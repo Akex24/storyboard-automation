@@ -25,3 +25,4 @@ __pycache__/
 
 # Claude Code локальные
 .claude/settings.local.json
+_session_log.md

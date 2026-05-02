@@ -417,53 +417,116 @@ def parse_shots(prompt_text: str) -> List[Dict]:
     return shots[:PANELS]
 
 
-def build_single_shot_prompt(prompt_text: str, panel_idx: int) -> str:
-    BLANK = ("COMPLETELY BLANK AND EMPTY. Pure white space only. "
-             "No drawing, no lines. No text annotation below.")
-    target   = panel_idx + 1
-    panel_re = re.compile(
-        r'(Panel\s+\d+\s+\([^)]+\):)(.*?)(?=Panel\s+\d+\s+\(|===ПРОМПТ_БЛОК.*?КОНЕЦ|$)',
-        re.DOTALL,
+def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
+    """Извлекает контент одного шота как самостоятельный 9:16 промпт.
+
+    Берёт общий хедер блока (стиль, рефы, персонажи) + тело конкретного Panel,
+    адаптирует layout-инструкции с "ONE wide horizontal sheet, 4 panels"
+    на "Single vertical 9:16 panel".
+
+    Возвращает None если панель помечена как COMPLETELY BLANK или не найдена.
+    """
+    target = panel_idx + 1
+
+    cleaned = "\n".join(
+        l for l in prompt_text.splitlines()
+        if not l.startswith("# [@]") and not l.startswith("===ПРОМПТ_БЛОК")
+    ).strip()
+
+    first_panel_m = re.search(r'(?im)^\s*Panel\s+1\s+\(', cleaned)
+    if not first_panel_m:
+        return None
+
+    header      = cleaned[:first_panel_m.start()].rstrip()
+    panels_text = cleaned[first_panel_m.start():]
+
+    panel_pat = re.compile(
+        r'(?is)Panel\s+(\d+)\s+\([^)]+\):\s*(.*?)(?=Panel\s+\d+\s+\(|$)'
+    )
+    panel_body: Optional[str] = None
+    for m in panel_pat.finditer(panels_text):
+        if int(m.group(1)) == target:
+            panel_body = m.group(2).strip()
+            break
+
+    if not panel_body or "COMPLETELY BLANK" in panel_body.upper():
+        return None
+
+    header_new = re.sub(
+        r'(?i)(Film storyboard layout,\s*)?ONE\s+wide\s+horizontal\s+sheet,?\s*'
+        r'EXACTLY\s+\d+\s+vertical\s+panels[^.]*\.\s*',
+        'Single vertical 9:16 panel. ',
+        header,
+    )
+    if header_new == header:
+        header_new = re.sub(
+            r'(?i)ONE\s+wide\s+horizontal\s+sheet[^.]*\.',
+            'Single vertical 9:16 panel.',
+            header,
+        )
+
+    header_new = re.sub(
+        r'(?i)Blank\s+panels:[^.]*\.(?:\s*(?:Pure\s+white\s+space|No\s+drawing|No\s+text\s+annotation)[^.]*\.)*',
+        '',
+        header_new,
     )
 
-    def replacer(m):
-        header = m.group(1)
-        pn     = re.search(r'Panel\s+(\d+)', header)
-        if pn and int(pn.group(1)) == target:
-            return m.group(0)
-        return f"{header}\n{BLANK}\n\n"
-
-    return panel_re.sub(replacer, prompt_text)
+    return f"{header_new.strip()}\n\n{panel_body}"
 
 
 # ─── Утилиты — изображения ───────────────────────────────────────────────────
 
-def split_storyboard(image_path: Path) -> List[bytes]:
-    img  = PILImage.open(image_path)
-    w, h = img.size
-    pw   = w // PANELS
-    out  = []
+def shot_path(block_name: str, shot_idx: int) -> Path:
+    """Путь к отдельному файлу шота: {block}_shot{N}.jpg (N с 1)."""
+    return STORYBOARDS_DIR / f"{block_name}_shot{shot_idx + 1}.jpg"
+
+
+def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
+    """Склеивает все 9:16 шоты блока в одну 16:9 картинку (4 в ряд) и сохраняет.
+
+    Пустые позиции (где нет файла) заполняются белым.
+    """
+    paths: List[Optional[Path]] = []
     for i in range(PANELS):
-        left  = i * pw
-        right = (i + 1) * pw if i < PANELS - 1 else w
-        buf   = io.BytesIO()
-        img.crop((left, 0, right, h)).save(buf, format="JPEG", quality=92)
-        out.append(buf.getvalue())
-    return out
+        p = shot_path(block_name, i)
+        paths.append(p if p.exists() else None)
 
+    panel_w, panel_h = 0, 0
+    for p in paths:
+        if p is not None:
+            with PILImage.open(p) as img:
+                panel_w, panel_h = img.size
+            break
 
-def composite_panel(storyboard_path: Path, new_bytes: bytes, panel_idx: int) -> None:
-    orig       = PILImage.open(storyboard_path)
-    w, h       = orig.size
-    pw         = w // PANELS
-    new_img    = PILImage.open(io.BytesIO(new_bytes))
-    nw, _      = new_img.size
-    if nw > pw * 1.5:
-        spw = nw // PANELS
-        new_img = new_img.crop((panel_idx * spw, 0, (panel_idx + 1) * spw, new_img.height))
-    new_img = new_img.resize((pw, h), PILImage.LANCZOS)
-    orig.paste(new_img, (panel_idx * pw, 0))
-    orig.save(storyboard_path, format="JPEG", quality=92)
+    if panel_w == 0 or panel_h == 0:
+        return
+
+    total_w = panel_w * PANELS
+    canvas  = PILImage.new("RGB", (total_w, panel_h), (255, 255, 255))
+
+    for i, p in enumerate(paths):
+        if p is None:
+            continue
+        with PILImage.open(p) as img:
+            piece = img.convert("RGB")
+            if piece.size != (panel_w, panel_h):
+                if piece.height != panel_h:
+                    new_w = max(1, int(piece.width * panel_h / piece.height))
+                    piece = piece.resize((new_w, panel_h), PILImage.LANCZOS)
+                if piece.width > panel_w:
+                    x0 = (piece.width - panel_w) // 2
+                    piece = piece.crop((x0, 0, x0 + panel_w, panel_h))
+                elif piece.width < panel_w:
+                    pad = PILImage.new("RGB", (panel_w, panel_h), (255, 255, 255))
+                    pad.paste(piece, ((panel_w - piece.width) // 2, 0))
+                    piece = pad
+        canvas.paste(piece, (i * panel_w, 0))
+
+    fmt = "PNG" if dest.suffix.lower() == ".png" else "JPEG"
+    if fmt == "JPEG":
+        canvas.save(dest, format=fmt, quality=95)
+    else:
+        canvas.save(dest, format=fmt)
 
 
 # ─── Поток генерации ─────────────────────────────────────────────────────────
@@ -492,11 +555,12 @@ class GenerateThread(QThread):
 
             prompt_text = prompt_file.read_text(encoding="utf-8")
             refs        = parse_refs(prompt_text)
-            mod_prompt  = build_single_shot_prompt(prompt_text, self.panel_idx)
-            clean = "\n".join(
-                l for l in mod_prompt.splitlines()
-                if not l.startswith("===ПРОМПТ_БЛОК") and not l.startswith("# [@]")
-            ).strip()
+            clean       = extract_shot_prompt(prompt_text, self.panel_idx)
+            if not clean:
+                self.error.emit(
+                    f"SHOT {self.panel_idx + 1}: панель пустая или Panel "
+                    f"{self.panel_idx + 1} не найден в промпте {prompt_file.name}")
+                return
 
             # Загрузка рефов
             ref_hashes: List[str] = []
@@ -527,7 +591,7 @@ class GenerateThread(QThread):
 
             payload: Dict = {
                 "prompt":       clean,
-                "aspect_ratio": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+                "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",   # 9:16 — отдельный шот
                 "model":        MODEL,
             }
             if ref_hashes:
@@ -575,12 +639,10 @@ class GenerateThread(QThread):
                     self.error.emit(f"API error: {data.get('error')}")
                     return
 
-            self.step.emit("Вставляю панель…", 92)
-            sb_path = STORYBOARDS_DIR / f"{self.block_name}.jpg"
-            if sb_path.exists():
-                composite_panel(sb_path, image_bytes, self.panel_idx)
-            else:
-                sb_path.write_bytes(image_bytes)
+            self.step.emit("Сохраняю шот…", 92)
+            # Каждый шот — отдельный файл {block}_shot{N}.jpg в формате 9:16
+            shot_file = shot_path(self.block_name, self.panel_idx)
+            shot_file.write_bytes(image_bytes)
 
             self.step.emit("Готово!", 100)
             self.finished.emit()
@@ -1157,11 +1219,24 @@ class MainWindow(QMainWindow):
         prev = self.current_block
         self.block_list.blockSignals(True)
         self.block_list.clear()
-        for b in sorted(STORYBOARDS_DIR.glob("*block_*.jpg")):
-            m       = re.match(r'(.*?)_block_(\d+)', b.stem)
-            display = f"Блок {m.group(2)}  [{m.group(1)}]" if m else b.stem
+
+        # Новый формат: {block}_shot{N}.jpg — собираем уникальные имена блоков
+        seen: set = set()
+        for f in STORYBOARDS_DIR.glob("*_block_*_shot*.jpg"):
+            m = re.match(r'(.*?_block_\d+)_shot\d+', f.stem)
+            if m:
+                seen.add(m.group(1))
+
+        # Также показываем блоки у которых есть промпт-файл, даже если шотов
+        # ещё нет — чтобы можно было запустить регенерацию.
+        for p in PROMPTS_DIR.glob("*_block_*.txt"):
+            seen.add(p.stem)
+
+        for block_name in sorted(seen):
+            m       = re.match(r'(.*?)_block_(\d+)', block_name)
+            display = f"Блок {m.group(2)}  [{m.group(1)}]" if m else block_name
             item    = QListWidgetItem(display)
-            item.setData(Qt.ItemDataRole.UserRole, b.stem)
+            item.setData(Qt.ItemDataRole.UserRole, block_name)
             self.block_list.addItem(item)
         self.block_list.blockSignals(False)
 
@@ -1180,7 +1255,6 @@ class MainWindow(QMainWindow):
         self._display_block(self.current_block)
 
     def _display_block(self, name: str):
-        sb_path     = STORYBOARDS_DIR / f"{name}.jpg"
         prompt_file = PROMPTS_DIR / f"{name}.txt"
 
         m = re.match(r'(.*?)_block_(\d+)', name)
@@ -1191,12 +1265,17 @@ class MainWindow(QMainWindow):
         if prompt_file.exists():
             shots = parse_shots(prompt_file.read_text(encoding="utf-8"))
 
+        # Загружаем по одному 9:16 файлу на каждый шот: {block}_shot{N}.jpg
         panels: List[Optional[bytes]] = [None] * PANELS
-        if sb_path.exists():
-            try:
-                panels = split_storyboard(sb_path)
-            except Exception as e:
-                self.status_bar.showMessage(f"Ошибка загрузки: {e}")
+        any_exists = False
+        for i in range(PANELS):
+            p = shot_path(name, i)
+            if p.exists():
+                try:
+                    panels[i] = p.read_bytes()
+                    any_exists = True
+                except Exception as e:
+                    self.status_bar.showMessage(f"Ошибка загрузки {p.name}: {e}")
 
         for i, card in enumerate(self.shot_cards):
             shot = shots[i] if i < len(shots) else dict(
@@ -1210,7 +1289,8 @@ class MainWindow(QMainWindow):
             else:
                 card.set_loading(False)
 
-        self.save_btn.setEnabled(sb_path.exists())
+        # Кнопка экспорта активна если хотя бы один шот сгенерирован
+        self.save_btn.setEnabled(any_exists)
 
     # ── Regeneration ─────────────────────────────────────────────────────────
 
@@ -1302,16 +1382,23 @@ class MainWindow(QMainWindow):
     def _save_png(self):
         if not self.current_block:
             return
-        src = STORYBOARDS_DIR / f"{self.current_block}.jpg"
-        if not src.exists():
+        # Проверяем что хотя бы один шот существует
+        any_exists = any(shot_path(self.current_block, i).exists() for i in range(PANELS))
+        if not any_exists:
+            self.status_bar.showMessage("Нет шотов для экспорта")
             return
+
         dest, _ = QFileDialog.getSaveFileName(
             self, "Сохранить стриборд",
             str(Path.home() / "Desktop" / f"{self.current_block}.png"),
             "PNG (*.png);;JPEG (*.jpg)")
-        if dest:
-            PILImage.open(src).save(dest)
+        if not dest:
+            return
+        try:
+            stitch_shots_to_landscape(self.current_block, Path(dest))
             self.status_bar.showMessage(f"Сохранено: {dest}")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка экспорта", str(e))
 
     # ── Обновления ─────────────────────────────────────────────────────────────
 
