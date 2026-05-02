@@ -14,6 +14,7 @@ import io
 import os
 import sys
 import json
+import shutil
 import zipfile
 import platform
 import tempfile
@@ -21,6 +22,32 @@ import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Optional
+
+
+def find_system_python() -> Optional[str]:
+    """Найти системный Python — НЕ запакованный установщик.
+
+    Внутри PyInstaller .app-бандла sys.executable указывает на сам бандл,
+    что приводит к fork-bomb при попытке запустить Python через subprocess.
+    """
+    if not getattr(sys, 'frozen', False):
+        return sys.executable
+    for cmd in ("python3", "python"):
+        path = shutil.which(cmd)
+        if path:
+            return path
+    # Стандартные места установки на macOS
+    for guess in (
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/usr/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3",
+    ):
+        if Path(guess).exists():
+            return guess
+    return None
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -245,32 +272,19 @@ class StepPython(StepBase):
         QTimer.singleShot(500, self._check_python)
 
     def _check_python(self):
-        try:
-            r = subprocess.run(
-                [sys.executable, "--version"],
-                capture_output=True, text=True, timeout=5,
-            )
-            ver = r.stdout.strip() or r.stderr.strip()
-            if r.returncode == 0:
-                self.status.setText(f"✓ {ver} установлен")
-                self.status.setObjectName("status-ok")
-                self.status.setStyleSheet("font-size: 13px; color: #6db86d;")
-                self.next_btn.setEnabled(True)
-                return
-        except Exception:
-            pass
-        # Запасной вариант: ищем `python3` или `python` в PATH
-        for cmd in ("python3", "python"):
+        py = find_system_python()
+        if py:
             try:
-                r = subprocess.run([cmd, "--version"],
+                r = subprocess.run([py, "--version"],
                                     capture_output=True, text=True, timeout=5)
                 if r.returncode == 0:
-                    self.status.setText(f"✓ {r.stdout.strip() or r.stderr.strip()} найден")
+                    ver = r.stdout.strip() or r.stderr.strip()
+                    self.status.setText(f"✓ {ver} установлен")
                     self.status.setStyleSheet("font-size: 13px; color: #6db86d;")
                     self.next_btn.setEnabled(True)
                     return
             except Exception:
-                continue
+                pass
         # Не нашли
         self.status.setText("✗ Python не найден на компьютере")
         self.status.setStyleSheet("font-size: 13px; color: #cc6666;")
@@ -603,8 +617,9 @@ class InstallerWindow(QMainWindow):
             # Запасной вариант — Python скрипт в проекте
             if self.project_path:
                 script = self.project_path / "storyboard_app.py"
-                if script.exists():
-                    subprocess.Popen([sys.executable, str(script)])
+                py = find_system_python()
+                if script.exists() and py:
+                    subprocess.Popen([py, str(script)])
                     self.close()
                     return
         elif IS_WINDOWS:
@@ -618,8 +633,9 @@ class InstallerWindow(QMainWindow):
                     return
             if self.project_path:
                 script = self.project_path / "storyboard_app.py"
-                if script.exists():
-                    subprocess.Popen([sys.executable, str(script)])
+                py = find_system_python()
+                if script.exists() and py:
+                    subprocess.Popen([py, str(script)])
                     self.close()
                     return
 
@@ -633,6 +649,8 @@ class InstallerWindow(QMainWindow):
 
 
 def main():
+    import multiprocessing
+    multiprocessing.freeze_support()
     app = QApplication(sys.argv)
     app.setApplicationName("Storyboard Studio Installer")
     app.setStyleSheet(DARK)
