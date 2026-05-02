@@ -9,6 +9,7 @@ Usage: python generate_storyboards.py ep20_block_1 ep20_block_2 ...
        python generate_storyboards.py  (generates all *block_*.txt prompts)
 """
 
+import json
 import re
 import sys
 import time
@@ -18,11 +19,27 @@ from typing import Optional
 
 import requests
 
-ROOT            = Path(__file__).parent
-ENV_FILE        = ROOT / ".env"
-PROMPTS_DIR     = ROOT / "output" / "prompts"
-STORYBOARDS_DIR = ROOT / "output" / "storyboards"
-REFS_DIR        = ROOT / "refs"
+ROOT     = Path(__file__).parent
+ENV_FILE = ROOT / ".env"
+
+
+def get_show_root() -> Path:
+    """Папка активного сериала из current_show.json. Fallback на ROOT если нет."""
+    show_file = ROOT / "current_show.json"
+    if show_file.exists():
+        try:
+            current = json.loads(show_file.read_text(encoding="utf-8")).get("current")
+            if current and (ROOT / "shows" / current).exists():
+                return ROOT / "shows" / current
+        except Exception:
+            pass
+    return ROOT
+
+
+SHOW_ROOT       = get_show_root()
+PROMPTS_DIR     = SHOW_ROOT / "output" / "prompts"
+STORYBOARDS_DIR = SHOW_ROOT / "output" / "storyboards"
+REFS_DIR        = SHOW_ROOT / "refs"
 LOCATIONS_DIR   = REFS_DIR / "locations"
 CHARACTERS_DIR  = REFS_DIR / "characters"
 OBJECTS_DIR     = REFS_DIR / "objects"

@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QListWidget, QListWidgetItem,
     QStatusBar, QFileDialog, QMessageBox, QProgressBar, QDialog,
-    QDialogButtonBox,
+    QDialogButtonBox, QTabWidget, QComboBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QFileSystemWatcher, QTimer, QSize, QSettings
 from PyQt6.QtGui import QPixmap, QImage
@@ -54,12 +54,14 @@ PANELS       = 4
 
 # Папки которые НЕ перезаписываются обновлением (контент пользователя)
 PRESERVE_ON_UPDATE = {".env", ".env.local", "output", "refs", "scenarios",
+                      "shows", "current_show.json",
                       "_inbox", ".claude", ".git", "build", "dist", "__pycache__",
                       ".DS_Store"}
 
 _upload_cache: Dict[str, str] = {}
 
-# Глобальные пути — инициализируются через setup_paths()
+# Глобальные пути — инициализируются через setup_paths_for_show()
+SHOW_ROOT       = Path()
 ENV_FILE        = Path()
 PROMPTS_DIR     = Path()
 STORYBOARDS_DIR = Path()
@@ -68,16 +70,134 @@ CHARACTERS_DIR  = Path()
 OBJECTS_DIR     = Path()
 
 
-def setup_paths(root: Path) -> None:
-    global ENV_FILE, PROMPTS_DIR, STORYBOARDS_DIR, LOCATIONS_DIR, CHARACTERS_DIR, OBJECTS_DIR
-    ENV_FILE        = root / ".env"
-    PROMPTS_DIR     = root / "output" / "prompts"
-    STORYBOARDS_DIR = root / "output" / "storyboards"
-    refs            = root / "refs"
+def shows_dir(project_root: Path) -> Path:
+    return project_root / "shows"
+
+
+def list_shows(project_root: Path) -> List[str]:
+    """Список slug'ов сериалов в `shows/` (сортировка алфавитная)."""
+    sd = shows_dir(project_root)
+    if not sd.exists():
+        return []
+    return sorted(p.name for p in sd.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
+def get_current_show(project_root: Path) -> Optional[str]:
+    """Активный сериал из current_show.json. None если файла нет или пусто."""
+    f = project_root / "current_show.json"
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text(encoding="utf-8")).get("current") or None
+    except Exception:
+        return None
+
+
+def set_current_show(project_root: Path, show_name: str) -> None:
+    """Записывает активный сериал в current_show.json."""
+    f = project_root / "current_show.json"
+    try:
+        f.write_text(json.dumps({"current": show_name}, ensure_ascii=False, indent=2) + "\n",
+                     encoding="utf-8")
+    except Exception:
+        pass
+
+
+def read_episodes_meta(show_root: Path) -> Dict:
+    """Читает episodes.json из папки сериала. Возвращает {} если файла нет."""
+    f = show_root / "episodes.json"
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def setup_paths_for_show(project_root: Path, show_name: Optional[str]) -> None:
+    """Устанавливает глобальные пути в папку активного сериала.
+    Если show_name=None — пути «зануляются» (в проекте нет сериалов)."""
+    global SHOW_ROOT, ENV_FILE, PROMPTS_DIR, STORYBOARDS_DIR
+    global LOCATIONS_DIR, CHARACTERS_DIR, OBJECTS_DIR
+    ENV_FILE = project_root / ".env"
+    if not show_name:
+        SHOW_ROOT       = project_root / "shows" / "_none_"
+        PROMPTS_DIR     = SHOW_ROOT / "output" / "prompts"
+        STORYBOARDS_DIR = SHOW_ROOT / "output" / "storyboards"
+        LOCATIONS_DIR   = SHOW_ROOT / "refs" / "locations"
+        CHARACTERS_DIR  = SHOW_ROOT / "refs" / "characters"
+        OBJECTS_DIR     = SHOW_ROOT / "refs" / "objects"
+        return
+    SHOW_ROOT       = project_root / "shows" / show_name
+    PROMPTS_DIR     = SHOW_ROOT / "output" / "prompts"
+    STORYBOARDS_DIR = SHOW_ROOT / "output" / "storyboards"
+    refs            = SHOW_ROOT / "refs"
     LOCATIONS_DIR   = refs / "locations"
     CHARACTERS_DIR  = refs / "characters"
     OBJECTS_DIR     = refs / "objects"
     STORYBOARDS_DIR.mkdir(parents=True, exist_ok=True)
+    PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def list_episodes() -> List[str]:
+    """Список ID эпизодов в активном сериале (`ep20`, `ep21`...). Сортировка по номеру."""
+    seen: set = set()
+    for f in STORYBOARDS_DIR.glob("*_block_*_shot*.jpg"):
+        m = re.match(r'(ep\d+)_block_', f.name)
+        if m:
+            seen.add(m.group(1))
+    for p in PROMPTS_DIR.glob("*_block_*.txt"):
+        m = re.match(r'(ep\d+)_block_', p.name)
+        if m:
+            seen.add(m.group(1))
+    def num(ep): m = re.match(r'ep(\d+)', ep); return int(m.group(1)) if m else 0
+    return sorted(seen, key=num)
+
+
+def list_blocks_for_episode(ep: str) -> List[str]:
+    """Имена блоков эпизода (`ep20_block_1`, `ep20_block_2`...) — отсортированы по номеру."""
+    seen: set = set()
+    for f in STORYBOARDS_DIR.glob(f"{ep}_block_*_shot*.jpg"):
+        m = re.match(rf'({re.escape(ep)}_block_\d+)_shot\d+', f.stem)
+        if m:
+            seen.add(m.group(1))
+    for p in PROMPTS_DIR.glob(f"{ep}_block_*.txt"):
+        seen.add(p.stem)
+    def num(b): m = re.match(r'.*_block_(\d+)', b); return int(m.group(1)) if m else 0
+    return sorted(seen, key=num)
+
+
+def episode_total_duration(ep: str) -> int:
+    """Сумма длительностей всех шотов эпизода (в секундах)."""
+    total = 0
+    for blk in list_blocks_for_episode(ep):
+        pf = PROMPTS_DIR / f"{blk}.txt"
+        if pf.exists():
+            try:
+                for shot in parse_shots(pf.read_text(encoding="utf-8")):
+                    if not shot.get("is_blank"):
+                        m = re.search(r'(\d+)', shot.get("duration", ""))
+                        if m:
+                            total += int(m.group(1))
+            except Exception:
+                pass
+    return total
+
+
+def block_total_duration(block_name: str) -> int:
+    pf = PROMPTS_DIR / f"{block_name}.txt"
+    if not pf.exists():
+        return 0
+    total = 0
+    try:
+        for shot in parse_shots(pf.read_text(encoding="utf-8")):
+            if not shot.get("is_blank"):
+                m = re.search(r'(\d+)', shot.get("duration", ""))
+                if m:
+                    total += int(m.group(1))
+    except Exception:
+        pass
+    return total
 
 
 def get_stored_root() -> Optional[Path]:
@@ -91,7 +211,7 @@ def store_root(root: Path) -> None:
 
 
 def is_valid_project(path: Path) -> bool:
-    return (path / "pipeline.py").exists() or (path / "output").is_dir()
+    return (path / "pipeline.py").exists() or (path / "shows").is_dir() or (path / "output").is_dir()
 
 
 # ─── Обновления ──────────────────────────────────────────────────────────────
@@ -269,17 +389,12 @@ def upload_release_asset(token: str, upload_url_template: str, file_path: Path) 
 
 
 def is_admin_mode(root: Path) -> bool:
-    """Админ — это владелец репозитория, у которого настроен git push origin."""
+    """Админ — это владелец репозитория с GitHub PAT-токеном в origin URL.
+    Сотрудники получают проект через установщик (без .git или без токена),
+    поэтому им is_admin = False и кнопка «Отправить обновление» не показывается."""
     if not (root / ".git").is_dir():
         return False
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(root), "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return r.returncode == 0 and r.stdout.strip().startswith(("http", "git@"))
-    except Exception:
-        return False
+    return get_github_token_from_remote(root) is not None
 
 
 def github_configured() -> bool:
@@ -287,62 +402,113 @@ def github_configured() -> bool:
 
 
 # ─── Тема ─────────────────────────────────────────────────────────────────────
+# Акцентный красный (с макета LUMZ): #E63946
 DARK = """
-QMainWindow, QWidget        { background: #161616; color: #e0e0e0; font-family: -apple-system, "Segoe UI", Helvetica Neue; }
+QMainWindow                 { background: #0d0a14; }
+QWidget                     { color: #e0e0e0; font-family: -apple-system, "Segoe UI", Helvetica Neue; }
+QWidget#main-bg {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #2a1845, stop:0.35 #161020, stop:0.65 #1a0f1f, stop:1 #3a1525);
+}
 QScrollArea                 { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
-QDialog                     { background: #1e1e1e; }
-
-QListWidget {
-    background: #1e1e1e; border: 1px solid #2c2c2c; border-radius: 8px;
-    padding: 4px; outline: none;
-}
-QListWidget::item           { padding: 9px 12px; border-radius: 6px; color: #b0b0b0; font-size: 13px; }
-QListWidget::item:selected  { background: #2d2d2d; color: #fff; }
-QListWidget::item:hover     { background: #252525; }
+QDialog                     { background: #1a1424; }
 
 QPushButton {
-    background: #2a2a2a; border: 1px solid #383838; border-radius: 6px;
+    background: #221a30; border: 1px solid #2e2440; border-radius: 6px;
     padding: 7px 14px; color: #e0e0e0; font-size: 13px;
 }
-QPushButton:hover           { background: #333; border-color: #444; }
-QPushButton:pressed         { background: #222; }
-QPushButton:disabled        { background: #1e1e1e; color: #444; border-color: #2a2a2a; }
-
-QPushButton#regen {
-    background: #1a2a1a; border: 1px solid #2a3f2a; color: #6db86d; font-size: 12px;
-}
-QPushButton#regen:enabled:hover { background: #1e311e; border-color: #3a5a3a; }
-QPushButton#regen:disabled      { background: #141414; color: #2e2e2e; border-color: #1c1c1c; }
+QPushButton:hover           { background: #2c2240; border-color: #3d2f55; }
+QPushButton:pressed         { background: #1c1626; }
+QPushButton:disabled        { background: #181222; color: #444; border-color: #221a30; }
 
 QPushButton#save {
-    background: #1a1e2a; border: 1px solid #2a2e3f; color: #7a9ccc; font-size: 13px; padding: 9px;
+    background: #1a1e2a; border: 1px solid #2a2e3f; color: #b0c4ff;
+    font-size: 13px; padding: 11px; font-weight: 500;
 }
 QPushButton#save:hover      { background: #1f2430; }
-QPushButton#secondary       { background: #222; font-size: 12px; color: #777; }
-QPushButton#secondary:hover { color: #bbb; }
+QPushButton#secondary       { background: #1d1727; font-size: 12px; color: #aaa; }
+QPushButton#secondary:hover { color: #ddd; }
 
-QFrame#card                 { background: #1e1e1e; border: 1px solid #2c2c2c; border-radius: 10px; }
-QFrame#card:hover           { border-color: #3a3a3a; }
+/* Pills — селектор эпизода и блока */
+QPushButton#pill {
+    background: rgba(34, 26, 48, 0.7); border: 1px solid #322545;
+    border-radius: 16px; padding: 6px 16px; color: #b0a8c0; font-size: 12px;
+    font-weight: 500;
+}
+QPushButton#pill:hover  { background: rgba(46, 36, 64, 0.9); color: #ddd; }
+QPushButton#pill[active="true"] {
+    background: #e63946; border: 1px solid #e63946; color: #fff;
+}
+QPushButton#pill[active="true"]:hover { background: #d6313c; }
 
-QLabel#sidebar-title        { font-size: 11px; font-weight: bold; color: #555; letter-spacing: 2px; }
-QLabel#block-title          { font-size: 15px; font-weight: bold; color: #ccc; }
-QLabel#shot-num             { font-size: 13px; font-weight: bold; color: #fff; }
-QLabel#shot-dur             { font-size: 12px; color: #666; }
-QLabel#shot-desc            { font-size: 12px; color: #888; }
-QLabel#step-label           { font-size: 11px; color: #5a8a5a; }
+QPushButton#pill-block {
+    background: rgba(28, 22, 40, 0.7); border: 1px solid #2a2238;
+    border-radius: 14px; padding: 5px 14px; color: #a89fb8; font-size: 12px;
+}
+QPushButton#pill-block:hover { background: rgba(40, 32, 56, 0.9); color: #ddd; }
+QPushButton#pill-block[active="true"] {
+    background: rgba(60, 48, 90, 0.9); border: 1px solid #6d56a5; color: #fff;
+}
+
+/* Карточка шота — без кнопки снизу, регенерация по hover-overlay */
+QFrame#card {
+    background: rgba(20, 16, 30, 0.85); border: 1px solid #2a2238; border-radius: 10px;
+}
+QFrame#card:hover { border-color: #4a3d65; }
+
+/* Hover overlay (полупрозрачная плашка с иконкой регенерации) */
+QFrame#regen-overlay {
+    background: rgba(0, 0, 0, 0.78); border-radius: 8px;
+}
+QLabel#regen-overlay-text {
+    color: #e0e0e0; font-size: 13px; font-weight: 500;
+    background: transparent; border: none;
+}
+
+/* Header — LUMZ + Storyboard Studio + версия */
+QLabel#logo-text         { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 1px; }
+QFrame#logo-square       { background: #e63946; border-radius: 1px; }
+QLabel#logo-sub          { font-size: 14px; color: #888; }
+QLabel#header-version    { font-size: 12px; color: #666; }
+
+/* Tabs — Редактор / Настройки */
+QTabBar::tab {
+    background: transparent; color: #888; padding: 8px 18px;
+    border: none; border-bottom: 2px solid transparent;
+    font-size: 13px; font-weight: 500;
+}
+QTabBar::tab:selected   { color: #fff; border-bottom: 2px solid #e63946; }
+QTabBar::tab:hover:!selected { color: #ccc; }
+QTabWidget::pane        { border: none; background: transparent; }
+
+/* Заголовки */
+QLabel#episode-title    { font-size: 16px; color: #fff; font-weight: 500; }
+QLabel#episode-duration { font-size: 13px; color: #888; }
+QLabel#block-title      { font-size: 12px; color: #777; font-weight: 600; letter-spacing: 1.5px; }
+
+/* Карточка шота — внутренние подписи */
+QLabel#shot-num         { font-size: 13px; font-weight: 600; color: #fff; }
+QLabel#shot-dur         { font-size: 11px; color: #666; }
+QLabel#shot-desc        { font-size: 11px; color: #888; }
+QLabel#step-label       { font-size: 11px; color: #5a8a5a; }
 QLabel#new-badge {
     color: #ffaa44; font-size: 10px; font-weight: bold;
     background: #2a1f0a; border: 1px solid #4a3010; border-radius: 4px;
     padding: 1px 6px;
 }
-QLabel#gen-time {
-    font-size: 11px; color: #5a8aaa;
-}
-QLabel#project-path         { font-size: 11px; color: #444; }
-QLabel#stats-label          { font-size: 10px; color: #3d3d5c; }
+QLabel#gen-time         { font-size: 10px; color: #5a8aaa; }
 
-QStatusBar                  { background: #111; color: #555; font-size: 12px; border-top: 1px solid #222; }
+/* Settings tab */
+QFrame#settings-group {
+    background: rgba(20, 16, 30, 0.7); border: 1px solid #2a2238; border-radius: 10px;
+}
+QLabel#settings-section { font-size: 11px; font-weight: 600; color: #555; letter-spacing: 2px; }
+QLabel#settings-row     { font-size: 13px; color: #ddd; }
+QLabel#settings-value   { font-size: 13px; color: #888; }
+
+QStatusBar              { background: rgba(10, 8, 14, 0.95); color: #777; font-size: 11px; border-top: 1px solid #1a141f; }
+QStatusBar::item        { border: none; }
 
 QProgressBar {
     background: #1a1a1a; border: none; border-radius: 3px; height: 5px;
@@ -353,9 +519,9 @@ QProgressBar::chunk {
 }
 
 QFrame#update-banner {
-    background: #1f2630; border: 1px solid #2d4060; border-radius: 8px;
+    background: rgba(31, 38, 48, 0.85); border: 1px solid #2d4060; border-radius: 8px;
 }
-QLabel#update-text          { font-size: 13px; color: #88aadd; }
+QLabel#update-text       { font-size: 13px; color: #88aadd; }
 QPushButton#update-btn {
     background: #2a3d5a; border: 1px solid #3d5680; border-radius: 6px;
     padding: 6px 14px; color: #b0d0ff; font-size: 12px;
@@ -363,19 +529,40 @@ QPushButton#update-btn {
 QPushButton#update-btn:hover { background: #344870; }
 
 QFrame#app-update-banner {
-    background: #201a30; border: 1px solid #503070; border-radius: 8px;
+    background: rgba(32, 26, 48, 0.85); border: 1px solid #503070; border-radius: 8px;
 }
-QLabel#app-update-text      { font-size: 13px; color: #cc99ff; }
+QLabel#app-update-text   { font-size: 13px; color: #cc99ff; }
 QPushButton#app-update-btn {
     background: #3a2560; border: 1px solid #5a3880; border-radius: 6px;
     padding: 6px 14px; color: #e0bbff; font-size: 12px;
 }
 QPushButton#app-update-btn:hover { background: #462e72; }
 
-QPushButton#admin-send {
-    background: #2a1f3a; border: 1px solid #4a3060; color: #c090ff; font-size: 12px;
+QFrame#admin-send-frame {
+    background: rgba(42, 31, 58, 0.7); border: 1px solid #4a3060; border-radius: 10px;
 }
-QPushButton#admin-send:hover { background: #322647; }
+QPushButton#admin-send {
+    background: #3a2560; border: 1px solid #5a3880; color: #e0bbff;
+    font-size: 13px; font-weight: 500; padding: 11px;
+}
+QPushButton#admin-send:hover { background: #462e72; }
+QPushButton#admin-send:disabled { background: #221830; color: #555; border-color: #2a2240; }
+
+QLabel#stats-label { font-size: 10px; color: #6d5d8c; }
+QLabel#admin-send-title { font-size: 13px; color: #c090ff; font-weight: 500; }
+QLabel#admin-send-desc  { font-size: 11px; color: #6d5d8c; }
+
+/* Show selector (dropdown) */
+QComboBox {
+    background: #221a30; border: 1px solid #322545; border-radius: 6px;
+    padding: 6px 14px; color: #ddd; font-size: 13px; min-width: 160px;
+}
+QComboBox:hover         { border-color: #4a3d65; }
+QComboBox::drop-down    { border: none; width: 22px; }
+QComboBox QAbstractItemView {
+    background: #1a1424; border: 1px solid #322545; selection-background-color: #2a1f3a;
+    color: #ddd; padding: 4px;
+}
 """
 
 # ─── Утилиты — промпты ────────────────────────────────────────────────────────
@@ -1018,23 +1205,51 @@ class ShotCard(QFrame):
     def __init__(self, panel_idx: int, parent=None):
         super().__init__(parent)
         self.panel_idx = panel_idx
-        # Запоминаем что шот пустой/blank — чтобы set_loading(False)
-        # не включал кнопку «Регенерировать» обратно
+        # Запоминаем что шот пустой/blank — чтобы overlay не показывался
         self._is_blank = False
+        self._is_loading = False
         self.setObjectName("card")
         self._build()
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
     def _build(self):
         lay = QVBoxLayout(self)
         lay.setSpacing(6)
         lay.setContentsMargins(10, 10, 10, 10)
 
-        self.img_label = QLabel("нет изображения")
+        # ── Зона изображения с hover-overlay ────────────────────────────────
+        # Контейнер чтобы overlay позиционировался относительно картинки
+        self.img_container = QWidget()
+        self.img_container.setFixedSize(self.CARD_W, self.CARD_H)
+        self.img_label = QLabel("нет изображения", self.img_container)
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.img_label.setFixedSize(self.CARD_W, self.CARD_H)
+        self.img_label.setGeometry(0, 0, self.CARD_W, self.CARD_H)
         self.img_label.setStyleSheet(
-            "background:#252525; border-radius:6px; color:#333; font-size:12px;")
-        lay.addWidget(self.img_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+            "background:#1a1424; border-radius:6px; color:#333; font-size:12px;")
+
+        # Hover-overlay — полупрозрачная плашка с иконкой регенерации
+        self.regen_overlay = QFrame(self.img_container)
+        self.regen_overlay.setObjectName("regen-overlay")
+        self.regen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
+        ov_lay = QVBoxLayout(self.regen_overlay)
+        ov_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ov_lay.setSpacing(8)
+        ov_icon = QLabel("↻")
+        ov_icon.setStyleSheet(
+            "font-size: 38px; color: #fff; background: transparent; border: none;")
+        ov_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ov_text = QLabel("ПЕРЕГЕНЕРИРОВАТЬ")
+        ov_text.setObjectName("regen-overlay-text")
+        ov_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ov_lay.addWidget(ov_icon)
+        ov_lay.addWidget(ov_text)
+        self.regen_overlay.hide()
+        # Клик по оверлею = регенерация. Для этого делаем overlay кликабельным
+        # через mousePressEvent.
+        self.regen_overlay.mousePressEvent = self._overlay_clicked  # type: ignore
+        self.regen_overlay.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        lay.addWidget(self.img_container, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -1079,11 +1294,27 @@ class ShotCard(QFrame):
 
         lay.addStretch()
 
+        # Скрытая кнопка для обратной совместимости с set_loading логикой —
+        # больше не отображается, но на всякий случай сохраняем интерфейс
         self.regen_btn = QPushButton("↺  Регенерировать")
-        self.regen_btn.setObjectName("regen")
-        self.regen_btn.setFixedWidth(self.CARD_W + 20)
-        self.regen_btn.clicked.connect(lambda: self.regen_requested.emit(self.panel_idx))
-        lay.addWidget(self.regen_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.regen_btn.hide()
+
+    def _overlay_clicked(self, ev):
+        """Клик по hover-overlay = запрос регенерации (если шот не пустой и не грузится)."""
+        if not self._is_blank and not self._is_loading:
+            self.regen_requested.emit(self.panel_idx)
+
+    def enterEvent(self, ev):
+        """Hover на карточку → показать overlay (если шот валиден и не грузится)."""
+        if not self._is_blank and not self._is_loading:
+            self.regen_overlay.show()
+            self.regen_overlay.raise_()
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        """Уход курсора → скрыть overlay."""
+        self.regen_overlay.hide()
+        super().leaveEvent(ev)
 
     def set_image(self, jpeg_bytes: Optional[bytes]):
         if not jpeg_bytes:
@@ -1106,6 +1337,7 @@ class ShotCard(QFrame):
             self.regen_btn.setEnabled(False)
             self.new_badge.hide()  # для пустого шота нечего быть «новым»
             self.gen_time_label.hide()
+            self.regen_overlay.hide()  # пустые шоты не дают hover-overlay
         else:
             self.num_label.setText(f"SHOT {shot['shot_num']}")
             self.dur_label.setText(shot["duration"])
@@ -1137,11 +1369,12 @@ class ShotCard(QFrame):
         self.step_label.show()
 
     def set_loading(self, loading: bool):
+        self._is_loading = loading
         if loading:
             self.regen_btn.setEnabled(False)
+            self.regen_overlay.hide()  # во время генерации overlay не показываем
         else:
             # КЛЮЧЕВОЕ: не включаем кнопку обратно если шот пустой.
-            # Иначе пустые шоты получают active hover-стиль и ложно кликаются.
             self.regen_btn.setEnabled(not self._is_blank)
             self.progress_bar.hide()
             self.step_label.hide()
@@ -1153,11 +1386,24 @@ class ShotCard(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self, project_root: Path):
         super().__init__()
-        setup_paths(project_root)
         self._project_root = project_root
         self._is_admin     = is_admin_mode(project_root)
+        # Активный сериал и эпизод
+        self._current_show:    Optional[str] = get_current_show(project_root)
+        self._current_episode: Optional[str] = None
+        self._meta: Dict = {}
+        # Готовим пути для активного сериала (или None если сериалов нет)
+        shows = list_shows(project_root)
+        if self._current_show not in shows:
+            self._current_show = shows[0] if shows else None
+            if self._current_show:
+                set_current_show(project_root, self._current_show)
+        setup_paths_for_show(project_root, self._current_show)
+        if self._current_show:
+            self._meta = read_episodes_meta(SHOW_ROOT)
+
         self.setWindowTitle("Storyboard Studio")
-        self.setMinimumSize(1080, 720)
+        self.setMinimumSize(1180, 760)
         self.current_block: Optional[str] = None
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
@@ -1165,21 +1411,24 @@ class MainWindow(QMainWindow):
         self._update_thread:     Optional[QThread]                 = None
         self._app_update_thread: Optional[DownloadAppUpdateThread] = None
         self._stats_thread:      Optional[FetchStatsThread]        = None
-        # Кешированная latest версия .app — нужна для скачивания при клике на баннер
         self._latest_app_ver: Optional[str] = None
         # Множество (block, panel_idx) — недавно регенерированные шоты, ещё не
         # просмотренные пользователем. На карточке у них висит бейдж NEW.
-        # Когда юзер переключается с блока на другой — пометки этого блока
-        # очищаются (он их «увидел»).
         self._unseen_shots: set = set()
         # Анимация точек ⋯ возле блоков с активной регенерацией
         self._dot_step = 0
-        self._build_ui()
-        self._load_blocks()
+        # Пилюли эпизодов и блоков (заполняются динамически)
+        self._episode_pills: Dict[str, QPushButton] = {}
+        self._block_pills:   Dict[str, QPushButton] = {}
 
+        self._build_ui()
+        self._populate_shows()
+        self._populate_episodes()
+
+        # File watcher следит за папкой сториборда активного сериала
         self._watcher = QFileSystemWatcher([str(STORYBOARDS_DIR)])
         self._watcher.directoryChanged.connect(
-            lambda: QTimer.singleShot(600, self._load_blocks))
+            lambda: QTimer.singleShot(600, self._reload_show))
 
         # Авто-проверка обновлений через 2 секунды после запуска
         if github_configured():
@@ -1214,68 +1463,58 @@ class MainWindow(QMainWindow):
             self._refresh_block_indicator(b)
 
     def _build_ui(self):
-        root = QWidget()
-        self.setCentralWidget(root)
-        lay = QHBoxLayout(root)
-        lay.setSpacing(16)
-        lay.setContentsMargins(16, 16, 16, 16)
+        # Центральный виджет с градиентным фоном
+        bg = QWidget()
+        bg.setObjectName("main-bg")
+        self.setCentralWidget(bg)
+        main = QVBoxLayout(bg)
+        main.setSpacing(0)
+        main.setContentsMargins(0, 0, 0, 0)
 
-        # ── Sidebar ───────────────────────────────────────────────────────────
-        sidebar = QWidget()
-        sidebar.setFixedWidth(210)
-        sl = QVBoxLayout(sidebar)
-        sl.setSpacing(8)
-        sl.setContentsMargins(0, 0, 0, 0)
+        main.addWidget(self._build_header())
 
-        title = QLabel("БЛОКИ")
-        title.setObjectName("sidebar-title")
-        sl.addWidget(title)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_editor_tab(), "Редактор")
+        self.tabs.addTab(self._build_settings_tab(), "Настройки")
+        main.addWidget(self.tabs, stretch=1)
 
-        self.block_list = QListWidget()
-        self.block_list.currentItemChanged.connect(self._on_block_selected)
-        sl.addWidget(self.block_list)
+        # Статус-бар (вариант B): пустой когда нечего показать
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
 
-        refresh_btn = QPushButton("⟳  Обновить список")
-        refresh_btn.clicked.connect(self._load_blocks)
-        sl.addWidget(refresh_btn)
+    def _build_header(self) -> QWidget:
+        h = QFrame()
+        h.setFixedHeight(58)
+        lay = QHBoxLayout(h)
+        lay.setContentsMargins(28, 12, 28, 12)
+        lay.setSpacing(8)
 
-        folder_btn = QPushButton("📂  Открыть в Finder")
-        folder_btn.setObjectName("secondary")
-        folder_btn.clicked.connect(self._open_folder)
-        sl.addWidget(folder_btn)
+        logo = QLabel("LUMZ")
+        logo.setObjectName("logo-text")
+        lay.addWidget(logo, alignment=Qt.AlignmentFlag.AlignVCenter)
+        sq = QFrame()
+        sq.setFixedSize(7, 7)
+        sq.setObjectName("logo-square")
+        lay.addWidget(sq, alignment=Qt.AlignmentFlag.AlignBottom)
+        lay.addSpacing(14)
+        sub = QLabel("Storyboard Studio")
+        sub.setObjectName("logo-sub")
+        lay.addWidget(sub, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        change_btn = QPushButton("⚙  Сменить папку проекта")
-        change_btn.setObjectName("secondary")
-        change_btn.clicked.connect(self._change_project)
-        sl.addWidget(change_btn)
+        lay.addStretch()
 
-        # Кнопка для админа — отправить обновление коллегам
-        if self._is_admin:
-            self.send_update_btn = QPushButton("📤  Отправить обновление")
-            self.send_update_btn.setObjectName("admin-send")
-            self.send_update_btn.clicked.connect(self._send_update)
-            sl.addWidget(self.send_update_btn)
+        self.header_version = QLabel(f"v{read_local_app_version(self._project_root)}")
+        self.header_version.setObjectName("header-version")
+        lay.addWidget(self.header_version, alignment=Qt.AlignmentFlag.AlignVCenter)
+        return h
 
-            # Метка со статистикой скачиваний приложения
-            self.stats_label = QLabel("загружаю статистику…")
-            self.stats_label.setObjectName("stats-label")
-            self.stats_label.setWordWrap(True)
-            sl.addWidget(self.stats_label)
+    def _build_editor_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(14)
+        lay.setContentsMargins(28, 14, 28, 14)
 
-        self.path_label = QLabel(self._format_version_label())
-        self.path_label.setObjectName("project-path")
-        self.path_label.setWordWrap(True)
-        sl.addWidget(self.path_label)
-
-        lay.addWidget(sidebar)
-
-        # ── Right panel ───────────────────────────────────────────────────────
-        right = QWidget()
-        rl = QVBoxLayout(right)
-        rl.setSpacing(12)
-        rl.setContentsMargins(0, 0, 0, 0)
-
-        # Баннер обновления проекта (файлы/скрипты)
+        # Баннер обновления проекта
         self.update_banner = QFrame()
         self.update_banner.setObjectName("update-banner")
         self.update_banner.hide()
@@ -1288,9 +1527,9 @@ class MainWindow(QMainWindow):
         self.update_btn.setObjectName("update-btn")
         self.update_btn.clicked.connect(self._download_update)
         ub_lay.addWidget(self.update_btn)
-        rl.addWidget(self.update_banner)
+        lay.addWidget(self.update_banner)
 
-        # Баннер обновления приложения (.app бинарник из GitHub Releases)
+        # Баннер обновления приложения
         self.app_update_banner = QFrame()
         self.app_update_banner.setObjectName("app-update-banner")
         self.app_update_banner.hide()
@@ -1303,17 +1542,62 @@ class MainWindow(QMainWindow):
         self.app_update_btn.setObjectName("app-update-btn")
         self.app_update_btn.clicked.connect(self._download_app_update)
         aub_lay.addWidget(self.app_update_btn)
-        rl.addWidget(self.app_update_banner)
+        lay.addWidget(self.app_update_banner)
 
-        self.block_title = QLabel("← Выбери блок")
+        # Селектор сериала
+        show_row = QHBoxLayout()
+        show_row.setSpacing(10)
+        show_lbl = QLabel("Сериал:")
+        show_lbl.setStyleSheet("color: #888; font-size: 13px;")
+        show_row.addWidget(show_lbl)
+        self.show_combo = QComboBox()
+        self.show_combo.currentTextChanged.connect(self._on_show_changed)
+        show_row.addWidget(self.show_combo)
+        show_row.addStretch()
+        lay.addLayout(show_row)
+
+        # Эпизоды + название/длительность
+        ep_row = QHBoxLayout()
+        ep_row.setSpacing(8)
+        self.ep_pills_container = QWidget()
+        self.ep_pills_layout = QHBoxLayout(self.ep_pills_container)
+        self.ep_pills_layout.setContentsMargins(0, 0, 0, 0)
+        self.ep_pills_layout.setSpacing(6)
+        ep_row.addWidget(self.ep_pills_container)
+        ep_row.addSpacing(20)
+        sep = QLabel("│")
+        sep.setStyleSheet("color: #2a2238; font-size: 14px;")
+        ep_row.addWidget(sep)
+        ep_row.addSpacing(10)
+        self.ep_title_label = QLabel("")
+        self.ep_title_label.setObjectName("episode-title")
+        ep_row.addWidget(self.ep_title_label)
+        ep_row.addStretch()
+        self.ep_dur_label = QLabel("")
+        self.ep_dur_label.setObjectName("episode-duration")
+        ep_row.addWidget(self.ep_dur_label)
+        lay.addLayout(ep_row)
+
+        # Блоки (пилюли)
+        self.block_pills_container = QWidget()
+        self.block_pills_layout = QHBoxLayout(self.block_pills_container)
+        self.block_pills_layout.setContentsMargins(0, 0, 0, 0)
+        self.block_pills_layout.setSpacing(6)
+        blk_row = QHBoxLayout()
+        blk_row.addWidget(self.block_pills_container)
+        blk_row.addStretch()
+        lay.addLayout(blk_row)
+
+        # Заголовок блока («КАМЕРА ЛОРЫ ~8с»)
+        self.block_title = QLabel("")
         self.block_title.setObjectName("block-title")
-        rl.addWidget(self.block_title)
+        lay.addWidget(self.block_title)
 
+        # Карточки шотов
         cards_w = QWidget()
         self.cards_row = QHBoxLayout(cards_w)
         self.cards_row.setSpacing(12)
         self.cards_row.setContentsMargins(0, 0, 0, 0)
-
         self.shot_cards: List[ShotCard] = []
         for i in range(PANELS):
             card = ShotCard(i)
@@ -1327,100 +1611,265 @@ class MainWindow(QMainWindow):
         scroll.setWidget(cards_w)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        rl.addWidget(scroll, stretch=1)
+        lay.addWidget(scroll, stretch=1)
 
+        # Сохранить как PNG
         self.save_btn = QPushButton("💾  Сохранить стриборд как PNG")
         self.save_btn.setObjectName("save")
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self._save_png)
-        rl.addWidget(self.save_btn)
+        lay.addWidget(self.save_btn)
+        return w
 
-        lay.addWidget(right, stretch=1)
+    def _build_settings_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(18)
+        lay.setContentsMargins(28, 22, 28, 22)
 
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Готов")
+        # ── Группа: Проект ──────────────────────────────────────────────────
+        proj_section = QLabel("ПРОЕКТ")
+        proj_section.setObjectName("settings-section")
+        lay.addWidget(proj_section)
+        proj_frame = QFrame()
+        proj_frame.setObjectName("settings-group")
+        pf_lay = QVBoxLayout(proj_frame)
+        pf_lay.setSpacing(8)
+        pf_lay.setContentsMargins(16, 14, 16, 14)
 
-    # ── Blocks ────────────────────────────────────────────────────────────────
+        refresh_btn = QPushButton("⟳  Обновить список файлов")
+        refresh_btn.clicked.connect(self._reload_show)
+        pf_lay.addWidget(refresh_btn)
 
-    def _load_blocks(self):
-        prev = self.current_block
-        self.block_list.blockSignals(True)
-        self.block_list.clear()
+        folder_btn = QPushButton("📂  Открыть папку проекта в Finder")
+        folder_btn.clicked.connect(self._open_folder)
+        pf_lay.addWidget(folder_btn)
 
-        # Новый формат: {block}_shot{N}.jpg — собираем уникальные имена блоков
-        seen: set = set()
-        for f in STORYBOARDS_DIR.glob("*_block_*_shot*.jpg"):
-            m = re.match(r'(.*?_block_\d+)_shot\d+', f.stem)
-            if m:
-                seen.add(m.group(1))
+        change_btn = QPushButton("⚙  Сменить папку проекта")
+        change_btn.clicked.connect(self._change_project)
+        pf_lay.addWidget(change_btn)
+        lay.addWidget(proj_frame)
 
-        # Также показываем блоки у которых есть промпт-файл, даже если шотов
-        # ещё нет — чтобы можно было запустить регенерацию.
-        for p in PROMPTS_DIR.glob("*_block_*.txt"):
-            seen.add(p.stem)
+        # ── Группа: О приложении ────────────────────────────────────────────
+        about_section = QLabel("О ПРИЛОЖЕНИИ")
+        about_section.setObjectName("settings-section")
+        lay.addWidget(about_section)
+        about_frame = QFrame()
+        about_frame.setObjectName("settings-group")
+        af_lay = QVBoxLayout(about_frame)
+        af_lay.setSpacing(8)
+        af_lay.setContentsMargins(16, 14, 16, 14)
 
-        for block_name in sorted(seen):
-            item = QListWidgetItem(self._format_block_label(block_name))
-            item.setData(Qt.ItemDataRole.UserRole, block_name)
-            self.block_list.addItem(item)
-        self.block_list.blockSignals(False)
+        self.app_ver_label = QLabel("")
+        self.app_ver_label.setObjectName("settings-row")
+        af_lay.addWidget(self.app_ver_label)
+        self.proj_ver_label = QLabel("")
+        self.proj_ver_label.setObjectName("settings-row")
+        af_lay.addWidget(self.proj_ver_label)
+        self.proj_path_label = QLabel("")
+        self.proj_path_label.setObjectName("settings-value")
+        self.proj_path_label.setWordWrap(True)
+        af_lay.addWidget(self.proj_path_label)
+        lay.addWidget(about_frame)
 
-        if prev:
-            for i in range(self.block_list.count()):
-                if self.block_list.item(i).data(Qt.ItemDataRole.UserRole) == prev:
-                    self.block_list.setCurrentRow(i)
-                    return
-        if self.block_list.count() > 0:
-            self.block_list.setCurrentRow(0)
+        # ── Админ: отправить обновление ────────────────────────────────────
+        if self._is_admin:
+            admin_frame = QFrame()
+            admin_frame.setObjectName("admin-send-frame")
+            ai = QVBoxLayout(admin_frame)
+            ai.setSpacing(6)
+            ai.setContentsMargins(16, 14, 16, 14)
+
+            ttl = QLabel("Отправить обновление")
+            ttl.setObjectName("admin-send-title")
+            ai.addWidget(ttl)
+            ds = QLabel("Запушить текущую версию проекта в GitHub для коллег")
+            ds.setObjectName("admin-send-desc")
+            ai.addWidget(ds)
+            ai.addSpacing(6)
+
+            self.send_update_btn = QPushButton("↑  Отправить обновление")
+            self.send_update_btn.setObjectName("admin-send")
+            self.send_update_btn.clicked.connect(self._send_update)
+            ai.addWidget(self.send_update_btn)
+
+            self.stats_label = QLabel("загружаю статистику…")
+            self.stats_label.setObjectName("stats-label")
+            self.stats_label.setWordWrap(True)
+            ai.addWidget(self.stats_label)
+            lay.addWidget(admin_frame)
+
+        lay.addStretch()
+        self._refresh_settings_versions()
+        return w
+
+    def _refresh_settings_versions(self):
+        """Обновляет тексты версий и пути в настройках."""
+        if hasattr(self, 'app_ver_label'):
+            self.app_ver_label.setText(
+                f"Версия приложения:    v{read_local_app_version(self._project_root)}")
+        if hasattr(self, 'proj_ver_label'):
+            self.proj_ver_label.setText(
+                f"Версия проекта:           v{read_local_version(self._project_root)}")
+        if hasattr(self, 'proj_path_label'):
+            self.proj_path_label.setText(self._project_root.name)
+        if hasattr(self, 'header_version'):
+            self.header_version.setText(f"v{read_local_app_version(self._project_root)}")
+
+    # ── Shows / Episodes / Blocks ────────────────────────────────────────────
+
+    def _populate_shows(self):
+        """Заполняет дропдаун сериалов и выбирает активный."""
+        self.show_combo.blockSignals(True)
+        self.show_combo.clear()
+        shows = list_shows(self._project_root)
+        for s in shows:
+            self.show_combo.addItem(s)
+        if self._current_show and self._current_show in shows:
+            self.show_combo.setCurrentText(self._current_show)
+        self.show_combo.blockSignals(False)
+        if not shows:
+            self.show_combo.setEnabled(False)
+            self.show_combo.addItem("(нет сериалов)")
+
+    def _on_show_changed(self, show_name: str):
+        if not show_name or show_name == self._current_show:
+            return
+        if show_name == "(нет сериалов)":
+            return
+        self._current_show = show_name
+        set_current_show(self._project_root, show_name)
+        setup_paths_for_show(self._project_root, show_name)
+        self._meta = read_episodes_meta(SHOW_ROOT)
+        self.current_block = None
+        self._current_episode = None
+        # Перевешиваем file watcher на новый путь
+        if hasattr(self, '_watcher'):
+            self._watcher.removePaths(self._watcher.directories())
+            self._watcher.addPath(str(STORYBOARDS_DIR))
+        self._populate_episodes()
+
+    def _reload_show(self):
+        """Перечитать эпизоды/блоки текущего сериала (после изменений на диске)."""
+        self._meta = read_episodes_meta(SHOW_ROOT) if self._current_show else {}
+        self._populate_episodes()
+
+    def _clear_layout(self, layout: QHBoxLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            wgt = item.widget()
+            if wgt is not None:
+                wgt.deleteLater()
+
+    def _populate_episodes(self):
+        """Перерисовывает ряд пилюль эпизодов активного сериала."""
+        self._clear_layout(self.ep_pills_layout)
+        self._episode_pills = {}
+
+        if not self._current_show:
+            self.ep_title_label.setText("В этом проекте нет сериалов")
+            self.ep_dur_label.setText("")
+            self._populate_blocks()
+            return
+
+        eps = list_episodes()
+        for ep in eps:
+            m = re.match(r'ep(\d+)', ep)
+            n = m.group(1) if m else ep
+            btn = QPushButton(f"EP {n}")
+            btn.setObjectName("pill")
+            btn.setProperty("active", False)
+            btn.clicked.connect(lambda _, e=ep: self._select_episode(e))
+            self.ep_pills_layout.addWidget(btn)
+            self._episode_pills[ep] = btn
+
+        if eps:
+            prev = self._current_episode if self._current_episode in eps else eps[0]
+            self._select_episode(prev)
+        else:
+            self._current_episode = None
+            self.ep_title_label.setText(f"В сериале «{self._current_show}» пока нет эпизодов")
+            self.ep_dur_label.setText("")
+            self._populate_blocks()
+
+    def _select_episode(self, ep: str):
+        self._current_episode = ep
+        for e, btn in self._episode_pills.items():
+            btn.setProperty("active", e == ep)
+            btn.style().unpolish(btn); btn.style().polish(btn)
+
+        title = self._meta.get(ep, {}).get("title") or ep.upper()
+        dur = episode_total_duration(ep)
+        self.ep_title_label.setText(title)
+        self.ep_dur_label.setText(f"{dur}с" if dur else "")
+        self._populate_blocks()
+
+    def _populate_blocks(self):
+        """Перерисовывает ряд пилюль блоков для текущего эпизода."""
+        self._clear_layout(self.block_pills_layout)
+        self._block_pills = {}
+
+        if not self._current_episode:
+            self.current_block = None
+            self.block_title.setText("")
+            for card in self.shot_cards:
+                card.set_shot_info(dict(shot_num=1, duration="", description="", is_blank=True))
+                card.set_image(None)
+            self.save_btn.setEnabled(False)
+            return
+
+        blocks = list_blocks_for_episode(self._current_episode)
+        for blk in blocks:
+            btn = QPushButton(self._format_block_label(blk))
+            btn.setObjectName("pill-block")
+            btn.setProperty("active", False)
+            btn.clicked.connect(lambda _, b=blk: self._select_block(b))
+            self.block_pills_layout.addWidget(btn)
+            self._block_pills[blk] = btn
+
+        if blocks:
+            prev = self.current_block if self.current_block in blocks else blocks[0]
+            self._select_block(prev)
+        else:
+            self.current_block = None
+            self.block_title.setText("")
+            for card in self.shot_cards:
+                card.set_shot_info(dict(shot_num=1, duration="", description="", is_blank=True))
+                card.set_image(None)
+            self.save_btn.setEnabled(False)
+
+    def _select_block(self, name: str):
+        if self.current_block and self.current_block != name:
+            self._mark_block_seen(self.current_block)
+        self.current_block = name
+        for b, btn in self._block_pills.items():
+            btn.setProperty("active", b == name)
+            btn.style().unpolish(btn); btn.style().polish(btn)
+        self._display_block(name)
 
     def _block_indicator_for(self, block_name: str) -> str:
-        """Возвращает префикс-индикатор для блока в списке.
-
-        Логика взаимоисключающая (точки имеют приоритет):
-        - Если идёт хоть одна генерация в блоке → анимированные точки `·/··/···`
-        - Иначе если есть непросмотренные шоты → `🆕`
-        - Иначе → пусто
-
-        Это даёт чёткий сигнал: «крутится» = идёт работа, «NEW» = ВСЕ
-        генерации в блоке закончились и есть что посмотреть.
-        """
+        """Префикс пилюли блока: точки во время регенерации, 🆕 если есть новое.
+        Точки имеют приоритет — взаимоисключающая логика."""
         has_active = any(b == block_name for (b, _) in self._active_regens.keys())
         if has_active:
-            # Анимация: «·», «··», «···» — обновляется QTimer'ом каждые 400ms
             dots_pattern = ["·    ", "· ·  ", "· · ·"]
             return dots_pattern[self._dot_step] + "  "
-
         has_unseen = any(b == block_name for (b, _) in self._unseen_shots)
         if has_unseen:
             return "🆕  "
-
         return ""
 
     def _format_block_label(self, block_name: str) -> str:
-        """Текст пункта в списке блоков с индикатором завершённости."""
-        m = re.match(r'(.*?)_block_(\d+)', block_name)
-        base = f"Блок {m.group(2)}  [{m.group(1)}]" if m else block_name
+        """Текст пилюли блока. Внутри эпизода префикс эпизода не нужен — только номер."""
+        m = re.match(r'.*_block_(\d+)', block_name)
+        base = f"Блок {m.group(1)}" if m else block_name
         return self._block_indicator_for(block_name) + base
 
     def _refresh_block_indicator(self, block_name: str):
-        """Обновляет иконку у одного блока в списке без перерисовки всего списка."""
-        for i in range(self.block_list.count()):
-            item = self.block_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == block_name:
-                item.setText(self._format_block_label(block_name))
-                return
-
-    def _on_block_selected(self, item: Optional[QListWidgetItem]):
-        if not item:
-            return
-        new_block = item.data(Qt.ItemDataRole.UserRole)
-        # Когда юзер УХОДИТ с блока, помечаем его шоты «увиденными» —
-        # бейджи NEW при возврате уже не покажутся.
-        if self.current_block and self.current_block != new_block:
-            self._mark_block_seen(self.current_block)
-        self.current_block = new_block
-        self._display_block(self.current_block)
+        """Обновляет текст одной пилюли блока (точки/NEW)."""
+        btn = self._block_pills.get(block_name)
+        if btn is not None:
+            btn.setText(self._format_block_label(block_name))
 
     def _mark_block_seen(self, block_name: str):
         """Очищает бейджи NEW у всех шотов указанного блока + обновляет индикатор."""
@@ -1435,9 +1884,18 @@ class MainWindow(QMainWindow):
     def _display_block(self, name: str):
         prompt_file = PROMPTS_DIR / f"{name}.txt"
 
-        m = re.match(r'(.*?)_block_(\d+)', name)
-        self.block_title.setText(
-            f"БЛОК {m.group(2)}  ·  {m.group(1).upper()}" if m else name)
+        # Заголовок блока: «КАМЕРА ЛОРЫ ~8с» (из episodes.json или fallback «БЛОК N»)
+        m = re.match(r'(ep\d+)_block_(\d+)', name)
+        ep, blk_n = (m.group(1), m.group(2)) if m else (None, None)
+        title_part = ""
+        if ep and blk_n:
+            block_name_meta = self._meta.get(ep, {}).get("blocks", {}).get(blk_n)
+            title_part = (block_name_meta or f"Блок {blk_n}").upper()
+        else:
+            title_part = name.upper()
+        dur = block_total_duration(name)
+        dur_part = f"   ~{dur}с" if dur else ""
+        self.block_title.setText(title_part + dur_part)
 
         shots: List[Dict] = []
         if prompt_file.exists():
@@ -1566,10 +2024,15 @@ class MainWindow(QMainWindow):
     # ── Misc ─────────────────────────────────────────────────────────────────
 
     def _open_folder(self):
+        # Открываем папку АКТИВНОГО сериала (со всеми его storyboards/refs/etc).
+        # Если сериала нет — открываем корень проекта.
+        target = SHOW_ROOT if self._current_show else self._project_root
+        if not target.exists():
+            target = self._project_root
         if sys.platform == "win32":
-            subprocess.run(["explorer", str(STORYBOARDS_DIR)])
+            subprocess.run(["explorer", str(target)])
         else:
-            subprocess.run(["open", str(STORYBOARDS_DIR)])
+            subprocess.run(["open", str(target)])
 
     def _change_project(self):
         folder = QFileDialog.getExistingDirectory(
@@ -1578,15 +2041,24 @@ class MainWindow(QMainWindow):
         if folder and is_valid_project(Path(folder)):
             self._project_root = Path(folder)
             store_root(self._project_root)
-            setup_paths(self._project_root)
-            self.path_label.setText(self._format_version_label())
+            # Сбрасываем активный сериал на тот что записан в новом проекте
+            shows = list_shows(self._project_root)
+            self._current_show = get_current_show(self._project_root)
+            if self._current_show not in shows:
+                self._current_show = shows[0] if shows else None
+                if self._current_show:
+                    set_current_show(self._project_root, self._current_show)
+            setup_paths_for_show(self._project_root, self._current_show)
+            self._meta = read_episodes_meta(SHOW_ROOT) if self._current_show else {}
+            self._refresh_settings_versions()
             self._watcher.removePaths(self._watcher.directories())
             self._watcher.addPath(str(STORYBOARDS_DIR))
-            self._load_blocks()
+            self._populate_shows()
+            self._populate_episodes()
         elif folder:
             QMessageBox.warning(self, "Ошибка",
                 "Это не папка проекта storyboard-automation.\n"
-                "Нужна папка с файлом pipeline.py")
+                "Нужна папка с файлом pipeline.py или папкой shows/")
 
     def _save_png(self):
         if not self.current_block:
@@ -1651,7 +2123,7 @@ class MainWindow(QMainWindow):
 
     def _on_update_done(self, new_version: str):
         self.update_banner.hide()
-        self.path_label.setText(self._format_version_label())
+        self._refresh_settings_versions()
         QMessageBox.information(
             self, "Обновление установлено",
             f"Проект обновлён до версии v{new_version}.\n\n"
@@ -1695,7 +2167,7 @@ class MainWindow(QMainWindow):
 
     def _on_app_update_done(self, new_version: str, install_path: str):
         self.app_update_banner.hide()
-        self.path_label.setText(self._format_version_label())
+        self._refresh_settings_versions()
 
         # Фиксируем что это «своё» скачивание — не показывать в счётчике коллег
         try:
@@ -1726,16 +2198,6 @@ class MainWindow(QMainWindow):
         self.app_update_btn.setEnabled(True)
         self.app_update_btn.setText("Скачать приложение →")
         QMessageBox.warning(self, "Ошибка загрузки приложения", msg)
-
-    def _format_version_label(self) -> str:
-        """Текст для нижней метки сайдбара — версии проекта и приложения."""
-        v_proj = read_local_version(self._project_root)
-        v_app  = read_local_app_version(self._project_root)
-        return (
-            f"Проект: v{v_proj}\n"
-            f"Приложение: v{v_app}\n"
-            f"{self._project_root.name}"
-        )
 
     def _fetch_download_stats(self):
         if self._stats_thread and self._stats_thread.isRunning():
@@ -1835,7 +2297,7 @@ class MainWindow(QMainWindow):
         self._update_thread.start()
 
     def _on_send_done(self, new_version: str, new_app_version: str, app_uploaded: bool):
-        self.send_update_btn.setText("📤  Отправить обновление")
+        self.send_update_btn.setText("↑  Отправить обновление")
 
         # Запоминаем mtime текущего .app — пригодится чтобы понять
         # «приложение было пересобрано после последней отправки».
@@ -1847,7 +2309,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        self.path_label.setText(self._format_version_label())
+        self._refresh_settings_versions()
 
         msg = f"Проект: v{new_version} опубликован на GitHub.\n"
         if app_uploaded:
@@ -1869,7 +2331,7 @@ class MainWindow(QMainWindow):
     def _on_send_error(self, msg: str):
         # На ошибке возвращаем кнопку в нормальное состояние, активность
         # выставит _refresh_send_button (изменения остались — должна быть активна).
-        self.send_update_btn.setText("📤  Отправить обновление")
+        self.send_update_btn.setText("↑  Отправить обновление")
         self._refresh_send_button()
         QMessageBox.warning(self, "Ошибка отправки", msg)
 

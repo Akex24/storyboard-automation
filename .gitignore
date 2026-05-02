@@ -7,6 +7,8 @@ output/
 scenarios/
 refs/
 _inbox/
+shows/
+current_show.json
 
 # Сборка и кэш
 build/

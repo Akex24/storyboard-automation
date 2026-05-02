@@ -12,15 +12,32 @@ Usage:
   python pipeline.py check <name>
 """
 
+import json
 import sys
 import time
 from pathlib import Path
 
 import requests
 
-ROOT          = Path(__file__).parent
-ENV_FILE      = ROOT / ".env"
-LOCATIONS_DIR = ROOT / "refs" / "locations"
+ROOT     = Path(__file__).parent
+ENV_FILE = ROOT / ".env"
+
+
+def get_show_root() -> Path:
+    """Папка активного сериала из current_show.json. Fallback на ROOT если нет."""
+    show_file = ROOT / "current_show.json"
+    if show_file.exists():
+        try:
+            current = json.loads(show_file.read_text(encoding="utf-8")).get("current")
+            if current and (ROOT / "shows" / current).exists():
+                return ROOT / "shows" / current
+        except Exception:
+            pass
+    return ROOT
+
+
+SHOW_ROOT     = get_show_root()
+LOCATIONS_DIR = SHOW_ROOT / "refs" / "locations"
 
 FASTGEN_BASE    = "https://googler.fast-gen.ai"
 FASTGEN_STORAGE = "https://storage.fast-gen.ai"
