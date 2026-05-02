@@ -1042,11 +1042,17 @@ class ShotCard(QFrame):
         self.new_badge = QLabel("NEW")
         self.new_badge.setObjectName("new-badge")
         self.new_badge.hide()
+        # Время генерации шота — стоит сразу после NEW, исчезает вместе с ним
+        self.gen_time_label = QLabel("")
+        self.gen_time_label.setObjectName("gen-time")
+        self.gen_time_label.hide()
         self.dur_label = QLabel("")
         self.dur_label.setObjectName("shot-dur")
         row.addWidget(self.num_label)
         row.addSpacing(6)
         row.addWidget(self.new_badge)
+        row.addSpacing(4)
+        row.addWidget(self.gen_time_label)
         row.addStretch()
         row.addWidget(self.dur_label)
         lay.addLayout(row)
@@ -1056,12 +1062,6 @@ class ShotCard(QFrame):
         self.desc_label.setWordWrap(True)
         self.desc_label.setMaximumWidth(self.CARD_W + 20)
         lay.addWidget(self.desc_label)
-
-        # Время генерации шота (отдельно от длительности воспроизведения)
-        self.gen_time_label = QLabel("")
-        self.gen_time_label.setObjectName("gen-time")
-        self.gen_time_label.hide()
-        lay.addWidget(self.gen_time_label)
 
         lay.addStretch()
 
@@ -1158,6 +1158,8 @@ class MainWindow(QMainWindow):
         # Когда юзер переключается с блока на другой — пометки этого блока
         # очищаются (он их «увидел»).
         self._unseen_shots: set = set()
+        # Анимация точек ⋯ возле блоков с активной регенерацией
+        self._dot_step = 0
         self._build_ui()
         self._load_blocks()
 
@@ -1180,6 +1182,22 @@ class MainWindow(QMainWindow):
         # Статистика скачиваний для админа (из GitHub Releases API)
         if self._is_admin and github_configured():
             QTimer.singleShot(4000, self._fetch_download_stats)
+
+        # Таймер анимации точек у блоков с активной регенерацией.
+        # Срабатывает каждые 400ms — циклически меняет ·/··/···
+        self._dot_timer = QTimer(self)
+        self._dot_timer.timeout.connect(self._tick_dots)
+        self._dot_timer.start(400)
+
+    def _tick_dots(self):
+        """Перебирает шаги анимации точек и обновляет индикаторы у блоков
+        где идёт регенерация. Если активных регенераций нет — ничего не делает."""
+        if not self._active_regens:
+            return
+        self._dot_step = (self._dot_step + 1) % 3
+        active_blocks = {b for (b, _) in self._active_regens.keys()}
+        for b in active_blocks:
+            self._refresh_block_indicator(b)
 
     def _build_ui(self):
         root = QWidget()
@@ -1347,10 +1365,10 @@ class MainWindow(QMainWindow):
 
         🆕 — есть непросмотренные новые шоты в этом блоке (главный сигнал
             «здесь что-то появилось»)
-        ⋯ — идёт регенерация хотя бы одного шота
+        ·/··/··· — анимированные точки, идёт регенерация (циклически по `_dot_step`)
         ""  — иначе (включая полностью готовые блоки — шум убран)
 
-        Возможные комбинации: «🆕 ⋯», «🆕», «⋯», «».
+        Возможные комбинации: «🆕 ·», «🆕», «···», «».
         """
         has_unseen = any(b == block_name for (b, _) in self._unseen_shots)
         has_active = any(b == block_name for (b, _) in self._active_regens.keys())
@@ -1359,7 +1377,9 @@ class MainWindow(QMainWindow):
         if has_unseen:
             parts.append("🆕")
         if has_active:
-            parts.append("⋯")
+            # Анимация: «·», «··», «···» — обновляется QTimer'ом каждые 400ms
+            dots_pattern = ["·    ", "· ·  ", "· · ·"]
+            parts.append(dots_pattern[self._dot_step])
 
         if not parts:
             return ""
@@ -1435,14 +1455,18 @@ class MainWindow(QMainWindow):
                 card.set_loading(True)
             else:
                 card.set_loading(False)
-            # Бейдж NEW — если шот недавно регенерирован и пользователь
-            # его ещё не видел (не переключался на другой блок после регена)
-            card.set_new_badge((name, i) in self._unseen_shots)
-            # Время генерации (из QSettings, если ранее регенерили этот шот)
-            try:
-                gt = int(settings.value(f"gen_time_{name}_shot{i + 1}", 0) or 0)
-            except (TypeError, ValueError):
-                gt = 0
+            # Бейдж NEW и время генерации — оба показываются ТОЛЬКО для
+            # непросмотренных шотов. Когда юзер уходит и возвращается,
+            # NEW и ⏱ исчезают вместе.
+            is_unseen = (name, i) in self._unseen_shots
+            card.set_new_badge(is_unseen)
+            if is_unseen:
+                try:
+                    gt = int(settings.value(f"gen_time_{name}_shot{i + 1}", 0) or 0)
+                except (TypeError, ValueError):
+                    gt = 0
+            else:
+                gt = 0   # для уже просмотренных шотов время скрываем
             card.set_gen_time(gt)
 
         # Кнопка экспорта активна если хотя бы один шот сгенерирован
