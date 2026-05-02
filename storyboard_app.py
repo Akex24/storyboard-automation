@@ -1363,27 +1363,25 @@ class MainWindow(QMainWindow):
     def _block_indicator_for(self, block_name: str) -> str:
         """Возвращает префикс-индикатор для блока в списке.
 
-        🆕 — есть непросмотренные новые шоты в этом блоке (главный сигнал
-            «здесь что-то появилось»)
-        ·/··/··· — анимированные точки, идёт регенерация (циклически по `_dot_step`)
-        ""  — иначе (включая полностью готовые блоки — шум убран)
+        Логика взаимоисключающая (точки имеют приоритет):
+        - Если идёт хоть одна генерация в блоке → анимированные точки `·/··/···`
+        - Иначе если есть непросмотренные шоты → `🆕`
+        - Иначе → пусто
 
-        Возможные комбинации: «🆕 ·», «🆕», «···», «».
+        Это даёт чёткий сигнал: «крутится» = идёт работа, «NEW» = ВСЕ
+        генерации в блоке закончились и есть что посмотреть.
         """
-        has_unseen = any(b == block_name for (b, _) in self._unseen_shots)
         has_active = any(b == block_name for (b, _) in self._active_regens.keys())
-
-        parts = []
-        if has_unseen:
-            parts.append("🆕")
         if has_active:
             # Анимация: «·», «··», «···» — обновляется QTimer'ом каждые 400ms
             dots_pattern = ["·    ", "· ·  ", "· · ·"]
-            parts.append(dots_pattern[self._dot_step])
+            return dots_pattern[self._dot_step] + "  "
 
-        if not parts:
-            return ""
-        return " ".join(parts) + "  "
+        has_unseen = any(b == block_name for (b, _) in self._unseen_shots)
+        if has_unseen:
+            return "🆕  "
+
+        return ""
 
     def _format_block_label(self, block_name: str) -> str:
         """Текст пункта в списке блоков с индикатором завершённости."""

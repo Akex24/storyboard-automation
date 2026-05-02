@@ -13,6 +13,10 @@
           {
             "type": "command",
             "command": "cat '/Volumes/DaVinci SSD/Работа/storyboard-automation/CRITICAL_RULES.md'"
+          },
+          {
+            "type": "command",
+            "command": "cat '/Volumes/DaVinci SSD/Работа/storyboard-automation/.claude/SESSION_LOG_REMINDER.md'"
           }
         ]
       }
