@@ -23,6 +23,12 @@ from typing import Optional, List, Dict
 import requests
 from PIL import Image as PILImage
 
+# SSL-fix для PyInstaller frozen .app
+if getattr(sys, 'frozen', False):
+    import os, certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QListWidget, QListWidgetItem,
@@ -118,6 +124,14 @@ def read_local_app_version(root: Path) -> str:
         return data.get("app_version") or data.get("version", "0.0.0")
     except Exception:
         return "0.0.0"
+
+
+def version_gt(a: str, b: str) -> bool:
+    """True если версия a строго больше версии b (семантическое сравнение)."""
+    try:
+        return tuple(int(x) for x in a.split('.')) > tuple(int(x) for x in b.split('.'))
+    except (ValueError, AttributeError):
+        return False
 
 
 # ─── GitHub API: токен, Releases, статистика ─────────────────────────────────
@@ -730,7 +744,7 @@ class CheckUpdateThread(QThread):
 
             latest_app = fetch_latest_app_release_version() or curr_app
 
-            if latest_proj != curr_proj or latest_app != curr_app:
+            if version_gt(latest_proj, curr_proj) or version_gt(latest_app, curr_app):
                 self.update_found.emit(curr_proj, latest_proj, curr_app, latest_app)
             else:
                 self.no_update.emit()

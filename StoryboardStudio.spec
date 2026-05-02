@@ -4,12 +4,13 @@
 # Windows: pyinstaller StoryboardStudio.spec  (запускать на Windows-машине)
 
 import sys
+import certifi
 
 a = Analysis(
     ['storyboard_app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[(certifi.where(), 'certifi')],
     hiddenimports=[
         'PIL._tkinter_finder',
         'PyQt6.QtPrintSupport',
