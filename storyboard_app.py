@@ -33,10 +33,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QListWidget, QListWidgetItem,
     QStatusBar, QFileDialog, QMessageBox, QProgressBar, QDialog,
-    QDialogButtonBox, QTabWidget, QComboBox,
+    QDialogButtonBox, QTabWidget, QComboBox, QPlainTextEdit, QMenu,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QFileSystemWatcher, QTimer, QSize, QSettings
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QFileSystemWatcher, QTimer, QSize, QSettings, QRectF, QPoint
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QPainterPath, QAction
 
 # ─── Константы ───────────────────────────────────────────────────────────────
 APP_ORG  = "StoryboardStudio"
@@ -112,6 +112,60 @@ def read_episodes_meta(show_root: Path) -> Dict:
         return json.loads(f.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
+
+
+def _pick_lang(value, lang: str) -> str:
+    """Извлекает строку из value:
+      - если value строка → возвращает как есть (любой язык, fallback)
+      - если value dict {ru, uk, en, ...} → берёт по lang, fallback на ru/en/любой
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return (value.get(lang) or value.get('ru') or value.get('en')
+                or next(iter([v for v in value.values() if v]), ""))
+    return str(value)
+
+
+def get_block_meta(meta: Dict, ep: str, blk_n: str, lang: Optional[str] = None) -> Dict:
+    """Унификация формата блока в episodes.json (поддержка обратной совместимости).
+
+    Форматы блока:
+      "1": "Встреча у стекла"  ← старый, только имя (одноязычный)
+      "1": {"name": "...", "shots": {...}}  ← новый
+      "1": {"name": {"ru": ..., "uk": ..., "en": ...}, "shots": {...}}  ← с переводами
+
+    Форматы описания шота (внутри shots):
+      "1": "Лора сидит..."  ← одноязычный
+      "1": {"ru": "...", "uk": "...", "en": "..."}  ← с переводами
+
+    Возвращает уже разрешённое для текущего языка: {"name": str, "shots": {str: str}}.
+    """
+    if lang is None:
+        lang = get_lang()
+    blocks = meta.get(ep, {}).get("blocks", {})
+    raw = blocks.get(str(blk_n))
+    if raw is None:
+        return {"name": "", "shots": {}}
+    if isinstance(raw, str):
+        return {"name": raw, "shots": {}}
+    if isinstance(raw, dict):
+        shots_raw = raw.get("shots", {}) or {}
+        return {
+            "name":  _pick_lang(raw.get("name", ""), lang),
+            "shots": {str(k): _pick_lang(v, lang) for k, v in shots_raw.items()},
+        }
+    return {"name": "", "shots": {}}
+
+
+def get_episode_title(meta: Dict, ep: str, lang: Optional[str] = None) -> str:
+    """Название эпизода с поддержкой переводов."""
+    if lang is None:
+        lang = get_lang()
+    title_raw = meta.get(ep, {}).get("title", "")
+    return _pick_lang(title_raw, lang)
 
 
 def setup_paths_for_show(project_root: Path, show_name: Optional[str]) -> None:
@@ -212,6 +266,142 @@ def store_root(root: Path) -> None:
 
 def is_valid_project(path: Path) -> bool:
     return (path / "pipeline.py").exists() or (path / "shows").is_dir() or (path / "output").is_dir()
+
+
+# ─── i18n ────────────────────────────────────────────────────────────────────
+# Поддерживаемые языки UI: код, отображаемый заголовок (с флагом),
+# и полное название в выпадающем списке.
+SUPPORTED_LANGUAGES = [
+    ('ru', '🇷🇺 РУС', 'Русский'),
+    ('uk', '🇺🇦 УКР', 'Українська'),
+    ('en', '🇬🇧 ENG', 'English'),
+]
+
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    'ru': {
+        'tab_editor': 'Редактор', 'tab_settings': 'Настройки',
+        'series': 'Сериал:', 'no_shows': 'В этом проекте нет сериалов',
+        'no_episodes': 'В сериале «{show}» пока нет эпизодов',
+        'ep_short': 'ЭП', 'block': 'Блок', 'empty_shot': 'ПУСТО',
+        'overlay_regen': '↻\n\nПЕРЕГЕНЕРИРОВАТЬ',
+        'overlay_edit':  '✎\n\nИЗМЕНИТЬ',
+        'save_png': '💾  Сохранить стриборд как PNG',
+        'sec_project': 'ПРОЕКТ', 'sec_about': 'О ПРИЛОЖЕНИИ',
+        'open_folder': 'Открыть папку проекта',
+        'app_version': 'Версия приложения', 'project_version': 'Версия проекта',
+        'send_update_title': 'Отправить обновление',
+        'send_update_desc': 'Запушить текущую версию проекта в GitHub для коллег',
+        'send_update_btn': '↑  Отправить обновление',
+        'edit_dialog_title': 'Изменить SHOT {n}',
+        'edit_dialog_q': 'Что изменить в этом шоте?',
+        'edit_dialog_hint': 'Опиши коротко (русский / английский). Композиция, стиль и остальные элементы сохранятся.',
+        'edit_dialog_placeholder': 'Например: убери девушку слева; смени костюм на чёрный…',
+        'edit_dialog_send': '↑  Отправить', 'edit_dialog_cancel': 'Отмена',
+        'edit_no_image_title': 'Сначала сгенерируй шот',
+        'edit_no_image_msg': 'Чтобы редактировать шот, у него должна быть исходная картинка.\nСначала сделай обычную регенерацию (наведи курсор на шот → ↻).',
+        'status_regenerating': 'Регенерирую SHOT {n} в {block}…',
+        'status_editing': 'Применяю изменения к SHOT {n}…',
+        'status_already_genning': 'SHOT {n} уже генерируется — подожди…',
+        'status_no_shots': 'Нет шотов для экспорта',
+        'status_saved': 'Сохранено: {path}',
+        'status_shot_done': 'SHOT {n} обновлён ✓',
+        'status_shot_done_other': 'SHOT {n} в [{block}] обновлён ✓',
+        'status_loading_stats': 'загружаю статистику…',
+        'status_no_stats': 'нет данных о скачиваниях',
+        'downloads_format': 'v{ver}: {n} скач.',
+    },
+    'uk': {
+        'tab_editor': 'Редактор', 'tab_settings': 'Налаштування',
+        'series': 'Серіал:', 'no_shows': 'У цьому проєкті немає серіалів',
+        'no_episodes': 'У серіалі «{show}» поки немає епізодів',
+        'ep_short': 'ЕП', 'block': 'Блок', 'empty_shot': 'ПОРОЖНЬО',
+        'overlay_regen': '↻\n\nПЕРЕГЕНЕРУВАТИ',
+        'overlay_edit':  '✎\n\nЗМІНИТИ',
+        'save_png': '💾  Зберегти стриборд як PNG',
+        'sec_project': 'ПРОЄКТ', 'sec_about': 'ПРО ДОДАТОК',
+        'open_folder': 'Відкрити папку проєкту',
+        'app_version': 'Версія додатку', 'project_version': 'Версія проєкту',
+        'send_update_title': 'Надіслати оновлення',
+        'send_update_desc': 'Запушити поточну версію проєкту на GitHub для колег',
+        'send_update_btn': '↑  Надіслати оновлення',
+        'edit_dialog_title': 'Змінити SHOT {n}',
+        'edit_dialog_q': 'Що змінити в цьому шоті?',
+        'edit_dialog_hint': 'Опиши коротко (українською / англійською). Композиція, стиль та інші елементи збережуться.',
+        'edit_dialog_placeholder': 'Наприклад: прибери дівчину зліва; зміни костюм на чорний…',
+        'edit_dialog_send': '↑  Надіслати', 'edit_dialog_cancel': 'Скасувати',
+        'edit_no_image_title': 'Спочатку згенеруй шот',
+        'edit_no_image_msg': 'Щоб редагувати шот, у нього має бути вихідна картинка.\nСпочатку зроби звичайну регенерацію (наведи курсор на шот → ↻).',
+        'status_regenerating': 'Регенерую SHOT {n} у {block}…',
+        'status_editing': 'Застосовую зміни до SHOT {n}…',
+        'status_already_genning': 'SHOT {n} вже генерується — зачекай…',
+        'status_no_shots': 'Немає шотів для експорту',
+        'status_saved': 'Збережено: {path}',
+        'status_shot_done': 'SHOT {n} оновлено ✓',
+        'status_shot_done_other': 'SHOT {n} у [{block}] оновлено ✓',
+        'status_loading_stats': 'завантажую статистику…',
+        'status_no_stats': 'немає даних про завантаження',
+        'downloads_format': 'v{ver}: {n} зав.',
+    },
+    'en': {
+        'tab_editor': 'Editor', 'tab_settings': 'Settings',
+        'series': 'Series:', 'no_shows': 'No series in this project yet',
+        'no_episodes': 'No episodes in series "{show}" yet',
+        'ep_short': 'EP', 'block': 'Block', 'empty_shot': 'EMPTY',
+        'overlay_regen': '↻\n\nREGENERATE',
+        'overlay_edit':  '✎\n\nEDIT',
+        'save_png': '💾  Save storyboard as PNG',
+        'sec_project': 'PROJECT', 'sec_about': 'ABOUT',
+        'open_folder': 'Open project folder',
+        'app_version': 'App version', 'project_version': 'Project version',
+        'send_update_title': 'Send update',
+        'send_update_desc': 'Push the current project version to GitHub for colleagues',
+        'send_update_btn': '↑  Send update',
+        'edit_dialog_title': 'Edit SHOT {n}',
+        'edit_dialog_q': 'What to change in this shot?',
+        'edit_dialog_hint': 'Describe briefly (any language). Composition, style and other elements will stay.',
+        'edit_dialog_placeholder': 'For example: remove the woman on the left; change suit to black…',
+        'edit_dialog_send': '↑  Send', 'edit_dialog_cancel': 'Cancel',
+        'edit_no_image_title': 'Generate the shot first',
+        'edit_no_image_msg': 'To edit a shot it must already have a source image.\nDo a regular regeneration first (hover the shot → ↻).',
+        'status_regenerating': 'Regenerating SHOT {n} in {block}…',
+        'status_editing': 'Applying changes to SHOT {n}…',
+        'status_already_genning': 'SHOT {n} is already generating — wait…',
+        'status_no_shots': 'No shots to export',
+        'status_saved': 'Saved: {path}',
+        'status_shot_done': 'SHOT {n} updated ✓',
+        'status_shot_done_other': 'SHOT {n} in [{block}] updated ✓',
+        'status_loading_stats': 'loading stats…',
+        'status_no_stats': 'no download data',
+        'downloads_format': 'v{ver}: {n} dl.',
+    },
+}
+
+
+def get_lang() -> str:
+    """Активный язык UI из QSettings (default: ru)."""
+    try:
+        s = QSettings(APP_ORG, APP_NAME)
+        v = str(s.value("ui_lang", "ru") or "ru")
+        return v if v in [c for c, _, _ in SUPPORTED_LANGUAGES] else "ru"
+    except Exception:
+        return "ru"
+
+
+def set_lang(lang: str) -> None:
+    QSettings(APP_ORG, APP_NAME).setValue("ui_lang", lang)
+
+
+def tr(key: str, **kwargs) -> str:
+    """Перевод по ключу. Fallback на русский, потом на сам ключ."""
+    lang = get_lang()
+    table = TRANSLATIONS.get(lang, TRANSLATIONS['ru'])
+    text  = table.get(key) or TRANSLATIONS['ru'].get(key, key)
+    if kwargs:
+        try:
+            text = text.format(**kwargs)
+        except (KeyError, IndexError):
+            pass
+    return text
 
 
 # ─── Обновления ──────────────────────────────────────────────────────────────
@@ -430,11 +620,13 @@ QPushButton#save:hover      { background: #1f2430; }
 QPushButton#secondary       { background: #1d1727; font-size: 12px; color: #aaa; }
 QPushButton#secondary:hover { color: #ddd; }
 
-/* Pills — селектор эпизода и блока */
+/* Pills — эпизоды МЕНЬШЕ, блоки БОЛЬШЕ (по макету).
+   border-radius: 100px — «безопасно большой» радиус, гарантирует полностью
+   скруглённую (pill) форму вне зависимости от итоговой высоты кнопки. */
 QPushButton#pill {
     background: rgba(34, 26, 48, 0.7); border: 1px solid #322545;
-    border-radius: 16px; padding: 6px 16px; color: #b0a8c0; font-size: 12px;
-    font-weight: 500;
+    border-radius: 100px; padding: 5px 14px; color: #b0a8c0; font-size: 11px;
+    font-weight: 600; min-height: 14px; min-width: 30px;
 }
 QPushButton#pill:hover  { background: rgba(46, 36, 64, 0.9); color: #ddd; }
 QPushButton#pill[active="true"] {
@@ -444,11 +636,37 @@ QPushButton#pill[active="true"]:hover { background: #d6313c; }
 
 QPushButton#pill-block {
     background: rgba(28, 22, 40, 0.7); border: 1px solid #2a2238;
-    border-radius: 14px; padding: 5px 14px; color: #a89fb8; font-size: 12px;
+    border-radius: 100px; padding: 10px 24px; color: #a89fb8; font-size: 13px;
+    font-weight: 500; min-height: 20px;
 }
 QPushButton#pill-block:hover { background: rgba(40, 32, 56, 0.9); color: #ddd; }
+
+/* Блок с непросмотренными шотами — оранжевый акцент (как бейдж NEW на карточке) */
+QPushButton#pill-block[unseen="true"] {
+    background: rgba(74, 48, 16, 0.55); border: 1px solid #6a4520; color: #ffcc66;
+    font-weight: 600;
+}
+QPushButton#pill-block[unseen="true"]:hover {
+    background: rgba(90, 60, 20, 0.7); color: #ffd680;
+}
+
+/* АКТИВНЫЙ блок — самый заметный: насыщенный фиолетовый + светлая обводка 2px.
+   Перекрывает unseen-стиль чтобы юзер всегда видел, на каком блоке он сейчас. */
 QPushButton#pill-block[active="true"] {
-    background: rgba(60, 48, 90, 0.9); border: 1px solid #6d56a5; color: #fff;
+    background: rgba(95, 70, 165, 1.0); border: 2px solid #c8a8ff;
+    color: #fff; font-weight: 700;
+}
+QPushButton#pill-block[active="true"]:hover {
+    background: rgba(110, 85, 180, 1.0);
+}
+/* Активный блок с непросмотренными шотами — обводка светло-оранжевая,
+   фон тоже оранжевый (но насыщеннее), сохраняем цветовую идентификацию NEW */
+QPushButton#pill-block[active="true"][unseen="true"] {
+    background: rgba(140, 90, 30, 1.0); border: 2px solid #ffcc66;
+    color: #fff; font-weight: 700;
+}
+QPushButton#pill-block[active="true"][unseen="true"]:hover {
+    background: rgba(160, 105, 35, 1.0);
 }
 
 /* Карточка шота — без кнопки снизу, регенерация по hover-overlay */
@@ -457,30 +675,41 @@ QFrame#card {
 }
 QFrame#card:hover { border-color: #4a3d65; }
 
-/* Hover overlay (полупрозрачная плашка с иконкой регенерации) */
+/* Hover overlay — полупрозрачная плашка с двумя кнопками действий */
 QFrame#regen-overlay {
-    background: rgba(0, 0, 0, 0.78); border-radius: 8px;
+    background: rgba(0, 0, 0, 0.82); border-radius: 8px;
 }
-QLabel#regen-overlay-text {
-    color: #e0e0e0; font-size: 13px; font-weight: 500;
-    background: transparent; border: none;
+QPushButton#overlay-action {
+    background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 10px; padding: 6px 8px; color: #fff;
+    font-size: 12px; font-weight: 600; text-align: center;
+}
+QPushButton#overlay-action:hover {
+    background: rgba(230, 57, 70, 0.55); border: 1px solid rgba(230, 57, 70, 0.9);
+}
+QPushButton#overlay-action:pressed {
+    background: rgba(180, 40, 50, 0.65);
 }
 
-/* Header — LUMZ + Storyboard Studio + версия */
-QLabel#logo-text         { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 1px; }
-QFrame#logo-square       { background: #e63946; border-radius: 1px; }
-QLabel#logo-sub          { font-size: 14px; color: #888; }
+/* Header — LUMZ + красный квадрат + Storyboard Studio (всё в одной rich-text QLabel) */
 QLabel#header-version    { font-size: 12px; color: #666; }
 
-/* Tabs — Редактор / Настройки */
+/* Tabs — Редактор / Настройки. Прижаты к ЛЕВОМУ краю (по макету) */
 QTabBar::tab {
-    background: transparent; color: #888; padding: 8px 18px;
+    background: transparent; color: #888; padding: 10px 22px;
     border: none; border-bottom: 2px solid transparent;
     font-size: 13px; font-weight: 500;
 }
 QTabBar::tab:selected   { color: #fff; border-bottom: 2px solid #e63946; }
 QTabBar::tab:hover:!selected { color: #ccc; }
 QTabWidget::pane        { border: none; background: transparent; }
+QTabWidget::tab-bar     { left: 28px; }   /* отступ слева как у контента */
+
+/* Тонкие разделительные линии между шапкой / табами / контентом */
+QFrame#header-divider, QFrame#tabs-divider {
+    background: rgba(255, 255, 255, 0.06); max-height: 1px; min-height: 1px;
+    border: none;
+}
 
 /* Заголовки */
 QLabel#episode-title    { font-size: 16px; color: #fff; font-weight: 500; }
@@ -499,13 +728,28 @@ QLabel#new-badge {
 }
 QLabel#gen-time         { font-size: 10px; color: #5a8aaa; }
 
-/* Settings tab */
+
+/* Settings tab — современный вид по макету: рамки с тонкими разделителями */
 QFrame#settings-group {
-    background: rgba(20, 16, 30, 0.7); border: 1px solid #2a2238; border-radius: 10px;
+    background: rgba(20, 16, 30, 0.5); border: 1px solid #2a2238; border-radius: 12px;
 }
-QLabel#settings-section { font-size: 11px; font-weight: 600; color: #555; letter-spacing: 2px; }
-QLabel#settings-row     { font-size: 13px; color: #ddd; }
-QLabel#settings-value   { font-size: 13px; color: #888; }
+QLabel#settings-section {
+    font-size: 11px; font-weight: 700; color: #5a5070; letter-spacing: 2.5px;
+}
+
+/* Кнопка-строка внутри #settings-group (открыть папку): без рамки внутри, как пункт меню */
+QPushButton#settings-row-btn {
+    background: transparent; border: none; padding: 16px 20px;
+    color: #ddd; font-size: 13px; text-align: left;
+}
+QPushButton#settings-row-btn:hover  { background: rgba(60, 48, 90, 0.25); color: #fff; }
+QPushButton#settings-row-btn:pressed { background: rgba(60, 48, 90, 0.4); }
+
+/* Строка ключ-значение внутри about (Версия приложения  v1.0.12) */
+QWidget#settings-row     { background: transparent; }
+QLabel#settings-row-key  { color: #aaa; font-size: 13px; }
+QLabel#settings-row-val  { color: #fff; font-size: 13px; font-weight: 500; }
+QFrame#settings-divider  { background: rgba(255, 255, 255, 0.06); border: none; }
 
 QStatusBar              { background: rgba(10, 8, 14, 0.95); color: #777; font-size: 11px; border-top: 1px solid #1a141f; }
 QStatusBar::item        { border: none; }
@@ -562,6 +806,30 @@ QComboBox::drop-down    { border: none; width: 22px; }
 QComboBox QAbstractItemView {
     background: #1a1424; border: 1px solid #322545; selection-background-color: #2a1f3a;
     color: #ddd; padding: 4px;
+}
+
+/* Переключатель языка в шапке — крупная кнопка-пилюля + кастомный QMenu */
+QPushButton#lang-btn {
+    background: rgba(34, 26, 48, 0.7); border: 1px solid #322545;
+    border-radius: 100px; padding: 7px 16px; color: #fff;
+    font-size: 13px; font-weight: 600; min-width: 110px; text-align: center;
+}
+QPushButton#lang-btn:hover {
+    background: rgba(50, 38, 72, 0.9); border-color: #5a4880;
+}
+QPushButton#lang-btn:pressed { background: rgba(40, 30, 58, 1.0); }
+
+/* Выпадающий список языков (как на макете LUMZ) */
+QMenu#lang-menu {
+    background: #1a1424; border: 1px solid #322545; border-radius: 10px;
+    padding: 6px;
+}
+QMenu#lang-menu::item {
+    padding: 11px 22px; color: #ddd; font-size: 13px; border-radius: 8px;
+    min-width: 160px;
+}
+QMenu#lang-menu::item:selected {
+    background: rgba(70, 55, 105, 0.7); color: #fff;
 }
 """
 
@@ -787,10 +1055,49 @@ class GenerateThread(QThread):
     finished = pyqtSignal(int)        # elapsed seconds
     error    = pyqtSignal(str)
 
-    def __init__(self, block_name: str, panel_idx: int):
+    def __init__(self, block_name: str, panel_idx: int,
+                 edit_instruction: Optional[str] = None):
+        """
+        Если `edit_instruction` задан — режим редактирования:
+          • существующий файл шота загружается как ЕДИНСТВЕННЫЙ реф [@]img1
+          • генерируется новый промпт «изменить только это, остальное оставить»
+          • новая картинка пишется поверх старой
+        Иначе — обычная регенерация по промпту блока + рефы локаций/персонажей.
+        """
         super().__init__()
-        self.block_name = block_name
-        self.panel_idx  = panel_idx
+        self.block_name       = block_name
+        self.panel_idx        = panel_idx
+        self.edit_instruction = (edit_instruction or "").strip() or None
+
+    def _upload_file(self, session: requests.Session, path: Path) -> str:
+        """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует по resolved-path."""
+        cache_key = str(path.resolve())
+        if cache_key in _upload_cache:
+            return _upload_cache[cache_key]
+        ext  = path.suffix.lower().lstrip(".")
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "png": "image/png"}.get(ext, "image/jpeg")
+        with open(path, "rb") as f:
+            r = session.post(f"{STORAGE_BASE}/upload",
+                             files={"file": (path.name, f, mime)}, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+        fh   = data.get("file_hash") or data.get("file") or data.get("hash") or ""
+        _upload_cache[cache_key] = fh
+        return fh
+
+    def _build_edit_prompt(self, instruction: str) -> str:
+        """Строит промпт для edit-режима: img1 = текущий шот, инструкция, всё остальное оставить."""
+        return (
+            "[@]img1 is the current storyboard panel — pencil sketch, "
+            "black and white, vertical 9:16 format.\n\n"
+            f"MODIFICATION REQUESTED: {instruction}\n\n"
+            "Apply ONLY the requested modification. Keep ALL other elements "
+            "EXACTLY identical to [@]img1: composition, framing, camera angle, "
+            "remaining characters, their poses and expressions, lighting, "
+            "background, the pencil sketch art style. Do not redraw or restyle. "
+            "Output: single vertical 9:16 panel, same pencil sketch black and white style."
+        )
 
     def run(self):
         start_time = time.time()
@@ -799,44 +1106,45 @@ class GenerateThread(QThread):
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
-            prompt_file = PROMPTS_DIR / f"{self.block_name}.txt"
-            if not prompt_file.exists():
-                self.error.emit(f"Промпт не найден: {prompt_file.name}")
-                return
-
-            prompt_text = prompt_file.read_text(encoding="utf-8")
-            refs        = parse_refs(prompt_text)
-            clean       = extract_shot_prompt(prompt_text, self.panel_idx)
-            if not clean:
-                self.error.emit(
-                    f"SHOT {self.panel_idx + 1}: панель пустая или Panel "
-                    f"{self.panel_idx + 1} не найден в промпте {prompt_file.name}")
-                return
-
-            # Загрузка рефов
             ref_hashes: List[str] = []
-            if refs:
-                n = len(refs)
-                sorted_tags = sorted(refs, key=lambda t: int(re.search(r'\d+', t).group()))
-                for idx, tag in enumerate(sorted_tags):
-                    path      = refs[tag]
-                    cache_key = str(path.resolve())
-                    if cache_key in _upload_cache:
-                        ref_hashes.append(_upload_cache[cache_key])
-                    else:
-                        ext  = path.suffix.lower().lstrip(".")
-                        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
-                                "png": "image/png"}.get(ext, "image/jpeg")
-                        with open(path, "rb") as f:
-                            r = session.post(f"{STORAGE_BASE}/upload",
-                                             files={"file": (path.name, f, mime)}, timeout=60)
-                        r.raise_for_status()
-                        data = r.json()
-                        fh   = data.get("file_hash") or data.get("file") or data.get("hash") or ""
-                        _upload_cache[cache_key] = fh
-                        ref_hashes.append(fh)
-                    pct = 5 + int((idx + 1) / n * 20)
-                    self.step.emit(f"Загружаю рефы ({idx+1}/{n})…", pct)
+            clean: str = ""
+
+            if self.edit_instruction:
+                # ── EDIT-режим ─────────────────────────────────────────────
+                # Существующий файл шота → единственный реф.
+                # Если файла нет — невозможно редактировать (нечего изменять).
+                existing = shot_path(self.block_name, self.panel_idx)
+                if not existing.exists():
+                    self.error.emit(
+                        f"Edit невозможен: исходного файла шота нет ({existing.name}). "
+                        "Сначала сделай обычную регенерацию.")
+                    return
+                self.step.emit("Загружаю текущий шот…", 10)
+                ref_hashes = [self._upload_file(session, existing)]
+                clean = self._build_edit_prompt(self.edit_instruction)
+            else:
+                # ── Обычная регенерация ───────────────────────────────────
+                prompt_file = PROMPTS_DIR / f"{self.block_name}.txt"
+                if not prompt_file.exists():
+                    self.error.emit(f"Промпт не найден: {prompt_file.name}")
+                    return
+
+                prompt_text = prompt_file.read_text(encoding="utf-8")
+                refs        = parse_refs(prompt_text)
+                clean       = extract_shot_prompt(prompt_text, self.panel_idx) or ""
+                if not clean:
+                    self.error.emit(
+                        f"SHOT {self.panel_idx + 1}: панель пустая или Panel "
+                        f"{self.panel_idx + 1} не найден в промпте {prompt_file.name}")
+                    return
+
+                if refs:
+                    n = len(refs)
+                    sorted_tags = sorted(refs, key=lambda t: int(re.search(r'\d+', t).group()))
+                    for idx, tag in enumerate(sorted_tags):
+                        ref_hashes.append(self._upload_file(session, refs[tag]))
+                        pct = 5 + int((idx + 1) / n * 20)
+                        self.step.emit(f"Загружаю рефы ({idx+1}/{n})…", pct)
 
             self.step.emit("Отправляю запрос…", 28)
 
@@ -1200,6 +1508,7 @@ class FetchStatsThread(QThread):
 
 class ShotCard(QFrame):
     regen_requested = pyqtSignal(int)
+    edit_requested  = pyqtSignal(int)   # запрос на edit-попап
     CARD_W, CARD_H  = 200, 356
 
     def __init__(self, panel_idx: int, parent=None):
@@ -1209,6 +1518,9 @@ class ShotCard(QFrame):
         self._is_blank = False
         self._is_loading = False
         self.setObjectName("card")
+        # Фиксированная ширина — чтобы пустые и с картинкой шоты были РОВНО
+        # одной ширины (иначе sizeHint от desc_label делает их разной ширины).
+        self.setFixedWidth(self.CARD_W + 20)
         self._build()
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
@@ -1227,27 +1539,31 @@ class ShotCard(QFrame):
         self.img_label.setStyleSheet(
             "background:#1a1424; border-radius:6px; color:#333; font-size:12px;")
 
-        # Hover-overlay — полупрозрачная плашка с иконкой регенерации
+        # Hover-overlay — полупрозрачная плашка с ДВУМЯ кнопками:
+        #   ↻ ПЕРЕГЕНЕРИРОВАТЬ  — обычная регенерация (по промпту блока)
+        #   ✎ ИЗМЕНИТЬ          — edit-режим (попап с инструкцией)
         self.regen_overlay = QFrame(self.img_container)
         self.regen_overlay.setObjectName("regen-overlay")
         self.regen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
         ov_lay = QVBoxLayout(self.regen_overlay)
-        ov_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ov_lay.setSpacing(8)
-        ov_icon = QLabel("↻")
-        ov_icon.setStyleSheet(
-            "font-size: 38px; color: #fff; background: transparent; border: none;")
-        ov_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ov_text = QLabel("ПЕРЕГЕНЕРИРОВАТЬ")
-        ov_text.setObjectName("regen-overlay-text")
-        ov_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ov_lay.addWidget(ov_icon)
-        ov_lay.addWidget(ov_text)
+        ov_lay.setContentsMargins(18, 18, 18, 18)
+        ov_lay.setSpacing(10)
+
+        self.overlay_regen_btn = QPushButton(tr('overlay_regen'))
+        self.overlay_regen_btn.setObjectName("overlay-action")
+        self.overlay_regen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.overlay_regen_btn.clicked.connect(
+            lambda: self.regen_requested.emit(self.panel_idx))
+        ov_lay.addWidget(self.overlay_regen_btn)
+
+        self.overlay_edit_btn = QPushButton(tr('overlay_edit'))
+        self.overlay_edit_btn.setObjectName("overlay-action")
+        self.overlay_edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.overlay_edit_btn.clicked.connect(
+            lambda: self.edit_requested.emit(self.panel_idx))
+        ov_lay.addWidget(self.overlay_edit_btn)
+
         self.regen_overlay.hide()
-        # Клик по оверлею = регенерация. Для этого делаем overlay кликабельным
-        # через mousePressEvent.
-        self.regen_overlay.mousePressEvent = self._overlay_clicked  # type: ignore
-        self.regen_overlay.setCursor(Qt.CursorShape.PointingHandCursor)
 
         lay.addWidget(self.img_container, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -1294,15 +1610,12 @@ class ShotCard(QFrame):
 
         lay.addStretch()
 
-        # Скрытая кнопка для обратной совместимости с set_loading логикой —
-        # больше не отображается, но на всякий случай сохраняем интерфейс
-        self.regen_btn = QPushButton("↺  Регенерировать")
+        # Скрытые кнопки для обратной совместимости с set_loading логикой —
+        # реальное взаимодействие через hover-overlay (overlay_regen_btn / overlay_edit_btn)
+        self.regen_btn = QPushButton()
         self.regen_btn.hide()
-
-    def _overlay_clicked(self, ev):
-        """Клик по hover-overlay = запрос регенерации (если шот не пустой и не грузится)."""
-        if not self._is_blank and not self._is_loading:
-            self.regen_requested.emit(self.panel_idx)
+        self.edit_btn = QPushButton()
+        self.edit_btn.hide()
 
     def enterEvent(self, ev):
         """Hover на карточку → показать overlay (если шот валиден и не грузится)."""
@@ -1321,20 +1634,31 @@ class ShotCard(QFrame):
             self.img_label.clear()
             self.img_label.setText("ПУСТО")
             return
-        pixmap = QPixmap.fromImage(QImage.fromData(jpeg_bytes))
-        self.img_label.setPixmap(pixmap.scaled(
+        pixmap = QPixmap.fromImage(QImage.fromData(jpeg_bytes)).scaled(
             QSize(self.CARD_W, self.CARD_H),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
-        ))
+        )
+        # Скругляем углы картинки через QPainterPath-маску. Картинка
+        # генерируется с прямыми углами — программно даём ей те же
+        # скругления (radius 6px), что у пустых панелей и фона карточки.
+        rounded = QPixmap(pixmap.size())
+        rounded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, pixmap.width(), pixmap.height()), 6, 6)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+        self.img_label.setPixmap(rounded)
 
     def set_shot_info(self, shot: Dict):
         self._is_blank = bool(shot.get("is_blank"))
         if self._is_blank:
-            self.num_label.setText("ПУСТО")
+            self.num_label.setText(tr('empty_shot'))
             self.dur_label.setText("")
             self.desc_label.setText("")
-            self.regen_btn.setEnabled(False)
             self.new_badge.hide()  # для пустого шота нечего быть «новым»
             self.gen_time_label.hide()
             self.regen_overlay.hide()  # пустые шоты не дают hover-overlay
@@ -1342,7 +1666,11 @@ class ShotCard(QFrame):
             self.num_label.setText(f"SHOT {shot['shot_num']}")
             self.dur_label.setText(shot["duration"])
             self.desc_label.setText(shot["description"])
-            self.regen_btn.setEnabled(True)
+
+    def apply_lang(self):
+        """Перевести тексты overlay-кнопок на текущий язык."""
+        self.overlay_regen_btn.setText(tr('overlay_regen'))
+        self.overlay_edit_btn.setText(tr('overlay_edit'))
 
     def set_new_badge(self, visible: bool):
         """Показ/скрытие бейджа NEW (только для НЕ-пустых шотов)."""
@@ -1371,11 +1699,8 @@ class ShotCard(QFrame):
     def set_loading(self, loading: bool):
         self._is_loading = loading
         if loading:
-            self.regen_btn.setEnabled(False)
             self.regen_overlay.hide()  # во время генерации overlay не показываем
         else:
-            # КЛЮЧЕВОЕ: не включаем кнопку обратно если шот пустой.
-            self.regen_btn.setEnabled(not self._is_blank)
             self.progress_bar.hide()
             self.step_label.hide()
             self.progress_bar.setValue(0)
@@ -1403,7 +1728,14 @@ class MainWindow(QMainWindow):
             self._meta = read_episodes_meta(SHOW_ROOT)
 
         self.setWindowTitle("Storyboard Studio")
-        self.setMinimumSize(1180, 760)
+        # Размер окна = ровно под 4 шота 9:16 + chrome без горизонтального скролла.
+        # Карточка: 200 (CARD_W) + 10×2 (внутренний padding QFrame) = 220
+        # 4 карточки × 220 + 3 spacing × 12 = 916
+        # + 28×2 margins tab content = 972
+        # + ~10px на чрезмерное паддинг scroll-area
+        # ИТОГО минимум 1000 ширина чтобы все 4 шота гарантированно влезли.
+        self.setMinimumSize(1000, 900)
+        self.resize(1000, 920)
         self.current_block: Optional[str] = None
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
@@ -1473,9 +1805,13 @@ class MainWindow(QMainWindow):
 
         main.addWidget(self._build_header())
 
+        # Тонкая разделительная линия под шапкой LUMZ
+        sep1 = QFrame(); sep1.setObjectName("header-divider"); sep1.setFixedHeight(1)
+        main.addWidget(sep1)
+
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_editor_tab(), "Редактор")
-        self.tabs.addTab(self._build_settings_tab(), "Настройки")
+        self.tabs.addTab(self._build_editor_tab(), tr('tab_editor'))
+        self.tabs.addTab(self._build_settings_tab(), tr('tab_settings'))
         main.addWidget(self.tabs, stretch=1)
 
         # Статус-бар (вариант B): пустой когда нечего показать
@@ -1487,26 +1823,105 @@ class MainWindow(QMainWindow):
         h.setFixedHeight(58)
         lay = QHBoxLayout(h)
         lay.setContentsMargins(28, 12, 28, 12)
-        lay.setSpacing(8)
+        lay.setSpacing(0)
 
-        logo = QLabel("LUMZ")
+        # LUMZ + красный квадрат-точка возле буквы Z + Storyboard Studio
+        # Используем rich-text QLabel чтобы квадрат идеально лёг по baseline.
+        logo = QLabel(
+            '<span style="color:#fff; font-size:20px; font-weight:700; letter-spacing:1px;">LUMZ</span>'
+            '<span style="color:#e63946; font-size:20px; font-weight:900;">▪</span>'
+            '<span style="color:#888; font-size:14px;">  Storyboard Studio</span>'
+        )
+        logo.setTextFormat(Qt.TextFormat.RichText)
         logo.setObjectName("logo-text")
         lay.addWidget(logo, alignment=Qt.AlignmentFlag.AlignVCenter)
-        sq = QFrame()
-        sq.setFixedSize(7, 7)
-        sq.setObjectName("logo-square")
-        lay.addWidget(sq, alignment=Qt.AlignmentFlag.AlignBottom)
-        lay.addSpacing(14)
-        sub = QLabel("Storyboard Studio")
-        sub.setObjectName("logo-sub")
-        lay.addWidget(sub, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         lay.addStretch()
+
+        # Переключатель языка интерфейса — кнопка + кастомный QMenu вместо
+        # системного QComboBox (на macOS он рендерится как spinner со стрелками).
+        self.lang_btn = QPushButton()
+        self.lang_btn.setObjectName("lang-btn")
+        self.lang_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._lang_menu = QMenu(self.lang_btn)
+        self._lang_menu.setObjectName("lang-menu")
+        for code, label, full_name in SUPPORTED_LANGUAGES:
+            flag = label.split(" ", 1)[0]  # "🇷🇺"
+            act = self._lang_menu.addAction(f"  {flag}   {full_name}")
+            act.triggered.connect(lambda _checked=False, c=code: self._set_lang(c))
+        self.lang_btn.clicked.connect(self._open_lang_menu)
+        self._refresh_lang_btn()
+        lay.addWidget(self.lang_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        lay.addSpacing(14)
 
         self.header_version = QLabel(f"v{read_local_app_version(self._project_root)}")
         self.header_version.setObjectName("header-version")
         lay.addWidget(self.header_version, alignment=Qt.AlignmentFlag.AlignVCenter)
         return h
+
+    def _refresh_lang_btn(self):
+        """Обновляет текст кнопки языка под текущий выбор: «🇷🇺 РУС ▾»."""
+        cur = get_lang()
+        for code, label, _full in SUPPORTED_LANGUAGES:
+            if code == cur:
+                self.lang_btn.setText(f"  {label}   ▾  ")
+                return
+        self.lang_btn.setText("  ▾  ")
+
+    def _open_lang_menu(self):
+        """Открывает кастомный QMenu со списком языков под кнопкой."""
+        pos = self.lang_btn.mapToGlobal(QPoint(0, self.lang_btn.height() + 4))
+        self._lang_menu.setMinimumWidth(self.lang_btn.width() + 60)
+        self._lang_menu.exec(pos)
+
+    def _set_lang(self, code: str):
+        """Применяет выбранный язык: сохраняет в QSettings + перерисовывает UI."""
+        if code == get_lang():
+            return
+        set_lang(code)
+        self._refresh_lang_btn()
+        self._apply_translations()
+
+    def _apply_translations(self):
+        """Применяет текущий язык ко всем UI-элементам без перезапуска."""
+        # Tabs
+        if hasattr(self, 'tabs'):
+            self.tabs.setTabText(0, tr('tab_editor'))
+            self.tabs.setTabText(1, tr('tab_settings'))
+        # Editor tab
+        if hasattr(self, 'show_lbl'):
+            self.show_lbl.setText(tr('series'))
+        if hasattr(self, 'save_btn'):
+            self.save_btn.setText(tr('save_png'))
+        # Settings tab
+        if hasattr(self, 'sec_project_lbl'):
+            self.sec_project_lbl.setText(tr('sec_project'))
+        if hasattr(self, 'sec_about_lbl'):
+            self.sec_about_lbl.setText(tr('sec_about'))
+        if hasattr(self, 'open_folder_btn'):
+            self.open_folder_btn.setText(tr('open_folder'))
+        if hasattr(self, 'send_update_title_lbl'):
+            self.send_update_title_lbl.setText(tr('send_update_title'))
+        if hasattr(self, 'send_update_desc_lbl'):
+            self.send_update_desc_lbl.setText(tr('send_update_desc'))
+        if hasattr(self, 'send_update_btn'):
+            self.send_update_btn.setText(tr('send_update_btn'))
+        # Versions row labels (включают ключи: app_version, project_version)
+        self._refresh_settings_versions()
+        # Карточки шотов (overlay-кнопки)
+        for card in getattr(self, 'shot_cards', []):
+            card.apply_lang()
+        # Перерисовать пилюли эпизодов и блоков (префикс «ЭП/ЕП/EP», «Блок/Block»)
+        if hasattr(self, '_meta') and self._current_show:
+            self._meta = read_episodes_meta(SHOW_ROOT)
+        if hasattr(self, 'ep_pills_layout'):
+            self._populate_episodes()  # пересоздаст пилюли + вызовет _select_episode → _populate_blocks → _display_block
+        # Стат-метка скачиваний (если есть)
+        if hasattr(self, 'stats_label') and self.stats_label.text() in (
+                "загружаю статистику…", "завантажую статистику…", "loading stats…",
+                "нет данных о скачиваниях", "немає даних про завантаження", "no download data"):
+            self.stats_label.setText(tr('status_loading_stats'))
 
     def _build_editor_tab(self) -> QWidget:
         w = QWidget()
@@ -1547,9 +1962,9 @@ class MainWindow(QMainWindow):
         # Селектор сериала
         show_row = QHBoxLayout()
         show_row.setSpacing(10)
-        show_lbl = QLabel("Сериал:")
-        show_lbl.setStyleSheet("color: #888; font-size: 13px;")
-        show_row.addWidget(show_lbl)
+        self.show_lbl = QLabel(tr('series'))
+        self.show_lbl.setStyleSheet("color: #888; font-size: 13px;")
+        show_row.addWidget(self.show_lbl)
         self.show_combo = QComboBox()
         self.show_combo.currentTextChanged.connect(self._on_show_changed)
         show_row.addWidget(self.show_combo)
@@ -1602,6 +2017,7 @@ class MainWindow(QMainWindow):
         for i in range(PANELS):
             card = ShotCard(i)
             card.regen_requested.connect(self._on_regen)
+            card.edit_requested.connect(self._on_edit_shot)
             self.shot_cards.append(card)
             self.cards_row.addWidget(card)
         self.cards_row.addStretch()
@@ -1614,7 +2030,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(scroll, stretch=1)
 
         # Сохранить как PNG
-        self.save_btn = QPushButton("💾  Сохранить стриборд как PNG")
+        self.save_btn = QPushButton(tr('save_png'))
         self.save_btn.setObjectName("save")
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self._save_png)
@@ -1624,76 +2040,98 @@ class MainWindow(QMainWindow):
     def _build_settings_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setSpacing(18)
-        lay.setContentsMargins(28, 22, 28, 22)
+        lay.setSpacing(22)
+        lay.setContentsMargins(28, 26, 28, 26)
 
-        # ── Группа: Проект ──────────────────────────────────────────────────
-        proj_section = QLabel("ПРОЕКТ")
-        proj_section.setObjectName("settings-section")
-        lay.addWidget(proj_section)
+        # ── ПРОЕКТ — одна кнопка «Открыть папку проекта» ────────────────────
+        self.sec_project_lbl = QLabel(tr('sec_project'))
+        self.sec_project_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_project_lbl)
+
         proj_frame = QFrame()
         proj_frame.setObjectName("settings-group")
-        pf_lay = QVBoxLayout(proj_frame)
-        pf_lay.setSpacing(8)
-        pf_lay.setContentsMargins(16, 14, 16, 14)
-
-        refresh_btn = QPushButton("⟳  Обновить список файлов")
-        refresh_btn.clicked.connect(self._reload_show)
-        pf_lay.addWidget(refresh_btn)
-
-        folder_btn = QPushButton("📂  Открыть папку проекта в Finder")
-        folder_btn.clicked.connect(self._open_folder)
-        pf_lay.addWidget(folder_btn)
-
-        change_btn = QPushButton("⚙  Сменить папку проекта")
-        change_btn.clicked.connect(self._change_project)
-        pf_lay.addWidget(change_btn)
+        pf = QVBoxLayout(proj_frame)
+        pf.setSpacing(0)
+        pf.setContentsMargins(0, 0, 0, 0)
+        self.open_folder_btn = QPushButton(tr('open_folder'))
+        self.open_folder_btn.setObjectName("settings-row-btn")
+        self.open_folder_btn.clicked.connect(self._open_folder)
+        pf.addWidget(self.open_folder_btn)
         lay.addWidget(proj_frame)
 
-        # ── Группа: О приложении ────────────────────────────────────────────
-        about_section = QLabel("О ПРИЛОЖЕНИИ")
-        about_section.setObjectName("settings-section")
-        lay.addWidget(about_section)
+        # ── О ПРИЛОЖЕНИИ — версии (две строки с тонкой разделительной) ─────
+        self.sec_about_lbl = QLabel(tr('sec_about'))
+        self.sec_about_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_about_lbl)
+
         about_frame = QFrame()
         about_frame.setObjectName("settings-group")
-        af_lay = QVBoxLayout(about_frame)
-        af_lay.setSpacing(8)
-        af_lay.setContentsMargins(16, 14, 16, 14)
+        af = QVBoxLayout(about_frame)
+        af.setSpacing(0)
+        af.setContentsMargins(0, 0, 0, 0)
 
-        self.app_ver_label = QLabel("")
-        self.app_ver_label.setObjectName("settings-row")
-        af_lay.addWidget(self.app_ver_label)
-        self.proj_ver_label = QLabel("")
-        self.proj_ver_label.setObjectName("settings-row")
-        af_lay.addWidget(self.proj_ver_label)
-        self.proj_path_label = QLabel("")
-        self.proj_path_label.setObjectName("settings-value")
-        self.proj_path_label.setWordWrap(True)
-        af_lay.addWidget(self.proj_path_label)
+        # Строка 1 — версия приложения
+        row_app = QWidget()
+        row_app.setObjectName("settings-row")
+        ra = QHBoxLayout(row_app)
+        ra.setContentsMargins(18, 14, 18, 14)
+        self.app_ver_key_lbl = QLabel(tr('app_version'))
+        self.app_ver_key_lbl.setObjectName("settings-row-key")
+        ra.addWidget(self.app_ver_key_lbl)
+        ra.addStretch()
+        self.app_ver_val_lbl = QLabel("")
+        self.app_ver_val_lbl.setObjectName("settings-row-val")
+        ra.addWidget(self.app_ver_val_lbl)
+        af.addWidget(row_app)
+
+        # Тонкая разделительная линия между строками
+        sep = QFrame()
+        sep.setObjectName("settings-divider")
+        sep.setFixedHeight(1)
+        af.addWidget(sep)
+
+        # Строка 2 — версия проекта
+        row_proj = QWidget()
+        row_proj.setObjectName("settings-row")
+        rp = QHBoxLayout(row_proj)
+        rp.setContentsMargins(18, 14, 18, 14)
+        self.proj_ver_key_lbl = QLabel(tr('project_version'))
+        self.proj_ver_key_lbl.setObjectName("settings-row-key")
+        rp.addWidget(self.proj_ver_key_lbl)
+        rp.addStretch()
+        self.proj_ver_val_lbl = QLabel("")
+        self.proj_ver_val_lbl.setObjectName("settings-row-val")
+        rp.addWidget(self.proj_ver_val_lbl)
+        af.addWidget(row_proj)
+
         lay.addWidget(about_frame)
 
-        # ── Админ: отправить обновление ────────────────────────────────────
+        # ── Админ: отправить обновление + статистика ───────────────────────
         if self._is_admin:
             admin_frame = QFrame()
             admin_frame.setObjectName("admin-send-frame")
             ai = QVBoxLayout(admin_frame)
-            ai.setSpacing(6)
-            ai.setContentsMargins(16, 14, 16, 14)
+            ai.setSpacing(0)
+            ai.setContentsMargins(20, 18, 20, 18)
 
-            ttl = QLabel("Отправить обновление")
-            ttl.setObjectName("admin-send-title")
-            ai.addWidget(ttl)
-            ds = QLabel("Запушить текущую версию проекта в GitHub для коллег")
-            ds.setObjectName("admin-send-desc")
-            ai.addWidget(ds)
-            ai.addSpacing(6)
+            self.send_update_title_lbl = QLabel(tr('send_update_title'))
+            self.send_update_title_lbl.setObjectName("admin-send-title")
+            ai.addWidget(self.send_update_title_lbl)
 
-            self.send_update_btn = QPushButton("↑  Отправить обновление")
+            ai.addSpacing(4)
+            self.send_update_desc_lbl = QLabel(tr('send_update_desc'))
+            self.send_update_desc_lbl.setObjectName("admin-send-desc")
+            self.send_update_desc_lbl.setWordWrap(True)
+            ai.addWidget(self.send_update_desc_lbl)
+
+            ai.addSpacing(16)
+            self.send_update_btn = QPushButton(tr('send_update_btn'))
             self.send_update_btn.setObjectName("admin-send")
             self.send_update_btn.clicked.connect(self._send_update)
             ai.addWidget(self.send_update_btn)
 
-            self.stats_label = QLabel("загружаю статистику…")
+            ai.addSpacing(12)
+            self.stats_label = QLabel(tr('status_loading_stats'))
             self.stats_label.setObjectName("stats-label")
             self.stats_label.setWordWrap(True)
             ai.addWidget(self.stats_label)
@@ -1704,17 +2142,19 @@ class MainWindow(QMainWindow):
         return w
 
     def _refresh_settings_versions(self):
-        """Обновляет тексты версий и пути в настройках."""
-        if hasattr(self, 'app_ver_label'):
-            self.app_ver_label.setText(
-                f"Версия приложения:    v{read_local_app_version(self._project_root)}")
-        if hasattr(self, 'proj_ver_label'):
-            self.proj_ver_label.setText(
-                f"Версия проекта:           v{read_local_version(self._project_root)}")
-        if hasattr(self, 'proj_path_label'):
-            self.proj_path_label.setText(self._project_root.name)
+        """Обновляет тексты версий + ключи (язык-зависимые) в настройках."""
+        v_app  = read_local_app_version(self._project_root)
+        v_proj = read_local_version(self._project_root)
+        if hasattr(self, 'app_ver_key_lbl'):
+            self.app_ver_key_lbl.setText(tr('app_version'))
+        if hasattr(self, 'app_ver_val_lbl'):
+            self.app_ver_val_lbl.setText(f"v{v_app}")
+        if hasattr(self, 'proj_ver_key_lbl'):
+            self.proj_ver_key_lbl.setText(tr('project_version'))
+        if hasattr(self, 'proj_ver_val_lbl'):
+            self.proj_ver_val_lbl.setText(f"v{v_proj}")
         if hasattr(self, 'header_version'):
-            self.header_version.setText(f"v{read_local_app_version(self._project_root)}")
+            self.header_version.setText(f"v{v_app}")
 
     # ── Shows / Episodes / Blocks ────────────────────────────────────────────
 
@@ -1767,7 +2207,7 @@ class MainWindow(QMainWindow):
         self._episode_pills = {}
 
         if not self._current_show:
-            self.ep_title_label.setText("В этом проекте нет сериалов")
+            self.ep_title_label.setText(tr('no_shows'))
             self.ep_dur_label.setText("")
             self._populate_blocks()
             return
@@ -1776,7 +2216,7 @@ class MainWindow(QMainWindow):
         for ep in eps:
             m = re.match(r'ep(\d+)', ep)
             n = m.group(1) if m else ep
-            btn = QPushButton(f"EP {n}")
+            btn = QPushButton(f"{tr('ep_short')} {n}")
             btn.setObjectName("pill")
             btn.setProperty("active", False)
             btn.clicked.connect(lambda _, e=ep: self._select_episode(e))
@@ -1788,7 +2228,7 @@ class MainWindow(QMainWindow):
             self._select_episode(prev)
         else:
             self._current_episode = None
-            self.ep_title_label.setText(f"В сериале «{self._current_show}» пока нет эпизодов")
+            self.ep_title_label.setText(tr('no_episodes', show=self._current_show))
             self.ep_dur_label.setText("")
             self._populate_blocks()
 
@@ -1798,7 +2238,7 @@ class MainWindow(QMainWindow):
             btn.setProperty("active", e == ep)
             btn.style().unpolish(btn); btn.style().polish(btn)
 
-        title = self._meta.get(ep, {}).get("title") or ep.upper()
+        title = get_episode_title(self._meta, ep) or ep.upper()
         dur = episode_total_duration(ep)
         self.ep_title_label.setText(title)
         self.ep_dur_label.setText(f"{dur}с" if dur else "")
@@ -1823,6 +2263,10 @@ class MainWindow(QMainWindow):
             btn = QPushButton(self._format_block_label(blk))
             btn.setObjectName("pill-block")
             btn.setProperty("active", False)
+            # Если у блока есть непросмотренные шоты — сразу выставляем оранжевый акцент
+            has_active = any(b == blk for (b, _) in self._active_regens.keys())
+            has_unseen = (not has_active) and any(b == blk for (b, _) in self._unseen_shots)
+            btn.setProperty("unseen", has_unseen)
             btn.clicked.connect(lambda _, b=blk: self._select_block(b))
             self.block_pills_layout.addWidget(btn)
             self._block_pills[blk] = btn
@@ -1848,28 +2292,33 @@ class MainWindow(QMainWindow):
         self._display_block(name)
 
     def _block_indicator_for(self, block_name: str) -> str:
-        """Префикс пилюли блока: точки во время регенерации, 🆕 если есть новое.
-        Точки имеют приоритет — взаимоисключающая логика."""
+        """Префикс текста пилюли — анимация точек во время регенерации.
+        NEW визуально показывается через property `unseen` и CSS (оранжевый фон),
+        а не через эмодзи в тексте."""
         has_active = any(b == block_name for (b, _) in self._active_regens.keys())
         if has_active:
             dots_pattern = ["·    ", "· ·  ", "· · ·"]
             return dots_pattern[self._dot_step] + "  "
-        has_unseen = any(b == block_name for (b, _) in self._unseen_shots)
-        if has_unseen:
-            return "🆕  "
         return ""
 
     def _format_block_label(self, block_name: str) -> str:
-        """Текст пилюли блока. Внутри эпизода префикс эпизода не нужен — только номер."""
+        """Текст пилюли блока — «Блок N» / «Block N» (+ префикс точек при генерации)."""
         m = re.match(r'.*_block_(\d+)', block_name)
-        base = f"Блок {m.group(1)}" if m else block_name
+        base = f"{tr('block')} {m.group(1)}" if m else block_name
         return self._block_indicator_for(block_name) + base
 
     def _refresh_block_indicator(self, block_name: str):
-        """Обновляет текст одной пилюли блока (точки/NEW)."""
+        """Обновляет пилюлю блока: текст (точки если идёт генерация) + property `unseen`."""
         btn = self._block_pills.get(block_name)
-        if btn is not None:
-            btn.setText(self._format_block_label(block_name))
+        if btn is None:
+            return
+        has_active = any(b == block_name for (b, _) in self._active_regens.keys())
+        # NEW показывается ТОЛЬКО когда нет активных генераций (взаимоисключающие)
+        has_unseen = (not has_active) and any(
+            b == block_name for (b, _) in self._unseen_shots)
+        btn.setText(self._format_block_label(block_name))
+        btn.setProperty("unseen", has_unseen)
+        btn.style().unpolish(btn); btn.style().polish(btn)
 
     def _mark_block_seen(self, block_name: str):
         """Очищает бейджи NEW у всех шотов указанного блока + обновляет индикатор."""
@@ -1878,19 +2327,20 @@ class MainWindow(QMainWindow):
             return
         for k in keys:
             self._unseen_shots.discard(k)
-        # 🆕 в сайдбаре должна исчезнуть после того как блок был просмотрен
+        # Оранжевый акцент NEW на пилюле блока должен пропасть после просмотра
         self._refresh_block_indicator(block_name)
 
     def _display_block(self, name: str):
         prompt_file = PROMPTS_DIR / f"{name}.txt"
 
-        # Заголовок блока: «КАМЕРА ЛОРЫ ~8с» (из episodes.json или fallback «БЛОК N»)
+        # Заголовок блока: «КАМЕРА ЛОРЫ ~8с» — имя из episodes.json (поддержка
+        # ОБЕИХ форм: строка-имя ИЛИ объект {name, shots})
         m = re.match(r'(ep\d+)_block_(\d+)', name)
         ep, blk_n = (m.group(1), m.group(2)) if m else (None, None)
-        title_part = ""
+        block_meta: Dict = {"name": "", "shots": {}}
         if ep and blk_n:
-            block_name_meta = self._meta.get(ep, {}).get("blocks", {}).get(blk_n)
-            title_part = (block_name_meta or f"Блок {blk_n}").upper()
+            block_meta = get_block_meta(self._meta, ep, blk_n)
+            title_part = (block_meta["name"] or f"{tr('block')} {blk_n}").upper()
         else:
             title_part = name.upper()
         dur = block_total_duration(name)
@@ -1900,6 +2350,15 @@ class MainWindow(QMainWindow):
         shots: List[Dict] = []
         if prompt_file.exists():
             shots = parse_shots(prompt_file.read_text(encoding="utf-8"))
+
+        # Подмена description на русское (или другое локальное) описание из
+        # episodes.json — оно показывается под карточкой шота вместо короткой
+        # английской аннотации из промпта.
+        shot_descs = block_meta.get("shots", {}) if isinstance(block_meta, dict) else {}
+        for s in shots:
+            local = shot_descs.get(str(s.get("shot_num", "")))
+            if local:
+                s["description"] = local
 
         # Загружаем по одному 9:16 файлу на каждый шот: {block}_shot{N}.jpg
         panels: List[Optional[bytes]] = [None] * PANELS
@@ -1944,6 +2403,80 @@ class MainWindow(QMainWindow):
 
     # ── Regeneration ─────────────────────────────────────────────────────────
 
+    def _on_edit_shot(self, panel_idx: int):
+        """Открывает попап с полем ввода инструкции для edit-режима регенерации."""
+        if not self.current_block:
+            return
+        target_block = self.current_block
+        key = (target_block, panel_idx)
+        if key in self._active_regens:
+            self.status_bar.showMessage(tr('status_already_genning', n=panel_idx + 1))
+            return
+        # Файл шота должен существовать — иначе нечего редактировать
+        if not shot_path(target_block, panel_idx).exists():
+            QMessageBox.information(
+                self, tr('edit_no_image_title'), tr('edit_no_image_msg'))
+            return
+
+        instruction = self._ask_edit_instruction(panel_idx)
+        if not instruction:
+            return  # отмена или пусто
+
+        # Запускаем регенерацию в edit-режиме (с инструкцией)
+        card = self.shot_cards[panel_idx]
+        card.set_loading(True)
+        thread = GenerateThread(target_block, panel_idx, edit_instruction=instruction)
+        self._active_regens[key] = thread
+        thread.progress.connect(self.status_bar.showMessage)
+        thread.step.connect(
+            lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
+        thread.finished.connect(
+            lambda elapsed: self._on_regen_done(panel_idx, target_block, elapsed))
+        thread.error.connect(
+            lambda msg: self._on_regen_error(msg, target_block, panel_idx))
+        thread.start()
+        self._refresh_block_indicator(target_block)
+        self.status_bar.showMessage(tr('status_editing', n=panel_idx + 1))
+
+    def _ask_edit_instruction(self, panel_idx: int) -> Optional[str]:
+        """Маленький модальный попап: текстовое поле + Отправить/Отмена.
+        Возвращает текст инструкции или None при отмене/пустом вводе."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr('edit_dialog_title', n=panel_idx + 1))
+        dlg.setFixedSize(440, 230)
+        v = QVBoxLayout(dlg)
+        v.setSpacing(12)
+        v.setContentsMargins(20, 18, 20, 16)
+
+        title = QLabel(tr('edit_dialog_q'))
+        title.setStyleSheet("color:#ddd; font-size:14px; font-weight:500;")
+        v.addWidget(title)
+
+        hint = QLabel(tr('edit_dialog_hint'))
+        hint.setStyleSheet("color:#888; font-size:11px;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        text = QPlainTextEdit()
+        text.setPlaceholderText(tr('edit_dialog_placeholder'))
+        text.setStyleSheet(
+            "QPlainTextEdit { background:#15101e; border:1px solid #2c2240; "
+            "border-radius:6px; color:#ddd; padding:8px; font-size:13px; }")
+        v.addWidget(text, stretch=1)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText(tr('edit_dialog_send'))
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText(tr('edit_dialog_cancel'))
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        instr = text.toPlainText().strip()
+        return instr or None
+
     def _on_regen(self, panel_idx: int):
         if not self.current_block:
             return
@@ -1953,8 +2486,7 @@ class MainWindow(QMainWindow):
 
         # Защита от двойного клика на один и тот же шот
         if key in self._active_regens:
-            self.status_bar.showMessage(
-                f"SHOT {panel_idx + 1} уже генерируется — подожди…")
+            self.status_bar.showMessage(tr('status_already_genning', n=panel_idx + 1))
             return
 
         # Дизейблим только КОНКРЕТНУЮ карточку (другие шоты остаются доступны
@@ -1974,7 +2506,7 @@ class MainWindow(QMainWindow):
         thread.start()
         # Показать ⋯ возле блока в списке (идёт регенерация)
         self._refresh_block_indicator(target_block)
-        self.status_bar.showMessage(f"Регенерирую SHOT {panel_idx + 1} в {target_block}…")
+        self.status_bar.showMessage(tr('status_regenerating', n=panel_idx + 1, block=target_block))
 
     def _on_regen_step(self, lbl: str, pct: int, target_block: str, panel_idx: int):
         # Прогресс показываем ТОЛЬКО если пользователь сейчас смотрит на тот
@@ -2005,10 +2537,10 @@ class MainWindow(QMainWindow):
         self._refresh_block_indicator(target_block)
 
         if self.current_block == target_block:
-            self.status_bar.showMessage(f"SHOT {panel_idx + 1} обновлён ✓")
+            self.status_bar.showMessage(tr('status_shot_done', n=panel_idx + 1))
         else:
             self.status_bar.showMessage(
-                f"SHOT {panel_idx + 1} в [{target_block}] обновлён ✓")
+                tr('status_shot_done_other', n=panel_idx + 1, block=target_block))
 
     def _on_regen_error(self, msg: str, target_block: str, panel_idx: int):
         self._active_regens.pop((target_block, panel_idx), None)
@@ -2066,7 +2598,7 @@ class MainWindow(QMainWindow):
         # Проверяем что хотя бы один шот существует
         any_exists = any(shot_path(self.current_block, i).exists() for i in range(PANELS))
         if not any_exists:
-            self.status_bar.showMessage("Нет шотов для экспорта")
+            self.status_bar.showMessage(tr('status_no_shots'))
             return
 
         dest, _ = QFileDialog.getSaveFileName(
@@ -2077,7 +2609,7 @@ class MainWindow(QMainWindow):
             return
         try:
             stitch_shots_to_landscape(self.current_block, Path(dest))
-            self.status_bar.showMessage(f"Сохранено: {dest}")
+            self.status_bar.showMessage(tr('status_saved', path=dest))
         except Exception as e:
             QMessageBox.warning(self, "Ошибка экспорта", str(e))
 
@@ -2219,7 +2751,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "stats_label"):
             return
         if not stats:
-            self.stats_label.setText("нет данных о скачиваниях")
+            self.stats_label.setText(tr('status_no_stats'))
             return
 
         settings = QSettings(APP_ORG, APP_NAME)
@@ -2240,7 +2772,7 @@ class MainWindow(QMainWindow):
                 except (TypeError, ValueError):
                     baseline = 0
             shown = max(0, total - baseline)
-            lines.append(f"v{version}: {shown} скач.")
+            lines.append(tr('downloads_format', ver=version, n=shown))
         self.stats_label.setText("\n".join(lines))
 
     def _send_update(self):
