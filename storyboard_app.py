@@ -673,8 +673,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Storyboard Studio")
         self.setMinimumSize(1080, 720)
         self.current_block: Optional[str] = None
-        self._thread:        Optional[GenerateThread]      = None
-        self._update_thread: Optional[QThread]             = None
+        # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
+        # Каждый шот в каждом блоке может генериться независимо от других.
+        self._active_regens: Dict[tuple, GenerateThread] = {}
+        self._update_thread: Optional[QThread]           = None
         self._build_ui()
         self._load_blocks()
 
@@ -847,6 +849,12 @@ class MainWindow(QMainWindow):
                 shot_num=i+1, duration="", description="", is_blank=True)
             card.set_shot_info(shot)
             card.set_image(panels[i] if i < len(panels) else None)
+            # Если этот шот ИМЕННО ЭТОГО блока сейчас регенерируется —
+            # оставляем спиннер на карточке. Иначе чистим состояние.
+            if (name, i) in self._active_regens:
+                card.set_loading(True)
+            else:
+                card.set_loading(False)
 
         self.save_btn.setEnabled(sb_path.exists())
 
@@ -855,32 +863,62 @@ class MainWindow(QMainWindow):
     def _on_regen(self, panel_idx: int):
         if not self.current_block:
             return
-        if self._thread and self._thread.isRunning():
-            self.status_bar.showMessage("Генерация уже идёт — подожди…")
+
+        target_block = self.current_block
+        key = (target_block, panel_idx)
+
+        # Защита от двойного клика на один и тот же шот
+        if key in self._active_regens:
+            self.status_bar.showMessage(
+                f"SHOT {panel_idx + 1} уже генерируется — подожди…")
             return
 
-        for c in self.shot_cards:
-            c.regen_btn.setEnabled(False)
+        # Дизейблим только КОНКРЕТНУЮ карточку (другие шоты остаются доступны
+        # для параллельной регенерации, в том числе в других блоках).
         card = self.shot_cards[panel_idx]
         card.set_loading(True)
 
-        self._thread = GenerateThread(self.current_block, panel_idx)
-        self._thread.progress.connect(self.status_bar.showMessage)
-        self._thread.step.connect(lambda lbl, pct: card.set_progress(lbl, pct))
-        self._thread.finished.connect(lambda: self._on_regen_done(panel_idx))
-        self._thread.error.connect(self._on_regen_error)
-        self._thread.start()
-        self.status_bar.showMessage(f"Регенерирую SHOT {panel_idx + 1}…")
+        thread = GenerateThread(target_block, panel_idx)
+        self._active_regens[key] = thread
+        thread.progress.connect(self.status_bar.showMessage)
+        thread.step.connect(
+            lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
+        thread.finished.connect(
+            lambda: self._on_regen_done(panel_idx, target_block))
+        thread.error.connect(
+            lambda msg: self._on_regen_error(msg, target_block, panel_idx))
+        thread.start()
+        self.status_bar.showMessage(f"Регенерирую SHOT {panel_idx + 1} в {target_block}…")
 
-    def _on_regen_done(self, panel_idx: int):
+    def _on_regen_step(self, lbl: str, pct: int, target_block: str, panel_idx: int):
+        # Прогресс показываем ТОЛЬКО если пользователь сейчас смотрит на тот
+        # блок где идёт регенерация. Иначе обновлять чужие карточки нельзя.
+        if self.current_block == target_block and 0 <= panel_idx < len(self.shot_cards):
+            self.shot_cards[panel_idx].set_progress(lbl, pct)
+
+    def _on_regen_done(self, panel_idx: int, target_block: str):
+        self._active_regens.pop((target_block, panel_idx), None)
+
+        # Обновляем текущий блок (если виден этот же — увидим новую картинку,
+        # если другой — карточки в нём перерисуются с актуальным состоянием
+        # оставшихся регенераций).
         if self.current_block:
             self._display_block(self.current_block)
-        self.status_bar.showMessage(f"SHOT {panel_idx + 1} обновлён ✓")
 
-    def _on_regen_error(self, msg: str):
-        self.status_bar.showMessage(f"Ошибка: {msg}")
+        if self.current_block == target_block:
+            self.status_bar.showMessage(f"SHOT {panel_idx + 1} обновлён ✓")
+        else:
+            self.status_bar.showMessage(
+                f"SHOT {panel_idx + 1} в [{target_block}] обновлён ✓")
+
+    def _on_regen_error(self, msg: str, target_block: str, panel_idx: int):
+        self._active_regens.pop((target_block, panel_idx), None)
+
         if self.current_block:
             self._display_block(self.current_block)
+
+        prefix = "Ошибка" if self.current_block == target_block else f"Ошибка [{target_block}]"
+        self.status_bar.showMessage(f"{prefix} SHOT {panel_idx + 1}: {msg}")
 
     # ── Misc ─────────────────────────────────────────────────────────────────
 

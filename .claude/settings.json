@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Write(*)",
+      "Edit(*)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat '/Volumes/DaVinci SSD/Работа/storyboard-automation/CRITICAL_RULES.md'"
+          }
+        ]
+      }
+    ]
+  }
+}
