@@ -322,6 +322,9 @@ QLabel#new-badge {
     background: #2a1f0a; border: 1px solid #4a3010; border-radius: 4px;
     padding: 1px 6px;
 }
+QLabel#gen-time {
+    font-size: 11px; color: #5a8aaa;
+}
 QLabel#project-path         { font-size: 11px; color: #444; }
 QLabel#stats-label          { font-size: 10px; color: #3d3d5c; }
 
@@ -486,6 +489,23 @@ def shot_path(block_name: str, shot_idx: int) -> Path:
     return STORYBOARDS_DIR / f"{block_name}_shot{shot_idx + 1}.jpg"
 
 
+def format_gen_duration(seconds: int) -> str:
+    """Форматирует длительность генерации в человекочитаемый вид.
+
+    < 60s     → "42с"
+    60-3599s  → "1м 5с"
+    >= 3600s  → "1ч 5м"
+    """
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}с"
+    minutes, secs = divmod(s, 60)
+    if minutes < 60:
+        return f"{minutes}м {secs}с"
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}ч {mins}м"
+
+
 def is_block_complete(block_name: str) -> bool:
     """True если ВСЕ non-blank шоты блока имеют сгенерированные файлы.
 
@@ -563,7 +583,7 @@ def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
 class GenerateThread(QThread):
     progress = pyqtSignal(str)
     step     = pyqtSignal(str, int)   # (label, percent)
-    finished = pyqtSignal()
+    finished = pyqtSignal(int)        # elapsed seconds
     error    = pyqtSignal(str)
 
     def __init__(self, block_name: str, panel_idx: int):
@@ -572,6 +592,7 @@ class GenerateThread(QThread):
         self.panel_idx  = panel_idx
 
     def run(self):
+        start_time = time.time()
         try:
             key     = load_api_key()
             session = requests.Session()
@@ -673,8 +694,9 @@ class GenerateThread(QThread):
             shot_file = shot_path(self.block_name, self.panel_idx)
             shot_file.write_bytes(image_bytes)
 
+            elapsed = max(0, int(time.time() - start_time))
             self.step.emit("Готово!", 100)
-            self.finished.emit()
+            self.finished.emit(elapsed)
 
         except Exception as e:
             self.error.emit(str(e))
@@ -1035,6 +1057,12 @@ class ShotCard(QFrame):
         self.desc_label.setMaximumWidth(self.CARD_W + 20)
         lay.addWidget(self.desc_label)
 
+        # Время генерации шота (отдельно от длительности воспроизведения)
+        self.gen_time_label = QLabel("")
+        self.gen_time_label.setObjectName("gen-time")
+        self.gen_time_label.hide()
+        lay.addWidget(self.gen_time_label)
+
         lay.addStretch()
 
         self.regen_btn = QPushButton("↺  Регенерировать")
@@ -1063,6 +1091,7 @@ class ShotCard(QFrame):
             self.desc_label.setText("")
             self.regen_btn.setEnabled(False)
             self.new_badge.hide()  # для пустого шота нечего быть «новым»
+            self.gen_time_label.hide()
         else:
             self.num_label.setText(f"SHOT {shot['shot_num']}")
             self.dur_label.setText(shot["duration"])
@@ -1075,6 +1104,17 @@ class ShotCard(QFrame):
             self.new_badge.hide()
         else:
             self.new_badge.setVisible(bool(visible))
+
+    def set_gen_time(self, seconds: int):
+        """Показывает время генерации шота, например '⏱ 42с' или '⏱ 1м 5с'.
+        Если 0 или это пустой шот — скрывает метку.
+        """
+        if self._is_blank or not seconds or seconds <= 0:
+            self.gen_time_label.hide()
+            self.gen_time_label.setText("")
+        else:
+            self.gen_time_label.setText(f"⏱ {format_gen_duration(seconds)}")
+            self.gen_time_label.show()
 
     def set_progress(self, label: str, pct: int):
         self.progress_bar.setValue(pct)
@@ -1305,15 +1345,29 @@ class MainWindow(QMainWindow):
     def _block_indicator_for(self, block_name: str) -> str:
         """Возвращает префикс-индикатор для блока в списке.
 
-        ⋯ — идёт регенерация хотя бы одного шота этого блока
-        ✓ — все нужные шоты сгенерированы (по промпту)
-        ""  — иначе (нет шотов / частично готов)
+        🆕 — есть непросмотренные новые шоты в этом блоке (главный сигнал
+            «здесь что-то появилось»)
+        ⋯ — идёт регенерация хотя бы одного шота
+        ✓ — все нужные шоты сгенерированы и нет непросмотренных
+        ""  — иначе
+
+        Возможные комбинации: «🆕 ⋯», «🆕», «⋯», «✓», «».
         """
-        if any(b == block_name for (b, _) in self._active_regens.keys()):
-            return "⋯  "
-        if is_block_complete(block_name):
-            return "✓  "
-        return ""
+        has_unseen = any(b == block_name for (b, _) in self._unseen_shots)
+        has_active = any(b == block_name for (b, _) in self._active_regens.keys())
+
+        parts = []
+        if has_unseen:
+            parts.append("🆕")
+        if has_active:
+            parts.append("⋯")
+        # Галочка «полностью готов» — только когда нет ни 🆕, ни ⋯
+        if not parts and is_block_complete(block_name):
+            parts.append("✓")
+
+        if not parts:
+            return ""
+        return " ".join(parts) + "  "
 
     def _format_block_label(self, block_name: str) -> str:
         """Текст пункта в списке блоков с индикатором завершённости."""
@@ -1341,10 +1395,14 @@ class MainWindow(QMainWindow):
         self._display_block(self.current_block)
 
     def _mark_block_seen(self, block_name: str):
-        """Очищает бейджи NEW у всех шотов указанного блока."""
+        """Очищает бейджи NEW у всех шотов указанного блока + обновляет индикатор."""
         keys = [(b, i) for (b, i) in self._unseen_shots if b == block_name]
+        if not keys:
+            return
         for k in keys:
             self._unseen_shots.discard(k)
+        # 🆕 в сайдбаре должна исчезнуть после того как блок был просмотрен
+        self._refresh_block_indicator(block_name)
 
     def _display_block(self, name: str):
         prompt_file = PROMPTS_DIR / f"{name}.txt"
@@ -1369,6 +1427,7 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.status_bar.showMessage(f"Ошибка загрузки {p.name}: {e}")
 
+        settings = QSettings(APP_ORG, APP_NAME)
         for i, card in enumerate(self.shot_cards):
             shot = shots[i] if i < len(shots) else dict(
                 shot_num=i+1, duration="", description="", is_blank=True)
@@ -1383,6 +1442,12 @@ class MainWindow(QMainWindow):
             # Бейдж NEW — если шот недавно регенерирован и пользователь
             # его ещё не видел (не переключался на другой блок после регена)
             card.set_new_badge((name, i) in self._unseen_shots)
+            # Время генерации (из QSettings, если ранее регенерили этот шот)
+            try:
+                gt = int(settings.value(f"gen_time_{name}_shot{i + 1}", 0) or 0)
+            except (TypeError, ValueError):
+                gt = 0
+            card.set_gen_time(gt)
 
         # Кнопка экспорта активна если хотя бы один шот сгенерирован
         self.save_btn.setEnabled(any_exists)
@@ -1413,7 +1478,7 @@ class MainWindow(QMainWindow):
         thread.step.connect(
             lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
         thread.finished.connect(
-            lambda: self._on_regen_done(panel_idx, target_block))
+            lambda elapsed: self._on_regen_done(panel_idx, target_block, elapsed))
         thread.error.connect(
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
@@ -1427,11 +1492,19 @@ class MainWindow(QMainWindow):
         if self.current_block == target_block and 0 <= panel_idx < len(self.shot_cards):
             self.shot_cards[panel_idx].set_progress(lbl, pct)
 
-    def _on_regen_done(self, panel_idx: int, target_block: str):
+    def _on_regen_done(self, panel_idx: int, target_block: str, elapsed_seconds: int = 0):
         self._active_regens.pop((target_block, panel_idx), None)
         # Помечаем шот «непросмотренным» — на карточке появится бейдж NEW.
         # Очистится когда юзер переключится с этого блока на другой.
         self._unseen_shots.add((target_block, panel_idx))
+
+        # Сохраняем длительность генерации в QSettings (показывается на карточке)
+        if elapsed_seconds > 0:
+            try:
+                key = f"gen_time_{target_block}_shot{panel_idx + 1}"
+                QSettings(APP_ORG, APP_NAME).setValue(key, int(elapsed_seconds))
+            except Exception:
+                pass
 
         # Обновляем текущий блок (если виден этот же — увидим новую картинку,
         # если другой — карточки в нём перерисуются с актуальным состоянием
