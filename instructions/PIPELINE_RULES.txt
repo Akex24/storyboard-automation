@@ -1,0 +1,238 @@
+# PIPELINE RULES — АВТОМАТИЧЕСКИЙ РЕЖИМ
+# Этот файл предназначен ТОЛЬКО для pipeline.py
+# Здесь нет диалоговой логики — только правила для автоматики
+
+=============================================================
+РАЗДЕЛ 1 — ПРОМПТ ДЛЯ ГЕНЕРАЦИИ ЛОКАЦИИ (Fast Gen AI)
+=============================================================
+
+При генерации изображения локации ВСЕГДА добавлять:
+- empty scene, no people, no humans, no characters
+- cinematic lighting
+- 16:9 format
+- photorealistic
+
+Формат промпта локации:
+"[описание места]. Empty scene, no people, no humans. Cinematic lighting, [тип освещения]. Photorealistic, 16:9 format."
+
+Примеры правильных промптов:
+- "Small prison cell with concrete walls, metal bunk bed on the left wall, barred window high on the back wall casting bar shadows on the floor, steel toilet and sink in the corner. Empty scene, no people, no humans. Harsh fluorescent overhead light. Photorealistic, 16:9 format."
+- "Formal courtroom with dark wood paneling, judge's bench elevated on the left, two counsel tables facing it, arched windows on the back wall, gallery benches in the background. Empty scene, no people, no humans. Soft natural daylight from windows. Photorealistic, 16:9 format."
+
+ЗАПРЕЩЕНО в промптах локации:
+- Упоминать людей, силуэты, фигуры
+- Описывать одежду или внешность
+- Добавлять "with person", "with figure", "with character"
+
+ВАЖНО: Одна локация = ОДНА картинка. Даже если в сцене два пространства 
+разделённых стеклом — это всё равно одна локация, одна картинка. 
+Разные ракурсы одной локации решаются в промптах сторибордов, 
+не через генерацию отдельных картинок.
+
+=============================================================
+РАЗДЕЛ 2 — АНАЛИЗ ГЕОМЕТРИИ ЧЕРЕЗ VISION
+=============================================================
+
+После генерации картинки локации — отправить в Claude Vision.
+Vision должен описать ТОЧНО ЧТО ПОЛУЧИЛОСЬ на картинке:
+
+Запрос к Vision:
+"Describe the exact geometry of this location for a storyboard artist.
+Cover:
+1. Room shape and dimensions (feel: narrow/wide/tall/low)
+2. Key furniture: exact position (left/center/right, foreground/background)
+3. Light sources: where they are, direction, quality (hard/soft)
+4. Foreground / midground / background planes — what is in each
+5. Best camera angles for drama
+6. Any architectural features (windows, doors, columns, stairs)
+Be specific about LEFT/RIGHT/CENTER positions as seen from the camera."
+
+Результат сохранять в: refs/locations/[name]_geometry.txt
+
+
+=============================================================
+РАЗДЕЛ 3 — ПОРЯДОК ТЕГОВ (КРИТИЧЕСКИ ВАЖНО)
+=============================================================
+
+Теги нумеруются в строгом порядке:
+1. Среда / локация — ВСЕГДА ПЕРВАЯ: [@]img1
+2. Объекты (если есть): [@]img2, [@]img3...
+3. Персонажи — ВСЕГДА В КОНЦЕ
+
+Пример для сцены с локацией + объектом + 2 персонажами:
+[@]img1 = локация (prison_cell.jpg)
+[@]img2 = объект (gun.jpg)
+[@]img3 = персонаж 1 (laura_prison_grey.jpg)
+[@]img4 = персонаж 2 (victor_grey_suit.jpg)
+
+ЗАПРЕЩЕНО:
+- Ставить персонажей перед средой
+- Менять нумерацию между блоками одного эпизода
+- Описывать объект словами если у него есть тег
+
+
+=============================================================
+РАЗДЕЛ 4 — ВЫБОР ПЕРСОНАЖА И ОДЕЖДЫ
+=============================================================
+
+Pipeline читает папку refs/characters/
+Имя папки = имя персонажа (laura, david, mark, victor, chloe, lawyer_woman)
+
+Для выбора нужного файла одежды:
+- Передать Claude список файлов в папке персонажа
+- Передать описание сцены
+- Claude выбирает файл по имени и контексту
+
+Пример:
+Файлы: laura_prison_grey.jpg, laura_burgundy_dress.jpg
+Сцена: "Лора сидит в тюремной камере"
+Выбор: laura_prison_grey.jpg
+
+Новый персонаж = новая папка в refs/characters/
+Название папки на латинице, строчными буквами, без пробелов.
+
+
+=============================================================
+РАЗДЕЛ 5 — ПРОМПТ ДЛЯ СТОРИБОРДА (Nano Banana / Fast Gen AI)
+=============================================================
+
+ШАПКА — вставляется в КАЖДЫЙ блок без изменений:
+---
+Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. Text annotations contain ONLY shot number, duration and short action description. NO dialogue, NO speech, NO quotes from characters in annotations. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+---
+
+СТРУКТУРА БЛОКА:
+===ПРОМПТ_БЛОК_N_НАЧАЛО===
+[ШАПКА]
+
+[[@]img1 - название локации, [@]img2 - название объекта, [@]imgN - Имя персонажа]
+CHARACTERS:
+[@]imgN Имя — wearing EXACT SAME clothes as [@]imgN reference
+
+Panel 1 (Far Left): [тип кадра]. [Имя] from [@]imgX [действие + взаимодействие с объектом из среды].
+Eyes [конкретная цель взгляда — НИКОГДА не в камеру]. [Микромимика].
+Text annotation below Panel 1: "SHOT 1 / [время]s / [описание]"
+
+Panel 2 (Middle Left): [тип кадра]. [описание].
+Text annotation below Panel 2: "SHOT 2 / [время]s / [описание]"
+
+Panel 3 (Middle Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+
+Panel 4 (Far Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+===ПРОМПТ_БЛОК_N_КОНЕЦ===
+
+
+=============================================================
+РАЗДЕЛ 6 — ПРАВИЛА ПАНЕЛЕЙ
+=============================================================
+
+ЖЁСТКИЕ ЛИМИТЫ:
+- Максимум 4 шота на блок
+- Максимум 15 секунд суммарно на блок
+- Нумерация SHOT начинается с 1 в каждом блоке заново
+
+НАПРАВЛЕНИЕ ВЗГЛЯДА — ОБЯЗАТЕЛЬНО для каждой панели:
+- ЗАПРЕЩЕНО: "looking at camera", "facing camera", "staring forward"
+- ВСЕГДА указывать конкретную цель: "Eyes looking down at the floor", "Eyes locked on David"
+
+МИКРОМИМИКА — ОБЯЗАТЕЛЬНО вместо ярлыков эмоций:
+ЗАПРЕЩЕНО → ПРАВИЛЬНО:
+- "shocked expression" → "pupils slightly dilated, breath held"
+- "angry face" → "jaw tightened, one brow slightly lowered"
+- "wide-open eyes" → "eyes narrowed, pupils fixed"
+- "raised eyebrows" → "one eyebrow slightly raised, the other still" (асимметрия)
+- "disgusted expression" → "corner of mouth slightly pulled down, head barely shifted back"
+
+ГЕОМЕТРИЯ для сцен с 2+ персонажами — 3 координаты на каждого:
+1. К чему привязан (сидит на диване из [@]img1, стоит у окна)
+2. Куда повёрнуто тело/голова
+3. В какой части кадра (left/center/right, foreground/midground/background)
+
+ПУСТЫЕ ПАНЕЛИ — всегда полностью:
+"COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below."
+ЗАПРЕЩЕНО сокращать до "BLANK" или "EMPTY".
+
+ВЗАИМОДЕЙСТВИЕ С ОБЪЕКТАМИ — обязательно явно:
+Правильно: "David sits on the metal bunk bed from [@]img1, leaning against the wall"
+Неправильно: "David sits in the room"
+
+ФАЗА ДЕЙСТВИЯ — середина, не финал:
+Правильно: "hand reaching toward the gun, fingers 10cm from the grip"
+Неправильно: "David holds the gun"
+
+
+=============================================================
+РАЗДЕЛ 7 — СТРУКТУРА ПАПОК
+=============================================================
+
+refs/
+├── locations/
+│   ├── [name].jpg              ← сгенерированная локация
+│   └── [name]_geometry.txt     ← описание геометрии от Vision
+├── objects/
+│   └── [object_name].jpg       ← объект на белом фоне
+└── characters/
+    ├── david/
+    │   └── david_checkered_shirt.jpg
+    ├── laura/
+    │   ├── laura_prison_grey.jpg
+    │   └── laura_burgundy_dress.jpg
+    └── [имя_персонажа]/
+        └── [имя]_[одежда].jpg
+
+output/
+├── prompts/          ← текстовые промпты сторибордов
+└── storyboards/      ← сгенерированные картинки сторибордов
+
+
+=============================================================
+РАЗДЕЛ 8 — ЛОГИКА РАБОТЫ PIPELINE (ЭТАПЫ)
+=============================================================
+
+ЭТАП 1 — ЛОКАЦИИ:
+1. Читать сценарий
+2. Извлечь все уникальные локации
+3. Для каждой локации:
+   a. Проверить есть ли уже файл в refs/locations/
+   b. Если есть — пропустить генерацию, взять готовый
+   c. Если нет — написать промпт по правилам Раздела 1 → отправить в Fast Gen AI → сохранить
+4. Отправить каждую картинку в Vision → получить геометрию → сохранить в [name]_geometry.txt
+
+ЭТАП 2 — МОНТАЖНАЯ КАРТА:
+1. Читать сценарий + геометрию всех локаций
+2. Разбить на блоки (1 блок = 1 локация, макс 4 шота, макс 15 сек)
+3. Для каждой сцены определить персонажей
+4. Выбрать нужный файл одежды для каждого персонажа
+
+РАСЧЁТ ТАЙМИНГА — СТРОГАЯ ФОРМУЛА (применять для каждой сцены):
+
+ШАГ 1 — Тип речи по контексту:
+- Быстрая / крик: 3–3.5 слова/сек
+- Нормальная: 2.5–3 слова/сек
+- Эмоциональная / взволнованная: 2–2.5 слова/сек
+- Медленная / угроза / холодная: 1.5–2 слова/сек
+
+ШАГ 2 — Посчитать слова в реплике
+
+ШАГ 3 — Формула: слова ÷ скорость + запас = время шота
+Запас: +0.5 сек (до 5 слов), +1.0 сек (6–15 слов), +1.5 сек (от 16 слов)
+
+Пример: "David played his hand well. My hands are tied, Laura." = 11 слов
+Холодная речь = 1.8 слова/сек: 11 / 1.8 + 1.0 = 7 сек
+
+ПРАВИЛА МОНТАЖНОЙ КАРТЫ:
+- Сцена без реплики: 3–5 сек
+- Реплика НЕ делится между блоками — целиком в одном блоке
+- Сумма шотов блока НЕ превышает 15 сек
+- Итоговый хронометраж эпизода: 50–70 сек
+- ЗАПРЕЩЕНО сокращать реплики ради укорачивания хронометража
+
+ЭТАП 3 — ПРОМПТЫ СТОРИБОРДОВ:
+1. Для каждого блока сформировать список тегов (среда → объекты → персонажи)
+2. Написать промпт по правилам Раздела 5
+3. Сохранить в output/prompts/block_N.txt
+
+ЭТАП 4 — ГЕНЕРАЦИЯ СТОРИБОРДОВ:
+1. Взять каждый промпт из output/prompts/
+2. Отправить в Fast Gen AI с форматом 16:9
+3. Сохранить результат в output/storyboards/block_N.jpg

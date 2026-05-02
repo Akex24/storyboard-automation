@@ -1,0 +1,66 @@
+# -*- mode: python ; coding: utf-8 -*-
+# PyInstaller spec — сборка для macOS (.app) и Windows (.exe)
+# macOS:   pyinstaller StoryboardStudio.spec
+# Windows: pyinstaller StoryboardStudio.spec  (запускать на Windows-машине)
+
+import sys
+
+a = Analysis(
+    ['storyboard_app.py'],
+    pathex=[],
+    binaries=[],
+    datas=[],
+    hiddenimports=[
+        'PIL._tkinter_finder',
+        'PyQt6.QtPrintSupport',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=['tkinter', 'matplotlib', 'numpy', 'scipy'],
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure)
+
+if sys.platform == 'darwin':
+    exe = EXE(
+        pyz, a.scripts, [],
+        exclude_binaries=True,
+        name='Storyboard Studio',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=False,
+        disable_windowed_traceback=False,
+    )
+    coll = COLLECT(
+        exe, a.binaries, a.datas,
+        strip=False,
+        upx=True,
+        name='Storyboard Studio',
+    )
+    app = BUNDLE(
+        coll,
+        name='Storyboard Studio.app',
+        bundle_identifier='com.storyboardstudio.app',
+        info_plist={
+            'NSHighResolutionCapable': True,
+            'LSMinimumSystemVersion': '11.0',
+            'CFBundleShortVersionString': '1.0',
+        },
+    )
+else:
+    # Windows
+    exe = EXE(
+        pyz, a.scripts, a.binaries, a.datas,
+        name='Storyboard Studio',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=False,
+        disable_windowed_traceback=False,
+        onefile=True,
+    )

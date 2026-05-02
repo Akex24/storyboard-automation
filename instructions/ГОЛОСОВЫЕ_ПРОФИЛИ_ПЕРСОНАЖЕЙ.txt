@@ -1,0 +1,139 @@
+# ГОЛОСОВЫЕ ПРОФИЛИ ПЕРСОНАЖЕЙ — NANO BANANA 2 / SEEDANCE 2.0
+
+---
+
+## ПРАВИЛА ИСПОЛЬЗОВАНИЯ
+
+1. **Копировать дословно.** Блок описания голоса вставляется в промпт Seedance слово в слово, без синонимов и перефразировок. Любое изменение формулировок = другой голос.
+2. **Язык реплики = язык в профиле.** Все персонажи говорят по-английски. Реплика в кавычках тоже на английском.
+3. **Без аудио-референса** — используй текстовый блок ниже. С аудио-референсом (@audio1) — текстовый блок не нужен, достаточно тега.
+4. **Новый персонаж** — добавляй в этот файл по той же структуре. Не описывай голос в промпте "на ходу".
+
+---
+
+## ФОРМАТ ВСТАВКИ В ПРОМПТ SEEDANCE
+
+В блоке 声音/台词 каждого шота:
+
+```
+声音：使用 @audio1。
+```
+— если есть аудио-референс.
+
+```
+声音：[Имя]用英语说："[Текст реплики]"
+[ВСТАВИТЬ ГОЛОСОВОЙ ПРОФИЛЬ ПЕРСОНАЖА ДОСЛОВНО]
+```
+— если аудио-референса нет.
+
+---
+
+## ПЕРСОНАЖИ
+
+---
+
+### DAVID (Дэвид) — муж, строительный прораб
+
+**Характер:** Умный, расчётливый, скрытный. Говорит мало — каждое слово взвешено. Внешне спокоен, внутри — стальной контроль.
+
+**Голосовой профиль (копировать дословно):**
+```
+A male, approximately 35-40 years old.
+Voice range: low to mid-range, slightly rough with a controlled gravelly texture.
+Delivery: slow and deliberate, each word placed with intention, minimal modulation.
+Tone: cold, authoritative, with an undercurrent of suppressed threat.
+Speech rate: slow to very slow — measured pauses between phrases, never rushed.
+Emotional baseline: calm and calculating, emotionally flat on the surface, dangerous underneath.
+He speaks in English.
+```
+
+---
+
+### LAURA (Лора) — жена
+
+**Характер:** Холодная, контролирующая. Говорит уверенно, с ощущением власти. Умеет переключаться — от сладкого тона к острому.
+
+**Голосовой профиль (копировать дословно):**
+```
+A female, approximately 32-37 years old.
+Voice range: mid-range, smooth and polished with a sharp edge underneath.
+Delivery: steady and controlled, natural intonation but with calculated pauses for effect.
+Tone: cold confidence, slightly superior — as if she already knows the outcome.
+Speech rate: medium, unhurried — she never rushes because she believes she's already won.
+Emotional baseline: controlled dominance with a surface layer of composure, occasional cold satisfaction.
+She speaks in English.
+```
+
+---
+
+### MARK (Марк) — любовник
+
+**Характер:** После месяца в СИЗО — сломан и переродился. Раньше был наглым и самодовольным. Теперь — дикий, непредсказуемый, мстительный. Голос изменился вместе с ним.
+
+**Голосовой профиль (копировать дословно):**
+```
+A male, approximately 33-38 years old.
+Voice range: mid-range to low, rough and slightly raspy — worn down, edges frayed.
+Delivery: erratic and unpredictable — bursts of intensity followed by sudden quiet, unstable rhythm.
+Tone: raw and volatile, simmering rage beneath every word, barely contained.
+Speech rate: variable — sometimes fast and clipped with anger, sometimes dangerously slow as a threat.
+Emotional baseline: volatile and wound tight, a man with nothing left to lose.
+He speaks in English.
+```
+
+---
+
+### VICTOR (Виктор) — адвокат
+
+**Характер:** Профессиональный, взвешенный, никогда не теряет голову. Говорит как человек, который видел всё и ничему не удивляется. Советник, а не игрок.
+
+**Голосовой профиль (копировать дословно):**
+```
+A male, approximately 45-52 years old.
+Voice range: mid-range to low, full and resonant with natural authority.
+Delivery: smooth and measured, precise word choice, no wasted syllables.
+Tone: warm but professionally detached — reassuring on the surface, strategic underneath.
+Speech rate: medium, with deliberate pauses before key points for emphasis.
+Emotional baseline: calm and composed, the steadiest person in any room, analytical.
+He speaks in English.
+```
+
+---
+
+### CHLOE (Хлоя) — секретарша, теперь союзник Виктора
+
+**Характер:** Молодая, умная, наблюдательная. Бывшая секретарша Дэвида — знает больше, чем показывает. С Виктором держится уверенно, но осторожно. Внешность: тёмные волосы, зелёные глаза, точёные черты.
+
+**Голосовой профиль (копировать дословно):**
+```
+A female, approximately 24-28 years old.
+Voice range: mid-range, clear and bright with a slightly husky undertone.
+Delivery: natural and composed, speaks with quiet confidence — never over-explains.
+Tone: warm but guarded, intelligent and alert, hints of carefully managed tension.
+Speech rate: medium, occasionally slows when choosing words carefully.
+Emotional baseline: composed and watchful, smart enough to stay neutral until she has to choose a side.
+She speaks in English.
+```
+
+---
+
+## ДОБАВЛЕНИЕ НОВОГО ПЕРСОНАЖА
+
+Используй эту структуру:
+
+```
+### [ИМЯ] — [роль]
+
+**Характер:** [2-3 предложения — кто он/она, как говорит, что скрывает]
+
+**Голосовой профиль (копировать дословно):**
+\```
+A [male/female], approximately [XX-XX] years old.
+Voice range: [low / mid-range / high — + текстура].
+Delivery: [характер подачи].
+Tone: [тон и что за ним стоит].
+Speech rate: [slow / medium / fast — + уточнение].
+Emotional baseline: [базовое эмоциональное состояние].
+He/She speaks in English.
+\```
+```

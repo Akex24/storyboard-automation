@@ -1,0 +1,27 @@
+# API ключи и секреты
+.env
+.env.local
+
+# Контент пользователя (у каждого свой)
+output/
+scenarios/
+refs/
+_inbox/
+
+# Сборка и кэш
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.spec.bak
+
+# macOS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Claude Code локальные
+.claude/settings.local.json

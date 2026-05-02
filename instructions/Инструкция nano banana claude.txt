@@ -1,0 +1,317 @@
+```
+# ИНСТРУКЦИЯ: ЭСКИЗНАЯ РАСКАДРОВКА (SKETCH STORYBOARD) В NANO BANANA 2
+
+---
+
+## 1. ФОРМАТ 16:9 И ПРАВИЛО 4-Х ПАНЕЛЕЙ
+
+- **Формат:** Всегда генерируем 1 широкий горизонтальный лист (пропорции 16:9), на котором расположены строго 4 вертикальные панели (9:16) в один ряд.
+- **Пустые слоты:** Даже если для сцены нужно всего 2 или 3 шота, мы всё равно требуем 4 панели. Лишние слоты прописываются как пустые белые квадраты (`COMPLETELY BLANK AND EMPTY`). Это необходимо для нарезки.
+- **ЖЁСТКИЙ ЛИМИТ:** Максимум 4 шота на один блок. 5 и более шотов — ЗАПРЕЩЕНО. Если действий больше — разбивай на два блока.
+- **Язык:** Промпт пишется **СТРОГО НА АНГЛИЙСКОМ**.
+
+---
+
+## 2. СТИЛЬ — ТОЛЬКО КАРАНДАШНЫЙ ЭСКИЗ (SKETCH)
+
+- **ОБЯЗАТЕЛЬНО:** Detailed pencil sketch storyboard, professional comic book layout, black and white, clear outlines, shading.
+- **ЗАПРЕЩЕНО:** Photorealistic, film stills, realistic photography, 3D render.
+- **Формула стиля:**
+`Detailed pencil sketch storyboard layout for vertical video format, professional comic book style, black and white drawing, clear outlines, highly detailed characters, minimal abstract background, clean layout with text annotations under each panel.`
+
+---
+
+## 3. ОДЕЖДА И РЕФЕРЕНСЫ
+
+### Одежда:
+`wearing the EXACT SAME clothes as the provided reference [@]img[X] (DO NOT invent new clothes)`
+
+### Персонажи:
+- **Запрещено** описывать внешность своими словами: борода, волосы, черты лица, рост — всё берётся ТОЛЬКО из референсного изображения.
+- Используем только имя и тег из СПИСКА_РЕФЕРЕНСОВ: `David from [@]img8`, `Laura from [@]img7`.
+
+---
+
+## 4. НАПРАВЛЕНИЕ ВЗГЛЯДА И РАКУРСЫ (КРИТИЧЕСКИ ВАЖНО)
+
+АБСОЛЮТНЫЙ ЗАПРЕТ: персонажи НИКОГДА не смотрят прямо в камеру.
+ЗАПРЕЩЕНО писать: "looking at camera", "facing camera", "staring forward".
+ВСЕГДА указывай конкретную цель взгляда.
+
+В описании каждой панели **ОБЯЗАТЕЛЬНО** указывать:
+1. Тип кадра (Close-up, Medium, Wide, Over-the-shoulder, Profile shot).
+2. Куда именно смотрит персонаж.
+
+Примеры правильных формулировок:
+`Profile shot. Eyes looking down at the floor.`
+`Over-the-shoulder shot. Eyes looking up toward Laura.`
+`Close-up. Eyes locked on David, looking right.`
+`Medium shot. Eyes gazing toward the window, looking left.`
+`Close-up. Eyes looking down at the gun in her hand.`
+
+---
+
+## 4.1. СТИЛЬ МИМИКИ — СДЕРЖАННАЯ, НЕ ТЕАТРАЛЬНАЯ (КРИТИЧЕСКИ ВАЖНО)
+
+Проблема: Nano Banana по дефолту рисует на сторибордах "мультяшные" лица — широко распахнутые глаза + открытый рот буквой О, симметричные приподнятые брови, театральные гримасы. Seedance потом эти лица воспроизводит в видео, и получается мыльная опера.
+
+Решение: в шапку каждого промпта добавляется обязательный блок FACIAL EXPRESSION STYLE. В описании каждой панели где персонаж эмоционален — эмоция описывается через **микромимику**, а не через ярлыки `shocked`, `furious`, `disgusted`.
+
+### Запрещено в описании панелей
+- `shocked expression`
+- `wide-open eyes`
+- `mouth open in O shape`
+- `raised eyebrows` (особенно `symmetric raised eyebrows`)
+- `exaggerated disgust`
+- `angry face`
+- `soap opera reaction`
+
+### Правильно — микромимика через конкретные малые движения
+- `jaw slightly tightened, barely visible`
+- `one eyebrow slightly raised, the other still`
+- `eyes narrowed, pupils fixed on X`
+- `lips pressed thin, no movement`
+- `slight head tilt, controlled stillness`
+- `mouth closed, swallow visible in throat`
+- `asymmetric micro-expression — right corner of mouth pulled down, left still`
+
+### Стилевой референс (вставляется в шапку промпта)
+
+```
+FACIAL EXPRESSION STYLE (mandatory for all character faces):
+Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated 
+open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces 
+show tension through jaw, eyes, slight asymmetry — not through wide-open features. 
+Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+```
+
+Этот блок — часть шапки, идёт вместе со стилевой формулой из раздела 2.
+
+---
+
+## 5. ЯКОРНЫЕ ОБЪЕКТЫ — СРЕДА КАК ДЕКОРАЦИЯ (КРИТИЧЕСКИ ВАЖНО)
+
+Референс среды — это НЕ фон. Это реальные декорации в которых живут персонажи.
+
+В описании каждой панели где присутствует референс среды **ОБЯЗАТЕЛЬНО** указывай физическое взаимодействие персонажа с конкретными объектами из этого референса.
+
+**Правильно:**
+`David sits on the wooden chair from [@]img3, leaning forward with both elbows on the table.`
+`Laura stands at the window from [@]img2, her hand pressing against the glass.`
+`Mark leans against the closed door from [@]img3, arms crossed.`
+`Laura picks up pistol from [@]img5, aims forward.`
+
+**Неправильно:**
+`David stands in the room.`
+`Laura is in the corridor.`
+`Mark sits somewhere.`
+
+Если персонаж просто стоит — указывай где именно относительно объектов:
+`David stands beside the table from [@]img3, facing the doorway.`
+
+ПОЗИЦИЯ ОБЪЕКТОВ: для широких кадров (Wide shot, Full shot) — ОБЯЗАТЕЛЬНО указывай положение персонажа и ключевых объектов относительно друг друга и стен/границ локации. Иначе нейросеть теряет расположение объектов при отдалении камеры.
+Правильно: Laura sits in the wicker armchair at the right side of the terrace, near the iron railing.
+Неправильно: Laura sits in the armchair on the terrace.
+
+ПРАВИЛО НЕСТАНДАРТНОЙ ГЕОМЕТРИИ СРЕДЫ (КРИТИЧЕСКИ ВАЖНО):
+Если референс среды содержит нестандартное пространственное 
+разделение (стекло вмонтировано в стену а не стоит посередине; 
+комната разделена на два изолированных отсека; персонажи физически 
+не могут находиться в одном пространстве) — в описании КАЖДОЙ панели 
+где присутствует это разделение обязательно:
+1. Указать с какой стороны разделителя стоит камера
+2. Описать разделитель как архитектурный элемент с деталями 
+   из референса (рама, материал, толщина)
+3. Указать что второй персонаж виден СКВОЗЬ этот элемент — не рядом
+
+Правильно:
+Camera on Laura's side. The thick grey-framed window is fixed in 
+the concrete wall. Through the glass — Victor visible on the visitor side.
+
+Неправильно:
+Over-the-shoulder shot — Victor through the glass behind Laura.
+
+---
+
+## 5.1. ПРОСТРАНСТВЕННАЯ ГЕОМЕТРИЯ ДЛЯ СЦЕН С 2+ ПЕРСОНАЖАМИ
+
+Источник: строка ГЕОМЕТРИЯ из монтажной карты (приходит из главной инструкции).
+
+Для каждой панели где изображены 2 и более персонажа — в описании панели обязательно указывай где кто стоит относительно друг друга и относительно якорных объектов из референса среды. Это нужно чтобы:
+1. Сториборд нарисовался с правильной композицией
+2. Seedance потом взял с этого сториборда чёткое положение персонажей
+
+### Формат
+
+Каждый персонаж описывается с тремя координатами:
+1. **К чему привязан** (опирается на, сидит на, стоит у — с тегом объекта)
+2. **Куда повёрнуто тело/голова**
+3. **В какой части кадра** (left/center/right side, foreground/midground/background)
+
+### Пример
+
+```
+Panel 2 (Middle Left): Medium shot. Mark from [@]img8 leans against the left 
+armrest of the sofa from [@]img2, body turned toward the wheelchair, left 
+side of the frame, midground. Arthur from [@]img7 sits in the wheelchair at 
+the center of the room, body facing forward, right side of the frame, 
+blurred foreground. Anna from [@]img9 stands to the right of Arthur, body 
+turned toward Mark, right side of the frame, midground.
+Eyes: Mark looking down at Arthur. Anna looking at Mark. Arthur facing forward, 
+blind.
+Text annotation below Panel 2: "SHOT 2 / 4s / Mark disgusted, delivers line"
+```
+
+### Для одиночных панелей (1 персонаж) — геометрия не нужна
+Достаточно указать взаимодействие с якорным объектом по правилам раздела 5.
+
+## 5.2. ФАЗА ДЕЙСТВИЯ НА ПАНЕЛИ — СЕРЕДИНА, НЕ ФИНАЛ (КРИТИЧЕСКИ ВАЖНО)
+
+Проблема: Seedance копирует положение объектов со сториборда как стоп-кадр. 
+Если на панели конверт уже лежит на столе — Seedance зафиксирует его в этой 
+позиции с первого кадра шота. Объект "зависает" в финальной точке вместо 
+того чтобы анимироваться.
+
+ПРАВИЛО: Если на панели персонаж совершает действие с объектом (кладёт, 
+поднимает, передаёт, бросает) — рисовать СЕРЕДИНУ действия, не результат.
+
+Правильно:
+- Рука с конвертом НАД тумбочкой, конверт ещё в пальцах — не конверт уже на тумбочке
+- Рука тянется к пистолету на столе, пальцы в 10 см от рукояти — не пистолет уже в руке
+- Персонаж протягивает бокал другому, бокал между ними — не бокал уже в руке получателя
+
+Неправильно:
+- Объект уже в финальной позиции (лежит, стоит, находится у получателя)
+- Действие уже завершено на панели
+
+В аннотации панели указывать фазу: "reaching toward", "mid-transfer", 
+"hand hovering above" — не "places", "puts down", "hands over".
+
+---
+
+## 6. ТЕГИ — НУМЕРАЦИЯ ИЗ СПИСКА РЕФЕРЕНСОВ (КРИТИЧЕСКИ ВАЖНО)
+
+Нумерация тегов берётся **СТРОГО из СПИСКА_РЕФЕРЕНСОВ** и **НЕ МЕНЯЕТСЯ** от блока к блоку.
+
+КРИТИЧЕСКИ ВАЖНО: нумерация берётся из СПИСКА_РЕФЕРЕНСОВ текущего эпизода как есть.
+[@]img1 — это всегда первый реф из списка (как правило среда/локация).
+[@]img1 — это НЕ сториборд. Сториборд не является рефом и не входит в нумерацию.
+Сториборд прикрепляется пользователем отдельно в интерфейсе Nano Banana и в промпте не упоминается.
+
+- Среда всегда идёт первой: [@]img1, [@]img2...
+- Объекты после среды
+- Персонажи ВСЕГДА В КОНЦЕ списка
+
+**ЗАПРЕЩЕНО:** сбрасывать нумерацию в каждом блоке заново.
+**ЗАПРЕЩЕНО:** описывать объект словами если у него есть тег в списке. Только тег.
+**ЗАПРЕЩЕНО:** описывать внешность персонажа (борода, волосы, черты лица) — только имя и тег.
+
+В каждом блоке указываешь только те теги которые реально нужны в этом конкретном блоке.
+
+---
+
+## 6.1. НУМЕРАЦИЯ SHOT В АННОТАЦИЯХ ПАНЕЛЕЙ (КРИТИЧЕСКИ ВАЖНО)
+
+Нумерация SHOT в текстовых аннотациях под панелями сториборда ВСЕГДА НАЧИНАЕТСЯ ЗАНОВО С 1 В КАЖДОМ БЛОКЕ.
+
+ПРИЧИНА: сториборд каждого блока прикрепляется к Seedance как отдельный референс (@image1). Китайские промпты Seedance ссылаются на панели сториборда как 第1格分镜 (панель 1), 第2格分镜 (панель 2). Если на сториборде подписано SHOT 7 вместо SHOT 1 — возникает расхождение между китайским указанием и визуальной подписью на панели.
+
+ПРАВИЛО:
+- Блок 1 → SHOT 1, SHOT 2, SHOT 3, SHOT 4
+- Блок 2 → SHOT 1, SHOT 2 (НЕ SHOT 5, SHOT 6)
+- Блок 3 → SHOT 1 (НЕ SHOT 7)
+- И так далее — в каждом блоке нумерация SHOT всегда стартует с 1.
+
+ЭТО КАСАЕТСЯ ТОЛЬКО ПОДПИСЕЙ SHOT НА САМИХ СТОРИБОРДАХ (текстовые аннотации под панелями).
+
+Нумерация сцен в монтажной карте (Сцена 1, Сцена 2... Сцена 17) ОСТАЁТСЯ СКВОЗНОЙ по всему эпизоду — это другая сущность, последовательность событий в сценарии, и её трогать нельзя.
+
+Нумерация тегов референсов ([@]img1, [@]img2...) тоже НЕ сбрасывается между блоками — она сквозная по эпизоду согласно разделу 6.
+
+ПРАВИЛЬНО:
+Блок 3, Panel 1: "SHOT 1 / 15s / Victor threatens Chloe"
+
+НЕПРАВИЛЬНО:
+Блок 3, Panel 1: "SHOT 4 / 15s / Victor threatens Chloe"
+
+---
+
+## 7. ШАБЛОН ПРОМПТА
+
+### ВАЖНО — ШАПКА ПИШЕТСЯ В КАЖДОМ БЛОКЕ:
+
+В Claude шапка включается в каждый промпт блока — в отличие от Weavy где она писалась один раз.
+
+Шапка (обновлена — добавлен блок FACIAL EXPRESSION STYLE):
+```
+Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. Text annotations contain ONLY shot number, duration and short action description. NO dialogue, NO speech, NO quotes from characters in annotations. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+```
+
+### Шаблон блока:
+
+ВАЖНО: нумерация SHOT в аннотациях каждого блока ВСЕГДА стартует с SHOT 1 (см. раздел 6.1).
+
+```
+===ПРОМПТ_БЛОК_N_НАЧАЛО===
+Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. Text annotations contain ONLY shot number, duration and short action description. NO dialogue, NO speech, NO quotes from characters in annotations. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+
+[[@]img1 - Env ref, [@]img3 - Object ref, [@]img7 - Laura, [@]img8 - David]
+CHARACTERS:
+[@]img7 Laura — wearing EXACT SAME clothes as [@]img7 reference
+[@]img8 David — wearing EXACT SAME clothes as [@]img8 reference
+
+Panel 1 (Far Left): [Тип кадра]. [Имя] from [@]imgX [действие + взаимодействие с объектом].
+Eyes [конкретная цель взгляда]. [Микромимика — не ярлык эмоции].
+Text annotation below Panel 1: "SHOT 1 / [время] / [описание]"
+
+Panel 2 (Middle Left): [Тип кадра]. [Имя] from [@]imgX [действие].
+[Если 2+ персонажа — пространственная геометрия по разделу 5.1]
+Eyes [конкретная цель взгляда]. [Микромимика].
+Text annotation below Panel 2: "SHOT 2 / [время] / [описание]"
+
+Panel 3 (Middle Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+
+Panel 4 (Far Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+===ПРОМПТ_БЛОК_N_КОНЕЦ===
+```
+
+ЗАПРЕЩЕНО сокращать запись пустой панели. Нельзя писать просто BLANK или EMPTY.
+Всегда пишется полностью:
+`COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.`
+
+---
+
+## 8. ОБЯЗАТЕЛЬНАЯ РАЗМЕТКА
+
+Каждый промпт оборачивается в теги:
+```
+===ПРОМПТ_БЛОК_1_НАЧАЛО===
+[полный промпт на английском]
+===ПРОМПТ_БЛОК_1_КОНЕЦ===
+```
+
+Внутри тегов — только чистый промпт. Никаких пояснений.
+
+---
+
+## 9. ЧЕКЛИСТ
+
+- [ ] Нумерация тегов взята из СПИСКА_РЕФЕРЕНСОВ и не меняется от блока к блоку?
+- [ ] Персонажи в конце списка, среда в начале?
+- [ ] Если у объекта есть тег — используется тег, не описание словами?
+- [ ] Каждый [@]img тег использованный в описании панелей присутствует в квадратных скобках шапки блока? (обратная проверка: пройдись по Panel 1–4, собери все [@]imgN, сверь со списком в квадратных скобках вверху промпта)
+- [ ] Внешность персонажа не описана словами (борода, волосы и т.д.)?
+- [ ] Формат: 16:9 лист, 4 панели, максимум 4 шота?
+- [ ] Стиль: Pencil sketch (НЕ photorealistic)?
+- [ ] Ракурс и направление взгляда указаны для каждой панели?
+- [ ] Персонажи НЕ смотрят в камеру — указана конкретная цель взгляда?
+- [ ] Физическое взаимодействие с объектами среды указано явно?
+- [ ] Пустые панели: COMPLETELY BLANK AND EMPTY (полностью)?
+- [ ] Промпт в тегах ===ПРОМПТ_БЛОК_N_НАЧАЛО=== / ===КОНЕЦ===?
+- [ ] Шапка включена в каждый блок (включая блок FACIAL EXPRESSION STYLE)?
+- [ ] CHARACTERS секция есть в каждом блоке?
+- [ ] NO dialogue в аннотациях?
+- [ ] Нумерация SHOT в аннотациях начинается с 1 в каждом блоке (не сквозная по эпизоду)?
+- [ ] Эмоции описаны через микромимику, не через ярлыки (`shocked`, `furious` и т.д.)?
+- [ ] Для панелей с 2+ персонажами — указана пространственная геометрия (к чему привязан, куда повёрнут, где в кадре)?
+```
