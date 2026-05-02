@@ -1348,10 +1348,9 @@ class MainWindow(QMainWindow):
         🆕 — есть непросмотренные новые шоты в этом блоке (главный сигнал
             «здесь что-то появилось»)
         ⋯ — идёт регенерация хотя бы одного шота
-        ✓ — все нужные шоты сгенерированы и нет непросмотренных
-        ""  — иначе
+        ""  — иначе (включая полностью готовые блоки — шум убран)
 
-        Возможные комбинации: «🆕 ⋯», «🆕», «⋯», «✓», «».
+        Возможные комбинации: «🆕 ⋯», «🆕», «⋯», «».
         """
         has_unseen = any(b == block_name for (b, _) in self._unseen_shots)
         has_active = any(b == block_name for (b, _) in self._active_regens.keys())
@@ -1361,9 +1360,6 @@ class MainWindow(QMainWindow):
             parts.append("🆕")
         if has_active:
             parts.append("⋯")
-        # Галочка «полностью готов» — только когда нет ни 🆕, ни ⋯
-        if not parts and is_block_complete(block_name):
-            parts.append("✓")
 
         if not parts:
             return ""
