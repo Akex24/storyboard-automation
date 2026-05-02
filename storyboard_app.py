@@ -298,8 +298,8 @@ QPushButton:disabled        { background: #1e1e1e; color: #444; border-color: #2
 QPushButton#regen {
     background: #1a2a1a; border: 1px solid #2a3f2a; color: #6db86d; font-size: 12px;
 }
-QPushButton#regen:hover     { background: #1e311e; border-color: #3a5a3a; }
-QPushButton#regen:disabled  { background: #181818; color: #333; border-color: #222; }
+QPushButton#regen:enabled:hover { background: #1e311e; border-color: #3a5a3a; }
+QPushButton#regen:disabled      { background: #141414; color: #2e2e2e; border-color: #1c1c1c; }
 
 QPushButton#save {
     background: #1a1e2a; border: 1px solid #2a2e3f; color: #7a9ccc; font-size: 13px; padding: 9px;
@@ -317,6 +317,11 @@ QLabel#shot-num             { font-size: 13px; font-weight: bold; color: #fff; }
 QLabel#shot-dur             { font-size: 12px; color: #666; }
 QLabel#shot-desc            { font-size: 12px; color: #888; }
 QLabel#step-label           { font-size: 11px; color: #5a8a5a; }
+QLabel#new-badge {
+    color: #ffaa44; font-size: 10px; font-weight: bold;
+    background: #2a1f0a; border: 1px solid #4a3010; border-radius: 4px;
+    padding: 1px 6px;
+}
 QLabel#project-path         { font-size: 11px; color: #444; }
 QLabel#stats-label          { font-size: 10px; color: #3d3d5c; }
 
@@ -977,6 +982,9 @@ class ShotCard(QFrame):
     def __init__(self, panel_idx: int, parent=None):
         super().__init__(parent)
         self.panel_idx = panel_idx
+        # Запоминаем что шот пустой/blank — чтобы set_loading(False)
+        # не включал кнопку «Регенерировать» обратно
+        self._is_blank = False
         self.setObjectName("card")
         self._build()
 
@@ -1008,9 +1016,15 @@ class ShotCard(QFrame):
         row = QHBoxLayout()
         self.num_label = QLabel(f"SHOT {self.panel_idx + 1}")
         self.num_label.setObjectName("shot-num")
+        # Бейдж NEW — показывается после регенерации, исчезает при переключении блока
+        self.new_badge = QLabel("NEW")
+        self.new_badge.setObjectName("new-badge")
+        self.new_badge.hide()
         self.dur_label = QLabel("")
         self.dur_label.setObjectName("shot-dur")
         row.addWidget(self.num_label)
+        row.addSpacing(6)
+        row.addWidget(self.new_badge)
         row.addStretch()
         row.addWidget(self.dur_label)
         lay.addLayout(row)
@@ -1042,16 +1056,25 @@ class ShotCard(QFrame):
         ))
 
     def set_shot_info(self, shot: Dict):
-        if shot["is_blank"]:
+        self._is_blank = bool(shot.get("is_blank"))
+        if self._is_blank:
             self.num_label.setText("ПУСТО")
             self.dur_label.setText("")
             self.desc_label.setText("")
             self.regen_btn.setEnabled(False)
+            self.new_badge.hide()  # для пустого шота нечего быть «новым»
         else:
             self.num_label.setText(f"SHOT {shot['shot_num']}")
             self.dur_label.setText(shot["duration"])
             self.desc_label.setText(shot["description"])
             self.regen_btn.setEnabled(True)
+
+    def set_new_badge(self, visible: bool):
+        """Показ/скрытие бейджа NEW (только для НЕ-пустых шотов)."""
+        if self._is_blank:
+            self.new_badge.hide()
+        else:
+            self.new_badge.setVisible(bool(visible))
 
     def set_progress(self, label: str, pct: int):
         self.progress_bar.setValue(pct)
@@ -1060,8 +1083,12 @@ class ShotCard(QFrame):
         self.step_label.show()
 
     def set_loading(self, loading: bool):
-        self.regen_btn.setEnabled(not loading)
-        if not loading:
+        if loading:
+            self.regen_btn.setEnabled(False)
+        else:
+            # КЛЮЧЕВОЕ: не включаем кнопку обратно если шот пустой.
+            # Иначе пустые шоты получают active hover-стиль и ложно кликаются.
+            self.regen_btn.setEnabled(not self._is_blank)
             self.progress_bar.hide()
             self.step_label.hide()
             self.progress_bar.setValue(0)
@@ -1086,6 +1113,11 @@ class MainWindow(QMainWindow):
         self._stats_thread:      Optional[FetchStatsThread]        = None
         # Кешированная latest версия .app — нужна для скачивания при клике на баннер
         self._latest_app_ver: Optional[str] = None
+        # Множество (block, panel_idx) — недавно регенерированные шоты, ещё не
+        # просмотренные пользователем. На карточке у них висит бейдж NEW.
+        # Когда юзер переключается с блока на другой — пометки этого блока
+        # очищаются (он их «увидел»).
+        self._unseen_shots: set = set()
         self._build_ui()
         self._load_blocks()
 
@@ -1300,8 +1332,19 @@ class MainWindow(QMainWindow):
     def _on_block_selected(self, item: Optional[QListWidgetItem]):
         if not item:
             return
-        self.current_block = item.data(Qt.ItemDataRole.UserRole)
+        new_block = item.data(Qt.ItemDataRole.UserRole)
+        # Когда юзер УХОДИТ с блока, помечаем его шоты «увиденными» —
+        # бейджи NEW при возврате уже не покажутся.
+        if self.current_block and self.current_block != new_block:
+            self._mark_block_seen(self.current_block)
+        self.current_block = new_block
         self._display_block(self.current_block)
+
+    def _mark_block_seen(self, block_name: str):
+        """Очищает бейджи NEW у всех шотов указанного блока."""
+        keys = [(b, i) for (b, i) in self._unseen_shots if b == block_name]
+        for k in keys:
+            self._unseen_shots.discard(k)
 
     def _display_block(self, name: str):
         prompt_file = PROMPTS_DIR / f"{name}.txt"
@@ -1337,6 +1380,9 @@ class MainWindow(QMainWindow):
                 card.set_loading(True)
             else:
                 card.set_loading(False)
+            # Бейдж NEW — если шот недавно регенерирован и пользователь
+            # его ещё не видел (не переключался на другой блок после регена)
+            card.set_new_badge((name, i) in self._unseen_shots)
 
         # Кнопка экспорта активна если хотя бы один шот сгенерирован
         self.save_btn.setEnabled(any_exists)
@@ -1383,6 +1429,9 @@ class MainWindow(QMainWindow):
 
     def _on_regen_done(self, panel_idx: int, target_block: str):
         self._active_regens.pop((target_block, panel_idx), None)
+        # Помечаем шот «непросмотренным» — на карточке появится бейдж NEW.
+        # Очистится когда юзер переключится с этого блока на другой.
+        self._unseen_shots.add((target_block, panel_idx))
 
         # Обновляем текущий блок (если виден этот же — увидим новую картинку,
         # если другой — карточки в нём перерисуются с актуальным состоянием
