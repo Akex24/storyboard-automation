@@ -108,6 +108,152 @@ def read_local_version(root: Path) -> str:
         return "0.0.0"
 
 
+def read_local_app_version(root: Path) -> str:
+    """Версия самого приложения (Storyboard Studio.app), отдельно от версии проекта."""
+    f = root / "version.json"
+    if not f.exists():
+        return "0.0.0"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data.get("app_version") or data.get("version", "0.0.0")
+    except Exception:
+        return "0.0.0"
+
+
+# ─── GitHub API: токен, Releases, статистика ─────────────────────────────────
+
+def get_github_token_from_remote(root: Path) -> Optional[str]:
+    """Извлекает GitHub PAT из URL origin.
+
+    Поддерживаемые форматы:
+      https://TOKEN@github.com/...
+      https://USER:TOKEN@github.com/...
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        url = r.stdout.strip()
+        m = re.match(r'https://(?:[^@:/]+:)?([^@:/]+)@github\.com/', url)
+        if m:
+            return m.group(1)
+        return None
+    except Exception:
+        return None
+
+
+def fetch_latest_app_release_version() -> Optional[str]:
+    """Возвращает версию последнего опубликованного релиза приложения (тег app-vX.Y.Z)."""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/releases"
+        r = requests.get(url, timeout=10, headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            return None
+        for rel in r.json():
+            tag = rel.get("tag_name", "")
+            if tag.startswith("app-v"):
+                return tag[len("app-v"):]
+        return None
+    except Exception:
+        return None
+
+
+def fetch_release_asset_info(version: str) -> Optional[Dict]:
+    """Возвращает info об asset (mac zip) для релиза app-vX.Y.Z, или None."""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/releases"
+        r = requests.get(url, timeout=10, headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            return None
+        for rel in r.json():
+            if rel.get("tag_name") == f"app-v{version}":
+                for asset in rel.get("assets", []):
+                    name = asset.get("name", "")
+                    if name.endswith(".zip") and "mac" in name.lower():
+                        return asset
+        return None
+    except Exception:
+        return None
+
+
+def fetch_all_release_stats() -> List[Dict]:
+    """Возвращает список {tag, version, downloads} для последних релизов приложения."""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/releases"
+        r = requests.get(url, timeout=10, headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            return []
+        result = []
+        for rel in r.json()[:5]:
+            tag = rel.get("tag_name", "")
+            if tag.startswith("app-v"):
+                total = sum(a.get("download_count", 0) for a in rel.get("assets", []))
+                result.append({
+                    "tag":       tag,
+                    "version":   tag[len("app-v"):],
+                    "downloads": total,
+                })
+        return result
+    except Exception:
+        return []
+
+
+def find_current_app_bundle() -> Optional[Path]:
+    """Возвращает путь к .app-бандлу в котором работает этот exe, или None если не frozen."""
+    if not getattr(sys, 'frozen', False):
+        return None
+    exe = Path(sys.executable)
+    for parent in exe.parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
+def create_github_release(token: str, tag: str, name: str, body: str = "") -> Optional[Dict]:
+    """Создаёт GitHub Release. Возвращает данные релиза или None."""
+    url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/releases"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    payload = {
+        "tag_name":         tag,
+        "target_commitish": GITHUB_BRANCH,
+        "name":             name,
+        "body":             body,
+        "draft":            False,
+        "prerelease":       False,
+    }
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=30)
+        if r.status_code in (200, 201):
+            return r.json()
+        return None
+    except Exception:
+        return None
+
+
+def upload_release_asset(token: str, upload_url_template: str, file_path: Path) -> bool:
+    """Загружает файл как asset в существующий GitHub Release."""
+    upload_url = upload_url_template.split("{")[0]
+    headers = {
+        "Authorization": f"token {token}",
+        "Content-Type":  "application/octet-stream",
+        "Accept":        "application/vnd.github+json",
+    }
+    params = {"name": file_path.name}
+    try:
+        with open(file_path, "rb") as f:
+            r = requests.post(upload_url, headers=headers, params=params,
+                              data=f.read(), timeout=600)
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
 def is_admin_mode(root: Path) -> bool:
     """Админ — это владелец репозитория, у которого настроен git push origin."""
     if not (root / ".git").is_dir():
@@ -172,6 +318,7 @@ QLabel#shot-dur             { font-size: 12px; color: #666; }
 QLabel#shot-desc            { font-size: 12px; color: #888; }
 QLabel#step-label           { font-size: 11px; color: #5a8a5a; }
 QLabel#project-path         { font-size: 11px; color: #444; }
+QLabel#stats-label          { font-size: 10px; color: #3d3d5c; }
 
 QStatusBar                  { background: #111; color: #555; font-size: 12px; border-top: 1px solid #222; }
 
@@ -192,6 +339,16 @@ QPushButton#update-btn {
     padding: 6px 14px; color: #b0d0ff; font-size: 12px;
 }
 QPushButton#update-btn:hover { background: #344870; }
+
+QFrame#app-update-banner {
+    background: #201a30; border: 1px solid #503070; border-radius: 8px;
+}
+QLabel#app-update-text      { font-size: 13px; color: #cc99ff; }
+QPushButton#app-update-btn {
+    background: #3a2560; border: 1px solid #5a3880; border-radius: 6px;
+    padding: 6px 14px; color: #e0bbff; font-size: 12px;
+}
+QPushButton#app-update-btn:hover { background: #462e72; }
 
 QPushButton#admin-send {
     background: #2a1f3a; border: 1px solid #4a3060; color: #c090ff; font-size: 12px;
@@ -435,8 +592,9 @@ class GenerateThread(QThread):
 # ─── Обновления — потоки ─────────────────────────────────────────────────────
 
 class CheckUpdateThread(QThread):
-    """Проверяет наличие новой версии на GitHub."""
-    update_found = pyqtSignal(str, str)   # (current, latest)
+    """Проверяет наличие новых версий проекта и приложения на GitHub."""
+    # curr_proj, latest_proj, curr_app, latest_app
+    update_found = pyqtSignal(str, str, str, str)
     no_update    = pyqtSignal()
     error        = pyqtSignal(str)
 
@@ -449,12 +607,18 @@ class CheckUpdateThread(QThread):
             if not github_configured():
                 self.no_update.emit()
                 return
-            current = read_local_version(self.root)
+
+            curr_proj = read_local_version(self.root)
+            curr_app  = read_local_app_version(self.root)
+
             r = requests.get(github_raw_url("version.json"), timeout=10)
             r.raise_for_status()
-            latest = r.json().get("version", "0.0.0")
-            if latest != current:
-                self.update_found.emit(current, latest)
+            latest_proj = r.json().get("version", curr_proj)
+
+            latest_app = fetch_latest_app_release_version() or curr_app
+
+            if latest_proj != curr_proj or latest_app != curr_app:
+                self.update_found.emit(curr_proj, latest_proj, curr_app, latest_app)
             else:
                 self.no_update.emit()
         except Exception as e:
@@ -512,24 +676,115 @@ class DownloadUpdateThread(QThread):
             self.error.emit(str(e))
 
 
-class SendUpdateThread(QThread):
-    """Админ-режим: бампит версию + git commit + git push."""
-    progress = pyqtSignal(str)
-    finished = pyqtSignal(str)   # new version
+class DownloadAppUpdateThread(QThread):
+    """Скачивает и устанавливает новую версию Storyboard Studio.app из GitHub Releases."""
+    progress = pyqtSignal(str, int)
+    finished = pyqtSignal(str, str)   # (new_app_version, install_path)
     error    = pyqtSignal(str)
 
-    def __init__(self, root: Path):
+    def __init__(self, target_version: str):
         super().__init__()
-        self.root = root
+        self.target_version = target_version
+
+    def run(self):
+        try:
+            self.progress.emit("Ищу релиз на GitHub…", 5)
+            asset = fetch_release_asset_info(self.target_version)
+            if not asset:
+                self.error.emit(
+                    f"Не найден .zip в релизе app-v{self.target_version}.\n"
+                    "Попробуй обновить вручную — скачай с GitHub Releases.")
+                return
+
+            download_url = asset["browser_download_url"]
+            size_bytes   = asset.get("size", 0)
+            size_mb      = max(1, size_bytes // (1024 * 1024))
+
+            self.progress.emit(f"Скачиваю приложение ({size_mb} МБ)…", 8)
+            r = requests.get(download_url, timeout=600, stream=True)
+            r.raise_for_status()
+            total = int(r.headers.get("content-length", size_bytes))
+            buf   = io.BytesIO()
+            done  = 0
+            for chunk in r.iter_content(chunk_size=65536):
+                buf.write(chunk)
+                done += len(chunk)
+                if total:
+                    pct = 8 + int(done / total * 60)
+                    self.progress.emit(
+                        f"Скачиваю… {done // (1024*1024)} / {total // (1024*1024)} МБ", pct)
+
+            self.progress.emit("Распаковка…", 70)
+
+            app_bundle  = find_current_app_bundle()
+            install_dir = app_bundle.parent if app_bundle else (Path.home() / "Downloads")
+            app_name    = app_bundle.name   if app_bundle else "Storyboard Studio.app"
+
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                with zipfile.ZipFile(buf) as z:
+                    z.extractall(tmp_path)
+
+                apps = list(tmp_path.rglob("*.app"))
+                if not apps:
+                    self.error.emit("В архиве не найдено .app приложение.")
+                    return
+                new_app_src = apps[0]
+
+                self.progress.emit("Устанавливаю…", 82)
+                dest = install_dir / app_name
+                bak  = install_dir / (app_name + ".bak")
+
+                try:
+                    if dest.exists():
+                        if bak.exists():
+                            shutil.rmtree(bak, ignore_errors=True)
+                        dest.rename(bak)
+                    shutil.copytree(new_app_src, dest)
+                    if bak.exists():
+                        shutil.rmtree(bak, ignore_errors=True)
+                except PermissionError:
+                    dest = Path.home() / "Downloads" / app_name
+                    if dest.exists():
+                        shutil.rmtree(dest, ignore_errors=True)
+                    shutil.copytree(new_app_src, dest)
+
+            self.progress.emit("Готово!", 100)
+            self.finished.emit(self.target_version, str(dest))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class SendUpdateThread(QThread):
+    """Админ-режим: бампит версию + git commit + git push.
+    Опционально — загружает Storyboard Studio.app в GitHub Releases.
+    """
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(str, str, bool)   # (project_version, app_version, app_uploaded)
+    error    = pyqtSignal(str)
+
+    def __init__(self, root: Path, upload_app: bool = False):
+        super().__init__()
+        self.root       = root
+        self.upload_app = upload_app
 
     def run(self):
         try:
             vfile = self.root / "version.json"
             data = json.loads(vfile.read_text(encoding="utf-8")) if vfile.exists() \
-                   else {"version": "1.0.0"}
+                   else {"version": "1.0.0", "app_version": "1.0.0"}
+
             major, minor, patch = data.get("version", "1.0.0").split(".")
             new_version = f"{major}.{minor}.{int(patch) + 1}"
-            data["version"]  = new_version
+            data["version"] = new_version
+
+            cur_app_v = data.get("app_version", data.get("version", "1.0.0"))
+            new_app_version = cur_app_v
+            if self.upload_app:
+                amaj, amin, apat = cur_app_v.split(".")
+                new_app_version = f"{amaj}.{amin}.{int(apat) + 1}"
+                data["app_version"] = new_app_version
+
             data["released"] = datetime.date.today().isoformat()
             vfile.write_text(
                 json.dumps(data, indent=2, ensure_ascii=False) + "\n",
@@ -556,11 +811,75 @@ class SendUpdateThread(QThread):
                 self.error.emit(f"Git push error: {r.stderr}")
                 return
 
-            self.finished.emit(new_version)
+            uploaded = False
+            if self.upload_app:
+                app_path = self.root / "dist" / "Storyboard Studio.app"
+                if not app_path.exists():
+                    self.error.emit(
+                        f"Не найден {app_path}.\n"
+                        "Сначала пересобери приложение командой:\n"
+                        "python3 -m PyInstaller StoryboardStudio.spec --noconfirm")
+                    return
+
+                token = get_github_token_from_remote(self.root)
+                if not token:
+                    self.error.emit(
+                        "Не нашёл GitHub token в URL origin.\n"
+                        "Чтобы загрузить .app в Releases — настрой git remote с токеном:\n"
+                        "git remote set-url origin https://TOKEN@github.com/USER/REPO.git")
+                    return
+
+                self.progress.emit("Архивирую Storyboard Studio.app…")
+                zip_name = f"Storyboard-Studio-{new_app_version}-mac.zip"
+                zip_path = self.root / "dist" / zip_name
+                if zip_path.exists():
+                    zip_path.unlink()
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                    for f in app_path.rglob("*"):
+                        if f.is_file() or f.is_symlink():
+                            zf.write(f, f.relative_to(app_path.parent))
+
+                self.progress.emit("Создаю GitHub Release…")
+                tag = f"app-v{new_app_version}"
+                rel = create_github_release(
+                    token, tag,
+                    name=f"Storyboard Studio v{new_app_version}",
+                    body=f"Версия приложения: {new_app_version}\n"
+                         f"Версия проекта на момент сборки: {new_version}",
+                )
+                if not rel:
+                    self.error.emit(
+                        "Не удалось создать GitHub Release. Проверь токен и права (нужен scope 'repo').")
+                    return
+
+                size_mb = zip_path.stat().st_size // (1024 * 1024)
+                self.progress.emit(f"Загружаю .app ({size_mb} МБ) в Release…")
+                if not upload_release_asset(token, rel["upload_url"], zip_path):
+                    self.error.emit("Не удалось загрузить .app в GitHub Release.")
+                    return
+
+                # Удаляем zip после успешной загрузки — он больше не нужен,
+                # коллеги скачивают его прямо с GitHub Releases.
+                try:
+                    zip_path.unlink()
+                except Exception:
+                    pass
+
+                uploaded = True
+
+            self.finished.emit(new_version, new_app_version, uploaded)
         except subprocess.CalledProcessError as e:
             self.error.emit(f"Ошибка git: {e.stderr.decode() if e.stderr else str(e)}")
         except Exception as e:
             self.error.emit(str(e))
+
+
+class FetchStatsThread(QThread):
+    """Загружает статистику скачиваний из GitHub Releases (только для admin)."""
+    finished = pyqtSignal(list)   # list of {tag, version, downloads}
+
+    def run(self):
+        self.finished.emit(fetch_all_release_stats())
 
 
 # ─── Карточка шота ───────────────────────────────────────────────────────────
@@ -676,7 +995,11 @@ class MainWindow(QMainWindow):
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
         self._active_regens: Dict[tuple, GenerateThread] = {}
-        self._update_thread: Optional[QThread]           = None
+        self._update_thread:     Optional[QThread]                 = None
+        self._app_update_thread: Optional[DownloadAppUpdateThread] = None
+        self._stats_thread:      Optional[FetchStatsThread]        = None
+        # Кешированная latest версия .app — нужна для скачивания при клике на баннер
+        self._latest_app_ver: Optional[str] = None
         self._build_ui()
         self._load_blocks()
 
@@ -687,6 +1010,18 @@ class MainWindow(QMainWindow):
         # Авто-проверка обновлений через 2 секунды после запуска
         if github_configured():
             QTimer.singleShot(2000, self._check_updates)
+
+        # Для админа: периодически проверяем есть ли изменения для отправки.
+        # Кнопка "Отправить обновление" активна только при наличии изменений.
+        if self._is_admin:
+            self._send_check_timer = QTimer(self)
+            self._send_check_timer.timeout.connect(self._refresh_send_button)
+            self._send_check_timer.start(5000)   # каждые 5 сек
+            QTimer.singleShot(800, self._refresh_send_button)   # первая проверка
+
+        # Статистика скачиваний для админа (из GitHub Releases API)
+        if self._is_admin and github_configured():
+            QTimer.singleShot(4000, self._fetch_download_stats)
 
     def _build_ui(self):
         root = QWidget()
@@ -731,9 +1066,13 @@ class MainWindow(QMainWindow):
             self.send_update_btn.clicked.connect(self._send_update)
             sl.addWidget(self.send_update_btn)
 
-        self.path_label = QLabel(
-            f"v{read_local_version(self._project_root)}\n{self._project_root.name}"
-        )
+            # Метка со статистикой скачиваний приложения
+            self.stats_label = QLabel("загружаю статистику…")
+            self.stats_label.setObjectName("stats-label")
+            self.stats_label.setWordWrap(True)
+            sl.addWidget(self.stats_label)
+
+        self.path_label = QLabel(self._format_version_label())
         self.path_label.setObjectName("project-path")
         self.path_label.setWordWrap(True)
         sl.addWidget(self.path_label)
@@ -746,7 +1085,7 @@ class MainWindow(QMainWindow):
         rl.setSpacing(12)
         rl.setContentsMargins(0, 0, 0, 0)
 
-        # Баннер обновлений (скрыт по умолчанию)
+        # Баннер обновления проекта (файлы/скрипты)
         self.update_banner = QFrame()
         self.update_banner.setObjectName("update-banner")
         self.update_banner.hide()
@@ -760,6 +1099,21 @@ class MainWindow(QMainWindow):
         self.update_btn.clicked.connect(self._download_update)
         ub_lay.addWidget(self.update_btn)
         rl.addWidget(self.update_banner)
+
+        # Баннер обновления приложения (.app бинарник из GitHub Releases)
+        self.app_update_banner = QFrame()
+        self.app_update_banner.setObjectName("app-update-banner")
+        self.app_update_banner.hide()
+        aub_lay = QHBoxLayout(self.app_update_banner)
+        aub_lay.setContentsMargins(14, 10, 10, 10)
+        self.app_update_text = QLabel("")
+        self.app_update_text.setObjectName("app-update-text")
+        aub_lay.addWidget(self.app_update_text, stretch=1)
+        self.app_update_btn = QPushButton("Скачать приложение →")
+        self.app_update_btn.setObjectName("app-update-btn")
+        self.app_update_btn.clicked.connect(self._download_app_update)
+        aub_lay.addWidget(self.app_update_btn)
+        rl.addWidget(self.app_update_banner)
 
         self.block_title = QLabel("← Выбери блок")
         self.block_title.setObjectName("block-title")
@@ -936,7 +1290,7 @@ class MainWindow(QMainWindow):
             self._project_root = Path(folder)
             store_root(self._project_root)
             setup_paths(self._project_root)
-            self.path_label.setText(str(self._project_root))
+            self.path_label.setText(self._format_version_label())
             self._watcher.removePaths(self._watcher.directories())
             self._watcher.addPath(str(STORYBOARDS_DIR))
             self._load_blocks()
@@ -971,11 +1325,20 @@ class MainWindow(QMainWindow):
             lambda e: self.status_bar.showMessage(f"Не удалось проверить обновления: {e}"))
         self._update_thread.start()
 
-    def _show_update_banner(self, current: str, latest: str):
-        self.update_text.setText(
-            f"🔄  Доступно обновление:  v{current} → v{latest}"
-        )
-        self.update_banner.show()
+    def _show_update_banner(self, curr_proj: str, latest_proj: str,
+                            curr_app: str, latest_app: str):
+        """Показывает один или оба баннера в зависимости от того что устарело."""
+        if latest_proj != curr_proj:
+            self.update_text.setText(
+                f"🔄  Обновление проекта:  v{curr_proj} → v{latest_proj}"
+            )
+            self.update_banner.show()
+        if latest_app != curr_app:
+            self._latest_app_ver = latest_app
+            self.app_update_text.setText(
+                f"⬇  Новое приложение:  v{curr_app} → v{latest_app}"
+            )
+            self.app_update_banner.show()
 
     def _download_update(self):
         if self._update_thread and self._update_thread.isRunning():
@@ -992,10 +1355,11 @@ class MainWindow(QMainWindow):
 
     def _on_update_done(self, new_version: str):
         self.update_banner.hide()
-        self.path_label.setText(f"v{new_version}\n{self._project_root.name}")
+        self.path_label.setText(self._format_version_label())
         QMessageBox.information(
             self, "Обновление установлено",
-            f"Обновлено до версии v{new_version}.\n\n"
+            f"Проект обновлён до версии v{new_version}.\n\n"
+            "Все твои сториборды и референсы сохранены.\n\n"
             "Если изменения затронули само приложение — закрой и открой его заново."
         )
         self.status_bar.showMessage(f"Обновлено до v{new_version} ✓")
@@ -1005,43 +1369,257 @@ class MainWindow(QMainWindow):
         self.update_btn.setText("Обновить →")
         QMessageBox.warning(self, "Ошибка обновления", msg)
 
+    def _download_app_update(self):
+        """Скачивает и устанавливает новый .app бинарник из GitHub Releases."""
+        if self._app_update_thread and self._app_update_thread.isRunning():
+            return
+        if not self._latest_app_ver:
+            return
+
+        confirm = QMessageBox.question(
+            self, "Скачать новое приложение?",
+            f"Будет скачана версия v{self._latest_app_ver} (~50–150 МБ).\n\n"
+            "После установки нужно перезапустить Storyboard Studio.\n"
+            "Все сториборды и настройки будут сохранены.\n\n"
+            "Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        self.app_update_btn.setEnabled(False)
+        self.app_update_btn.setText("Скачивается…")
+
+        self._app_update_thread = DownloadAppUpdateThread(self._latest_app_ver)
+        self._app_update_thread.progress.connect(
+            lambda msg, pct: self.status_bar.showMessage(f"{msg} ({pct}%)"))
+        self._app_update_thread.finished.connect(self._on_app_update_done)
+        self._app_update_thread.error.connect(self._on_app_update_error)
+        self._app_update_thread.start()
+
+    def _on_app_update_done(self, new_version: str, install_path: str):
+        self.app_update_banner.hide()
+        self.path_label.setText(self._format_version_label())
+
+        installed_in_app = install_path.endswith(".app") or ".app/" in install_path
+        if installed_in_app:
+            msg = (
+                f"Storyboard Studio v{new_version} установлен.\n\n"
+                "Закрой приложение и открой его снова — "
+                "новая версия запустится автоматически."
+            )
+        else:
+            msg = (
+                f"Storyboard Studio v{new_version} сохранён в:\n{install_path}\n\n"
+                "Нет прав на замену текущего приложения.\n"
+                "Перемести его вручную в папку Applications."
+            )
+        QMessageBox.information(self, "Приложение обновлено", msg)
+        self.status_bar.showMessage(f"Приложение v{new_version} установлено ✓")
+
+    def _on_app_update_error(self, msg: str):
+        self.app_update_btn.setEnabled(True)
+        self.app_update_btn.setText("Скачать приложение →")
+        QMessageBox.warning(self, "Ошибка загрузки приложения", msg)
+
+    def _format_version_label(self) -> str:
+        """Текст для нижней метки сайдбара — версии проекта и приложения."""
+        v_proj = read_local_version(self._project_root)
+        v_app  = read_local_app_version(self._project_root)
+        return (
+            f"Проект: v{v_proj}\n"
+            f"Приложение: v{v_app}\n"
+            f"{self._project_root.name}"
+        )
+
+    def _fetch_download_stats(self):
+        if self._stats_thread and self._stats_thread.isRunning():
+            return
+        self._stats_thread = FetchStatsThread()
+        self._stats_thread.finished.connect(self._on_stats_fetched)
+        self._stats_thread.start()
+
+    def _on_stats_fetched(self, stats: list):
+        if not hasattr(self, "stats_label"):
+            return
+        if not stats:
+            self.stats_label.setText("нет данных о скачиваниях")
+            return
+        lines = []
+        for s in stats[:3]:
+            lines.append(f"v{s['version']}: {s['downloads']} скач.")
+        self.stats_label.setText("\n".join(lines))
+
     def _send_update(self):
         if not self._is_admin:
             return
         if self._update_thread and self._update_thread.isRunning():
             return
 
-        confirm = QMessageBox.question(
-            self, "Отправить обновление?",
-            "Это создаст новый коммит с автоматически увеличенной версией\n"
-            "и отправит изменения на GitHub.\n\nКоллеги увидят обновление при следующем запуске.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
+        # Проверяем есть ли свежесобранный .app в dist/
+        app_path = self._project_root / "dist" / "Storyboard Studio.app"
+        has_app  = app_path.exists()
+
+        if has_app:
+            box = QMessageBox(self)
+            box.setWindowTitle("Отправить обновление?")
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setText("Что отправить коллегам?")
+            box.setInformativeText(
+                "В папке dist/ найдено приложение Storyboard Studio.app.\n\n"
+                "• «Только проект» — отправит правила/скрипты на GitHub.\n"
+                "• «Проект + приложение» — отправит правила И загрузит\n"
+                "   новый .app в GitHub Releases (коллеги смогут скачать).\n\n"
+                "Если ты не пересобирал приложение — выбирай «Только проект»."
+            )
+            btn_only = box.addButton("Только проект",       QMessageBox.ButtonRole.AcceptRole)
+            btn_full = box.addButton("Проект + приложение", QMessageBox.ButtonRole.AcceptRole)
+            btn_canc = box.addButton("Отмена",              QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(btn_full)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is btn_canc:
+                return
+            upload_app = (clicked is btn_full)
+        else:
+            confirm = QMessageBox.question(
+                self, "Отправить обновление?",
+                "Это создаст новый коммит с автоматически увеличенной версией\n"
+                "и отправит изменения проекта на GitHub.\n\n"
+                "Коллеги увидят обновление при следующем запуске.\n\n"
+                "(Чтобы загрузить и само приложение — сначала пересобери его\n"
+                "командой: python3 -m PyInstaller StoryboardStudio.spec --noconfirm)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            upload_app = False
 
         self.send_update_btn.setEnabled(False)
         self.send_update_btn.setText("Отправляю…")
-        self._update_thread = SendUpdateThread(self._project_root)
+        self._update_thread = SendUpdateThread(self._project_root, upload_app=upload_app)
         self._update_thread.progress.connect(self.status_bar.showMessage)
         self._update_thread.finished.connect(self._on_send_done)
         self._update_thread.error.connect(self._on_send_error)
         self._update_thread.start()
 
-    def _on_send_done(self, new_version: str):
-        self.send_update_btn.setEnabled(True)
+    def _on_send_done(self, new_version: str, new_app_version: str, app_uploaded: bool):
         self.send_update_btn.setText("📤  Отправить обновление")
-        self.path_label.setText(f"v{new_version}\n{self._project_root.name}")
-        QMessageBox.information(
-            self, "Обновление отправлено",
-            f"Версия v{new_version} опубликована на GitHub.\n"
-            "Коллеги получат уведомление в приложении.")
-        self.status_bar.showMessage(f"Опубликовано: v{new_version} ✓")
+
+        # Запоминаем mtime текущего .app — пригодится чтобы понять
+        # «приложение было пересобрано после последней отправки».
+        app_path = self._project_root / "dist" / "Storyboard Studio.app"
+        if app_path.exists():
+            try:
+                QSettings(APP_ORG, APP_NAME).setValue(
+                    "last_sent_app_mtime", app_path.stat().st_mtime)
+            except Exception:
+                pass
+
+        self.path_label.setText(self._format_version_label())
+
+        msg = f"Проект: v{new_version} опубликован на GitHub.\n"
+        if app_uploaded:
+            msg += f"Приложение: v{new_app_version} загружено в GitHub Releases.\n"
+        msg += "\nКоллеги получат уведомление в приложении."
+        QMessageBox.information(self, "Обновление отправлено", msg)
+
+        self.status_bar.showMessage(
+            f"Опубликовано: проект v{new_version}"
+            + (f" + приложение v{new_app_version}" if app_uploaded else "")
+            + " ✓"
+        )
+
+        # После успешной отправки нет изменений → кнопка должна стать неактивной.
+        self._refresh_send_button()
+        # Обновляем счётчик скачиваний (после задержки чтобы GitHub успел проиндексировать)
+        QTimer.singleShot(3000, self._fetch_download_stats)
 
     def _on_send_error(self, msg: str):
-        self.send_update_btn.setEnabled(True)
+        # На ошибке возвращаем кнопку в нормальное состояние, активность
+        # выставит _refresh_send_button (изменения остались — должна быть активна).
         self.send_update_btn.setText("📤  Отправить обновление")
+        self._refresh_send_button()
         QMessageBox.warning(self, "Ошибка отправки", msg)
+
+    # ── Проверка изменений для админа ───────────────────────────────────────
+
+    def _has_changes_to_send(self) -> tuple:
+        """Возвращает (есть_ли_изменения, список_причин).
+
+        Кнопка должна быть активной если:
+        • Есть незакоммиченные изменения (`git status --porcelain` непустой)
+        • Есть неотправленные коммиты (`HEAD` впереди `origin/main`)
+        • dist/Storyboard Studio.app был пересобран после последней отправки
+        """
+        reasons: List[str] = []
+        root = self._project_root
+
+        # 1. Незакоммиченные изменения в файлах проекта
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(root), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                count = len(r.stdout.strip().splitlines())
+                reasons.append(f"измений в файлах: {count}")
+        except Exception:
+            pass
+
+        # 2. Локальные коммиты впереди origin/main (ещё не запушены)
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-list", "--count",
+                 f"origin/{GITHUB_BRANCH}..HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                try:
+                    n = int(r.stdout.strip() or "0")
+                except ValueError:
+                    n = 0
+                if n > 0:
+                    reasons.append(f"неотправленных коммитов: {n}")
+        except Exception:
+            pass
+
+        # 3. .app пересобран после последней отправки
+        app_path = root / "dist" / "Storyboard Studio.app"
+        if app_path.exists():
+            try:
+                last_sent_raw = QSettings(APP_ORG, APP_NAME).value(
+                    "last_sent_app_mtime", 0)
+                last_sent_mtime = float(last_sent_raw or 0)
+            except (TypeError, ValueError):
+                last_sent_mtime = 0.0
+            current_mtime = app_path.stat().st_mtime
+            # 1 сек tolerance чтобы не путать одинаковые mtime
+            if current_mtime > last_sent_mtime + 1:
+                reasons.append("приложение пересобрано")
+
+        return (len(reasons) > 0, reasons)
+
+    def _refresh_send_button(self):
+        """Обновляет состояние кнопки 'Отправить обновление' и подсказку."""
+        if not self._is_admin or not hasattr(self, "send_update_btn"):
+            return
+        # Если идёт отправка — не трогаем (кнопка дизейблена и так)
+        if self._update_thread is not None and self._update_thread.isRunning() \
+                and isinstance(self._update_thread, SendUpdateThread):
+            return
+
+        has_changes, reasons = self._has_changes_to_send()
+        self.send_update_btn.setEnabled(has_changes)
+        if has_changes:
+            self.send_update_btn.setToolTip(
+                "Есть что отправить:\n• " + "\n• ".join(reasons)
+            )
+        else:
+            self.send_update_btn.setToolTip(
+                "Нет изменений для отправки.\n"
+                "Внеси изменения в проект или пересобери приложение."
+            )
 
 
 # ─── Диалог выбора проекта при первом запуске ────────────────────────────────
