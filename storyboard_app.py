@@ -481,6 +481,30 @@ def shot_path(block_name: str, shot_idx: int) -> Path:
     return STORYBOARDS_DIR / f"{block_name}_shot{shot_idx + 1}.jpg"
 
 
+def is_block_complete(block_name: str) -> bool:
+    """True если ВСЕ non-blank шоты блока имеют сгенерированные файлы.
+
+    Считаем шот «нужным» если в промпт-файле его панель не помечена как
+    COMPLETELY BLANK. Если все нужные шоты есть на диске — блок завершён.
+    Если промпта нет — определить нельзя, возвращаем False.
+    """
+    prompt_file = PROMPTS_DIR / f"{block_name}.txt"
+    if not prompt_file.exists():
+        return False
+    try:
+        text = prompt_file.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    shots = parse_shots(text)
+    needed_indices = [i for i, s in enumerate(shots) if not s.get("is_blank")]
+    if not needed_indices:
+        return False
+    for i in needed_indices:
+        if not shot_path(block_name, i).exists():
+            return False
+    return True
+
+
 def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
     """Склеивает все 9:16 шоты блока в одну 16:9 картинку (4 в ряд) и сохраняет.
 
@@ -1233,9 +1257,7 @@ class MainWindow(QMainWindow):
             seen.add(p.stem)
 
         for block_name in sorted(seen):
-            m       = re.match(r'(.*?)_block_(\d+)', block_name)
-            display = f"Блок {m.group(2)}  [{m.group(1)}]" if m else block_name
-            item    = QListWidgetItem(display)
+            item = QListWidgetItem(self._format_block_label(block_name))
             item.setData(Qt.ItemDataRole.UserRole, block_name)
             self.block_list.addItem(item)
         self.block_list.blockSignals(False)
@@ -1247,6 +1269,33 @@ class MainWindow(QMainWindow):
                     return
         if self.block_list.count() > 0:
             self.block_list.setCurrentRow(0)
+
+    def _block_indicator_for(self, block_name: str) -> str:
+        """Возвращает префикс-индикатор для блока в списке.
+
+        ⋯ — идёт регенерация хотя бы одного шота этого блока
+        ✓ — все нужные шоты сгенерированы (по промпту)
+        ""  — иначе (нет шотов / частично готов)
+        """
+        if any(b == block_name for (b, _) in self._active_regens.keys()):
+            return "⋯  "
+        if is_block_complete(block_name):
+            return "✓  "
+        return ""
+
+    def _format_block_label(self, block_name: str) -> str:
+        """Текст пункта в списке блоков с индикатором завершённости."""
+        m = re.match(r'(.*?)_block_(\d+)', block_name)
+        base = f"Блок {m.group(2)}  [{m.group(1)}]" if m else block_name
+        return self._block_indicator_for(block_name) + base
+
+    def _refresh_block_indicator(self, block_name: str):
+        """Обновляет иконку у одного блока в списке без перерисовки всего списка."""
+        for i in range(self.block_list.count()):
+            item = self.block_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == block_name:
+                item.setText(self._format_block_label(block_name))
+                return
 
     def _on_block_selected(self, item: Optional[QListWidgetItem]):
         if not item:
@@ -1322,6 +1371,8 @@ class MainWindow(QMainWindow):
         thread.error.connect(
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
+        # Показать ⋯ возле блока в списке (идёт регенерация)
+        self._refresh_block_indicator(target_block)
         self.status_bar.showMessage(f"Регенерирую SHOT {panel_idx + 1} в {target_block}…")
 
     def _on_regen_step(self, lbl: str, pct: int, target_block: str, panel_idx: int):
@@ -1338,6 +1389,8 @@ class MainWindow(QMainWindow):
         # оставшихся регенераций).
         if self.current_block:
             self._display_block(self.current_block)
+        # Обновляем индикатор у ЦЕЛЕВОГО блока в списке (✓ если все шоты готовы)
+        self._refresh_block_indicator(target_block)
 
         if self.current_block == target_block:
             self.status_bar.showMessage(f"SHOT {panel_idx + 1} обновлён ✓")
@@ -1350,6 +1403,8 @@ class MainWindow(QMainWindow):
 
         if self.current_block:
             self._display_block(self.current_block)
+        # Снимаем ⋯ с блока (генерация прервалась, но новых файлов не появилось)
+        self._refresh_block_indicator(target_block)
 
         prefix = "Ошибка" if self.current_block == target_block else f"Ошибка [{target_block}]"
         self.status_bar.showMessage(f"{prefix} SHOT {panel_idx + 1}: {msg}")
@@ -1488,6 +1543,15 @@ class MainWindow(QMainWindow):
         self.app_update_banner.hide()
         self.path_label.setText(self._format_version_label())
 
+        # Фиксируем что это «своё» скачивание — не показывать в счётчике коллег
+        try:
+            settings = QSettings(APP_ORG, APP_NAME)
+            key = f"dl_baseline_{new_version}"
+            cur = int(settings.value(key, 0) or 0)
+            settings.setValue(key, cur + 1)
+        except Exception:
+            pass
+
         installed_in_app = install_path.endswith(".app") or ".app/" in install_path
         if installed_in_app:
             msg = (
@@ -1527,14 +1591,40 @@ class MainWindow(QMainWindow):
         self._stats_thread.start()
 
     def _on_stats_fetched(self, stats: list):
+        """Показываем счётчик скачиваний за вычетом «своих» (админских).
+
+        Логика baseline:
+          • Когда видим версию ВПЕРВЫЕ (нет ключа `dl_baseline_<v>` в QSettings),
+            записываем baseline = текущий total. То есть всё что было ДО
+            считаем «своим» (тестовые скачивания админа).
+          • Когда админ скачивает .app через приложение — инкрементим baseline.
+          • Отображение: max(0, total - baseline).
+        """
         if not hasattr(self, "stats_label"):
             return
         if not stats:
             self.stats_label.setText("нет данных о скачиваниях")
             return
+
+        settings = QSettings(APP_ORG, APP_NAME)
         lines = []
         for s in stats[:3]:
-            lines.append(f"v{s['version']}: {s['downloads']} скач.")
+            version = s["version"]
+            total   = int(s.get("downloads", 0))
+            key     = f"dl_baseline_{version}"
+            raw     = settings.value(key)
+            if raw is None:
+                # Первый показ этой версии — фиксируем baseline = total
+                # (всё что уже скачано — считаем своим)
+                settings.setValue(key, total)
+                baseline = total
+            else:
+                try:
+                    baseline = int(raw)
+                except (TypeError, ValueError):
+                    baseline = 0
+            shown = max(0, total - baseline)
+            lines.append(f"v{version}: {shown} скач.")
         self.stats_label.setText("\n".join(lines))
 
     def _send_update(self):
