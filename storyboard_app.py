@@ -8778,7 +8778,7 @@ class MainWindow(QMainWindow):
         self.app_update_btn.setEnabled(False)
         self.app_update_btn.setText("Скачивается…")
 
-        self._app_update_thread = DownloadAppUpdateThread(self._latest_app_ver)
+        self._app_update_thread = DownloadAppUpdateThread(self._latest_app_ver, self._project_root)
         self._app_update_thread.progress.connect(
             lambda msg, pct: self.status_bar.showMessage(f"{msg} ({pct}%)"))
         self._app_update_thread.finished.connect(self._on_app_update_done)

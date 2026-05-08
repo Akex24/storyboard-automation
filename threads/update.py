@@ -202,9 +202,10 @@ class DownloadAppUpdateThread(QThread):
     finished = pyqtSignal(str, str)   # (new_app_version, install_path)
     error    = pyqtSignal(str)
 
-    def __init__(self, target_version: str):
+    def __init__(self, target_version: str, root: Path):
         super().__init__()
         self.target_version = target_version
+        self.root = root
 
     def run(self):
         try:
@@ -294,6 +295,7 @@ class DownloadAppUpdateThread(QThread):
                     else:
                         shutil.copy2(src, dst)
 
+                installed_in_place = False
                 try:
                     if dest.exists():
                         if bak.exists():
@@ -302,6 +304,7 @@ class DownloadAppUpdateThread(QThread):
                     _install(new_app_src, dest)
                     if bak.exists():
                         _remove(bak)
+                    installed_in_place = True
                 except PermissionError:
                     # На Win — текущий .exe залочен пока запущен (нельзя
                     # rename). Падаем в Downloads. Юзер сам подменит после
@@ -311,10 +314,39 @@ class DownloadAppUpdateThread(QThread):
                         _remove(dest)
                     _install(new_app_src, dest)
 
+            if installed_in_place:
+                self._update_version_json()
+
             self.progress.emit("Готово!", 100)
             self.finished.emit(self.target_version, str(dest))
         except Exception as e:
             self.error.emit(str(e))
+
+    def _update_version_json(self):
+        """Атомарно обновляет app_version в version.json после успешной
+        установки .exe/.app в install_dir. Иначе после авто-обновления
+        Studio при старте читает старый version.json и продолжает звать
+        «Скачать приложение», а в углу заголовка висит старая цифра.
+
+        Работает только в success-ветке (installed_in_place=True). В
+        Downloads-fallback — version.json НЕ трогаем, чтобы цифра не
+        врала пока юзер не подменил .exe вручную.
+        """
+        try:
+            import os
+            vfile = self.root / "version.json"
+            data = json.loads(vfile.read_text(encoding="utf-8")) if vfile.exists() else {}
+            data["app_version"] = self.target_version
+            tmp = vfile.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(str(tmp), str(vfile))
+        except Exception:
+            # Не падаем — .exe/.app уже установлен. Юзер при следующем
+            # рестарте увидит старую цифру и баннер; одноразово поправит.
+            pass
 
 
 class SendUpdateThread(QThread):
