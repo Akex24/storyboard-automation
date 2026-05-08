@@ -379,16 +379,28 @@ class DownloadAppUpdateThread(QThread):
     def _launch_bootstrap(self, script: Path, is_win: bool):
         """Запускает bootstrap-скрипт detached — он переживёт смерть Studio.
 
-        Win: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW.
-        Mac: start_new_session=True (POSIX setsid).
+        Win (исправлено 2026-05-08): окно cmd скрываем через STARTUPINFO
+        с SW_HIDE — это работает надёжно. CREATE_NO_WINDOW + cmd.exe в
+        связке с DETACHED_PROCESS даёт undefined behavior: Windows
+        игнорирует флаг скрытия и показывает окно. STARTUPINFO работает
+        независимо от других флагов.
+
+        CREATE_NEW_PROCESS_GROUP оставляем — даёт child собственную
+        process group, чтобы Ctrl+C в parent (Studio) не убил bootstrap.
+        DETACHED_PROCESS убран как лишний и конфликтующий.
+
+        Mac: start_new_session=True (POSIX setsid) — bash без терминала.
         """
         if is_win:
-            DETACHED = 0x00000008
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0  # SW_HIDE
             NEW_GROUP = 0x00000200
             NO_WINDOW = 0x08000000
             subprocess.Popen(
                 ["cmd", "/c", str(script)],
-                creationflags=DETACHED | NEW_GROUP | NO_WINDOW,
+                creationflags=NEW_GROUP | NO_WINDOW,
+                startupinfo=si,
                 close_fds=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
