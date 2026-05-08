@@ -29,6 +29,7 @@ Lazy-proxy фикс — там же, после первого падения в
 from __future__ import annotations
 
 import io
+import os
 import sys
 import json
 import datetime
@@ -208,6 +209,27 @@ class DownloadAppUpdateThread(QThread):
         self.root = root
 
     def run(self):
+        """Скачивает новую версию + создаёт bootstrap-скрипт + запускает его.
+
+        2026-05-08 (Шаг 2): переход на bootstrap-логику. Раньше Thread
+        пытался подменить .exe пока Studio запущена — на Win это падало
+        с PermissionError (Windows блокирует удаление запущенного .exe)
+        и был fallback в Downloads, юзер должен был руками копировать.
+
+        Теперь:
+          1. Качаем zip → распаковываем в постоянную temp папку
+             (не TempDirectory — она удалится при выходе Thread'а).
+          2. Создаём bootstrap-скрипт (.bat на Win, .sh на Mac) который:
+             - Ждёт пока процесс Studio (с известным PID) умрёт.
+             - Подменяет .exe/.app на новый.
+             - Запускает обновлённый.
+             - Удаляет себя и временные файлы.
+          3. Пишем «pending_version.txt» рядом с version.json — Studio
+             при следующем старте обновит version.json[app_version].
+          4. Запускаем bootstrap detached (он переживёт смерть Studio).
+          5. emit finished → caller вызывает QApplication.quit().
+          6. Bootstrap делает свою работу → юзер видит новую Studio.
+        """
         try:
             self.progress.emit("Ищу релиз на GitHub…", 5)
             asset = _sa.fetch_release_asset_info(self.target_version)
@@ -237,116 +259,150 @@ class DownloadAppUpdateThread(QThread):
 
             self.progress.emit("Распаковка…", 70)
 
-            # 2026-05-08: кросс-платформенная логика установки.
-            # Mac: артефакт = .app bundle (папка), подмена через copytree.
-            # Win: артефакт = .exe файл, подмена через copy2 (одиночный файл).
             is_win = (sys.platform == 'win32')
+
+            # Куда подменять (target_path = текущий .exe или .app bundle)
             if is_win:
-                if getattr(sys, 'frozen', False):
-                    exe_path = Path(sys.executable)
-                    install_dir = exe_path.parent
-                    target_name = exe_path.name  # «Storyboard Studio.exe»
-                else:
-                    install_dir = Path.home() / "Downloads"
-                    target_name = "Storyboard Studio.exe"
+                if not getattr(sys, 'frozen', False):
+                    self.error.emit(
+                        "Авто-обновление работает только из собранного .exe.\n"
+                        "В dev-режиме обновись через GitHub Releases вручную.")
+                    return
+                target_path = Path(sys.executable)
                 search_pattern = "*.exe"
             else:
                 app_bundle = _sa.find_current_app_bundle()
-                install_dir = app_bundle.parent if app_bundle else (Path.home() / "Downloads")
-                target_name = app_bundle.name if app_bundle else "Storyboard Studio.app"
+                if not app_bundle:
+                    self.error.emit(
+                        "Не найден установленный Storyboard Studio.app.\n"
+                        "Перенеси .app в /Applications или ~/Applications.")
+                    return
+                target_path = app_bundle
                 search_pattern = "*.app"
 
-            with tempfile.TemporaryDirectory() as tmp:
-                tmp_path = Path(tmp)
-                with zipfile.ZipFile(buf) as z:
-                    z.extractall(tmp_path)
+            # Постоянная temp-папка для распаковки + bootstrap скрипта.
+            # ВАЖНО: НЕ TemporaryDirectory — она удалится когда Thread
+            # умрёт, а bootstrap должен прочитать new_app_src ПОСЛЕ
+            # выхода из Studio. Bootstrap сам удалит эту папку в конце.
+            update_dir = (Path(tempfile.gettempdir())
+                          / f"storyboard_update_{self.target_version}_{os.getpid()}")
+            if update_dir.exists():
+                shutil.rmtree(update_dir, ignore_errors=True)
+            update_dir.mkdir(parents=True, exist_ok=True)
 
-                candidates = list(tmp_path.rglob(search_pattern))
-                # На Win zip может содержать и Studio.exe, и Installer.exe —
-                # берём именно Studio (Installer обновляется отдельно при
-                # необходимости).
-                if is_win:
-                    studio = [c for c in candidates
-                              if 'installer' not in c.name.lower()]
-                    if studio:
-                        candidates = studio
-                if not candidates:
-                    self.error.emit(
-                        f"В архиве не найдено приложение ({search_pattern}).")
-                    return
-                new_app_src = candidates[0]
+            with zipfile.ZipFile(buf) as z:
+                z.extractall(update_dir)
 
-                self.progress.emit("Устанавливаю…", 82)
-                dest = install_dir / target_name
-                bak  = install_dir / (target_name + ".bak")
+            candidates = list(update_dir.rglob(search_pattern))
+            if is_win:
+                studio = [c for c in candidates
+                          if 'installer' not in c.name.lower()]
+                if studio:
+                    candidates = studio
+            if not candidates:
+                self.error.emit(
+                    f"В архиве не найдено приложение ({search_pattern}).")
+                return
+            new_app_src = candidates[0]
 
-                def _remove(p: Path):
-                    try:
-                        if p.is_dir():
-                            shutil.rmtree(p, ignore_errors=True)
-                        elif p.exists():
-                            p.unlink()
-                    except Exception:
-                        pass
+            self.progress.emit("Готовлю установку…", 85)
 
-                def _install(src: Path, dst: Path):
-                    if src.is_dir():
-                        shutil.copytree(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
+            # Маркер новой версии для Studio (читается при следующем
+            # старте → обновляет version.json[app_version] → удаляется).
+            try:
+                marker = self.root / "pending_version.txt"
+                marker.write_text(self.target_version, encoding='utf-8')
+            except Exception:
+                pass  # некритично — баннер просто появится один лишний раз
 
-                installed_in_place = False
-                try:
-                    if dest.exists():
-                        if bak.exists():
-                            _remove(bak)
-                        dest.rename(bak)
-                    _install(new_app_src, dest)
-                    if bak.exists():
-                        _remove(bak)
-                    installed_in_place = True
-                except PermissionError:
-                    # На Win — текущий .exe залочен пока запущен (нельзя
-                    # rename). Падаем в Downloads. Юзер сам подменит после
-                    # перезапуска (или подскажет installer).
-                    dest = Path.home() / "Downloads" / target_name
-                    if dest.exists():
-                        _remove(dest)
-                    _install(new_app_src, dest)
+            # Bootstrap-скрипт + запуск detached
+            script_path = self._make_bootstrap(
+                new_app_src, target_path, update_dir, is_win)
+            self._launch_bootstrap(script_path, is_win)
 
-            if installed_in_place:
-                self._update_version_json()
-
-            self.progress.emit("Готово!", 100)
-            self.finished.emit(self.target_version, str(dest))
+            self.progress.emit("Перезапуск…", 100)
+            self.finished.emit(self.target_version, str(target_path))
         except Exception as e:
             self.error.emit(str(e))
 
-    def _update_version_json(self):
-        """Атомарно обновляет app_version в version.json после успешной
-        установки .exe/.app в install_dir. Иначе после авто-обновления
-        Studio при старте читает старый version.json и продолжает звать
-        «Скачать приложение», а в углу заголовка висит старая цифра.
+    def _make_bootstrap(self, new_src: Path, target: Path,
+                         update_dir: Path, is_win: bool) -> Path:
+        """Пишет bootstrap-скрипт в update_dir и возвращает путь.
 
-        Работает только в success-ветке (installed_in_place=True). В
-        Downloads-fallback — version.json НЕ трогаем, чтобы цифра не
-        врала пока юзер не подменил .exe вручную.
+        Скрипт:
+          1. Ждёт пока процесс Studio (PID известен) умрёт. Иначе на Win
+             move .exe фейлится из-за file lock.
+          2. Подменяет target на new_src.
+          3. Запускает обновлённый Studio.
+          4. Удаляет update_dir (сам себя в том числе).
         """
-        try:
-            import os
-            vfile = self.root / "version.json"
-            data = json.loads(vfile.read_text(encoding="utf-8")) if vfile.exists() else {}
-            data["app_version"] = self.target_version
-            tmp = vfile.with_suffix(".json.tmp")
-            tmp.write_text(
-                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
+        studio_pid = os.getpid()
+        if is_win:
+            script = update_dir / "update.bat"
+            # На Win .exe файл — move /Y перезаписывает.
+            # tasklist + find проверяет что Studio.exe закрылся.
+            # Кавычки везде — пути с пробелами («Storyboard Studio.exe»).
+            content = (
+                "@echo off\r\n"
+                "rem Storyboard Studio update bootstrap\r\n"
+                ":wait_for_studio\r\n"
+                "timeout /t 1 /nobreak > nul 2>&1\r\n"
+                f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
+                "if not errorlevel 1 goto wait_for_studio\r\n"
+                "timeout /t 1 /nobreak > nul 2>&1\r\n"
+                f'move /Y "{new_src}" "{target}" >nul\r\n'
+                f'start "" "{target}"\r\n'
+                "timeout /t 2 /nobreak > nul 2>&1\r\n"
+                f'rmdir /s /q "{update_dir}"\r\n'
             )
-            os.replace(str(tmp), str(vfile))
-        except Exception:
-            # Не падаем — .exe/.app уже установлен. Юзер при следующем
-            # рестарте увидит старую цифру и баннер; одноразово поправит.
-            pass
+            script.write_bytes(content.encode('utf-8'))
+        else:
+            script = update_dir / "update.sh"
+            # На Mac .app — это папка, удаляем целиком и копируем новую.
+            # `kill -0 PID` возвращает 0 если процесс жив, иначе ошибка.
+            # `open` запускает .app как стандартный Mac launcher.
+            content = (
+                "#!/bin/bash\n"
+                "# Storyboard Studio update bootstrap\n"
+                f"while kill -0 {studio_pid} 2>/dev/null; do sleep 1; done\n"
+                "sleep 1\n"
+                f'rm -rf "{target}"\n'
+                f'cp -R "{new_src}" "{target}"\n'
+                f'open "{target}"\n'
+                "sleep 2\n"
+                f'rm -rf "{update_dir}"\n'
+            )
+            script.write_text(content, encoding='utf-8')
+            os.chmod(script, 0o755)
+        return script
+
+    def _launch_bootstrap(self, script: Path, is_win: bool):
+        """Запускает bootstrap-скрипт detached — он переживёт смерть Studio.
+
+        Win: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW.
+        Mac: start_new_session=True (POSIX setsid).
+        """
+        if is_win:
+            DETACHED = 0x00000008
+            NEW_GROUP = 0x00000200
+            NO_WINDOW = 0x08000000
+            subprocess.Popen(
+                ["cmd", "/c", str(script)],
+                creationflags=DETACHED | NEW_GROUP | NO_WINDOW,
+                close_fds=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                ["/bin/bash", str(script)],
+                start_new_session=True,
+                close_fds=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
 
 
 class SendUpdateThread(QThread):
@@ -387,10 +443,12 @@ class SendUpdateThread(QThread):
 
             self.progress.emit("Готовлю коммит…")
             subprocess.run(["git", "-C", str(self.root), "add", "-A"],
-                           check=True, capture_output=True, timeout=30)
+                           check=True, capture_output=True, timeout=30,
+                           **_sa.no_console_kwargs())
             r = subprocess.run(
                 ["git", "-C", str(self.root), "commit", "-m", f"Update {new_version}"],
                 capture_output=True, text=True, timeout=30,
+                **_sa.no_console_kwargs(),
             )
             if r.returncode != 0 and "nothing to commit" not in r.stdout:
                 self.error.emit(f"Git commit error: {r.stderr or r.stdout}")
@@ -400,6 +458,7 @@ class SendUpdateThread(QThread):
             r = subprocess.run(
                 ["git", "-C", str(self.root), "push", "origin", _sa.GITHUB_BRANCH],
                 capture_output=True, text=True, timeout=120,
+                **_sa.no_console_kwargs(),
             )
             if r.returncode != 0:
                 self.error.emit(f"Git push error: {r.stderr}")

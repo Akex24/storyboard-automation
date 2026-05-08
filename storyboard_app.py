@@ -774,6 +774,106 @@ class _SceneHighlighter:
         return _Real(document)
 
 
+def finalize_pending_update(project_root: Path):
+    """Финализирует авто-обновление после рестарта через bootstrap-скрипт.
+
+    Вызывается из MainWindow.__init__ при каждом старте Studio. Делает
+    три вещи (все опциональны, ошибки молча проглатываются):
+
+      1. Если рядом с version.json лежит `pending_version.txt` (его
+         написал DownloadAppUpdateThread прямо перед запуском bootstrap)
+         — обновляет version.json[app_version] на содержимое маркера и
+         удаляет маркер. После этого в углу окна показывается новая
+         цифра, и баннер «Скачать приложение» сам пропадает.
+
+      2. Чистит старые update-папки `storyboard_update_*` в системном
+         temp. Bootstrap-скрипт обычно сам себя удаляет, но если
+         процесс прервался на полпути — мусор может остаться. Удаляем
+         всё что соответствует паттерну.
+
+      3. Чистит резидуальные `.exe.old` / `.app.old` рядом с текущим
+         бандлом — на случай если когда-то использовался старый
+         rename trick.
+
+    Все операции внутри try/except — Studio не должна падать при старте
+    из-за проблем с update-инфраструктурой.
+    """
+    try:
+        marker = project_root / "pending_version.txt"
+        if marker.exists():
+            new_version = marker.read_text(encoding='utf-8').strip()
+            if new_version:
+                vfile = project_root / "version.json"
+                try:
+                    data = (json.loads(vfile.read_text(encoding='utf-8'))
+                            if vfile.exists() else {})
+                    data["app_version"] = new_version
+                    tmp = vfile.with_suffix(".json.tmp")
+                    tmp.write_text(
+                        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                        encoding='utf-8',
+                    )
+                    import os as _os
+                    _os.replace(str(tmp), str(vfile))
+                except Exception:
+                    traceback.print_exc()
+            try:
+                marker.unlink()
+            except Exception:
+                pass
+    except Exception:
+        traceback.print_exc()
+
+    try:
+        import tempfile as _tf
+        tmp_root = Path(_tf.gettempdir())
+        for p in tmp_root.glob("storyboard_update_*"):
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        if getattr(sys, 'frozen', False):
+            exe_dir = Path(sys.executable).parent
+            for p in exe_dir.glob("*.exe.old"):
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+            for p in exe_dir.glob("*.app.old"):
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def no_console_kwargs() -> dict:
+    """Возвращает kwargs для subprocess.run/Popen чтобы НЕ показывать
+    чёрное окно cmd на Windows. На Mac/Linux возвращает пустой dict —
+    поведение subprocess'а не меняется.
+
+    Применять КО ВСЕМ subprocess.run / subprocess.Popen которые могут
+    запуститься на Win. Без этого Windows показывает чёрное cmd-окно
+    на доли секунды при каждом запуске subprocess'а — особенно заметно
+    на периодических вызовах (раньше QTimer'ы дёргали git status каждые
+    5 сек, claude auth status каждые 90 сек — каждый раз окно).
+
+    Использование:
+        r = subprocess.run([...], capture_output=True, **no_console_kwargs())
+        proc = subprocess.Popen([...], **no_console_kwargs())
+    """
+    if sys.platform == 'win32':
+        return {'creationflags': 0x08000000}  # CREATE_NO_WINDOW
+    return {}
+
+
 def block_wheel_event(widget):
     """Блокирует прокрутку колесом мыши на виджете — событие проходит
     дальше к родителю (например QScrollArea будет скроллить страницу,
@@ -1553,6 +1653,7 @@ def get_github_token_from_remote(root: Path) -> Optional[str]:
         r = subprocess.run(
             ["git", "-C", str(root), "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=5,
+            **no_console_kwargs(),
         )
         if r.returncode != 0:
             return None
@@ -2943,7 +3044,8 @@ def claude_auth_status(timeout: float = 8.0) -> dict:
     try:
         r = subprocess.run(
             [cli, "auth", "status"],
-            timeout=timeout, capture_output=True, text=True
+            timeout=timeout, capture_output=True, text=True,
+            **no_console_kwargs(),
         )
         if r.returncode != 0:
             return {
@@ -3356,6 +3458,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._project_root = project_root
         self._is_admin     = is_admin_mode(project_root)
+
+        # 2026-05-08 (Шаг 2): post-bootstrap finalize.
+        # Если предыдущий запуск Studio инициировал авто-обновление через
+        # bootstrap-скрипт — сейчас это уже НОВАЯ версия. Подхватываем
+        # маркер `pending_version.txt`, обновляем version.json, чистим
+        # старые update-папки в temp.
+        finalize_pending_update(project_root)
         # Активный сериал и эпизод
         self._current_show:    Optional[str] = get_current_show(project_root)
         self._current_episode: Optional[str] = None
@@ -3490,12 +3599,12 @@ class MainWindow(QMainWindow):
         if github_configured():
             QTimer.singleShot(2000, self._check_updates)
 
-        # Для админа: периодически проверяем есть ли изменения для отправки.
-        # Кнопка "Отправить обновление" активна только при наличии изменений.
+        # Для админа: проверка наличия изменений для отправки.
+        # 2026-05-08: убран периодический QTimer (5s) — на Win показывал
+        # чёрное окно cmd при каждом git status. Теперь проверка лениво —
+        # один раз при старте + при переключении на вкладку Settings
+        # (см. _on_main_tab_changed).
         if self._is_admin:
-            self._send_check_timer = QTimer(self)
-            self._send_check_timer.timeout.connect(self._refresh_send_button)
-            self._send_check_timer.start(5000)   # каждые 5 сек
             QTimer.singleShot(800, self._refresh_send_button)   # первая проверка
 
         # Статистика скачиваний для админа (из GitHub Releases API)
@@ -4030,6 +4139,7 @@ class MainWindow(QMainWindow):
         # pill-кнопки в шапке.
         self.tabs.currentChanged.connect(self._on_tab_changed_fade)
         self.tabs.currentChanged.connect(self._sync_header_tab_active)
+        self.tabs.currentChanged.connect(self._on_main_tab_changed)
         main.addWidget(self.tabs, stretch=1)
 
         # Статус-бар (вариант B): пустой когда нечего показать
@@ -4058,11 +4168,12 @@ class MainWindow(QMainWindow):
         self._auth_dismissed_email: Optional[str] = None  # юзер скрыл — не доставать пока не сменится
         self._auth_switch_thread: Optional[QThread] = None  # активный AuthSwitchThread
         # Первый замер при старте Studio (синхронный, 1с).
+        # 2026-05-08: убран периодический QTimer (90s) — на Win показывал
+        # чёрное окно cmd при каждом claude auth status. Теперь проверка
+        # лениво: один раз при старте (выше) + при переключении на вкладку
+        # Settings (см. _on_main_tab_changed) + pre-flight перед запуском
+        # эпизода.
         self._auth_check_tick(initial=True)
-        self._auth_check_timer = QTimer(self)
-        self._auth_check_timer.setInterval(90 * 1000)  # 90 сек
-        self._auth_check_timer.timeout.connect(self._auth_check_tick)
-        self._auth_check_timer.start()
 
     def _on_status_msg_changed(self, msg: str):
         """Перезапускает авто-очистку каждый раз когда показывается новое
@@ -4362,6 +4473,32 @@ class MainWindow(QMainWindow):
                 btn.style().polish(btn)
             except Exception:
                 pass
+
+    def _on_main_tab_changed(self, idx: int):
+        """Обновляет ленивые проверки при переключении на вкладку Settings.
+
+        2026-05-08: ранее эти проверки крутились в QTimer'ах (5с git status,
+        90с claude auth status) и на Win показывали чёрные cmd-окна каждый
+        тик. Теперь — лениво, только когда юзер реально открыл Settings и
+        может увидеть результат:
+          • `_refresh_send_button` (для админа) — обновить состояние
+            кнопки «📤 Отправить обновление».
+          • `_auth_check_tick` — пересчитать статус AI-аккаунта чтобы
+            AuthBanner отрисовался актуально.
+
+        Settings tab — индекс 2 (Editor=0, Actors=1, Settings=2).
+        """
+        if idx != 2:
+            return
+        try:
+            if getattr(self, '_is_admin', False):
+                self._refresh_send_button()
+        except Exception:
+            pass
+        try:
+            self._auth_check_tick()
+        except Exception:
+            pass
 
     def _refresh_lang_btn(self):
         """Обновляет текст кнопки языка под текущий выбор: «РУС ▾».
@@ -8765,10 +8902,11 @@ class MainWindow(QMainWindow):
             return
 
         confirm = QMessageBox.question(
-            self, "Скачать новое приложение?",
+            self, "Обновить приложение?",
             f"Будет скачана версия v{self._latest_app_ver} (~50–150 МБ).\n\n"
-            "После установки нужно перезапустить Storyboard Studio.\n"
-            "Все сториборды и настройки будут сохранены.\n\n"
+            "После загрузки Storyboard Studio закроется и автоматически\n"
+            "запустится в новой версии. Все сториборды и настройки\n"
+            "сохраняются.\n\n"
             "Продолжить?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )
@@ -8786,8 +8924,20 @@ class MainWindow(QMainWindow):
         self._app_update_thread.start()
 
     def _on_app_update_done(self, new_version: str, install_path: str):
+        """Bootstrap-скрипт уже запущен — нам остаётся закрыть Studio.
+
+        2026-05-08 (Шаг 2): новая логика. DownloadAppUpdateThread больше
+        НЕ подменяет .exe/.app сам — он только качает + создаёт
+        bootstrap-скрипт + запускает его detached. Скрипт ждёт пока
+        наш процесс умрёт, потом подменяет файл, потом запускает
+        обновлённый Studio. Поэтому здесь:
+          • статус-бар: «Перезапускаюсь…».
+          • прячем баннер.
+          • инкрементим baseline счётчика скачиваний.
+          • через 1.5 секунды — QApplication.quit() (даём юзеру
+            увидеть статус и thread'у завершиться корректно).
+        """
         self.app_update_banner.hide()
-        self._refresh_settings_versions()
 
         # Фиксируем что это «своё» скачивание — не показывать в счётчике коллег
         try:
@@ -8798,21 +8948,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        installed_in_app = install_path.endswith(".app") or ".app/" in install_path
-        if installed_in_app:
-            msg = (
-                f"Storyboard Studio v{new_version} установлен.\n\n"
-                "Закрой приложение и открой его снова — "
-                "новая версия запустится автоматически."
-            )
-        else:
-            msg = (
-                f"Storyboard Studio v{new_version} сохранён в:\n{install_path}\n\n"
-                "Нет прав на замену текущего приложения.\n"
-                "Перемести его вручную в папку Applications."
-            )
-        QMessageBox.information(self, "Приложение обновлено", msg)
-        self.status_bar.showMessage(f"Приложение v{new_version} установлено ✓")
+        self.status_bar.showMessage(
+            f"Перезапускаюсь до v{new_version}…")
+
+        # Дать UI отрисовать статус + thread'у мирно завершиться, потом quit.
+        # Bootstrap-скрипт в это время уже ждёт смерти нашего PID.
+        QTimer.singleShot(1500, QApplication.quit)
 
     def _on_app_update_error(self, msg: str):
         self.app_update_btn.setEnabled(True)
@@ -8973,6 +9114,7 @@ class MainWindow(QMainWindow):
             r = subprocess.run(
                 ["git", "-C", str(root), "status", "--porcelain"],
                 capture_output=True, text=True, timeout=5,
+                **no_console_kwargs(),
             )
             if r.returncode == 0 and r.stdout.strip():
                 count = len(r.stdout.strip().splitlines())
@@ -8986,6 +9128,7 @@ class MainWindow(QMainWindow):
                 ["git", "-C", str(root), "rev-list", "--count",
                  f"origin/{GITHUB_BRANCH}..HEAD"],
                 capture_output=True, text=True, timeout=5,
+                **no_console_kwargs(),
             )
             if r.returncode == 0:
                 try:
