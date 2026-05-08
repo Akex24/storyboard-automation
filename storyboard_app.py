@@ -5452,7 +5452,12 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'delete_ep_btn'):
                 self.delete_ep_btn.setEnabled(False)
                 self.delete_ep_btn.setVisible(False)
-            if hasattr(self, 'scenario_drop_zone'):
+            # 2026-05-08 hotfix: scenario_drop_zone устанавливается в None
+            # (для совместимости со старыми callers), поэтому hasattr=True
+            # но значение None. Защита через is-not-None — иначе крах
+            # на свежей установке без current_show (типичный сценарий
+            # Win-коллег после первого запуска Studio.exe).
+            if getattr(self, 'scenario_drop_zone', None) is not None:
                 self.scenario_drop_zone.hide()  # без сериала прятаем
             self._populate_blocks()
             return
