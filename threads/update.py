@@ -339,8 +339,18 @@ class DownloadAppUpdateThread(QThread):
         studio_pid = os.getpid()
         if is_win:
             script = update_dir / "update.bat"
-            # На Win .exe файл — move /Y перезаписывает.
-            # tasklist + find проверяет что Studio.exe закрылся.
+            # На Win:
+            # - tasklist + find проверяет что Studio.exe закрылся (PID жив?).
+            # - copy /Y вместо move /Y: target и update_dir могут быть
+            #   на РАЗНЫХ дисках (update_dir в %TEMP% обычно C:,
+            #   target где-то E:). move между volumes = copy+delete,
+            #   НЕ атомарно. Если прервалось — .exe скопирован частично
+            #   → при запуске PyInstaller не находит base_library.zip
+            #   («_MEI…\base_l…» ошибка). Явный copy + sleep + start
+            #   решает. Удаление update_dir в конце уберёт исходник.
+            # - 2 сек после copy: даёт FS-кешу записать данные на диск.
+            # - 3 сек после start: даёт PyInstaller распаковаться в _MEI
+            #   до того как rmdir удалит update_dir.
             # Кавычки везде — пути с пробелами («Storyboard Studio.exe»).
             content = (
                 "@echo off\r\n"
@@ -350,9 +360,10 @@ class DownloadAppUpdateThread(QThread):
                 f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
                 "if not errorlevel 1 goto wait_for_studio\r\n"
                 "timeout /t 1 /nobreak > nul 2>&1\r\n"
-                f'move /Y "{new_src}" "{target}" >nul\r\n'
-                f'start "" "{target}"\r\n'
+                f'copy /Y "{new_src}" "{target}" >nul\r\n'
                 "timeout /t 2 /nobreak > nul 2>&1\r\n"
+                f'start "" "{target}"\r\n'
+                "timeout /t 3 /nobreak > nul 2>&1\r\n"
                 f'rmdir /s /q "{update_dir}"\r\n'
             )
             script.write_bytes(content.encode('utf-8'))

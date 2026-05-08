@@ -3493,6 +3493,20 @@ class MainWindow(QMainWindow):
         # Qt сам ограничит до экрана если нет).
         self.setMinimumSize(900, 600)
         self.resize(1100, 800)
+
+        # 2026-05-08: восстановление размера и позиции окна между запусками.
+        # Юзер настраивает ширину/высоту мышкой → закрывает Studio →
+        # при следующем запуске окно открывается ровно того же размера и
+        # на том же месте экрана. Сохранение — в closeEvent через
+        # saveGeometry. На первом запуске (geom=None) остаётся стартовый
+        # 1100×800. Qt restoreGeometry сам уважает setMinimumSize.
+        try:
+            _gs = QSettings(APP_ORG, APP_NAME)
+            _geom = _gs.value("main_window_geometry")
+            if _geom:
+                self.restoreGeometry(_geom)
+        except Exception:
+            traceback.print_exc()
         self.current_block: Optional[str] = None
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
@@ -5846,7 +5860,13 @@ class MainWindow(QMainWindow):
                     # «Подождать» — игнорируем закрытие, окно остаётся
                     event.ignore()
                     return
-            # Иначе — нет активных задач или юзер сказал «закрыть всё равно»
+            # Иначе — нет активных задач или юзер сказал «закрыть всё равно».
+            # Сохраняем размер/позицию окна — в __init__ восстановится.
+            try:
+                QSettings(APP_ORG, APP_NAME).setValue(
+                    "main_window_geometry", self.saveGeometry())
+            except Exception:
+                traceback.print_exc()
             event.accept()
         except Exception:
             traceback.print_exc()
