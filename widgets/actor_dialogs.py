@@ -1,0 +1,1474 @@
+# -*- coding: utf-8 -*-
+"""
+widgets/actor_dialogs.py — диалоги вокруг работы с актёрами.
+
+Шаг 4A (2026-05-04): простые диалоги без callback'ов в ActorsView:
+    - AddActorDialog          — popup «Создать актёра» / «Переименовать»
+    - ChooseActorDialog       — выбор папки куда положить фото
+    - _PhotoThumb             — кликабельный thumbnail в галерее
+    - _BigPhotoLabel          — большая фотка
+    - ActorPhotosDialog       — попап галереи фото актёра
+
+Шаг 4B (2026-05-04): диалоги с duck-typed callback'ами в ActorsView
+(через `owner_view` параметр, не через импорт):
+    - _LayoutVariantCard      — карточка варианта layout-а
+    - CreateActorRefDialog    — popup создания character-рефа
+    - RefResultDialog         — стек pending-вариантов с переключением
+
+Зависимости от storyboard_app (через `_AppProxy`): list_actors,
+actor_display_name, get_icon, block_wheel_event, ACTOR_REF_PROMPT_DETAILED/
+SIMPLE, build_actor_ref_filename, list_shows, get_current_show,
+list_show_characters, transliterate_for_filename. См. threads/update.py
+для объяснения проблемы dual-instance в PyInstaller и почему _AppProxy
+ищет в __main__.
+"""
+
+from __future__ import annotations
+
+import re
+import traceback
+from pathlib import Path
+from typing import List, Optional
+
+from PyQt6.QtCore import Qt, QSize, QUrl, pyqtSignal
+from PyQt6.QtGui import QPixmap, QDesktopServices
+from PyQt6.QtWidgets import (
+    QDialog, QLabel, QLineEdit, QPlainTextEdit, QComboBox, QPushButton,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
+    QScrollArea, QStackedWidget, QMessageBox,
+)
+
+from i18n import tr
+
+
+class _AppProxy:
+    """Прокси к module storyboard_app — приоритет __main__.
+    См. подробное объяснение в threads/update.py."""
+    def __getattr__(self, name):
+        import sys
+        main_mod = sys.modules.get('__main__')
+        if main_mod is not None and hasattr(main_mod, name):
+            return getattr(main_mod, name)
+        import storyboard_app
+        return getattr(storyboard_app, name)
+
+
+_sa = _AppProxy()
+
+
+# ─── Создание / переименование актёра ────────────────────────────
+
+class AddActorDialog(QDialog):
+    """Диалог создания нового актёра. Юзер вводит имя (например «Оля»).
+    Если передан current_name — режим переименования (другие лейблы)."""
+
+    def __init__(self, parent=None, current_name: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle(tr('add_actor_title') if not current_name
+                             else tr('rename_actor_title'))
+        self.setFixedSize(440, 200)
+        self.setStyleSheet("QDialog { background: #1a1424; }")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(28, 24, 28, 20)
+        v.setSpacing(12)
+
+        lbl = QLabel(tr('add_actor_label') if not current_name
+                     else tr('rename_actor_label'))
+        lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
+        v.addWidget(lbl)
+
+        self.input = QLineEdit(current_name)
+        self.input.setPlaceholderText(tr('add_actor_placeholder'))
+        self.input.setStyleSheet(
+            "QLineEdit { background:#1a1424; border:1px solid #3a2c52;"
+            " border-radius:6px; padding:10px; color:#fff; font-size:14px; }")
+        v.addWidget(self.input)
+
+        v.addStretch()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton(tr('add_actor_cancel'))
+        cancel_btn.setFixedHeight(34)
+        cancel_btn.setMinimumWidth(110)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        ok_btn = QPushButton(
+            tr('rename_actor_save') if current_name else tr('add_actor_create'))
+        ok_btn.setObjectName("save")
+        ok_btn.setFixedHeight(34)
+        ok_btn.setMinimumWidth(130)
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        v.addLayout(btn_row)
+
+    def value(self) -> str:
+        return self.input.text().strip()
+
+
+# ─── Выбор актёра при drop'е фоток ───────────────────────────────
+
+class ChooseActorDialog(QDialog):
+    """Диалог выбора актёра при перетаскивании фоток.
+    Список существующих актёров + опция «Создать нового».
+    Возвращает выбранный slug, либо None."""
+
+    NEW_SENTINEL = "__NEW__"
+
+    def __init__(self, project_root: Path, file_count: int, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.setWindowTitle(tr('choose_actor_title'))
+        self.setFixedSize(460, 240)
+        self.setStyleSheet("QDialog { background: #1a1424; }")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(28, 24, 28, 20)
+        v.setSpacing(12)
+
+        lbl = QLabel(tr('choose_actor_label'))
+        lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
+        v.addWidget(lbl)
+
+        self.combo = QComboBox()
+        self.combo.setFixedHeight(36)
+        self.combo.addItem(tr('choose_actor_placeholder'), "")
+        for slug in _sa.list_actors(project_root):
+            self.combo.addItem(_sa.actor_display_name(project_root, slug), slug)
+        self.combo.addItem(tr('actors_add_btn'), self.NEW_SENTINEL)
+        self.combo.setStyleSheet(
+            "QComboBox { background:#1a1424; border:1px solid #3a2c52;"
+            " border-radius:6px; padding:6px 10px; color:#fff; font-size:14px; }")
+        _sa.block_wheel_event(self.combo)
+        v.addWidget(self.combo)
+
+        count_lbl = QLabel(tr('choose_actor_count', n=file_count))
+        count_lbl.setStyleSheet("color:#888; font-size:12px;")
+        v.addWidget(count_lbl)
+
+        v.addStretch()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton(tr('add_actor_cancel'))
+        cancel_btn.setFixedHeight(38)
+        cancel_btn.setMinimumWidth(110)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        ok_btn = QPushButton(tr('choose_actor_ok'))
+        ok_btn.setObjectName("save")
+        ok_btn.setIcon(_sa.get_icon('download'))
+        ok_btn.setIconSize(QSize(14, 14))
+        ok_btn.setFixedHeight(38)
+        ok_btn.setMinimumWidth(140)
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        v.addLayout(btn_row)
+
+    def selected_slug(self) -> Optional[str]:
+        """Возвращает slug выбранного актёра, NEW_SENTINEL если "новый",
+        или None если ничего не выбрано."""
+        v = self.combo.currentData()
+        if not v:
+            return None
+        return v
+
+
+# ─── Подвиджеты для ActorPhotosDialog ────────────────────────────
+
+class _PhotoThumb(QLabel):
+    """Кликабельный thumbnail фотки в галерее. По клику emit clicked(path).
+    Hover-эффект делается через CSS — лёгкая обводка чтобы было видно
+    что элемент интерактивный."""
+
+    clicked = pyqtSignal(str)  # absolute path
+
+    def __init__(self, photo_path: Path, thumb_size: int, parent=None):
+        super().__init__(parent)
+        self._path = str(photo_path)
+        self.setFixedSize(thumb_size, thumb_size)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            "QLabel { background:#1a1424; border:1px solid #2a1f3d;"
+            " border-radius:8px; }"
+            "QLabel:hover { border:1px solid #6e4cc4; }")
+        try:
+            pix = QPixmap(self._path)
+            if not pix.isNull():
+                pix = pix.scaled(
+                    QSize(thumb_size - 2, thumb_size - 2),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                self.setPixmap(pix)
+        except Exception:
+            pass
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._path)
+        super().mousePressEvent(ev)
+
+
+class _BigPhotoLabel(QLabel):
+    """QLabel в режиме «увеличенной фотки». Клик → emit clicked() — диалог
+    возвращает юзера к гриду."""
+
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(ev)
+
+
+# ─── Галерея фото актёра ─────────────────────────────────────────
+
+class ActorPhotosDialog(QDialog):
+    """Попап с галереей всех фото одного актёра.
+
+    Два режима через QStackedWidget:
+    - page 0 (`grid`): сетка thumbnail-ов 220×220 в скролле.
+    - page 1 (`single`): одна большая фотка (~700×700, KeepAspectRatio),
+      клик возвращает на page 0.
+
+    Закрыть: Esc, крестик окна, или кнопка «Закрыть» внизу.
+    """
+
+    THUMB_SIZE = 220
+    BIG_MAX = 700
+
+    # Сигнал — клик «✓ Использовать в эпизоде» на конкретной превью.
+    # Эмитится с полным path сгенерированного рефа. Caller (ActorsView)
+    # извлекает character_slug из родительской папки и пишет decision.
+    picked_for_ep = pyqtSignal(object)   # Path
+
+    def __init__(self, display_name: str, photos: List[Path], parent=None,
+                 folder_path: Optional[Path] = None,
+                 enable_delete: bool = False,
+                 enable_pick_for_ep: bool = False):
+        super().__init__(parent)
+        self.photos = list(photos)
+        # Включает кнопку «🗑 Удалить» под каждым thumb в сетке. По умолчанию
+        # выкл — для фото актёра (исходники) удаление опасно. Включается
+        # caller'ом для попапа character-рефов («Все референсы»).
+        self.enable_delete = bool(enable_delete)
+        # 2026-05-05: включает кнопку «✓ Использовать в эпизоде» под
+        # каждым thumb'ом. Активна когда ActorsView в режиме wildcard
+        # pending — юзер пришёл из «+ Добавить персонажа» и хочет взять
+        # готовый реф вместо генерации нового.
+        self.enable_pick_for_ep = bool(enable_pick_for_ep)
+        self._display_name = display_name
+        self.setWindowTitle(tr('actor_photos_title',
+                               name=display_name, n=len(self.photos)))
+        # Не блокировать всё приложение — модальный только относительно ActorsView
+        self.setModal(True)
+        self.resize(820, 720)
+        self.setStyleSheet(
+            "QDialog { background:#15101e; }"
+            "QLabel#photos-hint { color:#aaa; font-size:12px; }"
+            "QLabel#photos-empty { color:#888; font-size:14px;"
+            " font-style:italic; padding:40px; }"
+            "QPushButton#photos-close { background:#3a2c52; color:#fff;"
+            " border:none; border-radius:6px; padding:8px 18px; font-size:13px; }"
+            "QPushButton#photos-close:hover { background:#4d3a6b; }"
+            "QPushButton#photos-delete { background:transparent; color:#e08080;"
+            " border:1px solid #5a2a2a; border-radius:6px; padding:6px 10px;"
+            " font-size:12px; font-weight:500; }"
+            "QPushButton#photos-delete:hover { background:#3a1a1a; color:#ff9a9a;"
+            " border-color:#7a3a3a; }"
+            "QPushButton#photos-pick { background:#3a5a3a; color:#d8ffd8;"
+            " border:1px solid #4d8a4d; border-radius:6px; padding:6px 10px;"
+            " font-size:12px; font-weight:600; }"
+            "QPushButton#photos-pick:hover { background:#4d7a4d; color:#fff;"
+            " border-color:#6dba6d; }")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 16, 20, 16)
+        outer.setSpacing(12)
+
+        self.hint_lbl = QLabel(tr('actor_photos_hint'))
+        self.hint_lbl.setObjectName("photos-hint")
+        outer.addWidget(self.hint_lbl)
+
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack, stretch=1)
+
+        # ── page 0: грид thumbnails ─────────────────────────────────────
+        # Контейнер grid-страницы — содержимое перестраивается через
+        # _rebuild_grid() при удалении рефов. Сама страница в stack
+        # добавляется один раз, меняется только её layout-content.
+        self._grid_page = QWidget()
+        self._grid_page.setStyleSheet("background: transparent;")
+        self._grid_page_lay = QVBoxLayout(self._grid_page)
+        self._grid_page_lay.setContentsMargins(0, 0, 0, 0)
+        self._build_grid_content()
+        self.stack.addWidget(self._grid_page)
+
+        # ── page 1: большая одна фотка ──────────────────────────────────
+        big_page = QWidget()
+        big_page.setStyleSheet("background: transparent;")
+        bp_lay = QVBoxLayout(big_page)
+        bp_lay.setContentsMargins(0, 0, 0, 0)
+        self.big_lbl = _BigPhotoLabel()
+        self.big_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.big_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.big_lbl.setStyleSheet(
+            "QLabel { background:#1a1424; border-radius:10px; }")
+        self.big_lbl.clicked.connect(self._show_grid)
+        bp_lay.addWidget(self.big_lbl, stretch=1)
+        self.stack.addWidget(big_page)
+
+        # ── низ: «Показать в папке» (если есть фото) + «Закрыть» ─────────
+        bottom = QHBoxLayout()
+        # Папка по умолчанию определяется автоматически из первого фото
+        # (все фото актёра лежат в одной папке). Если caller передал явный
+        # folder_path — используем его (например, для show-wide рефов
+        # `shows/<show>/refs/characters/` где фото из разных подпапок).
+        self._folder_path: Optional[Path] = folder_path
+        if self._folder_path is None and self.photos:
+            try:
+                self._folder_path = self.photos[0].parent
+            except Exception:
+                self._folder_path = None
+
+        if self._folder_path is not None:
+            self.open_folder_btn = QPushButton(tr('actor_photos_open_folder'))
+            self.open_folder_btn.setStyleSheet(
+                "QPushButton { background:transparent; color:#d8c8ff;"
+                " border:1px solid #6e4cc4; border-radius:6px;"
+                " padding:8px 14px; font-size:12px; font-weight:600; }"
+                "QPushButton:hover { background:#2a1f3d; color:#fff; }")
+            self.open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.open_folder_btn.clicked.connect(self._on_open_folder)
+            bottom.addWidget(self.open_folder_btn)
+        else:
+            self.open_folder_btn = None
+
+        bottom.addStretch()
+        self.close_btn = QPushButton(tr('actor_photos_close'))
+        self.close_btn.setObjectName("photos-close")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.accept)
+        bottom.addWidget(self.close_btn)
+        outer.addLayout(bottom)
+
+    def _build_grid_content(self):
+        """Строит/перестраивает содержимое grid-страницы из self.photos.
+        Очищает текущий layout и заново раскладывает thumbnails (3 колонки).
+        Если включён enable_delete — под каждым thumb появляется кнопка
+        «🗑 Удалить»."""
+        # Очищаем текущее содержимое (если перестраиваем после delete)
+        while self._grid_page_lay.count():
+            item = self._grid_page_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        if not self.photos:
+            empty = QLabel(tr('actor_photos_empty'))
+            empty.setObjectName("photos-empty")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._grid_page_lay.addWidget(empty)
+            return
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }")
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        grid = QGridLayout(inner)
+        grid.setSpacing(12)
+        grid.setContentsMargins(0, 0, 0, 0)
+        cols = 3  # фиксированно — попап ~820px, 3×220+spacing влезает
+        for i, p in enumerate(self.photos):
+            # Контейнер: thumb сверху + кнопка «🗑 Удалить» снизу (если включена)
+            cell = QWidget()
+            cell_lay = QVBoxLayout(cell)
+            cell_lay.setContentsMargins(0, 0, 0, 0)
+            cell_lay.setSpacing(6)
+            thumb = _PhotoThumb(p, self.THUMB_SIZE)
+            thumb.clicked.connect(self._show_big)
+            cell_lay.addWidget(thumb)
+            if self.enable_pick_for_ep:
+                pick_btn = QPushButton(tr('actor_photos_pick_for_ep'))
+                pick_btn.setObjectName("photos-pick")
+                pick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                pick_btn.clicked.connect(
+                    lambda _checked=False, path=p: self._on_pick_thumb(path))
+                cell_lay.addWidget(pick_btn)
+            if self.enable_delete:
+                del_btn = QPushButton(tr('actor_photos_delete_btn'))
+                del_btn.setObjectName("photos-delete")
+                del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                # Захватываем path по значению (через default-arg)
+                del_btn.clicked.connect(
+                    lambda _checked=False, path=p: self._on_delete_thumb(path))
+                cell_lay.addWidget(del_btn)
+            r, c = divmod(i, cols)
+            grid.addWidget(cell, r, c)
+        for c in range(cols):
+            grid.setColumnStretch(c, 0)
+        grid.setColumnStretch(cols, 1)
+        scroll.setWidget(inner)
+        self._grid_page_lay.addWidget(scroll)
+
+    def _on_pick_thumb(self, path: Path):
+        """Клик «✓ Использовать в эпизоде» под thumb-ом. Эмитим сигнал
+        с полным path и закрываем диалог — caller сам разберёт slug
+        из родителя и запишет decision."""
+        try:
+            self.picked_for_ep.emit(path)
+        except Exception:
+            traceback.print_exc()
+        self.accept()
+
+    def _on_delete_thumb(self, path: Path):
+        """Клик «🗑 Удалить» под thumb-ом. Спрашивает подтверждение,
+        удаляет файл с диска, перестраивает grid. Это необратимое
+        действие — confirm обязателен."""
+        try:
+            ans = QMessageBox.question(
+                self,
+                tr('actor_photos_delete_title'),
+                tr('actor_photos_delete_confirm', filename=Path(path).name),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                traceback.print_exc()
+                return
+            # Удаляем из локального списка и перестраиваем сетку
+            self.photos = [p for p in self.photos if Path(p) != Path(path)]
+            self.setWindowTitle(tr('actor_photos_title',
+                                   name=self._display_name,
+                                   n=len(self.photos)))
+            self._build_grid_content()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_open_folder(self):
+        """Открывает папку с фото в Finder/Explorer через Qt-кроссплатформ.
+        QDesktopServices работает на macOS/Linux/Windows одинаково."""
+        try:
+            if self._folder_path is None or not self._folder_path.exists():
+                return
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(self._folder_path.resolve())))
+        except Exception:
+            traceback.print_exc()
+
+    def _show_big(self, path: str):
+        """Показать выбранную фотку крупно (page 1)."""
+        try:
+            pix = QPixmap(path)
+            if pix.isNull():
+                return
+            # Размер максимум BIG_MAX×BIG_MAX, но не больше доступной площади
+            avail_w = max(200, self.width() - 60)
+            avail_h = max(200, self.height() - 140)
+            target = min(self.BIG_MAX, avail_w, avail_h)
+            pix = pix.scaled(
+                QSize(target, target),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self.big_lbl.setPixmap(pix)
+            self.stack.setCurrentIndex(1)
+        except Exception:
+            traceback.print_exc()
+
+    def _show_grid(self):
+        """Вернуться к гриду thumbnail-ов (page 0)."""
+        try:
+            self.stack.setCurrentIndex(0)
+            # Освобождаем память от большой pixmap
+            self.big_lbl.clear()
+        except Exception:
+            pass
+
+    def keyPressEvent(self, ev):
+        """Esc на page 1 → возврат к гриду. Esc на page 0 → стандартное
+        закрытие диалога (через QDialog.reject)."""
+        if ev.key() == Qt.Key.Key_Escape and self.stack.currentIndex() == 1:
+            self._show_grid()
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+
+# ═════════════════════════════════════════════════════════════════
+# Шаг 4B: создание character-рефа + просмотр стека вариантов
+# ═════════════════════════════════════════════════════════════════
+#
+# Эти диалоги вызывают `owner_view.X()` — duck typing, не реальная
+# зависимость через импорт. Когда ActorsView переедет в `views/actors.py`
+# на шаге 4C, он будет передавать `self` как `owner_view`, и интерфейс
+# (методы start_ref_generation / update_pending_variants /
+# confirm_pending_kept) останется тот же.
+
+
+# ─── Карточка варианта layout-а ──────────────────────────────────
+
+class _LayoutVariantCard(QFrame):
+    """Кликабельная карточка варианта layout-а в попапе создания рефа.
+    При клике emit chosen(variant_id). Визуально показывает выбранный
+    вариант через рамку (`-selected` стиль)."""
+
+    chosen = pyqtSignal(str)  # 'detailed' | 'simple'
+
+    def __init__(self, variant_id: str, title: str, hint: str,
+                 panels_count: int, parent=None):
+        super().__init__(parent)
+        self.variant_id = variant_id
+        self._selected = False
+        self.setObjectName("variant-card")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(150)
+        self._apply_style()
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(6)
+
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet(
+            "color:#fff; font-size:14px; font-weight:600; background:transparent;")
+        v.addWidget(title_lbl)
+
+        panels_lbl = QLabel(f"{panels_count} панелей")
+        panels_lbl.setStyleSheet(
+            "color:#ffd24d; font-size:12px; font-weight:600; background:transparent;")
+        v.addWidget(panels_lbl)
+
+        hint_lbl = QLabel(hint)
+        hint_lbl.setWordWrap(True)
+        hint_lbl.setStyleSheet(
+            "color:#bbb; font-size:11px; background:transparent;")
+        v.addWidget(hint_lbl)
+        v.addStretch()
+
+    def setSelected(self, sel: bool):
+        self._selected = bool(sel)
+        self._apply_style()
+
+    def _apply_style(self):
+        if self._selected:
+            self.setStyleSheet(
+                "QFrame#variant-card { background:#2a1f3d;"
+                " border:2px solid #8e6cd4; border-radius:10px; }")
+        else:
+            self.setStyleSheet(
+                "QFrame#variant-card { background:#1a1424;"
+                " border:1px solid #2a1f3d; border-radius:10px; }"
+                "QFrame#variant-card:hover { border:1px solid #5a4a82; }")
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.chosen.emit(self.variant_id)
+        super().mousePressEvent(ev)
+
+
+# ─── Создание character-рефа актёра ──────────────────────────────
+
+class CreateActorRefDialog(QDialog):
+    """Попап: ввод описания одежды/состояния + выбор варианта layout-а
+    + кнопка «Сгенерировать». После клика создаёт GenerateActorRefThread
+    (через owner_view.start_ref_generation) и закрывается с показом
+    прогресса в статус-баре главного окна."""
+
+    def __init__(self, project_root: Path, actor_slug: str, display_name: str,
+                 photos: List[Path], status_bar=None, owner_view=None,
+                 parent=None,
+                 prefill_show: Optional[str] = None,
+                 prefill_character: Optional[str] = None,
+                 prefill_description: Optional[str] = None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.actor_slug = actor_slug
+        self.display_name = display_name
+        self.photos = list(photos)
+        self.status_bar = status_bar
+        # Долг 13: префиллы из чата эпизода (выбранный вариант одежды +
+        # сериал + персонаж). Применяются после построения комбобоксов.
+        self._prefill_show = prefill_show
+        self._prefill_character = prefill_character
+        self._prefill_description = prefill_description
+        # owner_view = ActorsView, через него запускаем поток. ВАЖНО: thread
+        # НЕ должен иметь диалог как родителя — иначе при close() диалога
+        # Qt удалит работающий QThread → qFatal → краш всего приложения.
+        self.owner_view = owner_view
+        self._selected_variant = "detailed"  # default
+
+        self.setWindowTitle(tr('create_ref_title', name=display_name))
+        self.setModal(True)
+        self.resize(640, 700)
+        self.setStyleSheet(
+            "QDialog { background:#15101e; }"
+            "QLabel#cr-section { color:#cfcfcf; font-size:12px;"
+            " font-weight:700; letter-spacing:1px; }"
+            "QLabel#cr-hint { color:#aaa; font-size:12px; }"
+            "QPlainTextEdit#cr-desc {"
+            " background:#1a1424; border:1px solid #2a1f3d; border-radius:8px;"
+            " color:#fff; padding:10px; font-size:13px; }"
+            "QPlainTextEdit#cr-desc:focus { border:1px solid #6e4cc4; }"
+            "QLineEdit#cr-filename {"
+            " background:#15101e; border:1px solid #2a1f3d; border-radius:6px;"
+            " color:#888; padding:7px 10px; font-size:13px;"
+            " font-family: 'Menlo','Courier New',monospace; }"
+            "QLineEdit#cr-newchar {"
+            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
+            " color:#fff; padding:7px 10px; font-size:13px; }"
+            "QLineEdit#cr-newchar:focus { border:1px solid #6e4cc4; }"
+            "QComboBox#cr-show, QComboBox#cr-character {"
+            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
+            " color:#fff; padding:6px 10px; font-size:13px; }"
+            "QComboBox#cr-show::drop-down, QComboBox#cr-character::drop-down {"
+            " border:0; width:18px; }"
+            "QComboBox QAbstractItemView { background:#1a1424; color:#ddd;"
+            " selection-background-color:#322545; border:1px solid #322545; }"
+            "QPushButton#cr-generate { background:#6e4cc4; color:#fff;"
+            " border:none; border-radius:8px; padding:10px 22px;"
+            " font-size:14px; font-weight:600; }"
+            "QPushButton#cr-generate:hover { background:#7d5bd4; }"
+            "QPushButton#cr-cancel { background:transparent; color:#aaa;"
+            " border:1px solid #3a2c52; border-radius:6px; padding:8px 16px;"
+            " font-size:13px; }"
+            "QPushButton#cr-cancel:hover { color:#fff;"
+            " border-color:#5a4a82; }")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 18, 22, 18)
+        outer.setSpacing(10)
+
+        # ── Описание (textarea) ─────────────────────────────────────────
+        self.desc_section_lbl = QLabel(tr('create_ref_desc_section'))
+        self.desc_section_lbl.setObjectName("cr-section")
+        outer.addWidget(self.desc_section_lbl)
+
+        self.desc_hint_lbl = QLabel(tr('create_ref_desc_hint'))
+        self.desc_hint_lbl.setObjectName("cr-hint")
+        self.desc_hint_lbl.setWordWrap(True)
+        outer.addWidget(self.desc_hint_lbl)
+
+        self.desc_edit = QPlainTextEdit()
+        self.desc_edit.setObjectName("cr-desc")
+        self.desc_edit.setPlaceholderText(tr('create_ref_desc_placeholder'))
+        self.desc_edit.setFixedHeight(110)
+        self.desc_edit.textChanged.connect(self._on_desc_changed)
+        outer.addWidget(self.desc_edit)
+
+        # ── Сериал и персонаж ──────────────────────────────────────────
+        # Реф ложится в shows/<show>/refs/characters/<character>/, имя файла
+        # строится по имени персонажа. Дропдаун персонажей наполняется из
+        # episodes.json + папок refs/characters/ выбранного сериала.
+        outer.addSpacing(4)
+        self.show_section_lbl = QLabel(tr('create_ref_show_section'))
+        self.show_section_lbl.setObjectName("cr-section")
+        outer.addWidget(self.show_section_lbl)
+
+        self.show_hint_lbl = QLabel(tr('create_ref_show_hint'))
+        self.show_hint_lbl.setObjectName("cr-hint")
+        self.show_hint_lbl.setWordWrap(True)
+        outer.addWidget(self.show_hint_lbl)
+
+        # Строка 1: Сериал
+        sh_row = QHBoxLayout()
+        sh_row.setSpacing(8)
+        self.show_lbl = QLabel(tr('create_ref_show_label'))
+        self.show_lbl.setStyleSheet("color:#cfcfcf; font-size:12px;"
+                                    " min-width:80px;")
+        sh_row.addWidget(self.show_lbl)
+        self.show_combo = QComboBox()
+        self.show_combo.setObjectName("cr-show")
+        self._populate_show_combo()
+        self.show_combo.currentIndexChanged.connect(self._on_show_changed)
+        _sa.block_wheel_event(self.show_combo)
+        sh_row.addWidget(self.show_combo, stretch=1)
+        outer.addLayout(sh_row)
+
+        # Строка 2: Персонаж
+        ch_row = QHBoxLayout()
+        ch_row.setSpacing(8)
+        self.char_lbl = QLabel(tr('create_ref_character_label'))
+        self.char_lbl.setStyleSheet("color:#cfcfcf; font-size:12px;"
+                                    " min-width:80px;")
+        ch_row.addWidget(self.char_lbl)
+        self.char_combo = QComboBox()
+        self.char_combo.setObjectName("cr-character")
+        self.char_combo.currentIndexChanged.connect(self._on_character_changed)
+        _sa.block_wheel_event(self.char_combo)
+        ch_row.addWidget(self.char_combo, stretch=1)
+        outer.addLayout(ch_row)
+
+        # Строка 3: Поле для нового персонажа (показывается когда выбрано
+        # «➕ Создать нового…» в дропдауне)
+        self.new_char_edit = QLineEdit()
+        self.new_char_edit.setObjectName("cr-newchar")
+        self.new_char_edit.setPlaceholderText(
+            tr('create_ref_character_new_placeholder'))
+        self.new_char_edit.textChanged.connect(self._update_filename_preview)
+        self.new_char_edit.hide()
+        outer.addWidget(self.new_char_edit)
+
+        # Строка 4: Превью имени файла (readonly)
+        fn_row = QHBoxLayout()
+        fn_row.setSpacing(8)
+        self.fn_lbl = QLabel(tr('create_ref_filename_label'))
+        self.fn_lbl.setStyleSheet("color:#cfcfcf; font-size:12px;"
+                                  " min-width:80px;")
+        fn_row.addWidget(self.fn_lbl)
+        self.filename_edit = QLineEdit()
+        self.filename_edit.setObjectName("cr-filename")
+        self.filename_edit.setReadOnly(True)
+        self.filename_edit.setPlaceholderText("character_red_suit")
+        fn_row.addWidget(self.filename_edit, stretch=1)
+        self.fn_ext_lbl = QLabel(".jpg")
+        self.fn_ext_lbl.setStyleSheet("color:#888; font-size:13px;"
+                                      " font-family:'Menlo','Courier New',monospace;")
+        fn_row.addWidget(self.fn_ext_lbl)
+        outer.addLayout(fn_row)
+
+        # Сначала заполняем character combo для текущего сериала
+        self._populate_character_combo()
+        # Дефолтное превью имени файла
+        self._update_filename_preview()
+
+        # ── Выбор варианта layout-а ─────────────────────────────────────
+        outer.addSpacing(6)
+        self.var_section_lbl = QLabel(tr('create_ref_variant_section'))
+        self.var_section_lbl.setObjectName("cr-section")
+        outer.addWidget(self.var_section_lbl)
+
+        var_row = QHBoxLayout()
+        var_row.setSpacing(12)
+        self.card_detailed = _LayoutVariantCard(
+            "detailed",
+            tr('create_ref_variant_detailed_title'),
+            tr('create_ref_variant_detailed_hint'),
+            14)
+        self.card_simple = _LayoutVariantCard(
+            "simple",
+            tr('create_ref_variant_simple_title'),
+            tr('create_ref_variant_simple_hint'),
+            7)
+        self.card_detailed.chosen.connect(self._on_variant_chosen)
+        self.card_simple.chosen.connect(self._on_variant_chosen)
+        var_row.addWidget(self.card_detailed, stretch=1)
+        var_row.addWidget(self.card_simple, stretch=1)
+        outer.addLayout(var_row)
+        # По дефолту выбран detailed
+        self.card_detailed.setSelected(True)
+
+        # ── Низ: статус + кнопки ────────────────────────────────────────
+        outer.addStretch()
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet(
+            "color:#ffd24d; font-size:12px;")
+        outer.addWidget(self.status_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.cancel_btn = QPushButton(tr('create_ref_cancel'))
+        self.cancel_btn.setObjectName("cr-cancel")
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
+
+        self.generate_btn = QPushButton(tr('create_ref_generate'))
+        self.generate_btn.setObjectName("cr-generate")
+        self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.generate_btn.clicked.connect(self._on_generate)
+        btn_row.addWidget(self.generate_btn)
+        outer.addLayout(btn_row)
+
+        # Долг 13: применяем префиллы (показ, персонаж, описание) после
+        # того как все комбобоксы наполнены.
+        self._apply_prefills()
+
+    def _apply_prefills(self):
+        """Применяет prefill_show / prefill_character / prefill_description
+        если они переданы. Вызывается в самом конце __init__.
+
+        2026-05-05: для wildcard потока («+ Добавить персонажа» из
+        РЕФЕРЕНСОВ — `prefill_character == ""` или None) принудительно
+        ставим combo на «➕ Создать нового» и **дисейблим** «Сгенерировать»
+        пока юзер не выберет реального персонажа из combo или не введёт
+        имя в new_char_edit. Это предотвращает баг когда юзер «не заметил»
+        что combo по умолчанию указывает на не того персонажа и реф
+        прикрепляется к чужой роли."""
+        try:
+            wildcard_mode = not bool(self._prefill_character)
+            # 1. Сериал — выставляем по data-полю combobox'а
+            if self._prefill_show:
+                for i in range(self.show_combo.count()):
+                    if self.show_combo.itemData(i) == self._prefill_show:
+                        if self.show_combo.currentIndex() != i:
+                            self.show_combo.setCurrentIndex(i)
+                        break
+            # 2. Персонаж
+            if wildcard_mode:
+                # 2026-05-05: для wildcard потока (юзер пришёл из «+
+                # Добавить персонажа» в РЕФЕРЕНСАХ) полностью убираем
+                # поле «введи имя нового» — имена персонажей берутся
+                # из сценария, новых руками не создаём.
+                # Combo переставляем: первый item — placeholder
+                # «👇 Выбери персонажа», option «➕ Создать нового»
+                # удаляется. Combo визуально подсвечен (красная рамка)
+                # чтобы юзер сразу видел куда тыкать.
+                try:
+                    self.new_char_edit.hide()
+                except Exception:
+                    pass
+                # Чистим combo от «__new__» + ставим placeholder на 0
+                try:
+                    self.char_combo.blockSignals(True)
+                    # Удаляем все вхождения __new__
+                    for i in range(self.char_combo.count() - 1, -1, -1):
+                        if self.char_combo.itemData(i) == "__new__":
+                            self.char_combo.removeItem(i)
+                    # Удаляем "no_characters" placeholder если есть
+                    for i in range(self.char_combo.count() - 1, -1, -1):
+                        if self.char_combo.itemData(i) is None:
+                            self.char_combo.removeItem(i)
+                    # Вставляем наш placeholder в начало
+                    self.char_combo.insertItem(
+                        0, tr('create_ref_wildcard_pick'), None)
+                    self.char_combo.setCurrentIndex(0)
+                    self.char_combo.blockSignals(False)
+                except Exception:
+                    traceback.print_exc()
+                # Подсветка combo красным чтобы юзер видел куда тыкать.
+                try:
+                    self.char_combo.setStyleSheet(
+                        "QComboBox#cr-character {"
+                        " background:#3a1e26; border:2px solid #ff6464;"
+                        " border-radius:6px; color:#fff;"
+                        " padding:6px 10px; font-size:13px;"
+                        " font-weight:600; }"
+                        "QComboBox#cr-character::drop-down {"
+                        " border:0; width:18px; }"
+                        "QComboBox QAbstractItemView { background:#1a1424;"
+                        " color:#ddd;"
+                        " selection-background-color:#322545;"
+                        " border:1px solid #322545; }")
+                except Exception:
+                    pass
+                # Дисейблим «Сгенерировать» — реактивируется при выборе.
+                try:
+                    self.generate_btn.setEnabled(False)
+                except Exception:
+                    pass
+                # Хендлер для реактивации.
+                try:
+                    self.char_combo.currentIndexChanged.connect(
+                        self._on_wildcard_selection_changed)
+                except Exception:
+                    pass
+            elif self._prefill_character:
+                # Обычный поток (из чата) — slug известен, ищем в combo
+                want = self._prefill_character
+                found = False
+                for i in range(self.char_combo.count()):
+                    if self.char_combo.itemData(i) == want:
+                        if self.char_combo.currentIndex() != i:
+                            self.char_combo.setCurrentIndex(i)
+                        found = True
+                        break
+                if not found:
+                    for i in range(self.char_combo.count()):
+                        if self.char_combo.itemData(i) == "__new__":
+                            self.char_combo.setCurrentIndex(i)
+                            break
+                    self.new_char_edit.setText(want)
+            # 3. Описание (текст одежды от AI)
+            if self._prefill_description:
+                self.desc_edit.setPlainText(self._prefill_description)
+            self._update_filename_preview()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_wildcard_selection_changed(self):
+        """Wildcard-режим: реактивируем «Сгенерировать» когда юзер
+        выбрал реального персонажа в combo. Placeholder (data=None)
+        не считается — кнопка остаётся disabled."""
+        try:
+            data = self.char_combo.currentData()
+            slug = str(data) if data else ""
+            self.generate_btn.setEnabled(bool(slug))
+        except Exception:
+            self.generate_btn.setEnabled(True)
+
+    def _on_variant_chosen(self, variant_id: str):
+        self._selected_variant = variant_id
+        self.card_detailed.setSelected(variant_id == "detailed")
+        self.card_simple.setSelected(variant_id == "simple")
+
+    # ─── Сериал / Персонаж — наполнение и реактивность ──────────────
+
+    def _populate_show_combo(self):
+        """Заполняет дропдаун сериалов из shows/. По умолчанию выбран
+        активный (current_show.json)."""
+        self.show_combo.clear()
+        try:
+            shows = _sa.list_shows(self.project_root)
+        except Exception:
+            shows = []
+        if not shows:
+            # Нет сериалов вообще — дропдаун с placeholder'ом
+            self.show_combo.addItem(tr('create_ref_no_shows'), "")
+            self.show_combo.setEnabled(False)
+            return
+        for s in shows:
+            self.show_combo.addItem(s, s)
+        # Дефолт — активный сериал
+        try:
+            active = _sa.get_current_show(self.project_root)
+        except Exception:
+            active = None
+        if active:
+            for i in range(self.show_combo.count()):
+                if self.show_combo.itemData(i) == active:
+                    self.show_combo.setCurrentIndex(i)
+                    break
+
+    def _populate_character_combo(self):
+        """Перенаполняет дропдаун персонажей под выбранный сериал.
+        Источник — list_show_characters (episodes.json + папки рефов).
+        В конец добавляется опция «➕ Создать нового персонажа…»."""
+        self.char_combo.blockSignals(True)
+        self.char_combo.clear()
+        show = self.show_combo.currentData() or ""
+        chars = []
+        if show:
+            try:
+                chars = _sa.list_show_characters(self.project_root, show)
+            except Exception:
+                chars = []
+        if chars:
+            for c in chars:
+                self.char_combo.addItem(c, c)
+        else:
+            # Сериал есть, но персонажей пока нет — даём подсказку как
+            # disabled-айтем (data=None), чтобы юзер сразу пошёл в «новый»
+            self.char_combo.addItem(tr('create_ref_no_characters_yet'), None)
+        # «➕ Создать нового персонажа…» (data="__new__")
+        self.char_combo.addItem(tr('create_ref_character_new_option'), "__new__")
+        self.char_combo.blockSignals(False)
+        # Если был только placeholder + new — выбираем new и показываем поле
+        self._on_character_changed(self.char_combo.currentIndex())
+
+    def _on_show_changed(self, _index: int):
+        """Смена сериала → перезагрузка списка персонажей."""
+        self._populate_character_combo()
+        self._update_filename_preview()
+
+    def _on_character_changed(self, _index: int):
+        """Смена персонажа → показать/скрыть поле ввода нового имени и
+        обновить превью имени файла."""
+        data = self.char_combo.currentData()
+        if data == "__new__":
+            self.new_char_edit.show()
+            self.new_char_edit.setFocus()
+        else:
+            self.new_char_edit.hide()
+        self._update_filename_preview()
+
+    def _current_character_slug(self) -> str:
+        """Текущее имя персонажа: либо выбранное в дропдауне, либо
+        введённое в поле новой роли. Транслитерируется и чистится."""
+        data = self.char_combo.currentData()
+        if data == "__new__":
+            raw = self.new_char_edit.text().strip()
+        elif data:
+            return str(data)
+        else:
+            raw = ""
+        # Транслит для нового имени (пользователь может ввести по-русски)
+        slug = _sa.transliterate_for_filename(raw, max_words=2, max_len=24) \
+            if raw else ""
+        if not slug:
+            slug = re.sub(r'[^a-zA-Z0-9_-]', '_', raw).strip('_-').lower()
+        return slug
+
+    def _update_filename_preview(self):
+        """Обновляет readonly-превью имени файла:
+            <character>_<desc_slug>.jpg
+        Вызывается при изменении описания, персонажа или сериала."""
+        try:
+            desc = self.desc_edit.toPlainText().strip()
+            char = self._current_character_slug()
+            if not char:
+                self.filename_edit.setText("")
+                return
+            self.filename_edit.setText(_sa.build_actor_ref_filename(char, desc))
+        except Exception:
+            pass
+
+    def _on_desc_changed(self):
+        """При вводе описания обновляем превью имени файла."""
+        self._update_filename_preview()
+
+    def _on_generate(self):
+        """Делегирует запуск GenerateActorRefThread в ActorsView (owner_view).
+        Поток живёт в ActorsView (а не в этом диалоге!), потому что диалог
+        закрывается через accept() сразу после старта — если бы поток был
+        ребёнком диалога, Qt убил бы работающий QThread и вызвал qFatal."""
+        try:
+            desc = self.desc_edit.toPlainText().strip()
+            show = self.show_combo.currentData() or ""
+            character = self._current_character_slug()
+            if not show:
+                self.status_lbl.setText(tr('create_ref_no_shows'))
+                return
+            if not character:
+                # Юзер выбрал «➕ Создать нового» но ничего не ввёл
+                self.status_lbl.setText(tr('create_ref_character_new_placeholder'))
+                self.new_char_edit.setFocus()
+                return
+            filename = _sa.build_actor_ref_filename(character, desc)
+            filename = re.sub(r'[^a-zA-Z0-9_-]', '_', filename)
+            if not filename:
+                filename = character
+
+            outfit_text = desc if desc else (
+                "Keep the person's appearance exactly as in the reference "
+                "images. Use the same clothing visible in the reference photos.")
+            tmpl = (_sa.ACTOR_REF_PROMPT_DETAILED
+                    if self._selected_variant == "detailed"
+                    else _sa.ACTOR_REF_PROMPT_SIMPLE)
+            prompt = tmpl.format(outfit=outfit_text)
+
+            if self.owner_view is None:
+                self.status_lbl.setText(tr('create_ref_failed'))
+                return
+            target_dir = (self.project_root / "shows" / show / "refs"
+                          / "characters" / character)
+            # Записываем связь «актёр → персонаж в сериале» в actors.json.
+            # Это нужно чтобы кнопка «🖼 Все референсы (N)» на карточке
+            # актёра знала какую папку персонажа открывать.
+            try:
+                _sa.set_actor_role(self.project_root, self.actor_slug,
+                                   show, character)
+            except Exception:
+                traceback.print_exc()
+            self.owner_view.start_ref_generation(
+                self.actor_slug, self.photos, prompt, filename,
+                self.display_name, target_dir, outfit_text=desc)
+            # Закрываем попап — поток живёт в ActorsView, не зависит от диалога
+            self.accept()
+        except Exception:
+            traceback.print_exc()
+            self.status_lbl.setText(tr('create_ref_failed'))
+
+
+# ─── Стек pending-вариантов character-рефа ───────────────────────
+
+class RefResultDialog(QDialog):
+    """Попап со стеком сгенерированных character-референсов.
+
+    UX:
+    - Открывается ТОЛЬКО по клику на «🆕 Готов новый референс (N)» на
+      карточке актёра. Никогда не открывается автоматически из finished.
+    - Содержит initial_variants — это `_pending_variants[slug]` из
+      ActorsView. Все варианты которые юзер ещё не подтвердил.
+    - Юзер кликает по thumbnail внизу → переключает большое превью.
+    - Кнопка «Пересоздать» → попап ЗАКРЫВАЕТСЯ сам (через self.close()),
+      на карточке снова бежит прогресс. Когда новая генерация кончится →
+      добавляется в pending. При следующем клике на «Готов новый» юзер
+      увидит уже все накопленные варианты.
+    - Кнопка «✓ Оставить этот, остальные удалить» → выбранный остаётся,
+      остальные удаляются с диска, pending очищается, попап закрывается.
+    """
+
+    BIG_MAX = 700
+    THUMB_SIZE = 90
+
+    def __init__(self, actor_slug: str, display_name: str,
+                 photos: List[Path], initial_variants: List[str],
+                 owner_view, initial_outfit: str = "",
+                 variant_id: str = "detailed", parent=None):
+        super().__init__(parent)
+        self.actor_slug = actor_slug
+        self.display_name = display_name
+        self.photos = list(photos)
+        self.owner_view = owner_view
+        self._variant_id = variant_id
+        self._initial_outfit = initial_outfit
+
+        self._variants: List[str] = list(initial_variants)
+        self._current_idx: int = 0
+
+        self.setWindowTitle(tr('ref_result_title', name=display_name))
+        self.setModal(False)
+        self.resize(900, 880)
+        self.setStyleSheet(
+            "QDialog { background:#15101e; }"
+            "QLabel#rr-section { color:#cfcfcf; font-size:12px;"
+            " font-weight:700; letter-spacing:1px; }"
+            "QLabel#rr-hint { color:#aaa; font-size:12px; }"
+            "QLabel#rr-counter { color:#ffd24d; font-size:12px;"
+            " font-weight:600; }"
+            "QPlainTextEdit#rr-desc {"
+            " background:#1a1424; border:1px solid #2a1f3d; border-radius:8px;"
+            " color:#fff; padding:10px; font-size:13px; }"
+            "QPlainTextEdit#rr-desc:focus { border:1px solid #6e4cc4; }"
+            "QLineEdit#rr-filename {"
+            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
+            " color:#fff; padding:7px 10px; font-size:13px;"
+            " font-family: 'Menlo','Courier New',monospace; }"
+            "QLineEdit#rr-filename:focus { border:1px solid #6e4cc4; }"
+            "QPushButton#rr-regen { background:#6e4cc4; color:#fff;"
+            " border:none; border-radius:8px; padding:10px 20px;"
+            " font-size:13px; font-weight:600; }"
+            "QPushButton#rr-regen:hover { background:#7d5bd4; }"
+            "QPushButton#rr-regen:disabled { background:#3a2c52; color:#888; }"
+            "QPushButton#rr-done { background:#3a8c52; color:#fff;"
+            " border:none; border-radius:6px; padding:8px 18px;"
+            " font-size:13px; font-weight:600; }"
+            "QPushButton#rr-done:hover { background:#4d9e6b; }"
+            "QPushButton#rr-done:disabled { background:#3a2c52; color:#888; }")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 16, 20, 16)
+        outer.setSpacing(10)
+
+        self.preview_lbl = QLabel()
+        self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_lbl.setStyleSheet(
+            "background:#1a1424; border-radius:10px;")
+        self.preview_lbl.setMinimumHeight(380)
+        outer.addWidget(self.preview_lbl, stretch=1)
+
+        strip_row = QHBoxLayout()
+        strip_row.setSpacing(0)
+        self.variants_counter = QLabel("")
+        self.variants_counter.setObjectName("rr-counter")
+        strip_row.addWidget(self.variants_counter)
+        strip_row.addStretch()
+        outer.addLayout(strip_row)
+
+        self.strip_widget = QWidget()
+        self.strip_widget.setStyleSheet("background: transparent;")
+        self.strip_layout = QHBoxLayout(self.strip_widget)
+        self.strip_layout.setContentsMargins(0, 0, 0, 0)
+        self.strip_layout.setSpacing(8)
+        outer.addWidget(self.strip_widget)
+
+        self.desc_section_lbl = QLabel(tr('ref_result_desc_section'))
+        self.desc_section_lbl.setObjectName("rr-section")
+        outer.addWidget(self.desc_section_lbl)
+
+        self.desc_hint_lbl = QLabel(tr('ref_result_desc_hint'))
+        self.desc_hint_lbl.setObjectName("rr-hint")
+        self.desc_hint_lbl.setWordWrap(True)
+        outer.addWidget(self.desc_hint_lbl)
+
+        self.desc_edit = QPlainTextEdit()
+        self.desc_edit.setObjectName("rr-desc")
+        self.desc_edit.setPlaceholderText(tr('create_ref_desc_placeholder'))
+        self.desc_edit.setPlainText(initial_outfit)
+        self.desc_edit.setFixedHeight(70)
+        self.desc_edit.textChanged.connect(self._on_desc_changed)
+        outer.addWidget(self.desc_edit)
+
+        fn_row = QHBoxLayout()
+        fn_row.setSpacing(8)
+        self.fn_lbl = QLabel(tr('create_ref_filename_label'))
+        self.fn_lbl.setStyleSheet("color:#cfcfcf; font-size:12px;")
+        fn_row.addWidget(self.fn_lbl)
+        self.filename_edit = QLineEdit()
+        self.filename_edit.setObjectName("rr-filename")
+        first_path = self._variants[0] if self._variants else ""
+        self.filename_edit.setText(Path(first_path).stem if first_path else self.actor_slug)
+        fn_row.addWidget(self.filename_edit, stretch=1)
+        self.fn_ext_lbl = QLabel(".jpg")
+        self.fn_ext_lbl.setStyleSheet(
+            "color:#888; font-size:13px;"
+            " font-family:'Menlo','Courier New',monospace;")
+        fn_row.addWidget(self.fn_ext_lbl)
+        outer.addLayout(fn_row)
+
+        btn_row = QHBoxLayout()
+        self.delete_all_btn = QPushButton(tr('ref_result_delete_all'))
+        self.delete_all_btn.setStyleSheet(
+            "QPushButton { background:transparent; color:#c4304c;"
+            " border:1px solid #c4304c; border-radius:6px;"
+            " padding:8px 14px; font-size:12px; font-weight:600; }"
+            "QPushButton:hover { background:#c4304c; color:#fff; }")
+        self.delete_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_all_btn.clicked.connect(self._on_delete_all)
+        btn_row.addWidget(self.delete_all_btn)
+        btn_row.addStretch()
+
+        self.regen_btn = QPushButton(tr('ref_result_regen'))
+        self.regen_btn.setObjectName("rr-regen")
+        self.regen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.regen_btn.clicked.connect(self._on_regen)
+        btn_row.addWidget(self.regen_btn)
+
+        self.done_btn = QPushButton(tr('ref_result_done_keep'))
+        self.done_btn.setObjectName("rr-done")
+        self.done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.done_btn.clicked.connect(self._on_done)
+        btn_row.addWidget(self.done_btn)
+        outer.addLayout(btn_row)
+
+        self._refresh_preview()
+        self._refresh_strip()
+
+    @property
+    def target_path(self) -> str:
+        """Путь к ТЕКУЩЕМУ выбранному варианту (используется снаружи)."""
+        if 0 <= self._current_idx < len(self._variants):
+            return self._variants[self._current_idx]
+        return ""
+
+    def _refresh_preview(self):
+        """Загружает текущий вариант в превью с KeepAspectRatio."""
+        try:
+            path = self.target_path
+            if not path:
+                return
+            pix = QPixmap(path)
+            if pix.isNull():
+                return
+            avail_w = max(400, self.width() - 60)
+            target = min(self.BIG_MAX, avail_w)
+            pix = pix.scaled(
+                QSize(target, target),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self.preview_lbl.setPixmap(pix)
+            self.filename_edit.setText(Path(path).stem)
+        except Exception:
+            traceback.print_exc()
+
+    def _refresh_strip(self):
+        """Перерисовывает стрипу thumbnails. Показывается только когда
+        вариантов >1. Текущий выделен жёлтым лейблом #N."""
+        while self.strip_layout.count():
+            it = self.strip_layout.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+
+        n = len(self._variants)
+        if n <= 1:
+            self.strip_widget.hide()
+            self.variants_counter.setText("")
+            return
+        self.strip_widget.show()
+        self.variants_counter.setText(
+            tr('ref_result_variants_count', n=n))
+
+        for i, path in enumerate(self._variants):
+            cell = self._make_variant_cell(i, path,
+                                           selected=(i == self._current_idx))
+            self.strip_layout.addWidget(cell)
+        self.strip_layout.addStretch()
+
+    def _make_variant_cell(self, idx: int, path: str, selected: bool) -> QWidget:
+        """Один thumbnail в стрипе: превью + номер #N + кнопка
+        «🗑 Удалить» в виде полной строки под thumbnail.
+        Клик по thumbnail — переключает текущий выбранный."""
+        cell = QFrame()
+        cell.setFixedSize(self.THUMB_SIZE + 4, self.THUMB_SIZE + 44)
+        cell.setStyleSheet("QFrame { background:transparent; border:none; }")
+
+        v = QVBoxLayout(cell)
+        v.setContentsMargins(2, 2, 2, 2)
+        v.setSpacing(3)
+
+        thumb = QLabel()
+        thumb.setFixedSize(self.THUMB_SIZE, self.THUMB_SIZE)
+        thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumb.setStyleSheet(
+            "QLabel { background:#1a1424; border-radius:4px; }"
+            "QLabel:hover { background:#241830; }")
+        thumb.setCursor(Qt.CursorShape.PointingHandCursor)
+        try:
+            pix = QPixmap(path)
+            if not pix.isNull():
+                pix = pix.scaled(
+                    QSize(self.THUMB_SIZE - 2, self.THUMB_SIZE - 2),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                thumb.setPixmap(pix)
+        except Exception:
+            pass
+        thumb.mousePressEvent = lambda ev, _i=idx: self._on_select_variant(_i)
+        v.addWidget(thumb)
+
+        num = QLabel(f"#{idx + 1}")
+        num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if selected:
+            num.setStyleSheet(
+                "color:#ffd24d; font-size:11px; font-weight:700;"
+                " background:transparent;")
+        else:
+            num.setStyleSheet(
+                "color:#888; font-size:10px; background:transparent;")
+        v.addWidget(num)
+
+        del_btn = QPushButton(tr('ref_result_delete_variant'))
+        del_btn.setFixedHeight(22)
+        del_btn.setStyleSheet(
+            "QPushButton { background:#3a2c52; color:#d8c8ff;"
+            " border:none; border-radius:4px; padding:2px 4px;"
+            " font-size:11px; font-weight:600; }"
+            "QPushButton:hover { background:#c4304c; color:#fff; }")
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.clicked.connect(lambda _, _i=idx: self._on_delete_variant(_i))
+        v.addWidget(del_btn)
+        return cell
+
+    def _on_select_variant(self, idx: int):
+        """Клик по thumbnail → переключить большое превью."""
+        if 0 <= idx < len(self._variants) and idx != self._current_idx:
+            self._current_idx = idx
+            self._refresh_preview()
+            self._refresh_strip()
+
+    def _on_delete_variant(self, idx: int):
+        """Удалить файл варианта с диска и убрать из списка. Если это
+        последний оставшийся — попап закрывается (юзер удалил все, ушёл)."""
+        if not (0 <= idx < len(self._variants)):
+            return
+        path = self._variants[idx]
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception:
+            traceback.print_exc()
+        del self._variants[idx]
+        if not self._variants:
+            self._sync_pending_to_owner()
+            self.accept()
+            return
+        if self._current_idx >= len(self._variants):
+            self._current_idx = len(self._variants) - 1
+        elif self._current_idx > idx:
+            self._current_idx -= 1
+        self._refresh_preview()
+        self._refresh_strip()
+        self._sync_pending_to_owner()
+
+    def _on_delete_all(self):
+        """Кнопка «🗑 Удалить все варианты»: удаляет все файлы с диска,
+        очищает pending, закрывает попап. Юзер психанул — ушёл."""
+        try:
+            for p in self._variants:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    traceback.print_exc()
+            self._variants = []
+            self._sync_pending_to_owner()
+            self.accept()
+        except Exception:
+            traceback.print_exc()
+            self.accept()
+
+    def _on_desc_changed(self):
+        """Если описание поменялось — обновляем имя файла (если оно
+        выглядит как auto-generated, т.е. начинается с актёрского slug)."""
+        try:
+            desc = self.desc_edit.toPlainText().strip()
+            current = self.filename_edit.text().strip()
+            new_auto = _sa.build_actor_ref_filename(self.actor_slug, desc)
+            if not current or current == self.actor_slug or current.startswith(
+                    self.actor_slug + "_"):
+                self.filename_edit.setText(new_auto)
+        except Exception:
+            pass
+
+    def append_variant(self, path: str):
+        """Добавить новый сгенерированный вариант в стек (вызывается из
+        ActorsView когда юзер запускает «Пересоздать» при открытом попапе
+        и генерация завершилась)."""
+        try:
+            self._variants.append(path)
+            self._current_idx = len(self._variants) - 1
+            self._refresh_preview()
+            self._refresh_strip()
+        except Exception:
+            traceback.print_exc()
+
+    def closeEvent(self, ev):
+        """Закрытие через X — синхронизируем pending в owner_view (если
+        юзер удалял ✕ — отразить количество). Файлы НЕ удаляются."""
+        try:
+            self._sync_pending_to_owner()
+        except Exception:
+            traceback.print_exc()
+        super().closeEvent(ev)
+
+    def _sync_pending_to_owner(self):
+        """Синхронизирует self._variants → owner_view._pending_variants[slug]."""
+        try:
+            if self.owner_view is not None:
+                self.owner_view.update_pending_variants(
+                    self.actor_slug, list(self._variants))
+        except Exception:
+            traceback.print_exc()
+
+    def _on_regen(self):
+        """«Пересоздать»: запускаем новую генерацию через owner_view и
+        ЗАКРЫВАЕМ попап. Когда генерация финиширует — путь добавится в
+        pending, юзер увидит «🆕 Готов новый референс (N+1)» на карточке."""
+        try:
+            desc = self.desc_edit.toPlainText().strip()
+            filename = self.filename_edit.text().strip()
+            if not filename:
+                filename = self.actor_slug
+            filename = re.sub(r'[^a-zA-Z0-9_-]', '_', filename)
+            if not filename:
+                filename = self.actor_slug
+
+            outfit_text = desc if desc else (
+                "Keep the person's appearance exactly as in the reference "
+                "images. Use the same clothing visible in the reference photos.")
+            tmpl = (_sa.ACTOR_REF_PROMPT_DETAILED
+                    if self._variant_id == "detailed"
+                    else _sa.ACTOR_REF_PROMPT_SIMPLE)
+            prompt = tmpl.format(outfit=outfit_text)
+
+            self._sync_pending_to_owner()
+            # Регенерация в ту же папку что у уже существующих вариантов —
+            # это `shows/<show>/refs/characters/<character>/`. Берём из
+            # parent любого варианта (все варианты лежат в одной папке).
+            try:
+                target_dir = Path(self._variants[0]).parent if self._variants \
+                    else Path(self.target_path).parent
+            except Exception:
+                target_dir = Path()
+            self.owner_view.start_ref_generation(
+                self.actor_slug, self.photos, prompt, filename,
+                self.display_name, target_dir, outfit_text=desc)
+            self.accept()
+        except Exception:
+            traceback.print_exc()
+            self.accept()
+
+    def _on_done(self):
+        """«✓ Оставить этот, остальные удалить»: удаляет ВСЕ варианты с
+        диска кроме текущего, очищает pending в owner_view, закрывает попап."""
+        try:
+            for i, p in enumerate(self._variants):
+                if i == self._current_idx:
+                    continue
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    traceback.print_exc()
+            if self.owner_view is not None:
+                self.owner_view.confirm_pending_kept(
+                    self.actor_slug, self.target_path)
+            self.accept()
+        except Exception:
+            traceback.print_exc()
+            self.accept()

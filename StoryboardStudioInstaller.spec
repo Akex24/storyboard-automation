@@ -36,6 +36,7 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
         name='Storyboard Studio Installer.app',
+        icon='assets/icon_installer.icns',
         bundle_identifier='com.storyboardstudio.installer',
         info_plist={
             'NSHighResolutionCapable': True,
@@ -47,6 +48,7 @@ else:
     exe = EXE(
         pyz, a.scripts, a.binaries, a.datas,
         name='Storyboard Studio Installer',
+        icon='assets/icon_installer.ico',
         debug=False, strip=False, upx=True, console=False,
         onefile=True,
     )

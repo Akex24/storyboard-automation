@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate storyboard images via Nano Banana 2 (NARWHAL model on flow/image/generate).
+"""Generate storyboard images via OpenAI ChatGPT image flow (api/v4/openai/image/generate).
 
 Reads # [@]imgN = filename.jpg headers from each prompt file,
 uploads all refs to fast-gen storage (up to 10 refs supported),
@@ -180,16 +180,17 @@ def main():
             print(f"  Uploading {len(refs)} reference images...")
             ref_hashes = build_ordered_ref_hashes(refs, session)
 
+        # Phase 2 hotfix #20: OpenAI flow (cost=1 vs 4 у NARWHAL).
+        # `model`/`resolution` удалены (не принимаются OpenAI endpoint'ом).
         payload = {
             "prompt": clean_prompt,
-            "aspect_ratio": "IMAGE_ASPECT_RATIO_LANDSCAPE",
-            "model": MODEL,
+            "aspect_ratio": "16:9",
         }
         if ref_hashes:
             payload["reference_images"] = ref_hashes
 
         print(f"  Prompt length: {len(clean_prompt)} chars | Refs: {len(ref_hashes)}")
-        r = session.post(f"{API_BASE}/api/v4/flow/image/generate",
+        r = session.post(f"{API_BASE}/api/v4/openai/image/generate",
                          json=payload, timeout=60)
         r.raise_for_status()
         data = r.json()

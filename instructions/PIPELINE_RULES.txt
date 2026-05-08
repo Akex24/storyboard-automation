@@ -98,7 +98,7 @@ Pipeline читает папку refs/characters/
 
 ШАПКА — вставляется в КАЖДЫЙ блок без изменений:
 ---
-Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. Text annotations contain ONLY shot number, duration and short action description. NO dialogue, NO speech, NO quotes from characters in annotations. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. STRICT NO TEXT RULE: Do NOT draw any text, words, numbers, captions, labels, annotations, speech bubbles, signs, or written symbols ANYWHERE on the image. Each panel is a pure visual scene without text. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: restrained European arthouse acting, A24 indie drama films, Nordic noir aesthetic.
 ---
 
 СТРУКТУРА БЛОКА:
@@ -111,15 +111,18 @@ CHARACTERS:
 
 Panel 1 (Far Left): [тип кадра]. [Имя] from [@]imgX [действие + взаимодействие с объектом из среды].
 Eyes [конкретная цель взгляда — НИКОГДА не в камеру]. [Микромимика].
-Text annotation below Panel 1: "SHOT 1 / [время]s / [описание]"
 
 Panel 2 (Middle Left): [тип кадра]. [описание].
-Text annotation below Panel 2: "SHOT 2 / [время]s / [описание]"
 
-Panel 3 (Middle Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+Panel 3 (Middle Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines.
 
-Panel 4 (Far Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+Panel 4 (Far Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines.
 ===ПРОМПТ_БЛОК_N_КОНЕЦ===
+
+ВАЖНО: подписи "SHOT N / Xs / описание" внутри картинки НЕ генерируются.
+Они автоматически накладываются программой Storyboard Studio при экспорте
+сториборда в PNG (кнопка «Сохранить стриборд как PNG»). На самом изображении
+шотов никакого текста быть не должно.
 
 
 =============================================================
@@ -221,11 +224,75 @@ output/
 Холодная речь = 1.8 слова/сек: 11 / 1.8 + 1.0 = 7 сек
 
 ПРАВИЛА МОНТАЖНОЙ КАРТЫ:
-- Сцена без реплики: 3–5 сек
 - Реплика НЕ делится между блоками — целиком в одном блоке
 - Сумма шотов блока НЕ превышает 15 сек
-- Итоговый хронометраж эпизода: 50–70 сек
-- ЗАПРЕЩЕНО сокращать реплики ради укорачивания хронометража
+- Итоговый хронометраж эпизода: 60–80 сек — ЖЁСТКИЕ границы. Не
+  «допустимо 50–90», не «мягкий ориентир». Карта должна укладываться
+  в 60–80 включительно.
+- Если итог <60с — добор ТОЛЬКО через расширение СУЩЕСТВУЮЩИХ реплик
+  смысловыми словами по характеру персонажа (с проверкой по Bible
+  сериала). ЗАПРЕЩЕНО ради добора длительности:
+  • добавлять новые блоки или новые шоты — структура карты определяется
+    ТОЛЬКО драматическими beats сценария, а не нехваткой секунд;
+  • сочинять новые реплики в шотах где их не было — если у Сценариста
+    шот без реплики, у Редактора он остаётся без реплики;
+  • искусственно растягивать duration_sec — каждый duration_sec = время
+    реального действия + время реплики, накрутка секунд запрещена.
+  Если после удлинения всех имеющихся реплик карта всё равно <60с —
+  оставить как есть, не выдумывать.
+- Если итог >80с — сократи длительности безголосовых шотов и/или
+  ужми реплики до сути. Структуру (количество блоков/шотов) не трогай.
+- ЗАПРЕЩЕНО сокращать реплики ради укорачивания хронометража до 60с
+  (только если общий итог >80с — тогда можно ужать).
+
+КОЛИЧЕСТВО БЛОКОВ — ЦЕЛЕВОЕ 5-6:
+- 5-6 блоков на эпизод 60-80с — оптимум.
+- Допустимо 4-7. БОЛЬШЕ 7 = слишком мелко дробишь, объедини соседние.
+
+РАЗБИВКА НА БЛОКИ — ГЛАВНОЕ ПРАВИЛО:
+- Один блок = один ЗНАЧИМЫЙ драматический beat (фаза с одной целью
+  героя). Внутри beat'а — 2-4 шота с разных ракурсов, не каждый
+  кадр в свой блок.
+- Пример эпизода «вторжение в спальню» (5 блоков):
+    Блок 1 «Подготовка в коридоре» = заряжает + стоит + идёт + рука
+                                     на ручке (4 шота, ~13с)
+    Блок 2 «Вторжение + шок» = дверь + крик + Lora/Mark замерли
+                                (3-4 шота, ~12с)
+    Блок 3 «Наглость Mark'а» = Mark «Relax man» (1 шот, ~5с)
+    Блок 4 «Lora-щит + кульминация» = выпрыгивает + щит + умоляет +
+                                        David поднимает (3-4 шота, ~13с)
+    Блок 5 «Выстрел + cut to black» (1 шот, ~5с)
+- ПРОВЕРЬ перед сдачей: нет ли блоков которые можно объединить в
+  «подготовка / реакция / кульминация»? Если да — объедини.
+
+ИЗБЕГАЙ ВИЗУАЛЬНО ПОХОЖИХ ШОТОВ В БЛОКЕ:
+- Если SHOT 1 и SHOT 2 — оба wide shot одного места с теми же
+  людьми в почти том же положении — это ДУБЛЬ. Сделай SHOT 2
+  другим типом кадра (close-up / over-the-shoulder) или объедини.
+
+ЕСТЕСТВЕННАЯ ДЛИТЕЛЬНОСТЬ ШОТА (КРИТИЧЕСКИ ВАЖНО — НЕ РАСТЯГИВАТЬ):
+duration_sec шота = ВРЕМЯ РЕАЛЬНОГО ДЕЙСТВИЯ + время реплики (если есть).
+- Простой жест (поворот головы, удар, выстрел): 2с
+- Среднее действие (поднять предмет, открыть дверь, шаг к...): 3-4с
+- Сложное действие (пройти через комнату, заряжать оружие): 4-6с
+- Заморозка-инсёрт (close-up на лицо, реакция без слов): 2-3с
+- Шот без реплики БОЛЬШЕ 5с — допустим ТОЛЬКО при ЯВНО сложном действии
+  в описании (например «снаряжает ружьё двумя патронами»). Иначе это
+  растяжка, которую Чекер ловит как `block_N_shot_M_artificially_long`.
+
+ЕСЛИ ИТОГ ЭПИЗОДА < 60 СЕК — ДОБОР ЧЕРЕЗ РАСШИРЕНИЕ РЕПЛИК:
+1. (ЛУЧШИЙ способ) Расширь существующие реплики СМЫСЛОВЫМИ словами по
+   характеру персонажа из Bible. Пример:
+     "You bastard!" (4с) → "You bastard! In my own bed, after seven years!" (7с)
+   ЗАПРЕЩЕНО добивать паузами/междометиями ("You... bastard...") — это
+   театральный приём, плохо читается в Seedance.
+2. (СРЕДНИЙ) Если в сцене есть невербальный момент где персонаж
+   ЛОГИЧНО МОГ БЫ что-то сказать — добавь короткую реплику (3-8 слов EN).
+3. (ХУДШИЙ) Если #1 и #2 не помогают — увеличить шот с КОНКРЕТНЫМ сложным
+   действием (не простым). Максимум +1с на шот.
+ОБЯЗАТЕЛЬНО при расширении реплик: сверять с Bible (характер) и с
+ДРУГИМИ ЭПИЗОДАМИ (не сказать того что персонаж узнаёт позже / не
+противоречить уже показанному).
 
 ЭТАП 3 — ПРОМПТЫ СТОРИБОРДОВ:
 1. Для каждого блока сформировать список тегов (среда → объекты → персонажи)

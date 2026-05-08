@@ -10,10 +10,17 @@ a = Analysis(
     ['storyboard_app.py'],
     pathex=[],
     binaries=[],
-    datas=[(certifi.where(), 'certifi')],
+    datas=[
+        (certifi.where(), 'certifi'),
+        # Иконки табов (Lucide SVG) и иконки приложения
+        ('assets/icons', 'assets/icons'),
+    ],
     hiddenimports=[
         'PIL._tkinter_finder',
         'PyQt6.QtPrintSupport',
+        'PyQt6.QtSvg',          # Для рендера SVG-иконок табов
+        'PyQt6.QtSvgWidgets',
+        'docx',
     ],
     hookspath=[],
     hooksconfig={},
@@ -45,6 +52,7 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
         name='Storyboard Studio.app',
+        icon='assets/icon.icns',
         bundle_identifier='com.storyboardstudio.app',
         info_plist={
             'NSHighResolutionCapable': True,
@@ -57,6 +65,7 @@ else:
     exe = EXE(
         pyz, a.scripts, a.binaries, a.datas,
         name='Storyboard Studio',
+        icon='assets/icon.ico',
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,

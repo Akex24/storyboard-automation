@@ -1,0 +1,113 @@
+name: Build Windows .exe
+
+# Триггер: создание GitHub Release (тег `app-v*`).
+# SendUpdateThread в Studio создаёт Release через REST API
+# (`POST /releases`) — это НЕ git push тега, поэтому event `push: tags`
+# может не сработать. `release: published` срабатывает гарантированно
+# при API-создании Release с draft=false (как у нас в create_github_release).
+# Mac-сборка остаётся локальной (./build.sh + SendUpdateThread грузит .app
+# под именем `Storyboard Studio vX.Y.Z-mac.zip`). Этот workflow добавляет
+# к тому же Release файл `… vX.Y.Z-win.zip` с .exe.
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      # Нужно чтобы upload в Release работал через GITHUB_TOKEN.
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          # При release event default ref = тег. Для checkout берём
+          # содержимое тега (там же лежит обновлённый version.json и
+          # .spec файлы текущего релиза).
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/StoryboardStudio.spec') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install build dependencies
+        # Важно: тот же набор пакетов что в BUILD_WINDOWS.md + certifi (он
+        # явно используется в .spec через `certifi.where()`).
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyQt6 Pillow requests pyinstaller certifi python-docx
+
+      - name: Extract version from release
+        id: version
+        shell: bash
+        env:
+          # tag_name приходит из release event (надёжнее чем парсить
+          # GITHUB_REF — `release: published` устанавливает event payload).
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          TAG="$TAG_NAME"                          # app-v1.0.14
+          VERSION="${TAG#app-v}"                   # 1.0.14
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "Building Storyboard Studio v$VERSION for Windows"
+
+      - name: Build .exe with PyInstaller
+        run: pyinstaller StoryboardStudio.spec --noconfirm
+
+      - name: Verify .exe exists
+        shell: bash
+        run: |
+          if [ ! -f "dist/Storyboard Studio.exe" ]; then
+            echo "::error ::dist/Storyboard Studio.exe not found"
+            ls -la dist/ || true
+            exit 1
+          fi
+          ls -la "dist/Storyboard Studio.exe"
+
+      - name: Build installer .exe
+        run: pyinstaller StoryboardStudioInstaller.spec --noconfirm
+
+      - name: Create ZIP asset
+        shell: pwsh
+        # Имя строго совпадает с паттерном `…-win.zip` чтобы
+        # `fetch_release_asset_info` подхватил его на стороне коллеги-Win.
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $zipName = "Storyboard Studio v$version-win.zip"
+          $files = @(
+            "dist/Storyboard Studio.exe",
+            "dist/Storyboard Studio Installer.exe"
+          )
+          # Проверяем что оба файла существуют
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) {
+              Write-Error "Missing: $f"
+              exit 1
+            }
+          }
+          Compress-Archive -Path $files -DestinationPath "dist/$zipName" -Force
+          Get-Item "dist/$zipName" | Select-Object FullName, Length
+
+      - name: Upload .zip to existing Release
+        # Тег уже создан админом локально через SendUpdateThread (вместе с
+        # Mac-zip). Этот шаг просто прикрепляет к нему наш Win-zip.
+        # Использует встроенный GITHUB_TOKEN — отдельный PAT не нужен.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $tag     = "${{ steps.version.outputs.tag }}"
+          $zipPath = "dist/Storyboard Studio v$version-win.zip"
+          gh release upload "$tag" "$zipPath" --clobber

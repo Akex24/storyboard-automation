@@ -1,0 +1,35 @@
+{
+  "artem": {
+    "display_name": "Артем",
+    "roles": {
+      "finalnyy_raschet": "david"
+    }
+  },
+  "zhenya": {
+    "display_name": "Женя",
+    "roles": {
+      "finalnyy_raschet": "advokat"
+    }
+  },
+  "vova": {
+    "display_name": "Вова",
+    "roles": {
+      "finalnyy_raschet": "mark"
+    }
+  },
+  "akter_4": {
+    "display_name": "актер 4",
+    "roles": {
+      "finalnyy_raschet": "lora"
+    }
+  },
+  "akter_5": {
+    "display_name": "актер 5"
+  },
+  "akter_6": {
+    "display_name": "актер 6",
+    "roles": {
+      "finalnyy_raschet": "advokat"
+    }
+  }
+}

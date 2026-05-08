@@ -82,7 +82,7 @@ FACIAL EXPRESSION STYLE (mandatory for all character faces):
 Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated 
 open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces 
 show tension through jaw, eyes, slight asymmetry — not through wide-open features. 
-Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+Style reference: restrained European arthouse acting, A24 indie drama films, Nordic noir aesthetic.
 ```
 
 Этот блок — часть шапки, идёт вместе со стилевой формулой из раздела 2.
@@ -244,7 +244,7 @@ Text annotation below Panel 2: "SHOT 2 / 4s / Mark disgusted, delivers line"
 
 Шапка (обновлена — добавлен блок FACIAL EXPRESSION STYLE):
 ```
-Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. Text annotations contain ONLY shot number, duration and short action description. NO dialogue, NO speech, NO quotes from characters in annotations. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. STRICT NO TEXT RULE: Do NOT draw any text, words, numbers, captions, labels, annotations, speech bubbles, signs, or written symbols ANYWHERE on the image. Each panel is a pure visual scene without text. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: restrained European arthouse acting, A24 indie drama films, Nordic noir aesthetic.
 ```
 
 ### Шаблон блока:
@@ -253,7 +253,7 @@ Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels sid
 
 ```
 ===ПРОМПТ_БЛОК_N_НАЧАЛО===
-Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. Text annotations contain ONLY shot number, duration and short action description. NO dialogue, NO speech, NO quotes from characters in annotations. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: Michael Fassbender's restrained acting, A24 drama films, Nordic noir.
+Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. STRICT NO TEXT RULE: Do NOT draw any text, words, numbers, captions, labels, annotations, speech bubbles, signs, or written symbols ANYWHERE on the image. Each panel is a pure visual scene without text. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: restrained European arthouse acting, A24 indie drama films, Nordic noir aesthetic.
 
 [[@]img1 - Env ref, [@]img3 - Object ref, [@]img7 - Laura, [@]img8 - David]
 CHARACTERS:
@@ -262,22 +262,26 @@ CHARACTERS:
 
 Panel 1 (Far Left): [Тип кадра]. [Имя] from [@]imgX [действие + взаимодействие с объектом].
 Eyes [конкретная цель взгляда]. [Микромимика — не ярлык эмоции].
-Text annotation below Panel 1: "SHOT 1 / [время] / [описание]"
 
 Panel 2 (Middle Left): [Тип кадра]. [Имя] from [@]imgX [действие].
 [Если 2+ персонажа — пространственная геометрия по разделу 5.1]
 Eyes [конкретная цель взгляда]. [Микромимика].
-Text annotation below Panel 2: "SHOT 2 / [время] / [описание]"
 
-Panel 3 (Middle Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+Panel 3 (Middle Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines.
 
-Panel 4 (Far Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.
+Panel 4 (Far Right): COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines.
 ===ПРОМПТ_БЛОК_N_КОНЕЦ===
 ```
 
 ЗАПРЕЩЕНО сокращать запись пустой панели. Нельзя писать просто BLANK или EMPTY.
 Всегда пишется полностью:
-`COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. No text annotation below.`
+`COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines.`
+
+ВАЖНО — ПОДПИСИ ШОТОВ НЕ ГЕНЕРИРУЮТСЯ:
+Подписи "SHOT N / Xs / описание" внутри картинки **не пишутся в промпте**.
+Они автоматически накладываются программой Storyboard Studio при экспорте
+сториборда в PNG (кнопка «Сохранить стриборд как PNG»). На самом изображении
+шотов никакого текста, цифр, букв, аннотаций быть не должно.
 
 ---
 

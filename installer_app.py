@@ -64,8 +64,171 @@ GITHUB_BRANCH = "main"
 
 CLAUDE_CODE_DOWNLOAD_PAGE = "https://claude.ai/download"
 
+# Native installer Claude Code CLI (one-line download без Node.js / npm).
+# Та же команда что в документации Anthropic. Для macOS запускается через
+# bash, для Windows — через PowerShell. После установки бинарник лежит
+# в ~/.local/bin/claude (Mac) или %USERPROFILE%\.local\bin\claude (Win).
+CLAUDE_CLI_INSTALL_URL_MAC = "https://claude.ai/install.sh"
+CLAUDE_CLI_INSTALL_URL_WIN = "https://claude.ai/install.ps1"
+
 IS_MAC     = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
+
+
+def find_claude_cli_path() -> Optional[str]:
+    """Ищет установленный Claude Code CLI на машине.
+
+    macOS: shutil.which → ~/.local/bin/claude → /opt/homebrew/bin → /usr/local/bin
+    Windows: shutil.which → %USERPROFILE%\\.local\\bin\\claude.exe → %LOCALAPPDATA%
+
+    Возвращает абсолютный путь или None если не найден."""
+    found = shutil.which("claude")
+    if found and Path(found).exists():
+        return found
+    candidates = []
+    home = Path.home()
+    if IS_WINDOWS:
+        candidates += [
+            str(home / ".local" / "bin" / "claude.exe"),
+            str(home / ".local" / "bin" / "claude"),
+            str(home / "AppData" / "Local" / "Anthropic" / "claude.exe"),
+        ]
+    else:
+        candidates += [
+            str(home / ".local" / "bin" / "claude"),
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ]
+    for c in candidates:
+        if c and Path(c).exists() and Path(c).is_file():
+            return c
+    return None
+
+
+class InstallClaudeCliThread(QThread):
+    """Фоновый поток: запускает официальный native installer Claude Code CLI.
+
+    macOS:   bash -c "curl -fsSL https://claude.ai/install.sh | bash"
+    Windows: powershell -Command "irm https://claude.ai/install.ps1 | iex"
+
+    После завершения проверяет наличие бинарника. Эмитит progress (для
+    лога), finished (с путём к claude) и error (если что-то сломалось)."""
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(str)   # путь к бинарнику
+    error    = pyqtSignal(str)
+
+    def run(self):
+        try:
+            if IS_MAC:
+                self.progress.emit("Скачиваю официальный установщик с claude.ai…")
+                cmd = [
+                    "/bin/bash", "-c",
+                    f"curl -fsSL {CLAUDE_CLI_INSTALL_URL_MAC} | bash"
+                ]
+            elif IS_WINDOWS:
+                self.progress.emit("Скачиваю официальный установщик с claude.ai…")
+                # PowerShell -Command + Bypass policy чтобы не упереться
+                # в RemoteSigned execution policy на чистой Windows.
+                cmd = [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-Command",
+                    f"irm {CLAUDE_CLI_INSTALL_URL_WIN} | iex"
+                ]
+            else:
+                self.error.emit(f"ОС не поддерживается: {sys.platform}")
+                return
+
+            # 2026-05-08: CREATE_NO_WINDOW guard для Win — не показывать
+            # cmd-окно поверх установщика во время фонового powershell.
+            run_kwargs = dict(capture_output=True, text=True, timeout=300)
+            if IS_WINDOWS:
+                run_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+            proc = subprocess.run(cmd, **run_kwargs)
+            if proc.returncode != 0:
+                msg = (proc.stderr or proc.stdout or "exit != 0").strip()[:500]
+                self.error.emit(f"Установщик завершился с ошибкой:\n{msg}")
+                return
+
+            cli = find_claude_cli_path()
+            if not cli:
+                # Иногда PATH ещё не обновился в spawned shell — глянем явно
+                home = Path.home()
+                guess = (home / ".local" / "bin" /
+                         ("claude.exe" if IS_WINDOWS else "claude"))
+                if guess.exists():
+                    cli = str(guess)
+            if not cli:
+                self.error.emit(
+                    "Установка прошла, но бинарник `claude` не найден.\n"
+                    "Закрой и открой терминал заново — возможно нужно "
+                    "перечитать PATH.")
+                return
+            self.finished.emit(cli)
+        except subprocess.TimeoutExpired:
+            self.error.emit("Установка заняла больше 5 минут — прервано.")
+        except Exception as e:
+            self.error.emit(f"Ошибка: {e}")
+
+
+class CheckClaudeAuthThread(QThread):
+    """Фоновая проверка: установлен ли CLI И залогинен ли пользователь.
+
+    Пытается выполнить очень короткий headless-запрос:
+        claude -p "ok" --dangerously-skip-permissions
+    с timeout 25 секунд. По результату:
+      • returncode=0 + непустой ответ → CLI готов, юзер залогинен
+      • returncode!=0 + stderr содержит auth-keyword → CLI установлен, не залогинен
+      • CLI не найден → not_installed
+      • Прочее → error
+
+    Эмитит сигнал status_ready(state, detail) где state одно из:
+      'ready'           — всё готово
+      'not_logged_in'   — CLI есть, нужен claude login
+      'not_installed'   — CLI не найден на машине
+      'error'           — другая проблема (нет интернета, claude.ai недоступен)
+    """
+    status_ready = pyqtSignal(str, str)   # (state, detail)
+
+    def run(self):
+        cli = find_claude_cli_path()
+        if not cli:
+            self.status_ready.emit('not_installed', '')
+            return
+        try:
+            # 2026-05-08: CREATE_NO_WINDOW guard для Win.
+            run_kwargs = dict(capture_output=True, text=True, timeout=25)
+            if IS_WINDOWS:
+                run_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+            proc = subprocess.run(
+                [cli, "-p", "ok", "--dangerously-skip-permissions"],
+                **run_kwargs,
+            )
+            stderr_low = (proc.stderr or '').lower()
+            stdout_low = (proc.stdout or '').lower()
+            auth_keywords = ('not logged in', 'log in', 'login required',
+                             'unauthor', 'not authent', 'authenticate',
+                             'no credentials', 'no api key')
+            if proc.returncode == 0 and (proc.stdout or '').strip():
+                self.status_ready.emit('ready', cli)
+                return
+            if any(k in stderr_low or k in stdout_low for k in auth_keywords):
+                self.status_ready.emit('not_logged_in', cli)
+                return
+            # Возможно просто пустой ответ — но returncode=0 значит работает
+            if proc.returncode == 0:
+                self.status_ready.emit('ready', cli)
+                return
+            msg = (proc.stderr or proc.stdout or 'unknown').strip()[:300]
+            self.status_ready.emit('error', msg)
+        except subprocess.TimeoutExpired:
+            # Если ответ не пришёл за 25с — скорее всего что-то сломано
+            # (нет интернета или auth завис). Считаем not_logged_in чтобы юзер
+            # попробовал авторизоваться заново.
+            self.status_ready.emit('not_logged_in', cli)
+        except Exception as e:
+            self.status_ready.emit('error', str(e)[:300])
 
 
 def github_zip_url() -> str:
@@ -275,8 +438,12 @@ class StepPython(StepBase):
         py = find_system_python()
         if py:
             try:
-                r = subprocess.run([py, "--version"],
-                                    capture_output=True, text=True, timeout=5)
+                # 2026-05-08: CREATE_NO_WINDOW guard для Win — иначе при
+                # каждом старте установщика мигает чёрное cmd-окно.
+                run_kwargs = dict(capture_output=True, text=True, timeout=5)
+                if IS_WINDOWS:
+                    run_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+                r = subprocess.run([py, "--version"], **run_kwargs)
                 if r.returncode == 0:
                     ver = r.stdout.strip() or r.stderr.strip()
                     self.status.setText(f"✓ {ver} установлен")
@@ -476,56 +643,304 @@ class StepKey(StepBase):
 
 
 class StepClaudeCode(StepBase):
+    """Шаг 4: установка Claude Code CLI (нужен для автообновления geometry
+    после регенерации картинок локаций в Storyboard Studio).
+
+    Логика:
+      1. При входе — проверяем установлен ли уже CLI (find_claude_cli_path).
+         Если да → показываем «✓ установлен» + пропускаем тяжёлые шаги.
+      2. Если нет → большая кнопка «Установить автоматически» запускает
+         InstallClaudeCliThread (curl|bash на Mac, irm|iex в PowerShell на
+         Win). Прогресс-бар + статус.
+      3. После установки → кнопка «Открыть терминал для входа» — запускает
+         внешний терминал с командой `claude login` (юзер вручную проходит
+         OAuth-флоу в браузере).
+      4. Кнопка «Уже установлен / Пропустить» — для тех у кого CLI стоит
+         или кто не хочет автомат geometry.
+    """
     def __init__(self, parent=None):
-        super().__init__(4, 5, "Установи Claude Code", parent)
+        super().__init__(4, 5, "Установи Claude Code CLI", parent)
+        self._install_thread: Optional[InstallClaudeCliThread] = None
+        self._auth_thread:    Optional[CheckClaudeAuthThread]  = None
+        self._cli_path: Optional[str] = None
+        # Текущее состояние из CheckClaudeAuthThread:
+        # 'unknown' / 'checking' / 'ready' / 'not_logged_in' / 'not_installed' / 'error'
+        self._state: str = 'unknown'
 
         info = QLabel(
-            "Claude Code — это инструмент в котором ты пишешь сценарий\n"
-            "и получаешь готовые сториборды.\n\n"
-            "Если у тебя уже установлен Claude Code — пропусти этот шаг."
+            "Claude Code CLI — это инструмент Anthropic, который Storyboard "
+            "Studio использует для АВТОМАТИЧЕСКОГО обновления описаний "
+            "локаций (geometry-файлов) после того как ты перегенерируешь "
+            "картинку локации.\n\n"
+            "Без него всё равно работает — но описания нужно будет обновлять "
+            "вручную через попап с фразой для копирования."
         )
         info.setObjectName("desc")
         info.setWordWrap(True)
         self.lay.addWidget(info)
 
-        download_btn = QPushButton("⬇  Открыть страницу скачивания Claude Code")
-        download_btn.setObjectName("primary")
-        download_btn.setMinimumHeight(40)
-        download_btn.clicked.connect(self._open_download)
-        self.lay.addWidget(download_btn)
+        # Статусная плашка (заполняется в _refresh_status)
+        self.status_lbl = QLabel("Проверяю установку…")
+        self.status_lbl.setObjectName("desc")
+        self.status_lbl.setWordWrap(True)
+        self.status_lbl.setStyleSheet(
+            "padding: 14px 16px; background: #1a1424; "
+            "border: 1px solid #322545; border-radius: 8px; font-size: 13px;")
+        self.lay.addWidget(self.status_lbl)
 
-        hint = QLabel(
-            "После установки авторизуйся в Claude Code своим аккаунтом\n"
-            "(админ проекта подскажет если нужен общий аккаунт)."
+        # Прогресс-бар установки (изначально скрыт)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)   # неопределённый (busy indicator)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
+        self.progress.hide()
+        self.lay.addWidget(self.progress)
+
+        # Кнопки действий
+        self.install_btn = QPushButton("⬇  Установить Claude Code CLI автоматически")
+        self.install_btn.setObjectName("primary")
+        self.install_btn.setMinimumHeight(40)
+        self.install_btn.clicked.connect(self._on_install)
+        self.lay.addWidget(self.install_btn)
+
+        self.login_btn = QPushButton("🔑  Открыть терминал и войти в Claude")
+        self.login_btn.setObjectName("primary")
+        self.login_btn.setMinimumHeight(40)
+        self.login_btn.clicked.connect(self._open_terminal_login)
+        self.login_btn.hide()
+        self.lay.addWidget(self.login_btn)
+
+        # Кнопка повторной проверки (видима только в not_logged_in / error
+        # состоянии — для тех кто только что залогинился вручную в терминале
+        # и хочет чтобы плашка обновилась без ручного клика «Назад»)
+        self.recheck_btn = QPushButton("🔄  Проверить ещё раз")
+        self.recheck_btn.setObjectName("secondary")
+        self.recheck_btn.setMinimumHeight(34)
+        self.recheck_btn.clicked.connect(self._refresh_status)
+        self.recheck_btn.hide()
+        self.lay.addWidget(self.recheck_btn)
+
+        login_hint = QLabel(
+            "В открывшемся терминале выбери «Use existing subscription» и "
+            "войди под общим аккаунтом (админ проекта подскажет логин).\n"
+            "После «✓ Logged in as ...» закрой терминал и нажми "
+            "«🔄 Проверить ещё раз» — плашка должна стать зелёной."
         )
-        hint.setObjectName("desc")
-        hint.setWordWrap(True)
-        self.lay.addWidget(hint)
+        login_hint.setObjectName("desc")
+        login_hint.setWordWrap(True)
+        login_hint.setStyleSheet("font-size: 11px; color: #888;")
+        self.login_hint = login_hint
+        self.lay.addWidget(login_hint)
+        login_hint.hide()
 
         self.lay.addStretch()
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        skip = QPushButton("Уже установлен / Пропустить")
+        skip = QPushButton("Пропустить")
         skip.setObjectName("secondary")
         skip.clicked.connect(self.next_requested.emit)
         btn_row.addWidget(skip)
-        next_btn = QPushButton("Продолжить →")
-        next_btn.setObjectName("primary")
-        next_btn.clicked.connect(self.next_requested.emit)
-        btn_row.addWidget(next_btn)
+        self.next_btn = QPushButton("Продолжить →")
+        self.next_btn.setObjectName("primary")
+        self.next_btn.clicked.connect(self.next_requested.emit)
+        btn_row.addWidget(self.next_btn)
         self.lay.addLayout(btn_row)
 
-    def _open_download(self):
-        url = CLAUDE_CODE_DOWNLOAD_PAGE
-        if IS_MAC:
-            subprocess.run(["open", url])
-        elif IS_WINDOWS:
-            os.startfile(url)
+        # При первом показе шага — проверяем установку
+        QTimer.singleShot(50, self._refresh_status)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # Перепроверяем при каждом возврате на этот шаг (например юзер
+        # установил вручную и вернулся через «Назад»)
+        self._refresh_status()
+
+    def _refresh_status(self):
+        """Двухступенчатая проверка состояния:
+
+        1. МГНОВЕННО — проверяем есть ли бинарник на диске
+           (find_claude_cli_path). Если нет → показываем UI «нет CLI».
+        2. Если бинарник есть → запускаем фоновую `CheckClaudeAuthThread`
+           которая делает короткий headless-запрос (`claude -p "ok"`) и
+           определяет реально ли работает (то есть есть ли auth-токен).
+           Пока проверка идёт — показываем «🔍 Проверяю авторизацию…».
+           По результату: 'ready' / 'not_logged_in' / 'error' → UI.
+        """
+        self._cli_path = find_claude_cli_path()
+        if not self._cli_path:
+            self._set_state('not_installed')
+            return
+        # Бинарник есть — запускаем фоновую проверку auth
+        self._set_state('checking')
+        # Если предыдущий thread ещё бежит — не запускаем новый (избегаем
+        # одновременных параллельных проверок если юзер быстро прыгает по шагам)
+        if self._auth_thread is not None and self._auth_thread.isRunning():
+            return
+        self._auth_thread = CheckClaudeAuthThread()
+        self._auth_thread.status_ready.connect(self._on_auth_check_done)
+        self._auth_thread.start()
+
+    def _on_auth_check_done(self, state: str, detail: str):
+        """Слот результата CheckClaudeAuthThread."""
+        self._set_state(state, detail)
+
+    # --- единая точка обновления UI по состоянию ---
+
+    def _set_state(self, state: str, detail: str = ''):
+        """Переключает плашку и видимость кнопок под новое состояние.
+
+        Состояния:
+          'not_installed' — серая плашка + кнопка «Установить»
+          'checking'      — жёлтая плашка «🔍 Проверяю авторизацию…»
+                            (показывается ~5-15с пока claude -p отрабатывает)
+          'ready'         — ЗЕЛЁНАЯ плашка «✓ всё готово» + только Продолжить
+          'not_logged_in' — оранжевая плашка + кнопка «Открыть терминал»
+          'error'         — красная плашка + кнопка «Открыть терминал» (на всякий)
+        """
+        self._state = state
+
+        # Скрыть всё, потом показать нужное
+        self.install_btn.hide()
+        self.login_btn.hide()
+        self.login_hint.hide()
+        self.recheck_btn.hide()
+
+        if state == 'not_installed':
+            ostxt = "macOS" if IS_MAC else ("Windows" if IS_WINDOWS else sys.platform)
+            self.status_lbl.setText(
+                f"Claude Code CLI не найден на твоей машине.\n"
+                f"Нажми кнопку ниже — установщик скачает официальный "
+                f"native-инсталлер Anthropic ({ostxt}). Это займёт 30-90 секунд.")
+            self.status_lbl.setStyleSheet(
+                "padding: 14px 16px; background: #1a1424; "
+                "border: 1px solid #322545; border-radius: 8px; "
+                "color: #ddd; font-size: 13px;")
+            self.install_btn.show()
+
+        elif state == 'checking':
+            self.status_lbl.setText(
+                f"🔍  Claude Code CLI найден ({self._cli_path or '?'}).\n"
+                f"Проверяю авторизацию… (5-15 секунд)")
+            self.status_lbl.setStyleSheet(
+                "padding: 14px 16px; background: #2a1f0a; "
+                "border: 1px solid #4a3010; border-radius: 8px; "
+                "color: #ffcc66; font-size: 13px;")
+
+        elif state == 'ready':
+            self.status_lbl.setText(
+                f"✓  Всё готово!\n"
+                f"Claude CLI установлен и авторизован.\n\n"
+                f"Storyboard Studio будет автоматически обновлять описания "
+                f"локаций после регенерации картинок — без твоего участия. "
+                f"Можешь продолжать.")
+            self.status_lbl.setStyleSheet(
+                "padding: 14px 16px; background: #14241a; "
+                "border: 1px solid #2d5535; border-radius: 8px; "
+                "color: #b0e0b0; font-size: 13px;")
+
+        elif state == 'not_logged_in':
+            self.status_lbl.setText(
+                f"⚠  CLI установлен, но не залогинен.\n\n"
+                f"Нажми кнопку ниже — откроется терминал с командой "
+                f"авторизации. Войди под общим аккаунтом Claude (админ "
+                f"проекта подскажет логин), потом закрой терминал и "
+                f"нажми «🔄 Проверить ещё раз».")
+            self.status_lbl.setStyleSheet(
+                "padding: 14px 16px; background: #2a1f0a; "
+                "border: 1px solid #4a3010; border-radius: 8px; "
+                "color: #ffcc66; font-size: 13px;")
+            self.login_btn.show()
+            self.recheck_btn.show()
+            self.login_hint.show()
+
+        elif state == 'error':
+            self.status_lbl.setText(
+                f"⚠  Не удалось проверить статус автоматически:\n{detail[:200]}\n\n"
+                f"Попробуй открыть терминал и войти вручную — или просто "
+                f"нажми «Пропустить» (geometry будет обновляться вручную "
+                f"через попап с фразой для копирования).")
+            self.status_lbl.setStyleSheet(
+                "padding: 14px 16px; background: #2a0a14; "
+                "border: 1px solid #4a1020; border-radius: 8px; "
+                "color: #ff8080; font-size: 13px;")
+            self.login_btn.show()
+            self.recheck_btn.show()
+
+    def _on_install(self):
+        if self._install_thread is not None and self._install_thread.isRunning():
+            return
+        self.install_btn.setEnabled(False)
+        self.next_btn.setEnabled(False)
+        self.progress.show()
+        self.status_lbl.setText("Устанавливаю Claude Code CLI… (~30-90 секунд)")
+        self.status_lbl.setStyleSheet(
+            "padding: 14px 16px; background: #2a1f0a; "
+            "border: 1px solid #4a3010; border-radius: 8px; "
+            "color: #ffcc66; font-size: 13px;")
+        self._install_thread = InstallClaudeCliThread()
+        self._install_thread.progress.connect(self.status_lbl.setText)
+        self._install_thread.finished.connect(self._on_install_done)
+        self._install_thread.error.connect(self._on_install_error)
+        self._install_thread.start()
+
+    def _on_install_done(self, cli_path: str):
+        self.progress.hide()
+        self.install_btn.setEnabled(True)
+        self.next_btn.setEnabled(True)
+        self._refresh_status()  # покажет «✓ установлен» + кнопку login
+
+    def _on_install_error(self, msg: str):
+        self.progress.hide()
+        self.install_btn.setEnabled(True)
+        self.next_btn.setEnabled(True)
+        self.status_lbl.setText(
+            f"✗ Не удалось установить автоматически:\n{msg}\n\n"
+            f"Попробуй вручную в терминале: "
+            f"{'curl -fsSL https://claude.ai/install.sh | bash' if IS_MAC else 'irm https://claude.ai/install.ps1 | iex'}")
+        self.status_lbl.setStyleSheet(
+            "padding: 14px 16px; background: #2a0a14; "
+            "border: 1px solid #4a1020; border-radius: 8px; "
+            "color: #ff8080; font-size: 13px;")
+
+    def _open_terminal_login(self):
+        """Открывает внешний терминал с командой `claude login`.
+        macOS: AppleScript → Terminal.app
+        Windows: cmd /K claude login (новое окно)
+        """
+        try:
+            if IS_MAC:
+                # AppleScript: новое окно Terminal с командой
+                subprocess.Popen([
+                    "osascript", "-e",
+                    'tell application "Terminal" to do script "claude login"',
+                    "-e",
+                    'tell application "Terminal" to activate'
+                ])
+            elif IS_WINDOWS:
+                # /K = выполнить и оставить окно открытым
+                subprocess.Popen(
+                    ["cmd", "/K", "claude login"],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE)
+            else:
+                QMessageBox.information(
+                    self, "Открой терминал вручную",
+                    "Открой свой терминал и выполни команду:\n\nclaude login")
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Не удалось открыть терминал",
+                f"Открой терминал вручную и выполни:\n\nclaude login\n\n({e})")
 
 
 class StepDone(StepBase):
+    """Финальный шаг — установщик закончил свою работу.
+    Storyboard Studio.app — отдельное приложение, его юзер скачивает
+    отдельно (от админа или с GitHub Releases). Установщик НЕ пытается
+    его запустить (раньше была кнопка «Запустить» которая падала с
+    ошибкой Python если .app не находился). Вместо этого — просто
+    инструкция + кнопка «Открыть папку проекта»."""
     project_path: Optional[Path] = None
-    launch_requested = pyqtSignal()
+    open_folder_requested = pyqtSignal()
+    close_requested       = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(5, 5, "Всё готово!", parent)
@@ -536,24 +951,34 @@ class StepDone(StepBase):
         self.lay.addWidget(big)
 
         desc = QLabel(
-            "Теперь ты можешь:\n\n"
-            "  • Запустить Storyboard Studio чтобы смотреть сториборды\n"
-            "  • Открыть Claude Code и работать со сценарием\n"
-            "  • Получать обновления автоматически — кнопка появится в приложении"
+            "Установлено:\n"
+            "  ✓  Проект Storyboard Automation скачан с GitHub\n"
+            "  ✓  Fast Gen AI ключ сохранён\n"
+            "  ✓  Claude Code CLI установлен и авторизован\n\n"
+            "Что дальше:\n"
+            "  • Скачай и запусти Storyboard Studio.app — это отдельное\n"
+            "    приложение, ссылку получишь от админа проекта.\n"
+            "  • При запуске Storyboard Studio укажи папку проекта (та куда\n"
+            "    сейчас распаковался репозиторий)."
         )
         desc.setObjectName("desc")
         desc.setWordWrap(True)
-        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.lay.addWidget(desc)
 
         self.lay.addStretch()
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        launch_btn = QPushButton("🚀  Запустить Storyboard Studio")
-        launch_btn.setObjectName("primary")
-        launch_btn.setMinimumHeight(44)
-        launch_btn.clicked.connect(self.launch_requested.emit)
-        btn_row.addWidget(launch_btn)
+        folder_btn = QPushButton("📁  Открыть папку проекта")
+        folder_btn.setObjectName("secondary")
+        folder_btn.setMinimumHeight(40)
+        folder_btn.clicked.connect(self.open_folder_requested.emit)
+        btn_row.addWidget(folder_btn)
+        close_btn = QPushButton("Закрыть установщик")
+        close_btn.setObjectName("primary")
+        close_btn.setMinimumHeight(40)
+        close_btn.clicked.connect(self.close_requested.emit)
+        btn_row.addWidget(close_btn)
         btn_row.addStretch()
         self.lay.addLayout(btn_row)
 
@@ -585,7 +1010,8 @@ class InstallerWindow(QMainWindow):
         self.dl.next_requested.connect(self._after_download)
         self.key.next_requested.connect(lambda: self._goto(4))
         self.cc.next_requested.connect(lambda: self._goto(5))
-        self.done.launch_requested.connect(self._launch_app)
+        self.done.open_folder_requested.connect(self._open_project_folder)
+        self.done.close_requested.connect(self.close)
 
     def _goto(self, idx: int):
         self.stack.setCurrentIndex(idx)
@@ -597,55 +1023,30 @@ class InstallerWindow(QMainWindow):
             self.done.project_path = self.project_path
         self._goto(3)
 
-    def _launch_app(self):
+    def _open_project_folder(self):
+        """Открывает папку проекта в Finder (Mac) / Explorer (Windows).
+        Также сохраняет путь в QSettings — Storyboard Studio при первом
+        запуске сможет автоматически его подхватить."""
         # Сохраним путь проекта в QSettings (тот же ключ что использует Storyboard Studio)
         from PyQt6.QtCore import QSettings
         if self.project_path:
             QSettings("StoryboardStudio", "StoryboardApp").setValue(
                 "project_root", str(self.project_path))
 
-        # Пытаемся запустить установленный Storyboard Studio.app
-        if IS_MAC:
-            for candidate in [
-                Path("/Applications/Storyboard Studio.app"),
-                Path.home() / "Applications" / "Storyboard Studio.app",
-            ]:
-                if candidate.exists():
-                    subprocess.Popen(["open", str(candidate)])
-                    self.close()
-                    return
-            # Запасной вариант — Python скрипт в проекте
-            if self.project_path:
-                script = self.project_path / "storyboard_app.py"
-                py = find_system_python()
-                if script.exists() and py:
-                    subprocess.Popen([py, str(script)])
-                    self.close()
-                    return
-        elif IS_WINDOWS:
-            for candidate in [
-                Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Storyboard Studio" / "Storyboard Studio.exe",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Storyboard Studio" / "Storyboard Studio.exe",
-            ]:
-                if candidate.exists():
-                    subprocess.Popen([str(candidate)])
-                    self.close()
-                    return
-            if self.project_path:
-                script = self.project_path / "storyboard_app.py"
-                py = find_system_python()
-                if script.exists() and py:
-                    subprocess.Popen([py, str(script)])
-                    self.close()
-                    return
-
-        QMessageBox.information(
-            self, "Установка завершена",
-            f"Проект установлен в:\n{self.project_path}\n\n"
-            "Storyboard Studio.app пока не найден — запусти его вручную "
-            "после установки приложения."
-        )
-        self.close()
+        if not self.project_path or not self.project_path.exists():
+            QMessageBox.warning(
+                self, "Папка проекта не найдена",
+                "Не удалось определить путь к установленному проекту.")
+            return
+        try:
+            if IS_MAC:
+                subprocess.Popen(["open", str(self.project_path)])
+            elif IS_WINDOWS:
+                os.startfile(str(self.project_path))
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Не удалось открыть папку",
+                f"{self.project_path}\n\n{e}")
 
 
 def main():

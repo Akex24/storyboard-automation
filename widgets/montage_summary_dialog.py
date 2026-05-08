@@ -1,0 +1,365 @@
+# -*- coding: utf-8 -*-
+"""
+widgets/montage_summary_dialog.py — попап-сводка монтажной карты после
+работы оркестратора.
+
+Содержит:
+  • Таблицу блоков (Блок | Шотов | Секунд) + строку «Итого».
+  • Раскрывашку «Показать как чекер посчитал» — детальный отчёт по
+    репликам и таймингам.
+  • Две кнопки: «✎ Поправить» (отмена, юзер вернётся к чату) и
+    «🎨 Делать сториборды» (запуск генерации).
+
+История: создано 2026-05-06 (Multi-agent монтажная карта).
+"""
+
+from __future__ import annotations
+
+from typing import Optional, Dict, List
+
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit, QSizePolicy,
+    QDialogButtonBox, QMessageBox
+)
+
+from i18n import tr
+
+
+class MontageSummaryDialog(QDialog):
+    """Попап-сводка по утверждённой монтажной карте."""
+
+    # Эмитим signals чтобы не зависеть от .exec() (но можно и QDialog.Accepted)
+    confirm_storyboards = pyqtSignal()
+    edit_requested = pyqtSignal()
+
+    def __init__(self, montage_card: dict, checker_report: dict,
+                 rounds_used: int, agent_summary: Optional[dict] = None,
+                 parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr('montage_summary_title'))
+        self.setMinimumSize(700, 500)
+        # 2026-05-08: LUMZ-стиль. Цвета из views/theme.py:LUMZ_THEME.
+        self.setStyleSheet("""
+            QDialog { background: #0e0a18; }
+            QLabel { color: #ffffff; }
+            QTextEdit { background: rgba(255,255,255,0.04);
+                        color: #ffffff;
+                        border: 1px solid rgba(255,255,255,0.06);
+                        border-radius: 8px;
+                        padding: 8px; }
+            QPushButton { padding: 6px 14px; border-radius: 6px; }
+        """)
+
+        self._card = montage_card
+        self._report = checker_report
+        self._rounds_used = rounds_used
+        self._agent_summary = agent_summary or {}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(14)
+
+        # 2026-05-06: Заголовок переписан — теперь это отчёт по 4 агентам
+        # (а не одна строка про Чекер). Юзер видит что сделал каждый.
+        ok = checker_report.get('ok', False)
+        # 2026-05-08: LUMZ-палитра. ok → gold (выполнено), not-ok → red.
+        head_color = "#d4a256" if ok else "#e4344a"
+        head_lines = self._build_agent_lines()
+        head = QLabel("\n".join(head_lines))
+        head.setStyleSheet(
+            f"color: {head_color}; font-size: 12px; "
+            f"font-weight: 500; font-family: 'Menlo','Consolas',monospace;")
+        head.setWordWrap(True)
+        outer.addWidget(head)
+
+        # Таблица блоков
+        blocks = montage_card.get('blocks', []) or []
+        total_seconds = montage_card.get('total_seconds', 0)
+        total_shots = sum(len(b.get('shots', []) or []) for b in blocks)
+
+        table = QTableWidget(len(blocks) + 1, 3, self)
+        table.setHorizontalHeaderLabels([
+            tr('montage_summary_col_block'),
+            tr('montage_summary_col_shots'),
+            tr('montage_summary_col_seconds'),
+        ])
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        # 2026-05-08: LUMZ-стиль таблицы.
+        table.setStyleSheet("""
+            QTableWidget {
+                background: rgba(255,255,255,0.04);
+                color: #ffffff;
+                border: 1px solid rgba(255,255,255,0.06);
+                border-radius: 8px;
+                gridline-color: rgba(255,255,255,0.06);
+            }
+            QHeaderView::section {
+                background: rgba(255,255,255,0.06);
+                color: rgba(255,255,255,0.70);
+                padding: 8px;
+                border: 0;
+                border-right: 1px solid rgba(255,255,255,0.06);
+                font-weight: 500;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+        """)
+        for i, b in enumerate(blocks):
+            n = b.get('n', i + 1)
+            name = b.get('name', '')
+            shots_n = len(b.get('shots', []) or [])
+            block_secs = sum(s.get('duration_sec', 0) for s in (b.get('shots', []) or []))
+            table.setItem(i, 0, QTableWidgetItem(f"Блок {n} — {name}"))
+            table.setItem(i, 1, QTableWidgetItem(str(shots_n)))
+            table.setItem(i, 2, QTableWidgetItem(f"{block_secs}с"))
+        # Строка ИТОГО
+        total_row = len(blocks)
+        total_item_name = QTableWidgetItem(tr('montage_summary_total'))
+        total_item_name.setForeground(Qt.GlobalColor.white)
+        total_item_shots = QTableWidgetItem(str(total_shots))
+        total_item_secs = QTableWidgetItem(f"{total_seconds}с")
+        for it in (total_item_name, total_item_shots, total_item_secs):
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+        table.setItem(total_row, 0, total_item_name)
+        table.setItem(total_row, 1, total_item_shots)
+        table.setItem(total_row, 2, total_item_secs)
+        outer.addWidget(table, stretch=1)
+
+        # Раскрывашка «Как чекер посчитал»
+        self._details_btn = QPushButton(tr('montage_summary_show_details'))
+        # 2026-05-08: LUMZ — приглушённый «secondary link». Голубой `#a7c8ff`
+        # → text_secondary с hover-подсветкой через :hover.
+        self._details_btn.setStyleSheet(
+            "QPushButton { background: transparent;"
+            " color: rgba(255,255,255,0.55); border: none;"
+            " text-align: left; padding: 4px; font-size: 12px; }"
+            "QPushButton:hover { color: #ffffff; }")
+        self._details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._details_btn.clicked.connect(self._toggle_details)
+        outer.addWidget(self._details_btn)
+
+        self._details_view = QTextEdit()
+        self._details_view.setReadOnly(True)
+        self._details_view.hide()
+        self._details_view.setMinimumHeight(180)
+        self._details_view.setText(self._build_details_text())
+        outer.addWidget(self._details_view, stretch=1)
+
+        # Кнопки внизу
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+
+        # 2026-05-06: «Поправить вручную» убрал — кнопка путала юзеров
+        # (один клик и работа потеряна без видимой пользы). Если карта
+        # не нравится — закрыть попап крестиком и заново нажать
+        # «🎬 Сделать сториборды» в чате (оркестратор пройдёт ещё раз).
+        self.confirm_btn = QPushButton(tr('montage_summary_btn_storyboards'))
+        # 2026-05-08: LUMZ red primary CTA. Раньше был фиолетовый #4a5fcc.
+        self.confirm_btn.setStyleSheet(
+            "QPushButton { background: #e4344a; color: #ffffff;"
+            " font-weight: 500; border: none;"
+            " padding: 8px 18px; font-size: 13px;"
+            " border-radius: 6px; }"
+            "QPushButton:hover { background: #d92d44; }"
+            "QPushButton:pressed { background: #c52539; }")
+        self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+        btn_row.addWidget(self.confirm_btn)
+
+        outer.addLayout(btn_row)
+
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_agent_lines(self) -> List[str]:
+        """Формирует читабельный отчёт по работе всех 4 агентов для
+        заголовка попапа. Источник данных — `self._agent_summary` от
+        оркестратора.
+        """
+        s = self._agent_summary or {}
+        lines: List[str] = []
+        # Сценарист
+        sw = s.get('scriptwriter', {}) or {}
+        if sw.get('ran'):
+            lines.append(
+                f"🎬 Сценарист — написал карту: "
+                f"{sw.get('blocks_written', 0)} блоков, "
+                f"{sw.get('shots_total', 0)} шотов, "
+                f"{sw.get('total_seconds', 0)}с"
+            )
+        # Чекер
+        v = s.get('validator', {}) or {}
+        v_runs = v.get('runs', 0)
+        if v_runs > 0:
+            rps = v.get('rounds_passed') or []
+            last = rps[-1] if rps else {}
+            if last.get('ok'):
+                if v_runs == 1:
+                    lines.append(
+                        "🔍 Чекер — прошёл 11 правил с первого раза, ошибок 0"
+                    )
+                else:
+                    lines.append(
+                        f"🔍 Чекер — за {v_runs} раунда(ов) подтвердил карту"
+                    )
+            else:
+                errs = last.get('errors_count', 0)
+                lines.append(
+                    f"🔍 Чекер — нашёл {errs} ошибок (после {v_runs} раунда)"
+                )
+        # Редактор
+        ed = s.get('editor', {}) or {}
+        ed_runs = ed.get('runs', 0)
+        if ed_runs > 0:
+            errs_total = sum(r.get('errors_in', 0) for r in (ed.get('rounds') or []))
+            lines.append(
+                f"✏ Редактор — поправил {errs_total} ошибок за {ed_runs} раунд(ов)"
+            )
+        else:
+            lines.append("✏ Редактор — не запускался (нечего было править)")
+        # Финальный редактор
+        cr = s.get('context_reviewer', {}) or {}
+        if cr.get('ran'):
+            checks = cr.get('checks_performed') or []
+            concerns = cr.get('concerns') or []
+            if cr.get('ok') and not concerns:
+                lines.append(
+                    f"🎯 Финальный редактор — прошёл {len(checks)} проверок"
+                    f" по Bible'и, противоречий нет"
+                )
+            else:
+                lines.append(
+                    f"🎯 Финальный редактор — нашёл {len(concerns)} замечаний"
+                    f" (поправлено в раунде Редактора)"
+                )
+        else:
+            lines.append("🎯 Финальный редактор — не запускался")
+        return lines
+
+    def _build_details_text(self) -> str:
+        """Формирует читабельный отчёт чекера + сами реплики из карты."""
+        lines: List[str] = []
+        blocks = self._card.get('blocks', []) or []
+        report_blocks = {r.get('block_n'): r for r in (self._report.get('report') or [])}
+        for b in blocks:
+            n = b.get('n', '?')
+            name = b.get('name', '')
+            block_secs = sum(s.get('duration_sec', 0) for s in (b.get('shots', []) or []))
+            shots_n = len(b.get('shots', []) or [])
+            lines.append(f"━━━ БЛОК {n} — «{name}» — {block_secs}с / {shots_n} шот(а) ━━━")
+            br = report_blocks.get(n) or {}
+            sb = {s.get('shot_n'): s for s in (br.get('shot_breakdown') or [])}
+            for shot in (b.get('shots', []) or []):
+                sn = shot.get('n', '?')
+                dur = shot.get('duration_sec', 0)
+                desc = shot.get('description_ru', '')
+                lines.append(f"  SHOT {sn} ({dur}с) — {desc}")
+                dia = shot.get('dialog')
+                if dia:
+                    ru = dia.get('ru', '')
+                    en = dia.get('en', '')
+                    speech = dia.get('speech_type', 'normal')
+                    speaker = dia.get('speaker', '?')
+                    lines.append(f"    Реплика {speaker} ({speech}): «{ru}» («{en}»)")
+                rb = sb.get(sn)
+                if rb and rb.get('calc'):
+                    lines.append(f"    🔍 Чекер: {rb['calc']}")
+            lines.append("")
+        # Ошибки от чекера (если остались)
+        errors = self._report.get('errors') or []
+        if errors:
+            lines.append("━━━ НЕРАЗРЕШЁННЫЕ ОШИБКИ ОТ ЧЕКЕРА ━━━")
+            for e in errors:
+                lines.append(f"  • [{e.get('code', '?')}] {e.get('details', '')}")
+        # 2026-05-06: отчёт Финального Редактора (что он реально проверил)
+        cr = (self._agent_summary or {}).get('context_reviewer', {}) or {}
+        if cr.get('ran'):
+            lines.append("")
+            lines.append("━━━ ОТЧЁТ ФИНАЛЬНОГО РЕДАКТОРА (Bible-сверка) ━━━")
+            checks = cr.get('checks_performed') or []
+            if checks:
+                for c in checks:
+                    name = c.get('check', '?')
+                    det = c.get('details', '')
+                    lines.append(f"  ✓ {name}")
+                    if det:
+                        # Перенос длинных строк по словам.
+                        for chunk in [det[i:i+100]
+                                       for i in range(0, len(det), 100)]:
+                            lines.append(f"      {chunk}")
+            else:
+                lines.append("  (отчёт пуст — ничего не проверил, "
+                              "обнови промпт)")
+            crc = cr.get('concerns') or []
+            if crc:
+                lines.append("")
+                lines.append("  Найденные замечания:")
+                for c in crc:
+                    lines.append(f"    • [{c.get('code', '?')}] {c.get('details', '')}")
+        return "\n".join(lines)
+
+    def _toggle_details(self):
+        if self._details_view.isVisible():
+            self._details_view.hide()
+            self._details_btn.setText(tr('montage_summary_show_details'))
+        else:
+            self._details_view.show()
+            self._details_btn.setText(tr('montage_summary_hide_details'))
+
+    def _on_confirm(self):
+        # Юзер кликнул «🎨 Делать сториборды» — это явный путь дальше,
+        # подтверждение не нужно. Помечаем флаг чтобы override reject
+        # не показал предупреждение.
+        self._user_confirmed = True
+        self.confirm_storyboards.emit()
+        self.accept()
+
+    def _on_edit(self):
+        self._user_confirmed = True
+        self.edit_requested.emit()
+        self.reject()
+
+    def reject(self):
+        """2026-05-06: при попытке закрытия без клика «Делать сториборды»
+        (крестик / Esc / закрытие окна) — запрашиваем подтверждение,
+        потому что вся работа агентов потеряется и придётся запускать
+        оркестратор заново (1-3 минуты)."""
+        if getattr(self, '_user_confirmed', False):
+            super().reject()
+            return
+        m = QMessageBox(self)
+        m.setIcon(QMessageBox.Icon.Warning)
+        m.setWindowTitle(tr('montage_discard_title'))
+        m.setText(tr('montage_discard_text'))
+        yes = m.addButton(tr('montage_discard_yes'),
+                           QMessageBox.ButtonRole.DestructiveRole)
+        no = m.addButton(tr('montage_discard_no'),
+                          QMessageBox.ButtonRole.RejectRole)
+        m.setDefaultButton(no)
+        m.exec()
+        if m.clickedButton() is yes:
+            self._user_confirmed = True
+            super().reject()
+        # Иначе остаёмся в диалоге.
+
+    def closeEvent(self, event):
+        """Перехватываем системное закрытие окна (X в углу) — направляем
+        в наш reject() с подтверждением."""
+        if getattr(self, '_user_confirmed', False):
+            event.accept()
+            return
+        # reject() сам спросит подтверждение и закроет диалог если ОК.
+        event.ignore()
+        self.reject()

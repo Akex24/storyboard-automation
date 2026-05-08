@@ -9,6 +9,12 @@ refs/
 _inbox/
 shows/
 current_show.json
+# actors/ — БОЛЬШЕ НЕ ИГНОРИРУЕТСЯ (с 2026-05-04). Админ управляет фото
+# актёров (создание, удаление) и пушит их через SendUpdateThread.
+# Коллеги получают через DownloadUpdateThread, который зеркалирует
+# actors/ (удалит локально то, что админ удалил у себя). Сгенерированные
+# character-рефы коллег живут в shows/*/refs/characters/<slug>/ — это
+# их личная работа, в .gitignore (через `shows/`), не синкается.
 
 # Сборка и кэш
 build/
@@ -18,6 +24,11 @@ __pycache__/
 *.pyo
 *.spec.bak
 
+# Бэкапы и логи (локальные, не для GitHub)
+*.bak
+*.md.bak
+*.log
+
 # macOS / IDE
 .DS_Store
 .vscode/
@@ -25,6 +36,8 @@ __pycache__/
 *.swp
 *~
 
-# Claude Code локальные
-.claude/settings.local.json
+# Claude Code (служебные файлы Claude Code CLI, никак не связаны со Studio —
+# настройки самого Claude Code, worktrees воркфлоу, hooks). Не должны
+# попадать на GitHub репо проекта.
+.claude/
 _session_log.md
