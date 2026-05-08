@@ -21,6 +21,15 @@ a = Analysis(
         'PyQt6.QtSvg',          # Для рендера SVG-иконок табов
         'PyQt6.QtSvgWidgets',
         'docx',
+        # stdlib модули которые PyInstaller на Win иногда не подхватывает.
+        # 2026-05-08: на Win-ноуте у коллеги периодически появлялась ошибка
+        # `No module named 'unicodedata'` при первом запуске (через requests
+        # → idna → unicodedata). Явно перечисляем чтобы PyInstaller точно
+        # положил их в bundle.
+        'unicodedata',
+        'encodings',
+        'encodings.idna',
+        'encodings.utf_8',
     ],
     hookspath=[],
     hooksconfig={},
