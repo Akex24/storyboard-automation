@@ -5024,7 +5024,8 @@ class MainWindow(QMainWindow):
         af.setSpacing(0)
         af.setContentsMargins(0, 0, 0, 0)
 
-        # Строка 1 — версия приложения
+        # Версия приложения (одна строка — раньше были 2: app + project,
+        # 2026-05-08 объединили в одну, поле version в version.json устарело)
         row_app = QWidget()
         row_app.setObjectName("settings-row")
         ra = QHBoxLayout(row_app)
@@ -5037,26 +5038,6 @@ class MainWindow(QMainWindow):
         self.app_ver_val_lbl.setObjectName("settings-row-val")
         ra.addWidget(self.app_ver_val_lbl)
         af.addWidget(row_app)
-
-        # Тонкая разделительная линия между строками
-        sep = QFrame()
-        sep.setObjectName("settings-divider")
-        sep.setFixedHeight(1)
-        af.addWidget(sep)
-
-        # Строка 2 — версия проекта
-        row_proj = QWidget()
-        row_proj.setObjectName("settings-row")
-        rp = QHBoxLayout(row_proj)
-        rp.setContentsMargins(18, 14, 18, 14)
-        self.proj_ver_key_lbl = QLabel(tr('project_version'))
-        self.proj_ver_key_lbl.setObjectName("settings-row-key")
-        rp.addWidget(self.proj_ver_key_lbl)
-        rp.addStretch()
-        self.proj_ver_val_lbl = QLabel("")
-        self.proj_ver_val_lbl.setObjectName("settings-row-val")
-        rp.addWidget(self.proj_ver_val_lbl)
-        af.addWidget(row_proj)
 
         lay.addWidget(about_frame)
 
@@ -5283,17 +5264,12 @@ class MainWindow(QMainWindow):
         return outer
 
     def _refresh_settings_versions(self):
-        """Обновляет тексты версий + ключи (язык-зависимые) в настройках."""
+        """Обновляет тексты версии Studio в настройках + цифру в шапке."""
         v_app  = read_local_app_version(self._project_root)
-        v_proj = read_local_version(self._project_root)
         if hasattr(self, 'app_ver_key_lbl'):
             self.app_ver_key_lbl.setText(tr('app_version'))
         if hasattr(self, 'app_ver_val_lbl'):
             self.app_ver_val_lbl.setText(f"v{v_app}")
-        if hasattr(self, 'proj_ver_key_lbl'):
-            self.proj_ver_key_lbl.setText(tr('project_version'))
-        if hasattr(self, 'proj_ver_val_lbl'):
-            self.proj_ver_val_lbl.setText(f"v{v_proj}")
         if hasattr(self, 'header_version'):
             self.header_version.setText(f"v{v_app}")
 
@@ -8852,12 +8828,16 @@ class MainWindow(QMainWindow):
 
     def _show_update_banner(self, curr_proj: str, latest_proj: str,
                             curr_app: str, latest_app: str):
-        """Показывает один или оба баннера в зависимости от того что устарело."""
-        if latest_proj != curr_proj:
-            self.update_text.setText(
-                f"🔄  Обновление проекта:  v{curr_proj} → v{latest_proj}"
-            )
-            self.update_banner.show()
+        """Показывает баннер обновления Storyboard Studio.
+
+        2026-05-08 (Шаг B): убрано понятие «версия проекта» — теперь у
+        Studio одна цифра, она же app_version. Синий баннер «Обновление
+        проекта» больше НЕ показывается, даже если curr_proj != latest_proj
+        (это legacy-расхождение в version.json у некоторых коллег с
+        предыдущих версий — не должно вылезать в UI).
+
+        Сравниваем только app_version → один баннер.
+        """
         if latest_app != curr_app:
             self._latest_app_ver = latest_app
             self.app_update_text.setText(
@@ -9014,44 +8994,30 @@ class MainWindow(QMainWindow):
         app_path = self._project_root / "dist" / "Storyboard Studio.app"
         has_app  = app_path.exists()
 
-        if has_app:
-            box = QMessageBox(self)
-            box.setWindowTitle("Отправить обновление?")
-            box.setIcon(QMessageBox.Icon.Question)
-            box.setText("Что отправить коллегам?")
-            box.setInformativeText(
-                "В папке dist/ найдено приложение Storyboard Studio.app.\n\n"
-                "• «Только проект» — отправит правила/скрипты на GitHub.\n"
-                "• «Проект + приложение» — отправит правила И загрузит\n"
-                "   новый .app в GitHub Releases (коллеги смогут скачать).\n\n"
-                "Если ты не пересобирал приложение — выбирай «Только проект»."
+        if not has_app:
+            QMessageBox.warning(
+                self, "Приложение не пересобрано",
+                "В папке dist/ нет Storyboard Studio.app.\n\n"
+                "Сначала пересобери приложение командой:\n"
+                "  ./build.sh\n"
+                "и потом отправь обновление снова."
             )
-            btn_only = box.addButton("Только проект",       QMessageBox.ButtonRole.AcceptRole)
-            btn_full = box.addButton("Проект + приложение", QMessageBox.ButtonRole.AcceptRole)
-            btn_canc = box.addButton("Отмена",              QMessageBox.ButtonRole.RejectRole)
-            box.setDefaultButton(btn_full)
-            box.exec()
-            clicked = box.clickedButton()
-            if clicked is btn_canc:
-                return
-            upload_app = (clicked is btn_full)
-        else:
-            confirm = QMessageBox.question(
-                self, "Отправить обновление?",
-                "Это создаст новый коммит с автоматически увеличенной версией\n"
-                "и отправит изменения проекта на GitHub.\n\n"
-                "Коллеги увидят обновление при следующем запуске.\n\n"
-                "(Чтобы загрузить и само приложение — сначала пересобери его\n"
-                "командой: python3 -m PyInstaller StoryboardStudio.spec --noconfirm)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            )
-            if confirm != QMessageBox.StandardButton.Yes:
-                return
-            upload_app = False
+            return
+
+        confirm = QMessageBox.question(
+            self, "Отправить обновление?",
+            f"Будет загружена новая версия приложения в GitHub Releases.\n\n"
+            "Коллеги в открытой Studio увидят баннер «Обновить» и одним\n"
+            "кликом получат новую версию.\n\n"
+            "Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
 
         self.send_update_btn.setEnabled(False)
         self.send_update_btn.setText("Отправляю…")
-        self._update_thread = SendUpdateThread(self._project_root, upload_app=upload_app)
+        self._update_thread = SendUpdateThread(self._project_root, upload_app=True)
         self._update_thread.progress.connect(self.status_bar.showMessage)
         self._update_thread.finished.connect(self._on_send_done)
         self._update_thread.error.connect(self._on_send_error)
@@ -9072,16 +9038,15 @@ class MainWindow(QMainWindow):
 
         self._refresh_settings_versions()
 
-        msg = f"Проект: v{new_version} опубликован на GitHub.\n"
-        if app_uploaded:
-            msg += f"Приложение: v{new_app_version} загружено в GitHub Releases.\n"
-        msg += "\nКоллеги получат уведомление в приложении."
+        msg = (
+            f"Storyboard Studio v{new_app_version} загружена в GitHub Releases.\n\n"
+            "Коллеги в открытой Studio увидят баннер «Обновить» и одним\n"
+            "кликом получат новую версию (Studio автоматически перезапустится)."
+        )
         QMessageBox.information(self, "Обновление отправлено", msg)
 
         self.status_bar.showMessage(
-            f"Опубликовано: проект v{new_version}"
-            + (f" + приложение v{new_app_version}" if app_uploaded else "")
-            + " ✓"
+            f"Опубликовано: Storyboard Studio v{new_app_version} ✓"
         )
 
         # После успешной отправки нет изменений → кнопка должна стать неактивной.

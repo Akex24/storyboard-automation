@@ -436,16 +436,21 @@ class SendUpdateThread(QThread):
             data = json.loads(vfile.read_text(encoding="utf-8")) if vfile.exists() \
                    else {"version": "1.0.0", "app_version": "1.0.0"}
 
-            major, minor, patch = data.get("version", "1.0.0").split(".")
-            new_version = f"{major}.{minor}.{int(patch) + 1}"
-            data["version"] = new_version
-
+            # 2026-05-08 (Шаг B): убрана концепция «версии проекта». Раньше
+            # было два поля: `version` (project) и `app_version` (Studio).
+            # Теперь у Studio одна версия — она бампается в `app_version`.
+            # Поле `version` синхронизируем с app_version чтобы у коллег с
+            # legacy-version.json синий баннер «Обновление проекта» не
+            # вылезал (он сравнивает GitHub.version vs local.version).
             cur_app_v = data.get("app_version", data.get("version", "1.0.0"))
-            new_app_version = cur_app_v
-            if self.upload_app:
-                amaj, amin, apat = cur_app_v.split(".")
-                new_app_version = f"{amaj}.{amin}.{int(apat) + 1}"
-                data["app_version"] = new_app_version
+            amaj, amin, apat = cur_app_v.split(".")
+            new_app_version = f"{amaj}.{amin}.{int(apat) + 1}"
+            data["app_version"] = new_app_version
+            # Синхронизируем legacy-поле для backward-compat. Если Studio
+            # на старом коде сравнит GitHub.version vs local.version —
+            # они теперь оба = новой версии.
+            data["version"] = new_app_version
+            new_version = new_app_version
 
             data["released"] = datetime.date.today().isoformat()
             vfile.write_text(
@@ -512,8 +517,7 @@ class SendUpdateThread(QThread):
                 rel = _sa.create_github_release(
                     token, tag,
                     name=f"Storyboard Studio v{new_app_version}",
-                    body=f"Версия приложения: {new_app_version}\n"
-                         f"Версия проекта на момент сборки: {new_version}",
+                    body=f"Storyboard Studio v{new_app_version}",
                 )
                 if not rel:
                     self.error.emit(
