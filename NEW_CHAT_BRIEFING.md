@@ -1,383 +1,228 @@
-# NEW CHAT BRIEFING — 2026-05-08 (вторая сессия)
+# NEW CHAT BRIEFING — 2026-05-08 (поздний вечер) · Win-релиз через GitHub Actions
 
-**Дата:** 2026-05-08 (день/вечер). Большая сессия — редизайн UI под LUMZ-стиль.
+**Дата:** 2026-05-08, поздний вечер. Очень большая сессия (~30 правок + Win build automation).
 **Юзер:** админ/мейнтейнер. Активный сериал: `finalnyy_raschet`.
-**Версия Studio:** свежая сборка 2026-05-08 ~12:50 — со всеми фиксами этой сессии.
+**Текущая стабильная версия Studio (на GitHub):** **app-v1.0.15** или новее (см. ниже).
 
 ---
 
-## Стартовое сообщение для нового чата
+## ⚠ Стартовое сообщение для нового чата
 
-> Прочитай `_session_log.md` (хвост ~600 строк — за сегодняшний день
-> записей много, редизайн UI этап 1-6) и `NEW_CHAT_BRIEFING.md`.
-> Активные задачи — TODO 5/6/7/8 ниже. Скажи «делаем?» когда готов.
+> Прочитай `_session_log.md` (хвост ~1500 строк за 2026-05-08 — там
+> Win-релиз через GitHub Actions + множество UI-фиксов) и
+> `NEW_CHAT_BRIEFING.md`. **Главное сейчас** — юзер тестирует Win-сборку
+> на ноутбуке коллеги, ждёт результата теста v1.0.16 (фикс размера окна).
+> Открытая большая задача — **Variant A: переработка установщика**
+> (`installer_app.py`) без потери данных. Скажи «делаем?» когда готов.
 
 После этого Claude должен:
-1. Прочитать хвост `_session_log.md` (~600 строк за 2026-05-08) для понимания
-   всех правок UI-редизайна этой сессии.
-2. Прочитать `CLAUDE.md` (правила сторибординга).
-3. Проверить `~/.claude/projects/.../memory/MEMORY.md` — индекс правил.
+1. Прочитать **хвост `_session_log.md`** (~последние 1500 строк за 2026-05-08).
+2. Прочитать `_UI_TODO.md` (остатки LUMZ-стиля).
+3. Прочитать `_WINDOWS_PREP_TODO.md` (закрытые блокеры Win).
+4. Проверить состояние main: `git log --oneline -10`.
+5. Проверить активные runs: https://github.com/Akex24/storyboard-automation/actions
 
 ---
 
-## Что сделано во **второй сессии 2026-05-08** (свежее, после первого handoff)
+## 🎯 ГДЕ МЫ СЕЙЧАС (контекст последних 30 минут)
 
-### Редизайн UI под LUMZ-стиль (Этапы 1-6, частично 6)
+### ✅ Что ТОЧНО работает (проверено юзером на Win)
 
-- **Этап 1 — фундамент:** создан `views/theme.py` с `LUMZ_THEME` design tokens
-  + `LumzBackground(QWidget)` с радиальным градиентом фона главного окна.
-- **Этап 2 — шапка:** карточка LUMZ + pill-табы Editor/Actors/Settings БЕЗ
-  иконок + lang-btn в обёртке `lang-wrapper` (transparent, для выравнивания).
-- **Этап 3 — селектор сериала + эпизоды + плашка серии:**
-  кнопки эпизодов «01»/«02» (только цифры, PILL_W=38, padding 4×8),
-  лейбл «Эпизод:» перед пилюлями, плашка серии в LUMZ accent_gold,
-  кнопка «+» сериала красная subtle, font 14 normal.
-- **Этап 4 — полоса блоков:** обёртка `#blocks-bar`, активный блок accent_red,
-  Референсы золотые, Чат белый, корзина SVG `trash-2.svg` + hover красный.
-- **Этап 5 — карточки шотов + Seedance:** карточки лёгкие LUMZ bg_subtle,
-  кнопка `▶ Промпт Seedance` красная залитая, заголовок «Подготовка в
-  коридоре (Хс)» с длительностью в скобках, длительности шотов берутся
-  из `output/_agent_log_<ep>.json` (надёжный JSON, не зависит от AI annotation).
-- **Этап 6 (часть 1) — Refs view + overlay-кнопки:** ref-card в LUMZ,
-  круглые → прямоугольные кнопки 36×32 с SVG `pencil/trash-2/sparkles`,
-  без прозрачности, primary regen — красная.
-- **Этап 6 (часть 2) — Chat view + save/secondary кнопки:** log_view bg_card,
-  input bg_subtle, кнопка «Отправить» нейтральная серая.
+1. **GitHub Actions для Win-сборки** — настроен и работает.
+   - Триггер: `release: published` (через `SendUpdateThread.create_github_release`).
+   - `.github/workflows/build-windows.yml` собирает `Storyboard Studio.exe` + `Installer.exe` за ~3 мин на windows-latest.
+   - Грузит в Release как `Storyboard Studio vX.Y.Z-win.zip`.
+2. **Studio.exe запускается на Win без crash** (после fix scenario_drop_zone → v1.0.15).
+3. **UI рендерится корректно** на Win (PyQt6 встроен в bundle).
+4. **Claude CLI** установлен и авторизован вручную через `"%USERPROFILE%\.local\bin\claude.exe" login` (PATH issue в текущем installer).
 
-### Дополнительно
+### ⏳ Что СЕЙЧАС ждём подтверждения
 
-- **«1 серия» вправо:** `pills_container.sizePolicy = Maximum + Fixed`,
-  убраны `current_row.addStretch(1)` чтобы layout не растягивался.
-- **Длительности шотов** через `get_block_shot_durations(ep_id, block_n)`
-  читает `_agent_log_<ep>.json`. Fallback на парсинг promptа.
-- **Файловое логирование** Studio: `~/Library/Logs/Storyboard Studio/runtime.log`
-  (Mac) / `%LOCALAPPDATA%\Storyboard Studio\Logs\` (Win), кнопка
-  «Открыть лог» в Settings, timestamps `[YYYY-MM-DD HH:MM:SS]`,
-  Qt warnings ловятся через `qInstallMessageHandler`.
-- **Спам в логе** убран: `text-shadow` удалён из QSS, шрифт-стек
-  платформо-зависимый (`Helvetica Neue` Mac / `Segoe UI` Win).
-- **Save-кнопка** в редакторе: SVG `download.svg`, текст «Сохранить
-  сториборд» (без «как PNG»), исправлена опечатка «стриборд» → «сториборд».
-- **Корзина двойная исправлена** — в `_apply_translations` убрана
-  строка `setText(tr('delete_ep_btn'))` которая перерисовывала emoji
-  поверх SVG.
-- **Иконки на табах в шапке убраны** (юзер просил).
+**v1.0.16** — fix размера окна (`setMinimumSize` 1000×900 → 900×600). Юзеру надо:
+1. Жмёт «📤 Отправить обновление» в Studio Mac → bump app-v1.0.16.
+2. Win-workflow собирает новый Win-zip (3 мин).
+3. На Win-ноуте скачивает v1.0.16-win.zip → запускает → должно влезать на экран.
 
----
+### 🔴 ОТКРЫТЫЕ КРУПНЫЕ ЗАДАЧИ
 
-## Что готово в сессии 2026-05-07/08 (предыдущая сессия)
+#### 1. Variant A — переработка установщика (КРИТИЧНО для команды)
 
-### TODO 1 — UX первичного аналитика
-- **1а.** Описания в скобках: `slug (короткое описание)` для location/object;
-  для characters: `slug (Имя — короткая роль)`. Парсер `synthesize_gen_markers`
-  обновлён.
-- **1б.** Авто-язык чата (RU/UK/EN) — уже работало через `Respond in user's language`
-  в системном промпте + `--continue` сессия в RunEpisodeThread.
-- **1в.** Кнопки **«+ Добавить локацию» / «+ Добавить объект»** в REFS view —
-  открывают `RefPickerDialog` с превью.
-- **1г.** Confirmation popup в `RefPickerDialog` («Точно выбрать?») перед
-  привязкой.
+**Контекст:** при запуске юзером installer'а на Win-ноуте обнаружились серьёзные проблемы:
+- Установщик распаковывает GitHub-zip целиком в папку проекта → коллега получает **всю методологию в открытом виде** (instructions/, CLAUDE.md, agents/*.py, _UI_TODO.md, и т.д.).
+- Studio.exe **не скачивается** установщиком — юзер должен получить от админа отдельно (плохо для UX).
+- `_open_terminal_login` использует литерал `"claude"` вместо `self._cli_path` → cmd ругается «не является командой» (PATH issue).
+- Финальный экран говорит «Storyboard Studio.app» на Win (где должно быть .exe).
+- `project_root` в QSettings сохраняется только при клике «Открыть папку проекта» (юзер логично жмёт «Закрыть установщик» → Studio при запуске не находит проект).
 
-### Корзина / удаление
-- Корзина на location/object теперь **НЕ удаляет файл с диска**, только отвязывает
-  от эпизода через `refs_decisions[kind][slug]`. Текст popup'а kind-aware
-  («Удалить локацию» / «Удалить объект»).
+**План для Variant A** (юзер согласовал, ОТЛОЖЕНО до подтверждения работоспособности базы):
+1. **Фильтр в `DownloadProjectThread`** — НЕ распаковывать `instructions/`, `agents/`, `*.md`, `tests/`, `.github/`, `.spec`, все `*.py` (они уже в .exe). Оставлять только `actors/` (демо команды) + создать пустые `shows/`, `output/`.
+2. **Новый класс `DownloadAppExeThread`** — качает `Storyboard Studio.exe` из последнего Release через `fetch_release_asset_info`.
+3. **Новый `StepDownloadApp`** — между `StepKey` и `StepClaudeCode`, скачивает .exe и кладёт рядом с проектом.
+4. **`InstallerWindow`** — добавить новый step в stack (5/5 → 6/6).
+5. **`StepDone`** — авто-сохранение `project_root` в QSettings (без зависимости от кнопок) + платформо-зависимый текст (.app/.exe) + создание ярлыка на рабочем столе через PowerShell на Win.
+6. **`_open_terminal_login`** — использовать `self._cli_path` вместо литерала `"claude"`.
+7. **Скрыть Python-шаг для Win** — Studio.exe это standalone bundle, Python не нужен.
 
-### Outfit picker / Actors
-- Outfit picker закрывается СРАЗУ при клике «Создать референс» в Актёрах
-  (через `_active_character_gens` registry в MainWindow).
+После Variant A → bump до `app-v1.0.17` или похожее → Win-workflow соберёт новый `installer.exe` со всеми фиксами → раздать команде.
 
-### Кнопка-заголовок эпизода
-- Заменено `QLabel` → `QPushButton` с фиолетовым градиентом.
-- Клик → **non-modal** попап со сценарием справа от Studio (можно работать
-  параллельно). Авто-позиция, повторный клик поднимает существующий.
-- Подсветка `СЦЕНА N` / `ЭПИЗОД N` через `_SceneHighlighter` —
-  мультиязычно (CЦЕНА|SCENE для RU/UK/EN). Цвета: тёплый янтарный pill для
-  сцен, светло-фиолетовый для эпизод-заголовка.
-- ВАЖНО: использован `UseUnicodePropertiesOption` иначе `\b` не работает
-  с кириллицей.
+#### 2. UI остатки LUMZ-стиля (см. `_UI_TODO.md`)
 
-### Параллельные эпизоды
-- Убрана глобальная блокировка «Запустить» — `_threads: Dict[ep_id, Thread]`
-  per-ep. Юзер может запускать ep5/ep6/ep7 одновременно.
-- **`_on_chunk_persist` использует sender ep_id** (не shared `_current_ep_id`)
-  — раньше чанки ep5/ep6 попадали в чат ep7 при быстрых параллельных запусках.
-- `_check_montage_ready` тоже per-ep.
-- MontageCTA баннер возвращается при перезаходе на эпизод где идёт оркестратор
-  (фикс `MontageCTA.show_running()` теперь вызывает `self.show()`).
+10 пунктов виджетов которые остались в old-стиле (NewEpisodeView, Actors tab, OutfitPicker, NewShowDialog, AuthBanner, PromptRetryDialog, ShotViewerDialog, ActiveGensPanel, Settings проверка, эмодзи в монтажке).
 
-### REFS view
-- Переключение эпизодов **сразу обновляет REFS** (без манёвра чат→рефы).
-  Трекер `_refs_view_built_for_ep` решает когда no-op vs rebuild.
-- Точки на REFS-пилюле — **per-episode** (не блинкают на чужих ep).
-- **Прогресс-overlay** на refs-карточках:
-  - Image gen: тёмный overlay 🤖 + «Генерирую изображение … (5с)» + счётчик.
-  - Geometry (только для location): сменяется на «Обновляю описание … (12с)».
-  - Object: только image gen фаза, geometry skip (раньше было — но писалось
-    бесполезное в `<obj>_geometry.txt`).
-  - Счётчик переживает rebuild через `_active_image_paths` registry с
-    `started_at`.
-- **NEW-бейдж** на refs-карточках: появляется ПОСЛЕ полного завершения
-  (для location: после geometry; для object: после image-gen). Очищается
-  при уходе с REFS view (`_unseen_refs[ep]`).
-- Подтверждение перед regen (попап «Перегенерировать локацию/объект?
-  Заменит текущее»).
+Не критично, делается между другими задачами.
 
-### pipeline.py
-- Флаг **`--kind=object|location`** — раньше всё писалось в `LOCATIONS_DIR`
-  (объекты тоже), `_prompt.txt` объектов оставался orphan'ом.
-- **Расширение по магическим байтам** — раньше дефолтил на `.jpg` если
-  Content-Type пуст, контент мог быть PNG.
+#### 3. Семантические эмодзи в `montage_status_*` (опционально)
 
-### MIME / Edit рефа
-- В `_upload`: MIME определяется по магическим байтам файла (не по
-  расширению). Старые `.jpg` с PNG-контентом теперь корректно отправляются
-  серверу.
-- В `RefGenerateThread`: переключено с хардкода OpenAI на **выбор провайдера
-  через `_sa.image_provider()`** (default NARWHAL = `/api/v4/flow/image/generate`).
-  OpenAI имел pydantic-баг на `reference_images` — теперь NARWHAL.
-
-### Прочее
-- Правило «`Дэвид — главный герой`» — убрано. Аналитик пишет роль ТОЛЬКО
-  из текста сценария.
-- Fallback prompt-файла для объектов с цифровым суффиксом (`shotgun1.jpg`
-  → `shotgun_prompt.txt`).
-
-### Кросс-платформа
-- ВСЕ правки сессии — чистый Path/json/Qt/regex/requests. Без subprocess
-  (кроме существующих claude CLI вызовов которые ужe были).
-- Память сохранила правило в `feedback_windows_crossplatform.md`.
+`🔍 Чекер проверяет`, `✏ Редактор правит`, `✓ Раунд N`, `⚠ Раунд N`, `🎯 Финальный редактор` в i18n.py. Юзер пока не просил убирать — оставлены.
 
 ---
 
-## TODO в новом чате
+## 📋 Что было сделано в этой сессии (2026-05-08)
 
-### TODO 1 — Авто-перевод сценария на язык чата
+### UI редизайн под LUMZ (продолжение Этапа 6)
 
-**Запрос юзера:**
-> Можно сделать чтобы сценарий в попапе автоматически переводился на язык
-> чата? Я начал чат на украинском → клик на кнопку «5 серія» → попап
-> показывает сценарий на украинском.
+- **TODO 5/6/7/8** (анимация точек в чате, индикатор «Долго думаю», цвет диалогов в попапе сценария, кнопки «+ Добавить» в REFS).
+- **RefPickerDialog** (попап выбора рефа) → LUMZ.
+- **GenButton** (карточка авто-генерации в чате) → полный переход на LUMZ + убраны иконки 🎨/📁/📍/🎁/👤 + кнопка «Не нужен» скрыта (orphan).
+- **MontageCTA** (баннер «Все рефы залинкованы») → LUMZ + убрана 🎬.
+- **MontageSummaryDialog** (попап «Монтажная карта») → LUMZ + убрана 🎨 на «Делать сториборды».
+- **Иконки убраны** в i18n: 🎬 в `montage_cta_subtitle_idle`, 🤖 в `montage_cta_title_running`, 🎬 в `montage_status_scriptwriter`, 🎬 в `montage_summary_btn_storyboards`.
+- **Время** «1-3 минуты» → «может занять до 5 минут» в `montage_cta_subtitle_running`.
+- **Точка после Studio** убрана — `Не закрывай Studio.` → `Не закрывай Studio` (анимация бегущих точек теперь чистая).
+- **status_lbl** убран из layout `episode_chat.py` (orphan-виджет, дублировал точки в чате).
 
-**Текущее состояние:**
-- Сценарий в `shows/<slug>/scenarios/epNN.txt` — оригинальный язык
-  (тот, на котором юзер закинул).
-- `storyboard_app.py:_on_ep_title_clicked` (~line 5760) читает файл и
-  показывает в `QPlainTextEdit` с подсветкой через `_SceneHighlighter`.
-- `_SceneHighlighter` понимает CЦЕНА/SCENE/ЭПИЗОД/ЕПІЗОД/EPISODE.
+### Поведенческие фиксы
 
-**План реализации (на согласование с юзером):**
-1. **Кэш переводов:** `shows/<slug>/scenarios/epNN_<lang>.txt`
-   (например `ep05_uk.txt`). Создаётся лениво при первом открытии в
-   этом языке.
-2. **Определение языка чата** — helper `_detect_chat_language(ep_id)`:
-   читает последние user-messages из `chats/<ep>.jsonl`, эвристика на
-   характерные буквы/слова (RU: ё, ы, ъ; UK: і, ї, є, ґ; EN: только
-   латиница).
-3. **Background-перевод** — новый `ScenarioTranslateThread` (по образцу
-   `ClaudeGeometryThread`). Запускает `claude -p` с инструкцией:
-   ```
-   Translate this episode scenario to {target_lang}.
-   CRITICAL RULES:
-   - Keep ALL dialogue lines in quotes UNCHANGED (they're original English).
-   - Translate scene labels: СЦЕНА N → СЦЕНА N (UK same as RU) / SCENE N (EN).
-   - Translate ЭПИЗОД N → ЕПІЗОД N (UK) / EPISODE N (EN).
-   - Keep structure (line numbers, blank lines) identical.
-   ```
-4. **UI flow в `_on_ep_title_clicked`:**
-   - Определить язык чата текущего ep.
-   - Если `epNN_<chat_lang>.txt` существует → показать.
-   - Если нет → показать оригинал + индикатор «Перевожу на UK…» в заголовке.
-   - При завершении треда → если попап ещё открыт, обновить текст.
-5. **i18n** — ключи `scenario_translating`, `scenario_translation_failed`.
+- **Точки `▶ Думаю`** теперь бегут прямо в `log_view` (а не только в `status_lbl`). Финал — без точек, без многоточия (просто `▶ Думаю`).
+- **`▶ Долго думаю`** появляется сразу под `▶ Думаю` (без пустой строки) с бегущими точками.
+- **Hand-off thinking** — при запуске нового эпизода через NewEpisodeView точки бегут в EpisodeChatView через `begin_external_thinking(thread)`.
+- **Кнопка «Запустить» после удаления эпизода** — теперь активна (фоновый `RunEpisodeThread` корректно останавливается при удалении ep).
+- **Сториборды batch-per-block** — внутри блока все шоты параллельно, между блоками последовательно. Заменил `_storyboard_shot_queue` + `_storyboard_queue_busy` на `_storyboard_blocks_queue` + `_storyboard_active_block` + `_storyboard_active_pending`.
 
-**Сложность:** средняя. Будет работать на 100% корректно для нарратива.
-Реплики персонажей в кавычках сохраняем как есть (они в pipeline должны
-оставаться оригинальные).
+### Win10/11 prep
 
-**Подвох:** перевод через `claude -p` — отдельный subprocess. Должен иметь
-`CREATE_NO_WINDOW` на win32 (см. правило кросс-платформы).
+- **CREATE_NO_WINDOW guard** в 4 местах:
+  - `threads/autonomous_gen.py` (claude -p для авто-генерации location/object).
+  - `threads/suggest_outfits.py` (claude -p для одежды character).
+  - `threads/generate.py:ClaudeGeometryThread` + `RunEpisodeThread`.
+- **Installer**: 3 места защищены guard'ом (Claude install, auth check, python --version).
+- `_WINDOWS_PREP_TODO.md` обновлён, все P0 закрыты.
 
-### TODO 2 — Win10/11 prep блокеры (отложено)
+### Cross-platform install
 
-3 файла без `CREATE_NO_WINDOW` для `subprocess.Popen` на win32:
-- `threads/autonomous_gen.py:216`
-- `threads/suggest_outfits.py:256`
-- `threads/generate.py:587`
+- **`fetch_release_asset_info`** в storyboard_app.py — фильтрует по `sys.platform`: `mac` или `win` в имени файла.
+- **`DownloadAppUpdateThread`** в threads/update.py — кросс-платформенно: Mac → `.app` (copytree), Win → `.exe` (copy2). PermissionError fallback в `~/Downloads`.
 
-См. `_WINDOWS_PREP_TODO.md`. ~10 минут перед Win-релизом.
+### GitHub Actions
 
-### TODO 3 — Чистка orphan'ов в refs/locations/
-
-Из-за старого pipeline.py баги, в `refs/locations/` остались
-`<object>_prompt.txt` файлы для объектов:
-- `black_frame_mirror_prompt.txt`
-- `phone_prompt.txt`
-- `spy_camera_prompt.txt`
-- `table_lamp_prompt.txt`
-- `double_barrel_shotgun_prompt.txt`
-
-Можно почистить вручную или скриптом — НЕ критично, fallback в
-`_on_ref_regen` подхватывает их корректно.
-
-### TODO 5 — Анимация бегущих точек «Думаю...» в чате
-
-**Запрос юзера 2026-05-08 вечер:** «когда написано в чате „Передаю секцию“,
-потом „Думаю“ — хочу чтобы точки бежали тик-тик-тик прямо в чате».
-
-**Текущее состояние:** анимация `_thinking_step` УЖЕ есть в
-`views/new_episode.py` — но обновляет только `status_lbl` (отдельная
-полоска статуса), а не последнюю строку в `log_view` (само поле чата).
-Юзер хочет чтобы точки бежали В САМОМ ЧАТЕ.
-
-**Реализация (~30 строк):**
-- В `_tick_thinking` (или новый метод) — найти последнюю строку
-  `log_view`, начинающуюся с `▶ Думаю` (через QTextCursor +
-  movePosition(End) + select(LineUnderCursor)).
-- Заменить её на `▶ Думаю {dots}` где `dots` = `["·   ", "··  ", "··· ", "····"][step]`.
-- Триггер каждые 400мс пока `_thread.isRunning()`.
-- Альтернатива проще: после получения первого chunk от AI — точки убирать.
-
-**Файлы:** `views/new_episode.py:_tick_thinking` + аналогично
-`views/episode_chat.py` (там тоже `_thinking_timer` для followup).
-
-
-### TODO 6 — Индикатор «Долго думаю, это нормально»
-
-**Запрос юзера 2026-05-08 вечер:** иногда AI thinks 2-3 минуты на
-тяжёлый первый запрос (большой prompt: сценарий + bible + voice profiles).
-Юзер не понимает что происходит, думает что зависло.
-
-**Реализация:**
-- Добавить timer в `RunEpisodeThread` start: через **120 секунд** без
-  первого chunk → `progress.emit("⏳ Долго думаю — это нормально для первого запроса. Не закрывай Studio.")`.
-- Текст в i18n: `thinking_long_hint` (RU/UK/EN).
-- Когда первый chunk пришёл — таймер отменяется, обычная работа.
-
-**Файлы:** `threads/generate.py:RunEpisodeThread.run` + `i18n.py`.
-
-
-### TODO 7 — Цвет диалогов в попапе сценария эпизода
-
-**Запрос юзера 2026-05-08 вечер:** «в попапе сценария эпизода (клик
-на золотую плашку «Сумасшедший») есть подсветка `СЦЕНА N` /
-`ЭПИЗОД N`. Хочу чтобы ДИАЛОГИ персонажей тоже подсвечивались своим
-цветом».
-
-**Реализация:**
-- В `_SceneHighlighter` (поиск в `storyboard_app.py` или views/) —
-  добавить третий regex-format для строк вида `Имя: "..."` или
-  `Имя — "..."` (формат диалогов в сценарии).
-- Цвет — нейтральный голубой/зелёный (не красный — он у эпизода,
-  не золотой — у сцен).
-
-**Файлы:** `views/new_episode.py` или `storyboard_app.py` (где `_SceneHighlighter` живёт).
-
-
-### TODO 8 — Кнопки «+ Добавить» в REFS view
-
-**Запрос юзера 2026-05-08 вечер:** «во вкладке REFS не доделаны кнопки
-„Добавить локацию“, „Добавить объект“, „Добавить персонажа“ —
-надо в LUMZ-стиле сделать».
-
-**Реализация:**
-- Найти где они создаются (вероятно `_build_refs_view` в storyboard_app.py).
-- Перекрасить под LUMZ accent_red_subtle (как кнопка `new_show_btn`)
-  или с radius_md и border_strong.
-
-**Файлы:** `storyboard_app.py:_build_refs_view`.
-
-
-### TODO 4 — Вернуть кнопку «🎨 Сгенерировать» после ошибки AutonomousGenThread
-
-**Запись 2026-05-08.**
-
-**Симптом:** юзер кликнул «🎨 Сгенерировать buldog» → subprocess `claude -p`
-упал → popup с ошибкой → юзер дисмиснул → **кнопки больше нет в чате**,
-перегенерить нельзя без перезапуска Studio.
-
-**Корневая причина:**
-- `EpisodeChatView._gen_seen_names` хранит имена для которых карточка уже
-  была создана (защита от дублей при стримминге).
-- При успехе name остаётся в seen → нормально.
-- При **ошибке** name остаётся в seen, карточка из layout удаляется →
-  при перезаходе в эпизод `synthesize_gen_markers` находит маркер заново,
-  но `_maybe_show_gen_button` блокирует фильтром `name in _gen_seen_names`.
-
-**Реализация (~10 строк):**
-- В `MainWindow._on_active_gen_error` (storyboard_app.py ~line 3643) после
-  `_active_gens.pop(key)` найти `EpisodeChatView` для `ep_id`:
-  ```python
-  ev = self.episode_chat_view  # один view, переключается между ep_id
-  if ev is not None and ev._ep_id == ep_id:
-      ev._gen_seen_names.discard(name)
-      # пере-синтезировать → карточка появится
-      msgs = read_chat_messages(...)
-      ev._restore_gen_buttons_from_history(msgs)
-  ```
-- Альтернатива проще: при error `AutonomousGenThread` **всегда** делать
-  `ev._gen_seen_names.discard(name)` независимо от текущего ep'а.
-
-**Файлы для правки:**
-- `storyboard_app.py:_on_active_gen_error` (~line 3643)
-- `views/episode_chat.py` — может потребоваться public-метод
-  `forget_gen_button(name)` если приватный `_gen_seen_names` лучше не
-  трогать снаружи.
-
-**Не блокирует:** workaround — перезапустить Studio. На следующем старте
-`_gen_seen_names` пусто, при заходе в эпизод
-`_restore_gen_buttons_from_history` находит маркер и создаёт карточку.
+- **`.github/workflows/build-windows.yml`** — собирает .exe на release: published.
+- **PAT-токен** обновлён с scope `workflow` (юзер вручную через https://github.com/settings/tokens).
+- **Мегакоммит `2f0071a`** — sync 108 файлов (модульная архитектура, LUMZ, всё что было локально не пушено).
+- **Hotfix `fa2f794`** — `scenario_drop_zone` NoneType crash на свежей Win-установке.
+- **Hotfix `67db21b`** — окно слишком большое (1000×900 → 900×600 minimum).
 
 ---
 
-## Правила работы (кратко, полный список — в memory `MEMORY.md`)
+## 🔧 КРИТИЧЕСКИЕ ТЕХНИЧЕСКИЕ ДЕТАЛИ
 
-- **Кросс-платформа Mac+Win10/11:** все правки на обеих ОС. Subprocess'ы —
-  `CREATE_NO_WINDOW` на win32. `pathlib.Path` всегда. Никаких shell-only
-  команд (см. `feedback_windows_crossplatform.md`).
-- **Спрашивать «делаем?»** перед любой правкой кода.
+### Цикл релиза
+
+1. Админ собирает Mac локально: `./build.sh` (smoke + PyInstaller + smoke-launch).
+2. В Studio: Settings → «📤 Отправить обновление» с галочкой «Обновить app».
+3. `SendUpdateThread`:
+   - Бампит `version.json` (project + опционально app_version).
+   - `git add -A && commit && push origin main`.
+   - `create_github_release(tag=app-v…, target=main)` через GitHub REST API.
+   - Архивирует `dist/Storyboard Studio.app` → `Storyboard Studio v…-mac.zip` → `upload_release_asset`.
+4. **GitHub Actions** ловит `release: published` → workflow `build-windows.yml`:
+   - windows-latest runner, Python 3.11.
+   - `pip install PyQt6 Pillow requests pyinstaller certifi python-docx`.
+   - `pyinstaller StoryboardStudio.spec --noconfirm` → `dist/Storyboard Studio.exe`.
+   - `pyinstaller StoryboardStudioInstaller.spec --noconfirm` → installer.exe.
+   - PowerShell `Compress-Archive` → `Storyboard Studio v…-win.zip`.
+   - `gh release upload "$tag" "$zipPath" --clobber`.
+5. **Коллеги-Mac** — `CheckUpdateThread` → `DownloadAppUpdateThread` качает `…-mac.zip`.
+6. **Коллеги-Win** — то же, качает `…-win.zip`. Установщик пока распаковывает GitHub-zip целиком (см. Variant A).
+
+### Где искать важные коды
+
+- `storyboard_app.py:fetch_release_asset_info` (~line 1584) — platform-aware filter.
+- `threads/update.py:DownloadAppUpdateThread.run` — cross-platform install.
+- `threads/update.py:SendUpdateThread.run` — bump + push + release.
+- `installer_app.py` — установщик (5 шагов: Welcome/Python/Download/Key/ClaudeCode/Done).
+- `.github/workflows/build-windows.yml` — Win build CI.
+
+### Ключевые состояния
+
+**Локально на маке админа:**
+- `.env` — Anthropic + Fast Gen ключи (gitignored).
+- QSettings `~/Library/Preferences/com.storyboardstudio.StoryboardApp.plist`:
+  - `project_root` = `/Volumes/DaVinci SSD/Работа/storyboard-automation/`
+  - `fastgen_api_key`, `image_provider`, `anim_speed_multiplier`, и т.д.
+- git remote с PAT в URL (scope: `repo` + `workflow`).
+
+**На GitHub:**
+- Repo: `github.com/Akex24/storyboard-automation` (приватный).
+- Branch: `main`.
+- Releases: теги `app-v1.0.X` начиная с 1.0.2 до текущего.
+- Последний хороший Win-zip: `app-v1.0.15` (или `1.0.16` после теста юзера).
+
+**В .gitignore (расширен сегодня):**
+- `.env`, `.env.local`, `*.bak`, `*.md.bak`, `*.log`, `.claude/`, `_session_log.md`, `_inbox/`, `dist/`, `build/`, `output/`, `scenarios/`, `refs/`, `shows/`, `current_show.json`.
+
+---
+
+## 🛡 ВАЖНЫЕ ПРАВИЛА (из памяти)
+
+См. `~/.claude/projects/.../memory/MEMORY.md`. Кратко:
+
+- **Кросс-платформа Mac+Win10/11:** все правки на обеих ОС. Subprocess'ы → `creationflags=0x08000000` на win32.
+- **Спрашивать «делаем?»** перед любой правкой кода (если юзер просит «как ты понял?» — ответить пониманием, ждать подтверждения).
 - **После правки** — короткий «что проверить» чек-лист.
-- **Логи:** каждая правка — запись в `_session_log.md` (дата, что трогал,
-  что НЕ трогал, верификация, маркеры).
-- **Auto-rebuild:** после правок сам делать `rm -rf build/ && ./build.sh
-  && open dist/Storyboard\ Studio.app`. Юзер не запускает билд руками.
+- **Логи:** каждая правка — запись в `_session_log.md`.
+- **Auto-rebuild:** после правок сам делать `rm -rf build/ && ./build.sh && open dist/Storyboard\ Studio.app`. Юзер не запускает билд руками.
 - **AST + smoke** перед билдом.
-- **Слово «Claude»/«Клод» НЕ использовать** в UI Storyboard Studio
-  (юзер-видимые строки). Заменять на «ассистент»/«AI»/«ИИ».
-- **Lucide иконки** только из `assets/icons/`, через `get_icon('name')`.
-- **Модульная архитектура** — новые фичи в свой файл (`views/`,
-  `widgets/`, `threads/`), не дамп в `storyboard_app.py`.
-- **Anti-context-loss:** незнакомый паттерн (`_unseen_shots`,
-  `_active_regens`, `_active_image_paths`, `_unseen_refs`) — ищи в
-  `_session_log.md` зачем оно. Не удалять.
-- **«Стоп» = пауза, не откат** — при `стоп` от юзера просто остановиться.
-- **Никаких автодействий по убийству процессов** — перед `pkill` спросить
-  есть ли активные генерации.
+- **«Claude»/«Клод» НЕ использовать в UI Studio** (юзер-видимые строки) — заменять на «ассистент»/«AI»/«ИИ». Исключения: `Claude CLI` в установщике, имена классов/функций, URLs `claude.com`/`claude.ai`.
+- **Lucide иконки** только из `assets/icons/` через `get_icon('name')`.
+- **Модульная архитектура** — новые фичи в свой файл (`views/`, `widgets/`, `threads/`).
+- **«Стоп» = пауза, не откат**.
+- **Никаких автодействий по убийству процессов** — перед `pkill` спросить.
 
 ---
 
-## Активный сериал и состояние
+## 📁 Активный сериал и состояние
 
 - `current_show.json` → `{"current": "finalnyy_raschet"}`.
-- Эпизоды: ep1..ep7 (но юзер мог удалить-пересоздать ep5/6/7 во время
-  тестирования параллельных запусков).
-- `shows/finalnyy_raschet/refs/locations/` — несколько orphan-промптов
-  (см. TODO 3).
+- Эпизоды: ep1..ep4 (точное состояние зависит от того что юзер делал).
+- `shows/finalnyy_raschet/refs/locations/` может содержать orphan-промпты (см. TODO 3 в брифинге).
 
 ---
 
-## Контактные файлы
+## 📞 Контактные файлы
 
-- `_session_log.md` — полный лог за день (~50 записей с маркерами).
+- `_session_log.md` — полный лог за день (~27000 строк, .gitignored).
 - `NEW_CHAT_BRIEFING.md` — этот файл (актуальная версия).
-- `NEW_CHAT_BRIEFING_old_2026-05-07_19-00.md.bak` — предыдущая версия (для
-  справки если что-то непонятно).
+- `NEW_CHAT_BRIEFING_old_2026-05-08_handoff.md.bak` — предыдущая версия (.gitignored, локально).
 - `~/.claude/projects/.../memory/MEMORY.md` — индекс правил.
-- `_WINDOWS_PREP_TODO.md` — Win-blockers checklist.
-- `_UI_TODO.md` — UI LUMZ-стиль: что осталось доделать (NewEpisodeView,
-  Actors, Outfit picker, NewShowDialog, AuthBanner, PromptRetryDialog,
-  ShotViewerDialog, ActiveGensPanel, Settings tab, эмодзи в монтажке).
-  Создано 2026-05-08 после большой UI-сессии.
-- `CLAUDE.md` — правила сторибординга (для AI agents).
+- `_WINDOWS_PREP_TODO.md` — Win-blockers checklist (закрыт, все P0 done).
+- `_UI_TODO.md` — UI LUMZ остатки (10 пунктов).
+- `CLAUDE.md` — правила сторибординга для AI agents.
+- `.github/workflows/build-windows.yml` — Win build CI.
 
-Welcome aboard! 🎬
+---
+
+## 🚀 Что делать в новом чате СРАЗУ
+
+1. **Прочитать хвост `_session_log.md`** (последние 1500 строк за 2026-05-08).
+2. **Проверить `git log --oneline -5`** — узнать на каком commit'е main.
+3. **Проверить https://github.com/Akex24/storyboard-automation/actions** — есть ли свежие workflow runs.
+4. **Спросить юзера:** «Какой статус v1.0.16 на Win? Окно влезает?» → дальше идти по его ответу:
+   - Если **влезает** → переходим к Variant A (переработка installer).
+   - Если **не влезает** → нужны другие фиксы (например уменьшить отступы внутри UI).
+   - Если **новый crash** → срочно фикс, новый bump.
+
+**НЕ начинай Variant A без явного «делаем» от юзера.** План записан выше, но юзер должен сначала подтвердить что Win-сборка стабильна.
+
+---
+
+Welcome aboard! 🎬🪟
