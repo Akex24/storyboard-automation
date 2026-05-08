@@ -839,16 +839,22 @@ def finalize_pending_update(project_root: Path):
 
     try:
         if getattr(sys, 'frozen', False):
+            # 2026-05-08: на Win Studio теперь onedir (папка), при апдейте
+            # bootstrap переименовывает старую папку в `.old` и копирует
+            # новую. Очищаем `.old` папки рядом с текущим бандлом — это
+            # папка где лежит .exe и её родитель (если onedir структура).
             exe_dir = Path(sys.executable).parent
-            for p in exe_dir.glob("*.exe.old"):
+            cleanup_dirs = [exe_dir, exe_dir.parent]
+            for cleanup_dir in cleanup_dirs:
                 try:
-                    p.unlink()
-                except Exception:
-                    pass
-            for p in exe_dir.glob("*.app.old"):
-                try:
-                    if p.is_dir():
-                        shutil.rmtree(p, ignore_errors=True)
+                    for p in cleanup_dir.glob("*.old"):
+                        try:
+                            if p.is_dir():
+                                shutil.rmtree(p, ignore_errors=True)
+                            else:
+                                p.unlink()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
     except Exception:

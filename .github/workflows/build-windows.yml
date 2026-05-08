@@ -65,15 +65,18 @@ jobs:
       - name: Build .exe with PyInstaller
         run: pyinstaller StoryboardStudio.spec --noconfirm
 
-      - name: Verify .exe exists
+      - name: Verify Studio onedir exists
         shell: bash
         run: |
-          if [ ! -f "dist/Storyboard Studio.exe" ]; then
-            echo "::error ::dist/Storyboard Studio.exe not found"
+          # 2026-05-08: onedir mode — собирается папка
+          # `dist/Storyboard Studio/` с .exe + _internal/.
+          if [ ! -f "dist/Storyboard Studio/Storyboard Studio.exe" ]; then
+            echo "::error ::dist/Storyboard Studio/Storyboard Studio.exe not found"
             ls -la dist/ || true
+            ls -la "dist/Storyboard Studio/" || true
             exit 1
           fi
-          ls -la "dist/Storyboard Studio.exe"
+          ls -la "dist/Storyboard Studio/"
 
       - name: Build installer .exe
         run: pyinstaller StoryboardStudioInstaller.spec --noconfirm
@@ -82,21 +85,26 @@ jobs:
         shell: pwsh
         # Имя строго совпадает с паттерном `…-win.zip` чтобы
         # `fetch_release_asset_info` подхватил его на стороне коллеги-Win.
+        # 2026-05-08: упаковываем onedir-папку Studio целиком + одиночный
+        # Installer.exe (он остаётся onefile, потому что запускается раз
+        # для setup-а и не страдает от Defender-проблемы).
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $zipName = "Storyboard Studio v$version-win.zip"
-          $files = @(
-            "dist/Storyboard Studio.exe",
-            "dist/Storyboard Studio Installer.exe"
-          )
-          # Проверяем что оба файла существуют
-          foreach ($f in $files) {
-            if (-not (Test-Path $f)) {
-              Write-Error "Missing: $f"
-              exit 1
-            }
+          $studioDir = "dist/Storyboard Studio"
+          $installerExe = "dist/Storyboard Studio Installer.exe"
+          if (-not (Test-Path $studioDir)) {
+            Write-Error "Missing: $studioDir (onedir bundle)"
+            exit 1
           }
-          Compress-Archive -Path $files -DestinationPath "dist/$zipName" -Force
+          if (-not (Test-Path $installerExe)) {
+            Write-Error "Missing: $installerExe"
+            exit 1
+          }
+          # -Path принимает и папки, и файлы. Папка попадёт в zip целиком
+          # с сохранением структуры.
+          Compress-Archive -Path $studioDir, $installerExe `
+              -DestinationPath "dist/$zipName" -Force
           Get-Item "dist/$zipName" | Select-Object FullName, Length
 
       - name: Upload .zip to existing Release

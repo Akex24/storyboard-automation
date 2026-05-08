@@ -70,9 +70,15 @@ if sys.platform == 'darwin':
         },
     )
 else:
-    # Windows
+    # Windows — onedir mode (с 2026-05-08).
+    # Раньше был onefile=True, но onefile + Windows Defender = постоянные
+    # ошибки `_MEI…\base_l…` (PyInstaller распаковывает bundle в
+    # %TEMP%\_MEI<rand>, Defender карантинит часть файлов → крэш).
+    # В onedir всё уже распаковано рядом с .exe в папке `_internal/`,
+    # запуск без распаковки в TEMP → Defender не лазит → стабильно.
     exe = EXE(
-        pyz, a.scripts, a.binaries, a.datas,
+        pyz, a.scripts, [],
+        exclude_binaries=True,
         name='Storyboard Studio',
         icon='assets/icon.ico',
         debug=False,
@@ -81,5 +87,10 @@ else:
         upx=True,
         console=False,
         disable_windowed_traceback=False,
-        onefile=True,
+    )
+    coll = COLLECT(
+        exe, a.binaries, a.datas,
+        strip=False,
+        upx=True,
+        name='Storyboard Studio',
     )

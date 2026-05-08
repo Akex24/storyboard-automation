@@ -261,15 +261,19 @@ class DownloadAppUpdateThread(QThread):
 
             is_win = (sys.platform == 'win32')
 
-            # Куда подменять (target_path = текущий .exe или .app bundle)
+            # Куда подменять (target_path = папка onedir на Win или .app
+            # bundle на Mac). 2026-05-08: Studio на Win переключена на
+            # onedir (папка с .exe + _internal/). Bootstrap подменяет
+            # ВСЮ папку, не один файл.
             if is_win:
                 if not getattr(sys, 'frozen', False):
                     self.error.emit(
                         "Авто-обновление работает только из собранного .exe.\n"
                         "В dev-режиме обновись через GitHub Releases вручную.")
                     return
-                target_path = Path(sys.executable)
-                search_pattern = "*.exe"
+                # sys.executable = «…\Storyboard Studio\Storyboard Studio.exe»
+                # → target_path = «…\Storyboard Studio\» (папка onedir).
+                target_path = Path(sys.executable).parent
             else:
                 app_bundle = _sa.find_current_app_bundle()
                 if not app_bundle:
@@ -278,7 +282,6 @@ class DownloadAppUpdateThread(QThread):
                         "Перенеси .app в /Applications или ~/Applications.")
                     return
                 target_path = app_bundle
-                search_pattern = "*.app"
 
             # Постоянная temp-папка для распаковки + bootstrap скрипта.
             # ВАЖНО: НЕ TemporaryDirectory — она удалится когда Thread
@@ -293,15 +296,19 @@ class DownloadAppUpdateThread(QThread):
             with zipfile.ZipFile(buf) as z:
                 z.extractall(update_dir)
 
-            candidates = list(update_dir.rglob(search_pattern))
+            # На Win ищем папку «Storyboard Studio» (onedir),
+            # внутри которой .exe + _internal/.
+            # На Mac ищем .app bundle (папку).
             if is_win:
-                studio = [c for c in candidates
-                          if 'installer' not in c.name.lower()]
-                if studio:
-                    candidates = studio
+                candidates = [p for p in update_dir.iterdir()
+                              if p.is_dir()
+                              and 'installer' not in p.name.lower()
+                              and (p / 'Storyboard Studio.exe').exists()]
+            else:
+                candidates = list(update_dir.rglob('*.app'))
             if not candidates:
                 self.error.emit(
-                    f"В архиве не найдено приложение ({search_pattern}).")
+                    "В архиве не найдено приложение Storyboard Studio.")
                 return
             new_app_src = candidates[0]
 
@@ -339,43 +346,53 @@ class DownloadAppUpdateThread(QThread):
         studio_pid = os.getpid()
         if is_win:
             script = update_dir / "update.bat"
-            target_name = target.name  # «Storyboard Studio.exe»
-            # На Win:
-            # - tasklist + find проверяет что Studio.exe закрылся (PID жив?).
-            # - PowerShell Copy-Item -Force вместо cmd copy:
-            #   cmd `copy /Y` не делает явный flush на диск, NTFS write
-            #   cache держит данные в памяти → .exe запускается с
-            #   частично записанным bundle → PyInstaller не находит
-            #   base_library.zip («_MEI…\base_l…» ошибка). PS Copy-Item
-            #   синхронен и работает надёжнее на cross-disk сценариях.
-            # - 4 сек после copy: дополнительный буфер для flush.
-            # - retry-loop на запуск: если первый start не привёл к
-            #   живому процессу через 5 сек (.exe упал) — ещё попытка.
-            # - 5 сек после успешного start: даёт PyInstaller
-            #   распаковаться в _MEI до того как rmdir удалит update_dir.
-            # Кавычки везде — пути с пробелами («Storyboard Studio.exe»).
+            # 2026-05-08: onedir mode. target — это ПАПКА «Storyboard Studio»
+            # содержащая .exe + _internal/. new_src — также папка из
+            # распакованного zip. Подменяем папку целиком.
+            target_parent = target.parent
+            target_name = target.name           # «Storyboard Studio» (папка)
+            studio_exe = target / "Storyboard Studio.exe"
+            old_dir = target_parent / f"{target_name}.old"
+            # Логика:
+            # 1. Wait Studio.exe died (PID).
+            # 2. Rename target папка → target.old (чтобы не пытаться
+            #    удалить пока Defender может что-то держать).
+            # 3. PS Copy-Item -Recurse new_src → target (новая папка).
+            # 4. Start обновлённый .exe с retry-loop.
+            # 5. Через 5 сек удалить target.old + update_dir.
+            # PS используется для надёжного recursive copy с flush.
             content = (
                 "@echo off\r\n"
-                "rem Storyboard Studio update bootstrap\r\n"
+                "rem Storyboard Studio update bootstrap (onedir)\r\n"
                 ":wait_for_studio\r\n"
                 "timeout /t 1 /nobreak > nul 2>&1\r\n"
                 f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
                 "if not errorlevel 1 goto wait_for_studio\r\n"
                 "timeout /t 1 /nobreak > nul 2>&1\r\n"
+                # Удаляем .old папку если осталась от предыдущего апдейта.
+                f'if exist "{old_dir}" rmdir /s /q "{old_dir}"\r\n'
+                # Переименовываем текущую папку Studio → .old.
+                f'if exist "{target}" ren "{target}" "{target_name}.old"\r\n'
+                "timeout /t 1 /nobreak > nul 2>&1\r\n"
+                # Копируем новую onedir папку из update_dir в target.
                 f'powershell -NoProfile -ExecutionPolicy Bypass -Command '
                 f'"Copy-Item -LiteralPath \'{new_src}\' '
-                f'-Destination \'{target}\' -Force"\r\n'
-                "timeout /t 4 /nobreak > nul 2>&1\r\n"
+                f'-Destination \'{target}\' -Recurse -Force"\r\n'
+                "timeout /t 3 /nobreak > nul 2>&1\r\n"
+                # Запускаем обновлённую Studio с retry.
                 "set /a tries=0\r\n"
                 ":try_start\r\n"
                 "set /a tries+=1\r\n"
-                f'start "" "{target}"\r\n'
+                f'start "" "{studio_exe}"\r\n'
                 "timeout /t 5 /nobreak > nul 2>&1\r\n"
-                f'tasklist /FI "IMAGENAME eq {target_name}" 2>nul | find /I "{target_name}" >nul\r\n'
+                'tasklist /FI "IMAGENAME eq Storyboard Studio.exe" 2>nul '
+                '| find /I "Storyboard Studio.exe" >nul\r\n'
                 "if errorlevel 1 (\r\n"
                 "  if %tries% LSS 3 goto try_start\r\n"
                 ")\r\n"
                 "timeout /t 5 /nobreak > nul 2>&1\r\n"
+                # Cleanup: удалить старую .old папку и саму update_dir.
+                f'if exist "{old_dir}" rmdir /s /q "{old_dir}"\r\n'
                 f'rmdir /s /q "{update_dir}"\r\n'
             )
             script.write_bytes(content.encode('utf-8'))
