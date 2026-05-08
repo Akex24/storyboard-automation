@@ -4676,20 +4676,11 @@ class MainWindow(QMainWindow):
         lay.setSpacing(14)
         lay.setContentsMargins(28, 14, 28, 14)
 
-        # Баннер обновления проекта
-        self.update_banner = QFrame()
-        self.update_banner.setObjectName("update-banner")
-        self.update_banner.hide()
-        ub_lay = QHBoxLayout(self.update_banner)
-        ub_lay.setContentsMargins(14, 10, 10, 10)
-        self.update_text = QLabel("")
-        self.update_text.setObjectName("update-text")
-        ub_lay.addWidget(self.update_text, stretch=1)
-        self.update_btn = QPushButton("Обновить →")
-        self.update_btn.setObjectName("update-btn")
-        self.update_btn.clicked.connect(self._download_update)
-        ub_lay.addWidget(self.update_btn)
-        lay.addWidget(self.update_banner)
+        # 2026-05-08 (Шаг B): синий баннер «Обновление проекта» удалён.
+        # Раньше тут создавался update_banner + update_btn для скачивания
+        # project zip — старый механизм где коллегам отдавался весь репо
+        # включая instructions/ и agents/. Теперь обновляется только .exe
+        # через app_update_banner ниже (DownloadAppUpdateThread + bootstrap).
 
         # Баннер обновления приложения
         self.app_update_banner = QFrame()
@@ -8845,34 +8836,11 @@ class MainWindow(QMainWindow):
             )
             self.app_update_banner.show()
 
-    def _download_update(self):
-        if self._update_thread and self._update_thread.isRunning():
-            return
-        self.update_btn.setEnabled(False)
-        self.update_btn.setText("Скачивается…")
-
-        self._update_thread = DownloadUpdateThread(self._project_root)
-        self._update_thread.progress.connect(
-            lambda msg, pct: self.status_bar.showMessage(f"{msg} ({pct}%)"))
-        self._update_thread.finished.connect(self._on_update_done)
-        self._update_thread.error.connect(self._on_update_error)
-        self._update_thread.start()
-
-    def _on_update_done(self, new_version: str):
-        self.update_banner.hide()
-        self._refresh_settings_versions()
-        QMessageBox.information(
-            self, "Обновление установлено",
-            f"Проект обновлён до версии v{new_version}.\n\n"
-            "Все твои сториборды и референсы сохранены.\n\n"
-            "Если изменения затронули само приложение — закрой и открой его заново."
-        )
-        self.status_bar.showMessage(f"Обновлено до v{new_version} ✓")
-
-    def _on_update_error(self, msg: str):
-        self.update_btn.setEnabled(True)
-        self.update_btn.setText("Обновить →")
-        QMessageBox.warning(self, "Ошибка обновления", msg)
+    # 2026-05-08 (Шаг B): удалены `_download_update`, `_on_update_done`,
+    # `_on_update_error` — мёртвый код для синего баннера «Обновление
+    # проекта» который физически убран из layout. DownloadUpdateThread
+    # больше не вызывается. Если когда-нибудь понадобится восстановить
+    # — есть git history.
 
     def _download_app_update(self):
         """Скачивает и устанавливает новый .app бинарник из GitHub Releases."""
