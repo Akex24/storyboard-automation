@@ -112,6 +112,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QFileSystemWatcher, QTimer, QSize, QSettings,
     QRectF, QPoint, QPropertyAnimation, QEasingCurve, QObject, QEvent,
+    QByteArray,
 )
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPainterPath, QAction, QGuiApplication, QKeySequence, QShortcut, QColor, QTextCursor, QIcon
 
@@ -3500,10 +3501,15 @@ class MainWindow(QMainWindow):
         # на том же месте экрана. Сохранение — в closeEvent через
         # saveGeometry. На первом запуске (geom=None) остаётся стартовый
         # 1100×800. Qt restoreGeometry сам уважает setMinimumSize.
+        #
+        # Win-фикс: на Windows QSettings хранит в реестре как строки,
+        # QByteArray превращается в строку при чтении → restoreGeometry
+        # её не понимает. Явный type=QByteArray возвращает Qt-объект.
         try:
             _gs = QSettings(APP_ORG, APP_NAME)
-            _geom = _gs.value("main_window_geometry")
-            if _geom:
+            _geom = _gs.value("main_window_geometry", QByteArray(),
+                              type=QByteArray)
+            if _geom and not _geom.isEmpty():
                 self.restoreGeometry(_geom)
         except Exception:
             traceback.print_exc()

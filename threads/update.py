@@ -339,18 +339,20 @@ class DownloadAppUpdateThread(QThread):
         studio_pid = os.getpid()
         if is_win:
             script = update_dir / "update.bat"
+            target_name = target.name  # «Storyboard Studio.exe»
             # На Win:
             # - tasklist + find проверяет что Studio.exe закрылся (PID жив?).
-            # - copy /Y вместо move /Y: target и update_dir могут быть
-            #   на РАЗНЫХ дисках (update_dir в %TEMP% обычно C:,
-            #   target где-то E:). move между volumes = copy+delete,
-            #   НЕ атомарно. Если прервалось — .exe скопирован частично
-            #   → при запуске PyInstaller не находит base_library.zip
-            #   («_MEI…\base_l…» ошибка). Явный copy + sleep + start
-            #   решает. Удаление update_dir в конце уберёт исходник.
-            # - 2 сек после copy: даёт FS-кешу записать данные на диск.
-            # - 3 сек после start: даёт PyInstaller распаковаться в _MEI
-            #   до того как rmdir удалит update_dir.
+            # - PowerShell Copy-Item -Force вместо cmd copy:
+            #   cmd `copy /Y` не делает явный flush на диск, NTFS write
+            #   cache держит данные в памяти → .exe запускается с
+            #   частично записанным bundle → PyInstaller не находит
+            #   base_library.zip («_MEI…\base_l…» ошибка). PS Copy-Item
+            #   синхронен и работает надёжнее на cross-disk сценариях.
+            # - 4 сек после copy: дополнительный буфер для flush.
+            # - retry-loop на запуск: если первый start не привёл к
+            #   живому процессу через 5 сек (.exe упал) — ещё попытка.
+            # - 5 сек после успешного start: даёт PyInstaller
+            #   распаковаться в _MEI до того как rmdir удалит update_dir.
             # Кавычки везде — пути с пробелами («Storyboard Studio.exe»).
             content = (
                 "@echo off\r\n"
@@ -360,10 +362,20 @@ class DownloadAppUpdateThread(QThread):
                 f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
                 "if not errorlevel 1 goto wait_for_studio\r\n"
                 "timeout /t 1 /nobreak > nul 2>&1\r\n"
-                f'copy /Y "{new_src}" "{target}" >nul\r\n'
-                "timeout /t 2 /nobreak > nul 2>&1\r\n"
+                f'powershell -NoProfile -ExecutionPolicy Bypass -Command '
+                f'"Copy-Item -LiteralPath \'{new_src}\' '
+                f'-Destination \'{target}\' -Force"\r\n'
+                "timeout /t 4 /nobreak > nul 2>&1\r\n"
+                "set /a tries=0\r\n"
+                ":try_start\r\n"
+                "set /a tries+=1\r\n"
                 f'start "" "{target}"\r\n'
-                "timeout /t 3 /nobreak > nul 2>&1\r\n"
+                "timeout /t 5 /nobreak > nul 2>&1\r\n"
+                f'tasklist /FI "IMAGENAME eq {target_name}" 2>nul | find /I "{target_name}" >nul\r\n'
+                "if errorlevel 1 (\r\n"
+                "  if %tries% LSS 3 goto try_start\r\n"
+                ")\r\n"
+                "timeout /t 5 /nobreak > nul 2>&1\r\n"
                 f'rmdir /s /q "{update_dir}"\r\n'
             )
             script.write_bytes(content.encode('utf-8'))
