@@ -203,44 +203,13 @@ class NewEpisodeView(QWidget):
         self.ep_hint_lbl.setWordWrap(True)
         cb.addWidget(self.ep_hint_lbl)
 
-        # Дропдаун модели + Run в одной строке
+        # 2026-05-09: дропдаун модели убран. Все пайплайны прибиты
+        # к моделям в коде (см. _internal/ARCHITECTURE.md). Свободный
+        # чат серии управляется дропдауном в шапке EpisodeChatView —
+        # это значение переживает в QSettings ключ "new_ep/model_v2"
+        # и подхватывается _current_model() ниже.
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
-
-        self.model_label = QLabel(tr('new_ep_model_label'))
-        self.model_label.setStyleSheet("color:#aaa; font-size:12px;")
-        btn_row.addWidget(self.model_label)
-
-        self.model_combo = QComboBox()
-        self.model_combo.setFixedHeight(38)
-        self.model_combo.setMinimumWidth(150)
-        self.model_combo.setStyleSheet(
-            "QComboBox { background:#15101e; border:1px solid #322545;"
-            " border-radius:6px; padding:4px 10px; color:#ddd; font-size:13px; }"
-            "QComboBox::drop-down { border:0; width:20px; }"
-            "QComboBox QAbstractItemView { background:#15101e; color:#ddd;"
-            " selection-background-color:#322545; border:1px solid #322545; }"
-        )
-        for label, mid in (
-            ("Sonnet 4.6", "claude-sonnet-4-6"),
-            ("Opus 4.7",   "claude-opus-4-7"),
-            ("Haiku 4.5",  "claude-haiku-4-5-20251001"),
-        ):
-            self.model_combo.addItem(label, mid)
-        # Ключ model_v2 чтобы старый дефолт (sonnet) не перебивал новый
-        # (opus-4-7) у юзеров с уже сохранённой настройкой.
-        try:
-            qs = QSettings(_sa.APP_ORG, _sa.APP_NAME)
-            saved = qs.value("new_ep/model_v2", "claude-opus-4-7", type=str)
-            for i in range(self.model_combo.count()):
-                if self.model_combo.itemData(i) == saved:
-                    self.model_combo.setCurrentIndex(i)
-                    break
-        except Exception:
-            pass
-        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        _sa.block_wheel_event(self.model_combo)
-        btn_row.addWidget(self.model_combo)
 
         self.run_btn = QPushButton(tr('new_ep_run_btn'))
         self.run_btn.setObjectName("save")
@@ -362,7 +331,6 @@ class NewEpisodeView(QWidget):
         self.ep_hint_lbl.setText(tr('new_ep_episode_hint'))
         self.run_btn.setText(tr('new_ep_run_btn'))
         self.stop_btn.setText(tr('new_ep_stop_btn'))
-        self.model_label.setText(tr('new_ep_model_label'))
         self.log_title_lbl.setText(tr('new_ep_log_title'))
         self.chat_input.setPlaceholderText(tr('new_ep_chat_placeholder'))
         self.send_btn.setText(tr('new_ep_send_btn'))
@@ -1689,27 +1657,17 @@ class NewEpisodeView(QWidget):
         self.status_lbl.setStyleSheet("color:#cc6666; font-size:12px;")
 
     def _current_model(self) -> Optional[str]:
-        """Текущий выбранный model-id из дропдауна (или None если виджета нет)."""
+        """Читает текущую модель свободного чата из QSettings (тот же
+        ключ что у дропдауна в EpisodeChatView).
+
+        2026-05-09: виджет дропдауна убран из этого view — модель
+        синхронизируется через QSettings. RunEpisodeThread на этом
+        стартовом экране (свободный чат до handed-off) использует ту
+        же модель что и чат эпизода после переезда. Дефолт — Opus 4.7
+        для legacy-юзеров без записи в QSettings.
+        """
         try:
-            return self.model_combo.currentData()
+            qs = QSettings(_sa.APP_ORG, _sa.APP_NAME)
+            return qs.value("new_ep/model_v2", "claude-opus-4-7", type=str)
         except Exception:
             return None
-
-    def _on_model_changed(self, _index: int):
-        """Сохраняем выбор юзера в QSettings — переживёт перезапуск.
-        Также синхронизируем дропдаун в EpisodeChatView (общая модель)."""
-        try:
-            mid = self.model_combo.currentData()
-            if mid:
-                QSettings(_sa.APP_ORG, _sa.APP_NAME).setValue("new_ep/model_v2", mid)
-            ev = getattr(self._mw, 'episode_chat_view', None)
-            if ev is not None and hasattr(ev, 'model_combo'):
-                ec = ev.model_combo
-                for i in range(ec.count()):
-                    if ec.itemData(i) == mid:
-                        ec.blockSignals(True)
-                        ec.setCurrentIndex(i)
-                        ec.blockSignals(False)
-                        break
-        except Exception:
-            pass

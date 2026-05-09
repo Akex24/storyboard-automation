@@ -395,22 +395,16 @@ class EpisodeChatView(QWidget):
             f"{prefix}  " + tr('active_gens_btn_text', n=n))
 
     def _on_model_changed(self, _index: int):
-        """Сохраняем выбор в QSettings, чтобы NewEpisodeView и другие
-        EpisodeChatView'ы видели свежее значение."""
+        """Сохраняем выбор в QSettings — переживёт перезапуск Studio.
+
+        2026-05-09: дропдаун модели остался только в этом view (для
+        свободного чата эпизода). NewEpisodeView читает то же значение
+        через QSettings ключ "new_ep/model_v2" в своём _current_model().
+        """
         try:
             mid = self.model_combo.currentData()
             if mid:
                 QSettings(_sa.APP_ORG, _sa.APP_NAME).setValue("new_ep/model_v2", mid)
-            # Синхронизируем дропдаун в NewEpisodeView (если открыт)
-            nev = getattr(self._mw, 'new_episode_view', None)
-            if nev is not None and hasattr(nev, 'model_combo'):
-                nev_combo = nev.model_combo
-                for i in range(nev_combo.count()):
-                    if nev_combo.itemData(i) == mid:
-                        nev_combo.blockSignals(True)
-                        nev_combo.setCurrentIndex(i)
-                        nev_combo.blockSignals(False)
-                        break
         except Exception:
             pass
 
@@ -1251,7 +1245,7 @@ class EpisodeChatView(QWidget):
         thread = AutonomousGenThread(
             self._mw._project_root, gen_type, name, description,
             ep_id=self._ep_id, show_slug=cur_show,
-            model=self._current_model())
+            model="claude-opus-4-7")  # 2026-05-09: agentic flow с WebSearch + visual + geometry — Opus.
         thread.start()
         # Регистрация в MW — она сама подключит сигналы прогресса/
         # финиша/ошибки к попапу.
@@ -1407,7 +1401,7 @@ class EpisodeChatView(QWidget):
             character_name,
             ep_id=ep_id,
             show_slug=cur_show,
-            model=self._current_model(),
+            model="claude-sonnet-4-6",  # 2026-05-09: структурный outfit picker — Sonnet справляется.
             previous_variants=prev)
         thread.results.connect(self._on_outfit_results)
         thread.error.connect(self._on_outfit_error)
@@ -2488,8 +2482,10 @@ class EpisodeChatView(QWidget):
         except Exception:
             pass
 
-        # Текущая модель из combo.
-        model_id = self._current_model() or "claude-opus-4-7"
+        # 2026-05-09: модели монтажки прибиты per-agent в
+        # MontageOrchestratorThread (MODEL_* константы класса) —
+        # Validator на Sonnet 4.6, остальные на Opus 4.7. Дропдаун
+        # шапки чата больше НЕ влияет на пайплайны.
 
         # 2026-05-06: подгружаем контекст сериала (Bible + другие
         # эпизоды) — Сценарист, Редактор, Чекер и Context Reviewer
@@ -2503,7 +2499,6 @@ class EpisodeChatView(QWidget):
             scenario_text=scenario,
             refs_summary=refs_summary,
             show_context=show_context,
-            model=model_id,
             log_path=log_path,
             parent=self,
         )
@@ -2746,7 +2741,8 @@ class EpisodeChatView(QWidget):
             traceback.print_exc()
             return
 
-        model_id = self._current_model() or "claude-opus-4-7"
+        # 2026-05-09: модель PromptWriter прибита в StoryboardPipelineThread
+        # (MODEL = "claude-opus-4-7"). Дропдаун шапки чата больше НЕ влияет.
 
         thread = StoryboardPipelineThread(
             claude_cli_path=cli,
@@ -2756,7 +2752,6 @@ class EpisodeChatView(QWidget):
             ep_id=self._ep_id or "",
             prompts_dir=prompts_dir,
             geometry_context=geometry_context,
-            model=model_id,
             parent=self,
         )
         # Сигналы → MainWindow (он держит UI блоков/шотов и
@@ -2781,7 +2776,7 @@ class EpisodeChatView(QWidget):
         try:
             self._start_seedance_pipeline(montage_card, cli, refs_summary,
                                             characters_dict, project_root,
-                                            cur_show, model_id, prompts_dir)
+                                            cur_show, prompts_dir)
         except Exception:
             traceback.print_exc()
 
@@ -2798,7 +2793,6 @@ class EpisodeChatView(QWidget):
                                     characters_dict: Dict[str, str],
                                     project_root,
                                     cur_show: str,
-                                    model_id: str,
                                     storyboard_prompts_dir):
         """Запускает SeedancePipelineThread параллельно с PromptWriter.
         Файлы: shows/<slug>/output/seedance/<ep>_block_N.txt.

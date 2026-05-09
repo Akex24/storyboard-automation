@@ -74,6 +74,12 @@ class StoryboardPipelineThread(QThread):
 
     SUBPROCESS_TIMEOUT_SEC = 600
 
+    # 2026-05-09: модель прибита под задачу. PromptWriter — структурный
+    # агент с длинным system prompt'ом и тонкими правилами 6/6б/6.1
+    # (binding тегов, никаких визуальных описаний). Opus стабильнее
+    # держит дисциплину. Sonnet возможен, но сначала bench-тест.
+    MODEL = "claude-opus-4-7"
+
     def __init__(self, claude_cli_path: str,
                  montage_card: dict,
                  refs_summary: dict,
@@ -81,7 +87,6 @@ class StoryboardPipelineThread(QThread):
                  ep_id: str,
                  prompts_dir: Path,
                  geometry_context: Optional[Dict[str, str]] = None,
-                 model: Optional[str] = None,
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
@@ -95,7 +100,6 @@ class StoryboardPipelineThread(QThread):
         # ТОЛЬКО для позиционирования персонажей (где относительно
         # мебели/стен/окон). НЕ для описания мебели словами.
         self._geometry: Dict[str, str] = geometry_context or {}
-        self._model = model
         self._stop = False
 
     def stop(self):
@@ -161,9 +165,8 @@ class StoryboardPipelineThread(QThread):
             raise RuntimeError("claude CLI not found")
         cmd = [self._cli, "-p",
                "--system-prompt", system_prompt,
-               "--output-format", "text"]
-        if self._model:
-            cmd.extend(["--model", self._model])
+               "--output-format", "text",
+               "--model", self.MODEL]
         kwargs: dict = {
             'input': user_prompt,
             'capture_output': True,

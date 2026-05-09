@@ -61,11 +61,20 @@ class MontageOrchestratorThread(QThread):
     MAX_ROUNDS = 3
     SUBPROCESS_TIMEOUT_SEC = 600  # 10 минут на каждый вызов CLI
 
+    # 2026-05-09: per-agent model routing. Юзер не выбирает модели для
+    # пайплайнов — каждый агент прибит к задаче. Validator — механический
+    # чек-лист (формула тайминга, whitelist значений), Sonnet справляется
+    # отлично и даёт ~3× ускорение. Остальные три агента — творческие/
+    # семантические, остаются на Opus.
+    MODEL_SCRIPTWRITER     = "claude-opus-4-7"
+    MODEL_VALIDATOR        = "claude-sonnet-4-6"
+    MODEL_EDITOR           = "claude-opus-4-7"
+    MODEL_CONTEXT_REVIEWER = "claude-opus-4-7"
+
     def __init__(self, claude_cli_path: str,
                  scenario_text: str,
                  refs_summary: dict,
                  show_context: Optional[dict] = None,
-                 model: Optional[str] = None,
                  log_path: Optional[Path] = None,
                  parent=None):
         super().__init__(parent)
@@ -76,7 +85,6 @@ class MontageOrchestratorThread(QThread):
         # других эпизодов) — для соответствия характерам и сюжетной
         # целостности. См. _format_show_context в montage_prompts.py.
         self._show_context: dict = show_context or {}
-        self._model = model
         self._log_path = log_path
         self._stop = False
         self._agent_log: List[dict] = []  # для финального дампа
@@ -226,11 +234,13 @@ class MontageOrchestratorThread(QThread):
     def _call_scriptwriter(self) -> dict:
         user = build_scriptwriter_user_prompt(
             self._scenario, self._refs, show_context=self._show_context)
-        raw = self._run_claude(SCRIPTWRITER_SYSTEM, user)
+        raw = self._run_claude(SCRIPTWRITER_SYSTEM, user,
+                                model=self.MODEL_SCRIPTWRITER)
         montage = self._parse_json(raw)
         self._agent_log.append({
             "stage": "scriptwriter",
             "round": 1,
+            "model_used": self.MODEL_SCRIPTWRITER,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -242,10 +252,12 @@ class MontageOrchestratorThread(QThread):
         card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
         user = build_validator_user_prompt(
             card_json, self._refs, show_context=self._show_context)
-        raw = self._run_claude(VALIDATOR_SYSTEM, user)
+        raw = self._run_claude(VALIDATOR_SYSTEM, user,
+                                model=self.MODEL_VALIDATOR)
         report = self._parse_json(raw)
         self._agent_log.append({
             "stage": "validator",
+            "model_used": self.MODEL_VALIDATOR,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -259,10 +271,12 @@ class MontageOrchestratorThread(QThread):
             card_json, errors, self._refs,
             original_scenario=self._scenario,
             show_context=self._show_context)
-        raw = self._run_claude(EDITOR_SYSTEM, user)
+        raw = self._run_claude(EDITOR_SYSTEM, user,
+                                model=self.MODEL_EDITOR)
         new_card = self._parse_json(raw)
         self._agent_log.append({
             "stage": "editor",
+            "model_used": self.MODEL_EDITOR,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -279,7 +293,8 @@ class MontageOrchestratorThread(QThread):
         card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
         user = build_context_reviewer_user_prompt(
             card_json, self._scenario, show_context=self._show_context)
-        raw = self._run_claude(CONTEXT_REVIEWER_SYSTEM, user)
+        raw = self._run_claude(CONTEXT_REVIEWER_SYSTEM, user,
+                                model=self.MODEL_CONTEXT_REVIEWER)
         report = self._parse_json(raw)
         # Нормализуем — на случай если AI вернул concerns под другим
         # ключом или забыл ok.
@@ -289,6 +304,7 @@ class MontageOrchestratorThread(QThread):
         report.setdefault("concerns", [])
         self._agent_log.append({
             "stage": "context_reviewer",
+            "model_used": self.MODEL_CONTEXT_REVIEWER,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -298,15 +314,20 @@ class MontageOrchestratorThread(QThread):
 
     # ──────────────────────────────────────────────────────────────────
 
-    def _run_claude(self, system_prompt: str, user_prompt: str) -> str:
-        """Один вызов `claude -p` через subprocess. Возвращает stdout."""
+    def _run_claude(self, system_prompt: str, user_prompt: str,
+                    model: str) -> str:
+        """Один вызов `claude -p` через subprocess. Возвращает stdout.
+
+        2026-05-09: `model` — обязательный параметр. Каждый агент
+        (Scriptwriter / Validator / Editor / ContextReviewer) передаёт
+        свою модель через MODEL_* class constants (см. шапку класса).
+        """
         if not self._cli:
             raise RuntimeError("claude CLI not found")
         cmd = [self._cli, "-p",
                "--system-prompt", system_prompt,
-               "--output-format", "text"]
-        if self._model:
-            cmd.extend(["--model", self._model])
+               "--output-format", "text",
+               "--model", model]
         # На Windows запускаем без отдельной консоли (мы хотим тихий
         # subprocess для backend-AI).
         kwargs = {
@@ -411,7 +432,12 @@ class MontageOrchestratorThread(QThread):
             self._log_path.write_text(
                 json.dumps({
                     "timestamp": time.time(),
-                    "model": self._model,
+                    "models": {
+                        "scriptwriter": self.MODEL_SCRIPTWRITER,
+                        "validator": self.MODEL_VALIDATOR,
+                        "editor": self.MODEL_EDITOR,
+                        "context_reviewer": self.MODEL_CONTEXT_REVIEWER,
+                    },
                     "scenario_chars": len(self._scenario),
                     "refs_summary": self._refs,
                     "stages": self._agent_log,

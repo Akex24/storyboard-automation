@@ -622,11 +622,14 @@ def test_views_new_episode() -> None:
         ok("NewEpisodeView: QWidget ✓")
 
     # Контракт NewEpisodeView API (что зовёт MainWindow и сам класс)
+    # 2026-05-09: _on_model_changed убран из NewEpisodeView вместе
+    # с виджетом дропдауна (модель читается из QSettings через
+    # _current_model). EpisodeChatView сохраняет свой _on_model_changed.
     expected = ('apply_lang', '_on_run', '_on_send_followup', '_on_stop',
                 '_on_thread_finished', '_on_thread_error', '_on_thread_stopped',
                 '_append_log_persist', '_on_chunk_persist',
                 '_show_open_chat_btn', '_reset_for_new_episode',
-                '_current_model', '_on_model_changed',
+                '_current_model',
                 'dragEnterEvent', 'dragLeaveEvent', 'dropEvent')
     missing = [m for m in expected if not hasattr(NewEpisodeView, m)]
     if missing:
