@@ -4237,6 +4237,8 @@ class MainWindow(QMainWindow):
         prev_logged = self._last_known_auth_loggedin
         self._last_known_auth_email = cur_email
         self._last_known_auth_loggedin = cur_logged
+        # 2026-05-09: обновить лейбл в Settings → AI-АККАУНТ.
+        self._refresh_claude_account_email()
 
         # Скрытие баннера если юзер залогинен и состояние не меняется.
         if initial:
@@ -4288,6 +4290,26 @@ class MainWindow(QMainWindow):
             self.auth_banner.hide()
         except Exception:
             pass
+
+    def _refresh_claude_account_email(self):
+        """Обновляет email-лейбл в Settings → секция «AI-АККАУНТ».
+
+        Вызывается:
+          • После постройки Settings tab (первая отрисовка).
+          • Из `_auth_check_tick` (90с-таймер обнаружил смену).
+          • Из `_on_auth_switch_done` (юзер сменил аккаунт через UI).
+
+        Защита: лейбл может не существовать если Settings tab ещё не построен
+        (initial-tick из `__init__` стреляет до `_build_settings_tab`).
+        """
+        try:
+            lbl = getattr(self, 'claude_acc_email_lbl', None)
+            if lbl is None:
+                return
+            email = self._last_known_auth_email
+            lbl.setText(email or tr('ai_account_not_logged'))
+        except Exception:
+            traceback.print_exc()
 
     def _on_auth_dismiss(self):
         """Клик «✕ Скрыть» на плашке. Запоминаем текущий email чтобы не
@@ -4341,6 +4363,8 @@ class MainWindow(QMainWindow):
             self.auth_banner.show_done(email)
         except Exception:
             pass
+        # 2026-05-09: обновить лейбл в Settings → AI-АККАУНТ.
+        self._refresh_claude_account_email()
 
     def _on_auth_switch_failed(self, reason: str):
         """OAuth не прошёл за 5 мин или произошла ошибка.
@@ -4615,6 +4639,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'open_log_btn'):
             self.open_log_btn.setText(tr('open_log_btn'))
             self.open_log_btn.setToolTip(tr('open_log_btn_tooltip'))
+        # AI-АККАУНТ — секция, лейбл «Текущий аккаунт:», кнопка «Сменить».
+        # Email (claude_acc_email_lbl) обновляем через refresh — там либо
+        # сам email (не переводится), либо tr('ai_account_not_logged').
+        if hasattr(self, 'sec_ai_account_lbl'):
+            self.sec_ai_account_lbl.setText(tr('sec_ai_account'))
+        if hasattr(self, 'claude_acc_key_lbl'):
+            self.claude_acc_key_lbl.setText(tr('ai_account_current'))
+        if hasattr(self, 'claude_acc_switch_btn'):
+            self.claude_acc_switch_btn.setText(tr('ai_account_switch_btn'))
+        self._refresh_claude_account_email()
         # API-ключ — секция, подсказка, плейсхолдер, обе кнопки
         if hasattr(self, 'sec_apikey_lbl'):
             try:
@@ -5052,6 +5086,48 @@ class MainWindow(QMainWindow):
         af.addWidget(row_app)
 
         lay.addWidget(about_frame)
+
+        # ── AI-АККАУНТ ──────────────────────────────────────────────────
+        # Показывает email текущего залогиненного claude CLI аккаунта.
+        # Кнопка «Сменить аккаунт» дёргает существующий AuthSwitchThread
+        # (logout + open Terminal с claude auth login + polling).
+        # 2026-05-09: вынесено в Settings — раньше смена была доступна
+        # только через AuthBanner (только при детекции quota/logged_out).
+        self.sec_ai_account_lbl = QLabel(tr('sec_ai_account'))
+        self.sec_ai_account_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_ai_account_lbl)
+
+        claude_acc_frame = QFrame()
+        claude_acc_frame.setObjectName("settings-group")
+        cf = QVBoxLayout(claude_acc_frame)
+        cf.setSpacing(0)
+        cf.setContentsMargins(0, 0, 0, 0)
+
+        # Строка с email — повторяет стиль строки версии в about_frame.
+        row_acc = QWidget()
+        row_acc.setObjectName("settings-row")
+        ra2 = QHBoxLayout(row_acc)
+        ra2.setContentsMargins(18, 14, 18, 14)
+        self.claude_acc_key_lbl = QLabel(tr('ai_account_current'))
+        self.claude_acc_key_lbl.setObjectName("settings-row-key")
+        ra2.addWidget(self.claude_acc_key_lbl)
+        ra2.addStretch()
+        self.claude_acc_email_lbl = QLabel(tr('ai_account_loading'))
+        self.claude_acc_email_lbl.setObjectName("settings-row-val")
+        ra2.addWidget(self.claude_acc_email_lbl)
+        cf.addWidget(row_acc)
+
+        # Кнопка «Сменить аккаунт» — стилизована как settings-row-btn.
+        self.claude_acc_switch_btn = QPushButton(tr('ai_account_switch_btn'))
+        self.claude_acc_switch_btn.setObjectName("settings-row-btn")
+        self.claude_acc_switch_btn.clicked.connect(self._on_auth_switch_requested)
+        cf.addWidget(self.claude_acc_switch_btn)
+
+        lay.addWidget(claude_acc_frame)
+
+        # Инициализируем email актуальным значением. _last_known_auth_email
+        # уже populated initial-tick'ом при старте Studio (см. __init__).
+        self._refresh_claude_account_email()
 
         # ── API КЛЮЧ Fast Gen ──────────────────────────────────────────────
         # Поле для замены ключа без правки .env: коллега получил новый
