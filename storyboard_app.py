@@ -3501,8 +3501,10 @@ class MainWindow(QMainWindow):
         # 2026-05-08: запоминание размера окна между запусками.
         # Сохранение в closeEvent через saveGeometry, восстановление здесь
         # через restoreGeometry. На Mac работает надёжно (plist знает binary).
+        # Стартовый размер 1000×800 — точно под 4 карточки шотов без
+        # пустого пространства справа (4×227 + 3×12 + 28×2 margin ≈ 1000).
         self.setMinimumSize(900, 600)
-        self.resize(1100, 800)
+        self.resize(1000, 800)
         try:
             _gs = QSettings(APP_ORG, APP_NAME)
             _geom = _gs.value("main_window_geometry")
