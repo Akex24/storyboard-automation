@@ -3498,32 +3498,12 @@ class MainWindow(QMainWindow):
         # Внутренние QScrollArea позволят прокручивать контент если он не
         # помещается. Стартовый resize — 1100×800 (если экран позволяет;
         # Qt сам ограничит до экрана если нет).
+        # 2026-05-08: вернул базовое поведение как было до экспериментов.
+        # setMinimumSize(900, 600) — минимум для маленьких Win-ноутов 1366×768.
+        # resize(1100, 800) — стартовый размер. Юзер может менять и ширину
+        # и высоту. Никакого saveGeometry — каждый запуск стартует заново.
         self.setMinimumSize(900, 600)
         self.resize(1100, 800)
-
-        # 2026-05-08: восстановление размера и позиции окна между запусками.
-        # Сохранение — в closeEvent + на resize/move через debounced таймер.
-        #
-        # Win-фикс v2: QSettings на Win хранит данные в реестре как строки.
-        # QByteArray даже с type=QByteArray ненадёжно (разное поведение
-        # PyQt5/6 + версии Qt). Сериализуем как base64-строку — простой
-        # текст работает идентично на любой платформе.
-        try:
-            _gs = QSettings(APP_ORG, APP_NAME)
-            _geom_b64 = _gs.value("main_window_geometry_b64", "", type=str)
-            if _geom_b64:
-                import base64 as _b64
-                _geom_bytes = _b64.b64decode(_geom_b64)
-                self.restoreGeometry(QByteArray(_geom_bytes))
-        except Exception:
-            traceback.print_exc()
-
-        # Debounced save при изменении размера/позиции окна — на случай
-        # если closeEvent не успеет (Win-killing, авто-обновление).
-        self._geom_save_timer = QTimer(self)
-        self._geom_save_timer.setSingleShot(True)
-        self._geom_save_timer.setInterval(500)  # 500ms debounce
-        self._geom_save_timer.timeout.connect(self._save_window_geometry)
         self.current_block: Optional[str] = None
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
@@ -5878,52 +5858,10 @@ class MainWindow(QMainWindow):
                     event.ignore()
                     return
             # Иначе — нет активных задач или юзер сказал «закрыть всё равно».
-            # Сохраняем размер/позицию окна — в __init__ восстановится.
-            self._save_window_geometry()
             event.accept()
         except Exception:
             traceback.print_exc()
             event.accept()
-
-    def _save_window_geometry(self):
-        """Сохраняет geometry окна в QSettings как base64-строку.
-
-        Вызывается:
-         • из closeEvent при штатном закрытии,
-         • debounced таймером при resize/move (500ms после остановки),
-         • из resizeEvent / moveEvent (через таймер).
-
-        Base64-формат гарантирует кросс-платформенность QSettings
-        (Win-реестр хранит строки, Mac plist — binary; base64 работает
-        одинаково).
-        """
-        try:
-            import base64 as _b64
-            _geom_bytes = bytes(self.saveGeometry())
-            _geom_b64 = _b64.b64encode(_geom_bytes).decode('ascii')
-            _gs = QSettings(APP_ORG, APP_NAME)
-            _gs.setValue("main_window_geometry_b64", _geom_b64)
-            _gs.sync()  # форсированный flush в реестр/plist
-        except Exception:
-            traceback.print_exc()
-
-    def resizeEvent(self, event):
-        """При ресайзе окна — debounced save geometry через 500ms."""
-        super().resizeEvent(event)
-        try:
-            if hasattr(self, '_geom_save_timer'):
-                self._geom_save_timer.start()
-        except Exception:
-            pass
-
-    def moveEvent(self, event):
-        """При перемещении окна — debounced save geometry через 500ms."""
-        super().moveEvent(event)
-        try:
-            if hasattr(self, '_geom_save_timer'):
-                self._geom_save_timer.start()
-        except Exception:
-            pass
 
     def _on_delete_episode_clicked(self):
         """Обработчик кнопки «🗑 Удалить эпизод».

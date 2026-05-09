@@ -312,24 +312,158 @@ class DownloadProjectThread(QThread):
                     z.extractall(tmp)
                 src = next(Path(tmp).iterdir())  # e.g. storyboard-automation-main
                 target = self.dest_dir / GITHUB_REPO
-                if target.exists():
-                    # Сохраняем существующий контент пользователя
-                    for item in src.iterdir():
+                target.mkdir(parents=True, exist_ok=True)
+
+                # 2026-05-08 (Variant A): фильтр распаковки.
+                # Коллеге НЕ нужны Python-исходники, методология, спеки,
+                # тесты, CI-конфиг. Studio.exe — standalone bundle (всё
+                # уже зашито внутрь). Копируем ТОЛЬКО:
+                #   actors/        — фото актёров (синхрон от админа)
+                #   version.json   — версия проекта
+                # И создаём пустые папки для работы коллеги:
+                #   shows/, output/
+                # Игнорируем всё остальное.
+                ALLOW_DIRS  = {"actors"}
+                ALLOW_FILES = {"version.json"}
+
+                import shutil as _sh
+                for item in src.iterdir():
+                    if item.is_dir() and item.name in ALLOW_DIRS:
                         dst = target / item.name
-                        if dst.exists() and dst.is_dir():
-                            continue
-                        if item.is_dir():
-                            import shutil
-                            shutil.copytree(item, dst, dirs_exist_ok=True)
-                        else:
-                            import shutil
-                            shutil.copy2(item, dst)
-                else:
-                    import shutil
-                    shutil.copytree(src, target)
+                        if dst.exists():
+                            # Зеркальное копирование: удаляем то что
+                            # пропало у админа, добавляем новое.
+                            _sh.rmtree(dst, ignore_errors=True)
+                        _sh.copytree(item, dst)
+                    elif item.is_file() and item.name in ALLOW_FILES:
+                        _sh.copy2(item, target / item.name)
+                    # Всё остальное (instructions/, agents/, *.py, *.md,
+                    # *.spec, .github/, tests/, etc.) — игнорируем.
+
+                # Создаём пустые рабочие папки если их нет.
+                for empty_dir in ("shows", "output"):
+                    (target / empty_dir).mkdir(parents=True, exist_ok=True)
 
             self.progress.emit(100, "Готово!")
             self.finished.emit(target)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class DownloadAppExeThread(QThread):
+    """2026-05-08 (Variant A): качает Storyboard Studio bundle из последнего
+    GitHub Release и кладёт его рядом с проектной папкой.
+
+    Win:  ищет в Release zip с именем `… vX.Y.Z-win.zip` → распаковывает
+          → находит папку `Storyboard Studio` (onedir) → перемещает в
+          target_root.
+    Mac:  ищет zip с именем `… vX.Y.Z-mac.zip` → распаковывает
+          → находит `Storyboard Studio.app` → перемещает в
+          target_root.
+
+    После этого Studio.exe / .app лежит рядом с папкой проекта, коллегу
+    можно сразу запускать.
+    """
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(Path)   # путь к Studio (.exe или .app)
+    error    = pyqtSignal(str)
+
+    def __init__(self, target_root: Path):
+        super().__init__()
+        self.target_root = target_root
+
+    def run(self):
+        try:
+            self.progress.emit(2, "Ищу последний релиз Storyboard Studio…")
+            # GitHub REST API: latest release
+            api_url = (f"https://api.github.com/repos/{GITHUB_USER}/"
+                       f"{GITHUB_REPO}/releases/latest")
+            req = urllib.request.Request(
+                api_url,
+                headers={"User-Agent": "StoryboardStudioInstaller",
+                         "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                release = json.loads(resp.read().decode("utf-8"))
+
+            assets = release.get("assets", [])
+            is_win = (sys.platform == "win32")
+            marker = "-win.zip" if is_win else "-mac.zip"
+            asset = None
+            for a in assets:
+                name = a.get("name", "")
+                if marker in name:
+                    asset = a
+                    break
+            if not asset:
+                self.error.emit(
+                    f"В последнем релизе нет файла с {marker}.\n"
+                    "Попроси админа собрать и опубликовать новую версию.")
+                return
+
+            url = asset["browser_download_url"]
+            size_bytes = asset.get("size", 0)
+            size_mb = max(1, size_bytes // (1024 * 1024))
+            self.progress.emit(5, f"Скачиваю Storyboard Studio ({size_mb} МБ)…")
+
+            req2 = urllib.request.Request(
+                url, headers={"User-Agent": "StoryboardStudioInstaller"})
+            with urllib.request.urlopen(req2, timeout=600) as resp:
+                total = int(resp.headers.get("Content-Length", size_bytes))
+                buf = io.BytesIO()
+                done = 0
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    buf.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        pct = 5 + int(done / total * 70)
+                        self.progress.emit(
+                            pct,
+                            f"Скачиваю… {done // (1024*1024)} / "
+                            f"{total // (1024*1024)} МБ")
+
+            self.progress.emit(80, "Распаковка приложения…")
+            self.target_root.mkdir(parents=True, exist_ok=True)
+
+            with tempfile.TemporaryDirectory() as tmp:
+                with zipfile.ZipFile(buf) as z:
+                    z.extractall(tmp)
+                tmp_path = Path(tmp)
+
+                if is_win:
+                    # Ищем папку «Storyboard Studio» (onedir) внутри zip.
+                    candidates = [p for p in tmp_path.rglob("Storyboard Studio")
+                                  if p.is_dir()
+                                  and (p / "Storyboard Studio.exe").exists()]
+                    if not candidates:
+                        self.error.emit(
+                            "В zip не найдена папка Storyboard Studio "
+                            "с .exe внутри.")
+                        return
+                    src_studio = candidates[0]
+                    dst_studio = self.target_root / "Storyboard Studio"
+                    if dst_studio.exists():
+                        shutil.rmtree(dst_studio, ignore_errors=True)
+                    shutil.copytree(src_studio, dst_studio)
+                    final_path = dst_studio / "Storyboard Studio.exe"
+                else:
+                    # Mac: ищем .app bundle (папку).
+                    candidates = list(tmp_path.rglob("Storyboard Studio.app"))
+                    if not candidates:
+                        self.error.emit(
+                            "В zip не найден Storyboard Studio.app.")
+                        return
+                    src_app = candidates[0]
+                    dst_app = self.target_root / "Storyboard Studio.app"
+                    if dst_app.exists():
+                        shutil.rmtree(dst_app, ignore_errors=True)
+                    shutil.copytree(src_app, dst_app)
+                    final_path = dst_app
+
+            self.progress.emit(100, "Готово!")
+            self.finished.emit(final_path)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -905,45 +1039,129 @@ class StepClaudeCode(StepBase):
     def _open_terminal_login(self):
         """Открывает внешний терминал с командой `claude login`.
         macOS: AppleScript → Terminal.app
-        Windows: cmd /K claude login (новое окно)
+        Windows: cmd /K «<полный путь к claude.exe>» login
+
+        2026-05-08 (Variant A): на Win использовать ПОЛНЫЙ путь к
+        claude CLI (self._cli_path), а не литерал «claude». Иначе на
+        свежей установке CLI не в PATH → cmd ругается «не является
+        командой». На Mac обычно claude в PATH через brew или curl
+        installer, оставляем литерал.
         """
+        cli_path = self._cli_path or "claude"
         try:
             if IS_MAC:
                 # AppleScript: новое окно Terminal с командой
                 subprocess.Popen([
                     "osascript", "-e",
-                    'tell application "Terminal" to do script "claude login"',
+                    f'tell application "Terminal" to do script "{cli_path} login"',
                     "-e",
                     'tell application "Terminal" to activate'
                 ])
             elif IS_WINDOWS:
                 # /K = выполнить и оставить окно открытым
+                # Полный путь в кавычках на случай пробелов.
+                cmd_str = f'"{cli_path}" login'
                 subprocess.Popen(
-                    ["cmd", "/K", "claude login"],
+                    ["cmd", "/K", cmd_str],
                     creationflags=subprocess.CREATE_NEW_CONSOLE)
             else:
                 QMessageBox.information(
                     self, "Открой терминал вручную",
-                    "Открой свой терминал и выполни команду:\n\nclaude login")
+                    f"Открой свой терминал и выполни команду:\n\n{cli_path} login")
         except Exception as e:
             QMessageBox.warning(
                 self, "Не удалось открыть терминал",
-                f"Открой терминал вручную и выполни:\n\nclaude login\n\n({e})")
+                f"Открой терминал вручную и выполни:\n\n{cli_path} login\n\n({e})")
+
+
+class StepDownloadApp(StepBase):
+    """2026-05-08 (Variant A): шаг скачивания самого Storyboard Studio.
+    После Claude CLI — качаем .exe (Win) / .app (Mac) из последнего
+    GitHub Release и кладём рядом с папкой проекта."""
+    studio_path: Optional[Path] = None
+    project_path: Optional[Path] = None
+
+    def __init__(self, parent=None):
+        super().__init__(5, 6, "Скачивание Storyboard Studio", parent)
+
+        info = QLabel(
+            "Сейчас будет скачано само приложение Storyboard Studio.\n"
+            "Оно положится рядом с твоей папкой проекта."
+        )
+        info.setObjectName("desc")
+        info.setWordWrap(True)
+        self.lay.addWidget(info)
+
+        self.download_btn = QPushButton("📥  Скачать Storyboard Studio")
+        self.download_btn.clicked.connect(self._start_download)
+        self.lay.addWidget(self.download_btn)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.hide()
+        self.lay.addWidget(self.progress_bar)
+
+        self.status = QLabel("")
+        self.status.setObjectName("desc")
+        self.lay.addWidget(self.status)
+
+        self.lay.addStretch()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.next_btn = QPushButton("Продолжить →")
+        self.next_btn.setObjectName("primary")
+        self.next_btn.setEnabled(False)
+        self.next_btn.clicked.connect(self.next_requested.emit)
+        btn_row.addWidget(self.next_btn)
+        self.lay.addLayout(btn_row)
+
+    def set_project_path(self, path: Path):
+        self.project_path = path
+
+    def _start_download(self):
+        if not self.project_path:
+            QMessageBox.warning(self, "Ошибка",
+                                "Сначала пройди шаг скачивания проекта.")
+            return
+        # Кладём Studio в родительскую папку проекта (рядом, не внутрь).
+        target_root = self.project_path.parent
+        self.download_btn.setEnabled(False)
+        self.progress_bar.show()
+        self.thread = DownloadAppExeThread(target_root)
+        self.thread.progress.connect(self._on_progress)
+        self.thread.finished.connect(self._on_done)
+        self.thread.error.connect(self._on_error)
+        self.thread.start()
+
+    def _on_progress(self, pct: int, msg: str):
+        self.progress_bar.setValue(pct)
+        self.status.setText(msg)
+
+    def _on_done(self, path: Path):
+        self.studio_path = path
+        self.status.setText(f"✓ Скачано: {path.name}")
+        self.status.setStyleSheet("font-size: 13px; color: #6db86d;")
+        self.next_btn.setEnabled(True)
+
+    def _on_error(self, msg: str):
+        self.download_btn.setEnabled(True)
+        self.status.setText(f"✗ Ошибка: {msg}")
+        self.status.setStyleSheet("font-size: 13px; color: #cc6666;")
 
 
 class StepDone(StepBase):
     """Финальный шаг — установщик закончил свою работу.
-    Storyboard Studio.app — отдельное приложение, его юзер скачивает
-    отдельно (от админа или с GitHub Releases). Установщик НЕ пытается
-    его запустить (раньше была кнопка «Запустить» которая падала с
-    ошибкой Python если .app не находился). Вместо этого — просто
-    инструкция + кнопка «Открыть папку проекта»."""
+    2026-05-08 (Variant A): теперь установщик САМ скачивает Storyboard
+    Studio (предыдущий шаг StepDownloadApp). Здесь юзер видит «всё
+    готово» и одной кнопкой запускает Studio."""
     project_path: Optional[Path] = None
+    studio_path: Optional[Path] = None  # путь к Storyboard Studio.exe / .app
+    launch_requested      = pyqtSignal()
     open_folder_requested = pyqtSignal()
     close_requested       = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__(5, 5, "Всё готово!", parent)
+        super().__init__(6, 6, "Всё готово!", parent)
 
         big = QLabel("🎉  Установка завершена")
         big.setObjectName("h1")
@@ -952,14 +1170,12 @@ class StepDone(StepBase):
 
         desc = QLabel(
             "Установлено:\n"
-            "  ✓  Проект Storyboard Automation скачан с GitHub\n"
+            "  ✓  Папка проекта создана\n"
             "  ✓  Fast Gen AI ключ сохранён\n"
-            "  ✓  Claude Code CLI установлен и авторизован\n\n"
-            "Что дальше:\n"
-            "  • Скачай и запусти Storyboard Studio.app — это отдельное\n"
-            "    приложение, ссылку получишь от админа проекта.\n"
-            "  • При запуске Storyboard Studio укажи папку проекта (та куда\n"
-            "    сейчас распаковался репозиторий)."
+            "  ✓  Claude Code CLI установлен и авторизован\n"
+            "  ✓  Storyboard Studio скачана и готова к запуску\n\n"
+            "Жми «Запустить Storyboard Studio» — приложение откроется\n"
+            "с твоей папкой проекта, можно начинать работу."
         )
         desc.setObjectName("desc")
         desc.setWordWrap(True)
@@ -974,13 +1190,24 @@ class StepDone(StepBase):
         folder_btn.setMinimumHeight(40)
         folder_btn.clicked.connect(self.open_folder_requested.emit)
         btn_row.addWidget(folder_btn)
-        close_btn = QPushButton("Закрыть установщик")
-        close_btn.setObjectName("primary")
-        close_btn.setMinimumHeight(40)
-        close_btn.clicked.connect(self.close_requested.emit)
-        btn_row.addWidget(close_btn)
+        launch_btn = QPushButton("🚀  Запустить Storyboard Studio")
+        launch_btn.setObjectName("primary")
+        launch_btn.setMinimumHeight(40)
+        launch_btn.clicked.connect(self.launch_requested.emit)
+        btn_row.addWidget(launch_btn)
         btn_row.addStretch()
         self.lay.addLayout(btn_row)
+
+        # Маленькая ссылка «Закрыть без запуска» внизу
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QPushButton("Закрыть установщик")
+        close_btn.setObjectName("link")
+        close_btn.setFlat(True)
+        close_btn.clicked.connect(self.close_requested.emit)
+        close_row.addWidget(close_btn)
+        close_row.addStretch()
+        self.lay.addLayout(close_row)
 
 
 # ─── Главное окно установщика ────────────────────────────────────────────────
@@ -995,14 +1222,16 @@ class InstallerWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        self.welcome = StepWelcome()
-        self.python  = StepPython()
-        self.dl      = StepDownload()
-        self.key     = StepKey()
-        self.cc      = StepClaudeCode()
-        self.done    = StepDone()
+        self.welcome  = StepWelcome()
+        self.python   = StepPython()
+        self.dl       = StepDownload()
+        self.key      = StepKey()
+        self.cc       = StepClaudeCode()
+        self.dl_app   = StepDownloadApp()
+        self.done     = StepDone()
 
-        for step in [self.welcome, self.python, self.dl, self.key, self.cc, self.done]:
+        for step in [self.welcome, self.python, self.dl, self.key,
+                     self.cc, self.dl_app, self.done]:
             self.stack.addWidget(step)
 
         self.welcome.next_requested.connect(lambda: self._goto(1))
@@ -1010,6 +1239,8 @@ class InstallerWindow(QMainWindow):
         self.dl.next_requested.connect(self._after_download)
         self.key.next_requested.connect(lambda: self._goto(4))
         self.cc.next_requested.connect(lambda: self._goto(5))
+        self.dl_app.next_requested.connect(self._after_download_app)
+        self.done.launch_requested.connect(self._launch_studio)
         self.done.open_folder_requested.connect(self._open_project_folder)
         self.done.close_requested.connect(self.close)
 
@@ -1020,8 +1251,45 @@ class InstallerWindow(QMainWindow):
         self.project_path = self.dl.project_path
         if self.project_path:
             self.key.set_project_path(self.project_path)
+            self.dl_app.set_project_path(self.project_path)
             self.done.project_path = self.project_path
+            # 2026-05-08 (Variant A): сохраняем project_root в QSettings
+            # СРАЗУ после download — Studio при первом запуске сама
+            # подхватит правильный путь, юзеру не надо его указывать.
+            try:
+                from PyQt6.QtCore import QSettings
+                QSettings("StoryboardStudio", "StoryboardApp").setValue(
+                    "project_root", str(self.project_path))
+            except Exception:
+                pass
         self._goto(3)
+
+    def _after_download_app(self):
+        """После шага скачивания Studio.exe/.app — переход в StepDone."""
+        self.done.studio_path = self.dl_app.studio_path
+        self._goto(6)
+
+    def _launch_studio(self):
+        """Запуск Storyboard Studio из StepDone и закрытие установщика."""
+        if not self.done.studio_path:
+            QMessageBox.warning(
+                self, "Studio не найдена",
+                "Не удалось найти путь к установленной Storyboard Studio.")
+            return
+        try:
+            studio_path = self.done.studio_path
+            if IS_MAC:
+                # studio_path = Storyboard Studio.app
+                subprocess.Popen(["open", str(studio_path)])
+            elif IS_WINDOWS:
+                # studio_path = …/Storyboard Studio/Storyboard Studio.exe
+                os.startfile(str(studio_path))
+            # Закрываем установщик после запуска Studio.
+            QTimer.singleShot(800, self.close)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Не удалось запустить Studio",
+                f"{self.done.studio_path}\n\n{e}")
 
     def _open_project_folder(self):
         """Открывает папку проекта в Finder (Mac) / Explorer (Windows).
