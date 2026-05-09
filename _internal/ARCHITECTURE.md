@@ -164,8 +164,14 @@ User — admin, единственный кто пушит. Коллеги по�
 2. Обновления → внутри Studio → баннер «Обновить приложение» →
    `DownloadAppUpdateThread` подменяет bundle через bootstrap.
 
-`Send Update` (admin-only кнопка) → bump app_version → git push → optional
-upload .app/.exe в Release.
+`Send Update` (admin-only кнопка) при `upload_app=True`:
+1. Очистка `build/` + `bash build.sh` — авто-пересборка .app (с 2026-05-09).
+   Если упало → error до bump'а версии (история Releases без дыр).
+2. Bump app_version → git commit → git push.
+3. Архивация .app → создание Release → upload asset.
+
+При `upload_app=False` шаг 1 пропускается. Build.sh — Mac-only (bash);
+Win .exe собирает GitHub Actions из push'а отдельно.
 
 Не-админский UI (Send Update, FetchStats) гейтится в коде — у коллег
 этих кнопок нет. См. memory: project_distribution.

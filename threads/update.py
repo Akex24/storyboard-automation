@@ -472,6 +472,57 @@ class SendUpdateThread(QThread):
 
     def run(self):
         try:
+            # 1. Если upload_app — сначала пересобираем .app. Если сборка
+            #    упала, выходим с error ДО bump'а версии и git push —
+            #    чтобы не плодить дыры в истории Releases (v1.0.32 в git
+            #    без соответствующего Release-asset).
+            #
+            # Очистка build/ обязательна: PyInstaller держит .pyc от
+            # прошлой сборки → правки могут не попасть в bundle.
+            #
+            # Mac-only: build.sh — bash; админ работает на Mac, GitHub
+            # Actions собирает Win .exe отдельно из push'а.
+            if self.upload_app:
+                self.progress.emit("Очистка build/…")
+                build_dir = self.root / "build"
+                if build_dir.exists():
+                    shutil.rmtree(build_dir, ignore_errors=True)
+
+                build_script = self.root / "build.sh"
+                if not build_script.exists():
+                    self.error.emit(
+                        f"Не найден {build_script}. Авто-пересборка невозможна.")
+                    return
+
+                self.progress.emit(
+                    "Пересборка .app (≈2-3 мин, smoke + PyInstaller + launch-тест)…")
+                try:
+                    rb = subprocess.run(
+                        ["bash", str(build_script)],
+                        cwd=str(self.root),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=600,
+                        **_sa.no_console_kwargs(),
+                    )
+                except subprocess.TimeoutExpired:
+                    self.error.emit(
+                        "Сборка .app превысила 10 минут. Запусти ./build.sh "
+                        "вручную чтобы посмотреть лог.")
+                    return
+                if rb.returncode != 0:
+                    tail = ((rb.stderr or "") + (rb.stdout or ""))[-1500:]
+                    self.error.emit(f"Сборка .app упала:\n{tail}")
+                    return
+
+                app_path = self.root / "dist" / "Storyboard Studio.app"
+                if not app_path.exists():
+                    self.error.emit(
+                        f"Сборка прошла, но {app_path} не найден.")
+                    return
+
             vfile = self.root / "version.json"
             data = json.loads(vfile.read_text(encoding="utf-8")) if vfile.exists() \
                    else {"version": "1.0.0", "app_version": "1.0.0"}
@@ -525,13 +576,8 @@ class SendUpdateThread(QThread):
 
             uploaded = False
             if self.upload_app:
+                # .app уже собран и проверен в шаге 1 (build-then-bump).
                 app_path = self.root / "dist" / "Storyboard Studio.app"
-                if not app_path.exists():
-                    self.error.emit(
-                        f"Не найден {app_path}.\n"
-                        "Сначала пересобери приложение командой:\n"
-                        "python3 -m PyInstaller StoryboardStudio.spec --noconfirm")
-                    return
 
                 token = _sa.get_github_token_from_remote(self.root)
                 if not token:
