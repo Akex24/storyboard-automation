@@ -46,8 +46,15 @@ echo "  PyInstaller-frozen окружении)."
 APP_BIN="dist/Storyboard Studio.app/Contents/MacOS/Storyboard Studio"
 # Отключаем set -e на время теста — мы намеренно убиваем .app по таймеру.
 # Иначе SIGTERM от kill (exit 143) валит весь build.sh.
+#
+# QT_QPA_PLATFORM=offscreen — Qt создаёт QApplication БЕЗ видимого окна.
+# Цель: при auto-rebuild из SendUpdateThread юзер не должен видеть как
+# на 4 секунды всплывает вторая копия Studio. Тест по-прежнему ловит
+# ImportError / init-crash / circular import — это всё происходит ДО
+# создания окон. libqoffscreen.dylib забандлен в .app/Contents/Frameworks/
+# PyQt6/Qt6/plugins/platforms/ автоматически PyInstaller-хуками.
 set +e
-"$APP_BIN" > /tmp/storyboard_studio_launch.log 2>&1 &
+QT_QPA_PLATFORM=offscreen "$APP_BIN" > /tmp/storyboard_studio_launch.log 2>&1 &
 SPID=$!
 sleep 4
 if kill -0 $SPID 2>/dev/null; then
