@@ -499,7 +499,7 @@ class StepBase(QWidget):
 
 class StepWelcome(StepBase):
     def __init__(self, parent=None):
-        super().__init__(0, 5, "Storyboard Studio", parent)
+        super().__init__(0, 6, "Storyboard Studio", parent)
         # Сбросим заголовок шага для приветственного экрана
         for i in range(self.lay.count() - 1, -1, -1):
             w = self.lay.itemAt(i).widget()
@@ -540,7 +540,7 @@ class StepWelcome(StepBase):
 
 class StepPython(StepBase):
     def __init__(self, parent=None):
-        super().__init__(1, 5, "Проверка Python", parent)
+        super().__init__(1, 6, "Проверка Python", parent)
 
         info = QLabel("Storyboard Studio работает на Python 3.\nПроверяю что он установлен…")
         info.setObjectName("desc")
@@ -614,7 +614,7 @@ class StepDownload(StepBase):
     project_path: Optional[Path] = None
 
     def __init__(self, parent=None):
-        super().__init__(2, 5, "Скачивание проекта", parent)
+        super().__init__(2, 6, "Скачивание проекта", parent)
 
         info = QLabel(
             "Сейчас будет скачан проект storyboard-automation с GitHub.\n"
@@ -709,7 +709,7 @@ class StepKey(StepBase):
     project_path: Optional[Path] = None
 
     def __init__(self, parent=None):
-        super().__init__(3, 5, "Введи Fast Gen AI ключ", parent)
+        super().__init__(3, 6, "Введи Fast Gen AI ключ", parent)
 
         info = QLabel(
             "Этот ключ нужен для генерации картинок.\n"
@@ -793,7 +793,7 @@ class StepClaudeCode(StepBase):
          или кто не хочет автомат geometry.
     """
     def __init__(self, parent=None):
-        super().__init__(4, 5, "Установи Claude Code CLI", parent)
+        super().__init__(4, 6, "Установи Claude Code CLI", parent)
         self._install_thread: Optional[InstallClaudeCliThread] = None
         self._auth_thread:    Optional[CheckClaudeAuthThread]  = None
         self._cli_path: Optional[str] = None
@@ -976,6 +976,11 @@ class StepClaudeCode(StepBase):
                 "padding: 14px 16px; background: #14241a; "
                 "border: 1px solid #2d5535; border-radius: 8px; "
                 "color: #b0e0b0; font-size: 13px;")
+            # 2026-05-08: активируем «Продолжить →» когда CLI установлен
+            # и залогинен. Также скрываем «Пропустить» — пропускать уже
+            # нечего, всё работает.
+            self.next_btn.setEnabled(True)
+            self.skip_btn.hide()
 
         elif state == 'not_logged_in':
             self.status_lbl.setText(

@@ -83,14 +83,21 @@ jobs:
 
       - name: Create ZIP asset
         shell: pwsh
-        # Имя строго совпадает с паттерном `…-win.zip` чтобы
-        # `fetch_release_asset_info` подхватил его на стороне коллеги-Win.
-        # 2026-05-08: упаковываем onedir-папку Studio целиком + одиночный
-        # Installer.exe (он остаётся onefile, потому что запускается раз
-        # для setup-а и не страдает от Defender-проблемы).
+        # 2026-05-08 v2: упаковка ДВУХ отдельных asset'ов:
+        # 1) Storyboard Studio v<v>-win.zip — содержит ТОЛЬКО onedir-папку
+        #    Studio (без Installer.exe). Используется DownloadAppUpdateThread
+        #    (авто-обновления внутри Studio) и DownloadAppExeThread в
+        #    installer'е (первая установка).
+        # 2) Storyboard Studio Installer v<v>.exe — отдельный файл-установщик
+        #    для коллеги. Скачивает сам, без zip-обёртки. Один клик —
+        #    запуск, дальше installer сам тянет Studio из (1).
+        # Это убирает дублирование (раньше zip содержал и Studio и Installer
+        # — коллега качал ~250МБ, потом installer пытался скачать Studio
+        # ещё раз). Теперь коллега качает только installer ~80МБ.
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $zipName = "Storyboard Studio v$version-win.zip"
+          $installerOut = "Storyboard Studio Installer v$version.exe"
           $studioDir = "dist/Storyboard Studio"
           $installerExe = "dist/Storyboard Studio Installer.exe"
           if (-not (Test-Path $studioDir)) {
@@ -101,16 +108,17 @@ jobs:
             Write-Error "Missing: $installerExe"
             exit 1
           }
-          # -Path принимает и папки, и файлы. Папка попадёт в zip целиком
-          # с сохранением структуры.
-          Compress-Archive -Path $studioDir, $installerExe `
+          # zip только Studio onedir
+          Compress-Archive -Path $studioDir `
               -DestinationPath "dist/$zipName" -Force
-          Get-Item "dist/$zipName" | Select-Object FullName, Length
+          # Installer.exe — копируем под версионное имя
+          Copy-Item $installerExe "dist/$installerOut" -Force
+          Get-Item "dist/$zipName", "dist/$installerOut" `
+              | Select-Object FullName, Length
 
-      - name: Upload .zip to existing Release
+      - name: Upload assets to existing Release
         # Тег уже создан админом локально через SendUpdateThread (вместе с
-        # Mac-zip). Этот шаг просто прикрепляет к нему наш Win-zip.
-        # Использует встроенный GITHUB_TOKEN — отдельный PAT не нужен.
+        # Mac-zip). Этот шаг прикрепляет ОБА Win-asset'а к Release.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
@@ -118,4 +126,6 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $tag     = "${{ steps.version.outputs.tag }}"
           $zipPath = "dist/Storyboard Studio v$version-win.zip"
+          $installerPath = "dist/Storyboard Studio Installer v$version.exe"
           gh release upload "$tag" "$zipPath" --clobber
+          gh release upload "$tag" "$installerPath" --clobber
