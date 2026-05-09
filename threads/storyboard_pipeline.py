@@ -24,6 +24,8 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -118,6 +120,10 @@ class StoryboardPipelineThread(QThread):
         blocks = list(self._card.get('blocks') or [])
         success = 0
         fail = 0
+        # 2026-05-09: PW timing инструментация. Печатается в stderr
+        # (видно в Console.app для собранной .app или в терминале для
+        # dev-режима). Греп по `[PW_TIMING]`.
+        t_pipeline_start = time.time()
         for b in blocks:
             if self._stop:
                 self.aborted.emit()
@@ -127,7 +133,11 @@ class StoryboardPipelineThread(QThread):
                 continue
             self.block_started.emit(n)
             try:
+                t0 = time.time()
                 txt = self._call_prompt_writer(b)
+                elapsed = time.time() - t0
+                self._log_pw_timing(
+                    f"[PW_TIMING] block {n} PW elapsed {elapsed:.1f}s")
                 txt = self._sanitize(txt, n)
                 filename = f"{self._ep_id}_block_{n}.txt"
                 out_path = self._prompts_dir / filename
@@ -143,7 +153,31 @@ class StoryboardPipelineThread(QThread):
                 # Не прерываем — пробуем следующий блок.
                 continue
 
+        total = time.time() - t_pipeline_start
+        self._log_pw_timing(
+            f"[PW_TIMING] total {total:.1f}s for {success} OK / {fail} fail")
         self.all_done.emit(success, fail)
+
+    # ──────────────────────────────────────────────────────────────────
+
+    def _log_pw_timing(self, line: str) -> None:
+        """Печатает PW-timing в stderr + дублирует в файл
+        `~/.storyboard_studio_pw_timing.log`.
+
+        2026-05-09: на Mac stderr виден в Console.app / в терминале
+        (dev-режим). На Win windowed-сборка (`console=False`)
+        перехватывает stderr в null — поэтому дополнительно пишем в
+        home-директорию. Чтение:
+            Mac/Linux:  tail -f ~/.storyboard_studio_pw_timing.log
+            Windows:    Get-Content -Wait $env:USERPROFILE\\.storyboard_studio_pw_timing.log
+        """
+        print(line, file=sys.stderr, flush=True)
+        try:
+            log_path = Path.home() / ".storyboard_studio_pw_timing.log"
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat()} {line}\n")
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────────────────────────
 
