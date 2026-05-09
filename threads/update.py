@@ -496,6 +496,23 @@ class SendUpdateThread(QThread):
 
                 self.progress.emit(
                     "Пересборка .app (≈2-3 мин, smoke + PyInstaller + launch-тест)…")
+
+                # 2026-05-09: Qt env fix. SendUpdateThread работает внутри
+                # bundled Storyboard Studio.app — PyInstaller bootloader
+                # выставляет DYLD_*/QT_*/PYTHONHOME/PYTHONPATH/_PYI_*.
+                # Дочерний bash → python3 в build.sh унаследует их и при
+                # `import PyQt6` загрузит Qt из bundle поверх системного
+                # PyQt6 → дважды зарегистрированный QMetalLayer → SIGABRT
+                # в smoke.py. Чистим env. В dev (`sys.frozen=False`) env
+                # уже чистый — гейтим чтобы не сломать dev-режим. На Win
+                # этих vars нет — `.pop(k, None)` тихо пропустит.
+                clean_env = os.environ.copy()
+                if getattr(sys, 'frozen', False):
+                    for k in list(clean_env.keys()):
+                        if (k.startswith(("DYLD_", "QT_", "_PYI_"))
+                                or k in ("PYTHONHOME", "PYTHONPATH")):
+                            clean_env.pop(k, None)
+
                 try:
                     rb = subprocess.run(
                         ["bash", str(build_script)],
@@ -505,6 +522,7 @@ class SendUpdateThread(QThread):
                         encoding="utf-8",
                         errors="replace",
                         timeout=600,
+                        env=clean_env,
                         **_sa.no_console_kwargs(),
                     )
                 except subprocess.TimeoutExpired:
