@@ -3498,12 +3498,18 @@ class MainWindow(QMainWindow):
         # Внутренние QScrollArea позволят прокручивать контент если он не
         # помещается. Стартовый resize — 1100×800 (если экран позволяет;
         # Qt сам ограничит до экрана если нет).
-        # 2026-05-08: вернул базовое поведение как было до экспериментов.
-        # setMinimumSize(900, 600) — минимум для маленьких Win-ноутов 1366×768.
-        # resize(1100, 800) — стартовый размер. Юзер может менять и ширину
-        # и высоту. Никакого saveGeometry — каждый запуск стартует заново.
+        # 2026-05-08: запоминание размера окна между запусками.
+        # Сохранение в closeEvent через saveGeometry, восстановление здесь
+        # через restoreGeometry. На Mac работает надёжно (plist знает binary).
         self.setMinimumSize(900, 600)
         self.resize(1100, 800)
+        try:
+            _gs = QSettings(APP_ORG, APP_NAME)
+            _geom = _gs.value("main_window_geometry")
+            if _geom:
+                self.restoreGeometry(_geom)
+        except Exception:
+            traceback.print_exc()
         self.current_block: Optional[str] = None
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
@@ -5858,6 +5864,13 @@ class MainWindow(QMainWindow):
                     event.ignore()
                     return
             # Иначе — нет активных задач или юзер сказал «закрыть всё равно».
+            # Сохраняем размер/позицию окна в QSettings.
+            try:
+                _gs = QSettings(APP_ORG, APP_NAME)
+                _gs.setValue("main_window_geometry", self.saveGeometry())
+                _gs.sync()
+            except Exception:
+                traceback.print_exc()
             event.accept()
         except Exception:
             traceback.print_exc()

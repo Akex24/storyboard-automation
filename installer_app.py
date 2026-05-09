@@ -870,12 +870,17 @@ class StepClaudeCode(StepBase):
         self.lay.addStretch()
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        skip = QPushButton("Пропустить")
-        skip.setObjectName("secondary")
-        skip.clicked.connect(self.next_requested.emit)
-        btn_row.addWidget(skip)
+        self.skip_btn = QPushButton("Пропустить")
+        self.skip_btn.setObjectName("secondary")
+        self.skip_btn.clicked.connect(self.next_requested.emit)
+        btn_row.addWidget(self.skip_btn)
         self.next_btn = QPushButton("Продолжить →")
         self.next_btn.setObjectName("primary")
+        # 2026-05-08: Продолжить disabled по умолчанию. Активируется
+        # только когда CLI установлен И залогинен (через _refresh_status).
+        # До тех пор юзер должен либо войти в claude (зелёная кнопка),
+        # либо нажать «Пропустить» если совсем не получается.
+        self.next_btn.setEnabled(False)
         self.next_btn.clicked.connect(self.next_requested.emit)
         btn_row.addWidget(self.next_btn)
         self.lay.addLayout(btn_row)
@@ -1039,13 +1044,13 @@ class StepClaudeCode(StepBase):
     def _open_terminal_login(self):
         """Открывает внешний терминал с командой `claude login`.
         macOS: AppleScript → Terminal.app
-        Windows: cmd /K «<полный путь к claude.exe>» login
+        Windows: temp .bat файл → запускается через CREATE_NEW_CONSOLE
 
-        2026-05-08 (Variant A): на Win использовать ПОЛНЫЙ путь к
-        claude CLI (self._cli_path), а не литерал «claude». Иначе на
-        свежей установке CLI не в PATH → cmd ругается «не является
-        командой». На Mac обычно claude в PATH через brew или curl
-        installer, оставляем литерал.
+        2026-05-08 v2: на Win cmd /K с inline аргументом ненадёжен
+        (двойные кавычки в команде путают парсер cmd). Пишем временный
+        .bat файл — там `"<path>" login` парсится cmd корректно как
+        обычная команда. Bat файл удалится после выхода из Anthropic
+        login (через `del %~f0`).
         """
         cli_path = self._cli_path or "claude"
         try:
@@ -1058,12 +1063,26 @@ class StepClaudeCode(StepBase):
                     'tell application "Terminal" to activate'
                 ])
             elif IS_WINDOWS:
-                # /K = выполнить и оставить окно открытым
-                # Полный путь в кавычках на случай пробелов.
-                cmd_str = f'"{cli_path}" login'
+                # Через temp .bat — самый надёжный способ запуска
+                # программы с путём содержащим пробелы.
+                bat_path = (Path(tempfile.gettempdir())
+                            / "storyboard_claude_login.bat")
+                bat_content = (
+                    "@echo off\r\n"
+                    "title Claude CLI Login\r\n"
+                    "echo Запускаю claude login. После «Logged in as ...»\r\n"
+                    "echo закрой это окно и нажми «Проверить ещё раз».\r\n"
+                    "echo.\r\n"
+                    f'"{cli_path}" login\r\n'
+                    "echo.\r\n"
+                    "echo Готово. Закрой это окно.\r\n"
+                    "pause\r\n"
+                )
+                bat_path.write_text(bat_content, encoding='utf-8')
                 subprocess.Popen(
-                    ["cmd", "/K", cmd_str],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    [str(bat_path)],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    shell=False)
             else:
                 QMessageBox.information(
                     self, "Открой терминал вручную",
