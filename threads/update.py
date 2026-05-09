@@ -314,17 +314,34 @@ class DownloadAppUpdateThread(QThread):
 
             self.progress.emit("Готовлю установку…", 85)
 
-            # Маркер новой версии для Studio (читается при следующем
-            # старте → обновляет version.json[app_version] → удаляется).
+            # 2026-05-09: ДВА маркера для безопасного апдейта.
+            # - pending_version.txt = NEW: при success bat'а Studio при
+            #   старте обновит version.json[app_version] на это значение.
+            # - pending_rollback.txt = OLD: bat при success УДАЛЯЕТ этот
+            #   файл. Если файл остался → bat упал на середине → Studio
+            #   при старте откатывает version.json и показывает popup
+            #   с прямой ссылкой на ручный Installer.
+            old_app_version = ""
             try:
-                marker = self.root / "pending_version.txt"
-                marker.write_text(self.target_version, encoding='utf-8')
+                vfile_now = self.root / "version.json"
+                if vfile_now.exists():
+                    old_app_version = json.loads(
+                        vfile_now.read_text(encoding='utf-8')).get(
+                            'app_version', '')
             except Exception:
-                pass  # некритично — баннер просто появится один лишний раз
+                pass
+            try:
+                (self.root / "pending_version.txt").write_text(
+                    self.target_version, encoding='utf-8')
+                (self.root / "pending_rollback.txt").write_text(
+                    old_app_version, encoding='utf-8')
+            except Exception:
+                pass  # некритично — popup при следующем старте появится без old_version
 
             # Bootstrap-скрипт + запуск detached
             script_path = self._make_bootstrap(
-                new_app_src, target_path, update_dir, is_win)
+                new_app_src, target_path, update_dir, is_win,
+                project_root=self.root)
             self._launch_bootstrap(script_path, is_win)
 
             self.progress.emit("Перезапуск…", 100)
@@ -333,53 +350,81 @@ class DownloadAppUpdateThread(QThread):
             self.error.emit(str(e))
 
     def _make_bootstrap(self, new_src: Path, target: Path,
-                         update_dir: Path, is_win: bool) -> Path:
+                         update_dir: Path, is_win: bool,
+                         project_root: Path) -> Path:
         """Пишет bootstrap-скрипт в update_dir и возвращает путь.
 
+        2026-05-09 hardened после Failure mode A на Win (ren упал silently
+        → Copy-Item -Force создал nested mess в target\\target\\, .exe
+        остался старый, юзер думал что обновился).
+
         Скрипт:
-          1. Ждёт пока процесс Studio (PID известен) умрёт. Иначе на Win
-             move .exe фейлится из-за file lock.
-          2. Подменяет target на new_src.
-          3. Запускает обновлённый Studio.
-          4. Удаляет update_dir (сам себя в том числе).
+          1. Ждёт пока процесс Studio (PID известен) умрёт.
+          2. Move /y target → target.old (errorlevel показывает успех).
+             На fail — записать update_failed.txt + старт СТАРОЙ Studio
+             (она ещё на месте) + exit.
+          3. Copy-Item new_src → target. На fail — rollback (mv .old
+             → target обратно) + старт старой + exit.
+          4. На success — delete pending_rollback.txt в project_root
+             (Studio при старте видит → НЕ откатывает version.json).
+          5. Start обновлённой Studio с retry-loop.
+          6. Cleanup target.old. update_dir НЕ удаляем — bootstrap.log
+             остаётся для диагностики (auto-cleanup на следующем старте
+             Studio через finalize_pending_update).
         """
         studio_pid = os.getpid()
+        log_path = update_dir / "bootstrap.log"
+        rollback_marker = project_root / "pending_rollback.txt"
+        failed_marker = update_dir / "update_failed.txt"
         if is_win:
             script = update_dir / "update.bat"
-            # 2026-05-08: onedir mode. target — это ПАПКА «Storyboard Studio»
-            # содержащая .exe + _internal/. new_src — также папка из
-            # распакованного zip. Подменяем папку целиком.
             target_parent = target.parent
             target_name = target.name           # «Storyboard Studio» (папка)
             studio_exe = target / "Storyboard Studio.exe"
             old_dir = target_parent / f"{target_name}.old"
-            # Логика:
-            # 1. Wait Studio.exe died (PID).
-            # 2. Rename target папка → target.old (чтобы не пытаться
-            #    удалить пока Defender может что-то держать).
-            # 3. PS Copy-Item -Recurse new_src → target (новая папка).
-            # 4. Start обновлённый .exe с retry-loop.
-            # 5. Через 5 сек удалить target.old + update_dir.
-            # PS используется для надёжного recursive copy с flush.
             content = (
                 "@echo off\r\n"
-                "rem Storyboard Studio update bootstrap (onedir)\r\n"
+                "rem Storyboard Studio update bootstrap (onedir, hardened 2026-05-09)\r\n"
+                f'set "LOG={log_path}"\r\n'
+                'echo [%date% %time%] bootstrap start >> "%LOG%" 2>&1\r\n'
+                # 1. Wait for Studio process to die.
                 ":wait_for_studio\r\n"
                 "timeout /t 1 /nobreak > nul 2>&1\r\n"
                 f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
                 "if not errorlevel 1 goto wait_for_studio\r\n"
+                'echo [%date% %time%] studio died >> "%LOG%" 2>&1\r\n'
                 "timeout /t 1 /nobreak > nul 2>&1\r\n"
-                # Удаляем .old папку если осталась от предыдущего апдейта.
-                f'if exist "{old_dir}" rmdir /s /q "{old_dir}"\r\n'
-                # Переименовываем текущую папку Studio → .old.
-                f'if exist "{target}" ren "{target}" "{target_name}.old"\r\n'
-                "timeout /t 1 /nobreak > nul 2>&1\r\n"
-                # Копируем новую onedir папку из update_dir в target.
-                f'powershell -NoProfile -ExecutionPolicy Bypass -Command '
-                f'"Copy-Item -LiteralPath \'{new_src}\' '
-                f'-Destination \'{target}\' -Recurse -Force"\r\n'
-                "timeout /t 3 /nobreak > nul 2>&1\r\n"
-                # Запускаем обновлённую Studio с retry.
+                # Cleanup leftover .old от прошлого апдейта.
+                f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
+                # 2. Move target → .old (move /y даёт надёжный errorlevel,
+                #    в отличие от ren который тихо проваливается).
+                'echo [%date% %time%] moving target to .old >> "%LOG%" 2>&1\r\n'
+                f'move /y "{target}" "{old_dir}" >> "%LOG%" 2>&1\r\n'
+                "if errorlevel 1 (\r\n"
+                '  echo [%date% %time%] MOVE FAILED -- target locked, aborting >> "%LOG%" 2>&1\r\n'
+                f'  echo move_failed > "{failed_marker}"\r\n'
+                f'  start "" "{studio_exe}"\r\n'
+                "  exit /b 1\r\n"
+                ")\r\n"
+                # 3. Copy new bundle.
+                'echo [%date% %time%] copying new bundle >> "%LOG%" 2>&1\r\n'
+                'powershell -NoProfile -ExecutionPolicy Bypass -Command '
+                f'"Copy-Item -LiteralPath \'{new_src}\' -Destination \'{target}\' '
+                '-Recurse -Force" >> "%LOG%" 2>&1\r\n'
+                "if errorlevel 1 (\r\n"
+                '  echo [%date% %time%] COPY FAILED, rolling back >> "%LOG%" 2>&1\r\n'
+                f'  if exist "{target}" rmdir /s /q "{target}" >> "%LOG%" 2>&1\r\n'
+                f'  move /y "{old_dir}" "{target}" >> "%LOG%" 2>&1\r\n'
+                f'  echo copy_failed > "{failed_marker}"\r\n'
+                f'  start "" "{studio_exe}"\r\n'
+                "  exit /b 1\r\n"
+                ")\r\n"
+                # 4. SUCCESS — delete rollback marker (Studio при старте
+                #    увидит что markerа нет → НЕ откатит version.json).
+                'echo [%date% %time%] success -- deleting rollback marker >> "%LOG%" 2>&1\r\n'
+                f'if exist "{rollback_marker}" del /f /q "{rollback_marker}" >> "%LOG%" 2>&1\r\n'
+                "timeout /t 2 /nobreak > nul 2>&1\r\n"
+                # 5. Start updated Studio with retry-loop.
                 "set /a tries=0\r\n"
                 ":try_start\r\n"
                 "set /a tries+=1\r\n"
@@ -391,26 +436,52 @@ class DownloadAppUpdateThread(QThread):
                 "  if %tries% LSS 3 goto try_start\r\n"
                 ")\r\n"
                 "timeout /t 5 /nobreak > nul 2>&1\r\n"
-                # Cleanup: удалить старую .old папку и саму update_dir.
-                f'if exist "{old_dir}" rmdir /s /q "{old_dir}"\r\n'
-                f'rmdir /s /q "{update_dir}"\r\n'
+                # 6. Cleanup .old (update_dir НЕ удаляем — log нужен).
+                f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
+                'echo [%date% %time%] bootstrap complete >> "%LOG%" 2>&1\r\n'
             )
             script.write_bytes(content.encode('utf-8'))
         else:
             script = update_dir / "update.sh"
-            # На Mac .app — это папка, удаляем целиком и копируем новую.
-            # `kill -0 PID` возвращает 0 если процесс жив, иначе ошибка.
-            # `open` запускает .app как стандартный Mac launcher.
+            old_dir = Path(f"{target}.old")
             content = (
                 "#!/bin/bash\n"
-                "# Storyboard Studio update bootstrap\n"
+                "# Storyboard Studio update bootstrap (Mac, hardened 2026-05-09)\n"
+                f'LOG="{log_path}"\n'
+                'echo "[$(date)] bootstrap start" >> "$LOG"\n'
                 f"while kill -0 {studio_pid} 2>/dev/null; do sleep 1; done\n"
+                'echo "[$(date)] studio died" >> "$LOG"\n'
                 "sleep 1\n"
-                f'rm -rf "{target}"\n'
-                f'cp -R "{new_src}" "{target}"\n'
+                # Cleanup leftover .old.
+                f'rm -rf "{old_dir}" 2>/dev/null\n'
+                # Move target → .old. На Mac mv почти всегда работает,
+                # но проверим на всякий случай.
+                'echo "[$(date)] moving target to .old" >> "$LOG"\n'
+                f'if [ -d "{target}" ]; then\n'
+                f'  if ! mv "{target}" "{old_dir}" 2>>"$LOG"; then\n'
+                '    echo "[$(date)] MOVE FAILED, aborting" >> "$LOG"\n'
+                f'    echo move_failed > "{failed_marker}"\n'
+                f'    open "{target}" 2>/dev/null\n'
+                "    exit 1\n"
+                "  fi\n"
+                "fi\n"
+                # Copy new.
+                'echo "[$(date)] copying new bundle" >> "$LOG"\n'
+                f'if ! cp -R "{new_src}" "{target}" 2>>"$LOG"; then\n'
+                '  echo "[$(date)] COPY FAILED, rolling back" >> "$LOG"\n'
+                f'  rm -rf "{target}" 2>/dev/null\n'
+                f'  mv "{old_dir}" "{target}" 2>>"$LOG"\n'
+                f'  echo copy_failed > "{failed_marker}"\n'
+                f'  open "{target}" 2>/dev/null\n'
+                "  exit 1\n"
+                "fi\n"
+                # SUCCESS — delete rollback marker.
+                'echo "[$(date)] success -- deleting rollback marker" >> "$LOG"\n'
+                f'rm -f "{rollback_marker}" 2>>"$LOG"\n'
                 f'open "{target}"\n'
                 "sleep 2\n"
-                f'rm -rf "{update_dir}"\n'
+                f'rm -rf "{old_dir}" 2>>"$LOG"\n'
+                'echo "[$(date)] bootstrap complete" >> "$LOG"\n'
             )
             script.write_text(content, encoding='utf-8')
             os.chmod(script, 0o755)

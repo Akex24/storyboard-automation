@@ -93,9 +93,27 @@ installer_app.py     — отдельная программа Storyboard Instal
 [threads/update.py:200](threads/update.py:200) `DownloadAppUpdateThread`:
 - Качает GitHub Release asset (собранный bundle, **не исходники**).
 - Bootstrap-скрипт (.bat / .sh) ждёт смерти Studio, **подменяет ВЕСЬ
-  bundle**: rm + cp на Mac, rename + Copy-Item на Win.
+  bundle**.
 - Файлы проекта (`*.md`, `instructions/`, `agents/`, `.py`) при этом
   потоке **не трогаются**.
+
+**Hardened flow (2026-05-09 после Failure mode A на Win):**
+- Studio пишет ДВА маркера в `project_root` ДО запуска bootstrap'а:
+  - `pending_version.txt` = NEW версия → Studio при старте обновит
+    `version.json[app_version]` на это.
+  - `pending_rollback.txt` = OLD версия → bat при success УДАЛЯЕТ файл.
+- Bat использует `move /y` (не `ren` — он тихо проваливается!) +
+  errorlevel-check. На fail: запись `update_failed.txt`, старт СТАРОЙ
+  Studio, exit 1. На copy fail: rollback `mv .old → target`.
+- Bat пишет полный лог в `update_dir/bootstrap.log` (не stdout/stderr).
+  `update_dir` НЕ удаляется bootstrap'ом — Studio при следующем старте
+  чистит через `finalize_pending_update`, но защищает папку с активным
+  bootstrap.log если найден failed update.
+- При старте `finalize_pending_update` ([storyboard_app.py:778](storyboard_app.py:778)):
+  - Если `pending_rollback.txt` есть → bat упал → откат `version.json`
+    на OLD + popup юзеру (`_show_update_failed_dialog`) с кликабельной
+    ссылкой на Installer и bootstrap.log.
+  - Если только `pending_version.txt` есть → success → bump version.json.
 
 ### МЁРТВЫЙ КОД (важно знать чтобы не путаться)
 

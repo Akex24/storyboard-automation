@@ -21,7 +21,7 @@ import datetime
 import subprocess
 import traceback
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 # i18n — TRANSLATIONS / get_lang / set_lang / tr / _pick_lang / SUPPORTED_LANGUAGES
 # вытащены в i18n.py 2026-05-04 чтобы уменьшить размер этого файла на ~600 строк.
@@ -775,34 +775,101 @@ class _SceneHighlighter:
         return _Real(document)
 
 
-def finalize_pending_update(project_root: Path):
+def finalize_pending_update(project_root: Path) -> Optional[Tuple[str, Optional[Path]]]:
     """Финализирует авто-обновление после рестарта через bootstrap-скрипт.
 
     Вызывается из MainWindow.__init__ при каждом старте Studio. Делает
     три вещи (все опциональны, ошибки молча проглатываются):
 
-      1. Если рядом с version.json лежит `pending_version.txt` (его
-         написал DownloadAppUpdateThread прямо перед запуском bootstrap)
-         — обновляет version.json[app_version] на содержимое маркера и
-         удаляет маркер. После этого в углу окна показывается новая
-         цифра, и баннер «Скачать приложение» сам пропадает.
+      1. Маркеры от прошлого DownloadAppUpdateThread:
+         - `pending_rollback.txt` (содержит OLD app_version) — если bat
+           ЗАВЕРШИЛСЯ УСПЕШНО, он сам удалил этот файл. Если файл ОСТАЛСЯ
+           → bat упал на середине → подмена .exe не удалась →
+           откатываем `version.json[app_version]` на старое значение и
+           возвращаем кортеж (attempted_version, log_path) чтобы
+           MainWindow показал popup-предупреждение со ссылкой на
+           ручный Installer.
+         - `pending_version.txt` (содержит NEW app_version) — пишется
+           всегда вместе с rollback. При success-сценарии: только этот
+           файл существует → обновляем `version.json[app_version]` на
+           NEW и удаляем оба маркера.
 
       2. Чистит старые update-папки `storyboard_update_*` в системном
-         temp. Bootstrap-скрипт обычно сам себя удаляет, но если
-         процесс прервался на полпути — мусор может остаться. Удаляем
-         всё что соответствует паттерну.
+         temp. Bootstrap не удаляет их сам (с 2026-05-09 — оставляет
+         для bootstrap.log). Чистим всё кроме самой свежей.
 
       3. Чистит резидуальные `.exe.old` / `.app.old` рядом с текущим
          бандлом — на случай если когда-то использовался старый
          rename trick.
 
+    Возвращает:
+        None — обычный случай (нет update либо успех).
+        (attempted_version, log_path) — bootstrap упал. MainWindow
+        должен показать popup. log_path может быть None если лог не
+        найден (диагностика всё равно полезна юзеру с указанием
+        попытки версии).
+
     Все операции внутри try/except — Studio не должна падать при старте
     из-за проблем с update-инфраструктурой.
     """
+    update_failed: Optional[Tuple[str, Optional[Path]]] = None
     try:
-        marker = project_root / "pending_version.txt"
-        if marker.exists():
-            new_version = marker.read_text(encoding='utf-8').strip()
+        rollback_marker = project_root / "pending_rollback.txt"
+        version_marker = project_root / "pending_version.txt"
+
+        if rollback_marker.exists():
+            # FAILURE PATH — bat упал, не успел удалить rollback marker.
+            try:
+                old_version = rollback_marker.read_text(encoding='utf-8').strip()
+                attempted = ""
+                if version_marker.exists():
+                    attempted = version_marker.read_text(encoding='utf-8').strip()
+                # Откатываем version.json[app_version] на старое значение.
+                if old_version:
+                    vfile = project_root / "version.json"
+                    try:
+                        data = (json.loads(vfile.read_text(encoding='utf-8'))
+                                if vfile.exists() else {})
+                        data["app_version"] = old_version
+                        tmp = vfile.with_suffix(".json.tmp")
+                        tmp.write_text(
+                            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                            encoding='utf-8',
+                        )
+                        import os as _os
+                        _os.replace(str(tmp), str(vfile))
+                    except Exception:
+                        traceback.print_exc()
+                # Найти лог bootstrap'а в %TEMP% (последний по mtime —
+                # это и есть тот что только что упал).
+                log_path: Optional[Path] = None
+                try:
+                    import tempfile as _tf
+                    tmp_root = Path(_tf.gettempdir())
+                    candidates = sorted(
+                        tmp_root.glob("storyboard_update_*/bootstrap.log"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+                    if candidates:
+                        log_path = candidates[0]
+                except Exception:
+                    pass
+                update_failed = (attempted or "?", log_path)
+                # Удалить markers (мы уже обработали fail).
+                try:
+                    rollback_marker.unlink()
+                except Exception:
+                    pass
+                try:
+                    if version_marker.exists():
+                        version_marker.unlink()
+                except Exception:
+                    pass
+            except Exception:
+                traceback.print_exc()
+        elif version_marker.exists():
+            # SUCCESS PATH — bat сработал, удалил rollback marker.
+            # Нам осталось обновить version.json на NEW.
+            new_version = version_marker.read_text(encoding='utf-8').strip()
             if new_version:
                 vfile = project_root / "version.json"
                 try:
@@ -819,7 +886,7 @@ def finalize_pending_update(project_root: Path):
                 except Exception:
                     traceback.print_exc()
             try:
-                marker.unlink()
+                version_marker.unlink()
             except Exception:
                 pass
     except Exception:
@@ -828,9 +895,14 @@ def finalize_pending_update(project_root: Path):
     try:
         import tempfile as _tf
         tmp_root = Path(_tf.gettempdir())
+        # Если у нас есть active log_path для popup'а — не трогаем его dir,
+        # юзер кликнет на ссылку «Открыть лог».
+        protected_dir = None
+        if update_failed is not None and update_failed[1] is not None:
+            protected_dir = update_failed[1].parent
         for p in tmp_root.glob("storyboard_update_*"):
             try:
-                if p.is_dir():
+                if p.is_dir() and p != protected_dir:
                     shutil.rmtree(p, ignore_errors=True)
             except Exception:
                 pass
@@ -859,6 +931,8 @@ def finalize_pending_update(project_root: Path):
                     pass
     except Exception:
         pass
+
+    return update_failed
 
 
 def no_console_kwargs() -> dict:
@@ -3469,11 +3543,16 @@ class MainWindow(QMainWindow):
         self._is_admin     = is_admin_mode(project_root)
 
         # 2026-05-08 (Шаг 2): post-bootstrap finalize.
-        # Если предыдущий запуск Studio инициировал авто-обновление через
-        # bootstrap-скрипт — сейчас это уже НОВАЯ версия. Подхватываем
-        # маркер `pending_version.txt`, обновляем version.json, чистим
-        # старые update-папки в temp.
-        finalize_pending_update(project_root)
+        # 2026-05-09: добавлен detect failed bootstrap (через
+        # `pending_rollback.txt`). Если bat упал на середине, finalize
+        # откатывает version.json и возвращает (attempted_version, log_path)
+        # → показываем popup пользователю чтобы скачал Installer вручную.
+        # Отложенный показ — через showEvent + 200мс QTimer, чтобы окно
+        # успело отрисоваться даже на медленных Win-машинах (фиксированный
+        # 500мс не гарантировал на slow-моделях).
+        self._update_failure_info: Optional[Tuple[str, Optional[Path]]] = (
+            finalize_pending_update(project_root))
+        self._first_show_done: bool = False
         # Активный сериал и эпизод
         self._current_show:    Optional[str] = get_current_show(project_root)
         self._current_episode: Optional[str] = None
@@ -4365,6 +4444,59 @@ class MainWindow(QMainWindow):
             pass
         # 2026-05-09: обновить лейбл в Settings → AI-АККАУНТ.
         self._refresh_claude_account_email()
+
+    def showEvent(self, event):
+        """Triggered Qt'ом при первом show() окна.
+
+        2026-05-09: используется чтобы показать update-failed popup ПОСЛЕ
+        того как окно полностью отрисовалось (на slow Win-машинах
+        фиксированный QTimer.singleShot(500ms) из __init__ не гарантировал
+        что окно уже видимо). One-shot guard — `_first_show_done`. 200мс
+        даёт frame painter завершиться.
+        """
+        super().showEvent(event)
+        if not getattr(self, '_first_show_done', False):
+            self._first_show_done = True
+            if getattr(self, '_update_failure_info', None) is not None:
+                QTimer.singleShot(200, self._show_update_failed_dialog)
+
+    def _show_update_failed_dialog(self):
+        """Popup при старте если предыдущий auto-update упал на середине.
+
+        Triggered: `finalize_pending_update` вернул кортеж (attempted, log).
+        Действия: показать QMessageBox с кликабельной ссылкой на Installer
+        и (если есть) на bootstrap.log. После клика OK — popup исчезает.
+        """
+        info = getattr(self, '_update_failure_info', None)
+        if not info:
+            return
+        self._update_failure_info = None  # show only once
+        attempted_version, log_path = info
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle(tr('update_failed_title'))
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(tr('update_failed_text').format(version=attempted_version))
+
+        installer_url = (
+            "https://github.com/Akex24/storyboard-automation/releases/download/"
+            f"app-v{attempted_version}/Storyboard.Studio.Installer.v{attempted_version}.exe"
+        )
+        body_html = tr('update_failed_body').format(
+            version=attempted_version,
+            installer_url=installer_url,
+        )
+        if log_path and log_path.exists():
+            log_url = log_path.as_uri()
+            body_html += "<br><br>" + tr('update_failed_log').format(
+                log_url=log_url, log_path=str(log_path))
+        msg.setInformativeText(body_html)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        try:
+            msg.exec()
+        except Exception:
+            traceback.print_exc()
 
     def _on_auth_switch_failed(self, reason: str):
         """OAuth не прошёл за 5 мин или произошла ошибка.
