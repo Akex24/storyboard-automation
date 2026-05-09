@@ -232,6 +232,8 @@ class AutonomousGenThread(QThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",      # 2026-05-09 Win-fix: иначе на Win
+                errors="replace",      # cp1252 default → crash на 0x98.
                 bufsize=1,
             )
             if sys.platform == 'win32':

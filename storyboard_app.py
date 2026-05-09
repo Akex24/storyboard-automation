@@ -1660,6 +1660,7 @@ def get_github_token_from_remote(root: Path) -> Optional[str]:
         r = subprocess.run(
             ["git", "-C", str(root), "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
             **no_console_kwargs(),
         )
         if r.returncode != 0:
@@ -3052,6 +3053,7 @@ def claude_auth_status(timeout: float = 8.0) -> dict:
         r = subprocess.run(
             [cli, "auth", "status"],
             timeout=timeout, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
             **no_console_kwargs(),
         )
         if r.returncode != 0:
@@ -9073,6 +9075,7 @@ class MainWindow(QMainWindow):
             r = subprocess.run(
                 ["git", "-C", str(root), "status", "--porcelain"],
                 capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
                 **no_console_kwargs(),
             )
             if r.returncode == 0 and r.stdout.strip():
@@ -9087,6 +9090,7 @@ class MainWindow(QMainWindow):
                 ["git", "-C", str(root), "rev-list", "--count",
                  f"origin/{GITHUB_BRANCH}..HEAD"],
                 capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
                 **no_console_kwargs(),
             )
             if r.returncode == 0:

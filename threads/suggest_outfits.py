@@ -261,6 +261,8 @@ class SuggestOutfitsThread(QThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",      # 2026-05-09 Win-fix.
+                errors="replace",
                 bufsize=1,
             )
             if sys.platform == 'win32':

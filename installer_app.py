@@ -142,7 +142,8 @@ class InstallClaudeCliThread(QThread):
 
             # 2026-05-08: CREATE_NO_WINDOW guard для Win — не показывать
             # cmd-окно поверх установщика во время фонового powershell.
-            run_kwargs = dict(capture_output=True, text=True, timeout=300)
+            run_kwargs = dict(capture_output=True, text=True, timeout=300,
+                              encoding="utf-8", errors="replace")  # 2026-05-09 Win-fix.
             if IS_WINDOWS:
                 run_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
             proc = subprocess.run(cmd, **run_kwargs)
@@ -198,7 +199,8 @@ class CheckClaudeAuthThread(QThread):
             return
         try:
             # 2026-05-08: CREATE_NO_WINDOW guard для Win.
-            run_kwargs = dict(capture_output=True, text=True, timeout=25)
+            run_kwargs = dict(capture_output=True, text=True, timeout=25,
+                              encoding="utf-8", errors="replace")  # 2026-05-09 Win-fix.
             if IS_WINDOWS:
                 run_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
             proc = subprocess.run(
@@ -574,7 +576,8 @@ class StepPython(StepBase):
             try:
                 # 2026-05-08: CREATE_NO_WINDOW guard для Win — иначе при
                 # каждом старте установщика мигает чёрное cmd-окно.
-                run_kwargs = dict(capture_output=True, text=True, timeout=5)
+                run_kwargs = dict(capture_output=True, text=True, timeout=5,
+                                  encoding="utf-8", errors="replace")  # 2026-05-09 Win-fix.
                 if IS_WINDOWS:
                     run_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
                 r = subprocess.run([py, "--version"], **run_kwargs)

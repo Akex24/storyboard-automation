@@ -600,7 +600,9 @@ class ClaudeGeometryThread(QThread):
                 cwd=str(self.project_root),
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 минут — больше чем нужно, защита от зависа
+                encoding="utf-8",      # 2026-05-09 Win-fix: без encoding на
+                errors="replace",      # win10/11 default = cp1252 → crash
+                timeout=300,           # на 0x98 в UTF-8 stdout claude.
             )
             if sys.platform == 'win32':
                 run_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
@@ -692,6 +694,8 @@ class RunEpisodeThread(QThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",      # 2026-05-09 Win-fix: иначе на Win
+                errors="replace",      # cp1252 ловит UTF-8 stdout → crash.
                 bufsize=1,
             )
             if sys.platform == 'win32':

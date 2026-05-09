@@ -61,7 +61,8 @@ class AuthSwitchThread(QThread):
             try:
                 subprocess.run(
                     [self._cli, "auth", "logout"],
-                    timeout=15, capture_output=True, text=True
+                    timeout=15, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
                 )
             except Exception:
                 # logout мог упасть если уже разлогинен — не fatal, идём дальше
@@ -85,7 +86,8 @@ class AuthSwitchThread(QThread):
                     )
                     subprocess.run(
                         ["osascript", "-e", apple],
-                        timeout=10, capture_output=True, text=True
+                        timeout=10, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
                     )
                 elif sys.platform == 'win32':
                     # Предпочитаем Windows Terminal (wt.exe) если есть —
@@ -168,7 +170,8 @@ class AuthSwitchThread(QThread):
         try:
             r = subprocess.run(
                 [self._cli, "auth", "status"],
-                timeout=10, capture_output=True, text=True
+                timeout=10, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
             )
             if r.returncode != 0:
                 return None

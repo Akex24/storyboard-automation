@@ -9,6 +9,7 @@
 3. При ЛЮБОМ пересечении режимов — CODE побеждает. Если задача затрагивает .py код — это всегда CODE-режим, без исключений.
 4. Не отвечай по памяти. Сделай grep / Read и проверь по факту.
 5. Спроси «делаем?» перед первым Edit / Write.
+6. **Cross-platform gate** перед Edit/Write любого .py: трогаешь `subprocess` / `Path` / `open` / file-IO / shell? → grep `no_console_kwargs` или `if sys.platform == 'win32'` в этом файле, скопируй паттерн. Studio shipping в Win .exe — Mac-only код = сломанный релиз. Детали — `feedback_windows_crossplatform` в memory.
 
 ## ПОСЛЕ ПРАВКИ КОДА:
 - Запись в `_session_log.md` (формат — см. CLAUDE.md «Дисциплина»).

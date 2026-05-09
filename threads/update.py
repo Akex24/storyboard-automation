@@ -505,6 +505,7 @@ class SendUpdateThread(QThread):
             r = subprocess.run(
                 ["git", "-C", str(self.root), "commit", "-m", f"Update {new_version}"],
                 capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
                 **_sa.no_console_kwargs(),
             )
             if r.returncode != 0 and "nothing to commit" not in r.stdout:
@@ -515,6 +516,7 @@ class SendUpdateThread(QThread):
             r = subprocess.run(
                 ["git", "-C", str(self.root), "push", "origin", _sa.GITHUB_BRANCH],
                 capture_output=True, text=True, timeout=120,
+                encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
                 **_sa.no_console_kwargs(),
             )
             if r.returncode != 0:

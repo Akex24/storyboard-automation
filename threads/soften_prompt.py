@@ -170,7 +170,8 @@ class SoftenPromptThread(QThread):
             self._proc = subprocess.Popen(
                 args, cwd=str(self.project_root),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
+                text=True, encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
+                bufsize=1)
             assert self._proc.stdout is not None
             buf = self._proc.stdout.read()
             rc = self._proc.wait(timeout=10)
