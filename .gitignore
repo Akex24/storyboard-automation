@@ -28,6 +28,7 @@ __pycache__/
 *.bak
 *.md.bak
 *.log
+_archive/
 
 # macOS / IDE
 .DS_Store

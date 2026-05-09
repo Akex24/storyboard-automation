@@ -1,0 +1,198 @@
+# ARCHITECTURE — Storyboard Studio
+
+**Последнее обновление:** 2026-05-09
+
+Снимок текущего устройства кода. Живой документ — обновляется в том же
+коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
+коллегам через installer; bundle через PyInstaller тоже не включает).
+
+## Версия и статус
+- Текущая: **v1.0.30** (см. `version.json`).
+- Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
+- Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
+  ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
+  upload .app/.exe в Release.
+
+## Архитектурные решения которые легко забыть
+
+- **Anthropic API напрямую НЕ вызывается.** `pipeline.py` использует только
+  Fast Gen AI (генерация картинок). Описание геометрии локаций делает
+  Claude Code сам, глядя на сгенерированную картинку. Класс
+  `ClaudeGeometryThread` — legacy имя, не вызывает Anthropic API.
+- **Caching работает прозрачно через Claude CLI** (серверный prefix-cache
+  включён по умолчанию у Anthropic). **Переход на anthropic Python SDK
+  делать НЕ надо** — это per-token billing мимо Max-подписки админа.
+- **`PRESERVE_ON_UPDATE` ([storyboard_app.py:134](storyboard_app.py:134))
+  используется только в мёртвом `DownloadUpdateThread`** — расширять без
+  причины не нужно (см. ниже секцию «Архитектура обновлений»).
+
+## Hardcoded values
+
+### `seedance_model = "claude-opus-4-7"` — [views/episode_chat.py:2836](views/episode_chat.py:2836)
+Seedance pipeline всегда вызывает Opus 4.7 независимо от дропдауна модели в шапке.
+Причина (см. комментарий выше hardcode): Seedance-промпты большие и сложные,
+Sonnet даёт заметно хуже качество. Карту и PromptWriter можно гонять на Sonnet
+(быстрее), а Seedance — только Opus.
+**Когда снимать:** только если будет внутренний бенч-тест на Sonnet/Opus
+по идентичной выборке Seedance-промптов и Sonnet выходит на паритет.
+
+### Default model = `claude-opus-4-7` — [views/episode_chat.py:297](views/episode_chat.py:297)
+Сохранённое в `QSettings` по ключу `"new_ep/model_v2"`. Если ключа нет
+у юзера — загружается Opus 4.7 как fallback.
+
+## Per-agent model routing
+
+| Агент | Слушает дропдаун? | Где |
+|-------|--------------------|-----|
+| Montage (монтажная карта) | ДА | [views/episode_chat.py:2492](views/episode_chat.py:2492) `_current_model()` |
+| StoryboardWriter | ДА | [views/episode_chat.py:2749](views/episode_chat.py:2749) `_current_model()` |
+| Seedance pipeline | НЕТ — hardcode Opus 4.7 | [views/episode_chat.py:2836](views/episode_chat.py:2836) |
+
+Дропдаун в шапке: Sonnet 4.6 / Opus 4.7 / Haiku 4.5
+([views/episode_chat.py:289-292](views/episode_chat.py:289)).
+
+## Module boundaries
+
+```
+storyboard_app.py    — главный модуль: главное окно, вкладки, баннеры,
+                       пути (SHOW_ROOT/PROMPTS_DIR/...), глобальные
+                       утилиты (block_wheel_event, cross_fade_swap,
+                       no_console_kwargs, find_claude_cli...)
+threads/             — QThread worker'ы (10 файлов)
+                       update.py: CheckUpdateThread, DownloadAppUpdateThread,
+                                  SendUpdateThread, FetchStatsThread.
+                                  DownloadUpdateThread — МЁРТВЫЙ КОД (см. ниже).
+views/               — главные view'ы (episode_chat, new_episode, actors,
+                       theme, _chat_render — общий хелпер рендера чата)
+widgets/             — кастомные QWidget (active_gens_panel, gen_button,
+                       montage_cta, ref_picker_dialog, shot_viewer_dialog,
+                       editor_widgets и т.д.)
+agents/              — system prompts как Python-модули (НЕ читают
+                       instructions/*.txt в runtime — всё инлайн).
+                       montage_prompts, seedance_prompts, storyboard_writer_prompts.
+i18n.py              — TRANSLATIONS dict для RU/UK/EN.
+scenario_parser.py   — парсинг сценариев.
+show_manager.py      — current_show.json, shows/<slug>/ переключатель.
+installer_app.py     — отдельная программа Storyboard Installer.app
+                       (DownloadProjectThread + DownloadAppExeThread).
+```
+
+## Архитектура обновлений (КРИТИЧЕСКИ ВАЖНО)
+
+Два разных пути доставки файлов до коллеги:
+
+### A. Первая установка через Storyboard Installer.app
+[installer_app.py:280](installer_app.py:280) `DownloadProjectThread`:
+- Качает GitHub zip → жёсткий whitelist:
+  - `ALLOW_DIRS = {"actors"}`
+  - `ALLOW_FILES = {"version.json"}`
+  - Создаются пустые `shows/`, `output/`.
+- Всё остальное **игнорируется**: `instructions/`, `agents/`, `*.py`, `*.md`, `.spec`, `.github/`, `tests/`.
+
+### B. Обновление приложения из работающей Studio
+[threads/update.py:200](threads/update.py:200) `DownloadAppUpdateThread`:
+- Качает GitHub Release asset (собранный bundle, **не исходники**).
+- Bootstrap-скрипт (.bat / .sh) ждёт смерти Studio, **подменяет ВЕСЬ
+  bundle**: rm + cp на Mac, rename + Copy-Item на Win.
+- Файлы проекта (`*.md`, `instructions/`, `agents/`, `.py`) при этом
+  потоке **не трогаются**.
+
+### МЁРТВЫЙ КОД (важно знать чтобы не путаться)
+
+`DownloadUpdateThread` ([threads/update.py:107](threads/update.py:107)) — старый
+механизм «синий баннер Обновление проекта» который копировал ВЕСЬ репо
+коллеге. **Не вызывается с 2026-05-08.** Кнопка удалена из layout, вызовы
+выпилены ([storyboard_app.py:8865](storyboard_app.py:8865),
+[storyboard_app.py:4698](storyboard_app.py:4698)). Класс остался импортом и
+в `tests/smoke.py`. Если когда-то нужно восстановить — git history.
+
+`PRESERVE_ON_UPDATE` ([storyboard_app.py:134](storyboard_app.py:134)) —
+используется только в `DownloadUpdateThread`, то есть в мёртвом коде.
+Расширять его без причины не надо.
+
+### Что зашито в Studio bundle (PyInstaller)
+[StoryboardStudio.spec:13](StoryboardStudio.spec:13):
+```python
+datas=[
+    (certifi.where(), 'certifi'),
+    ('assets/icons', 'assets/icons'),
+],
+```
+Плюс автоматически — все импортируемые .py модули (включая `agents/*.py`).
+**НЕ зашиваются:** `instructions/*.txt`, `*.md`, `_session_log.md`. Если
+будущий feature потребует читать `instructions/*` в runtime — нужно
+явно добавить в `datas` spec.
+
+## Cross-platform (Mac / Win 10-11)
+
+Коллеги на Win получают `.exe` (onedir mode с 2026-05-08). Каждое касание
+кода должно работать на обеих ОС:
+- `subprocess.Popen/run` — обязательно `**_sa.no_console_kwargs()` или
+  явно `creationflags=CREATE_NO_WINDOW` на win32 (иначе мигают cmd-окна).
+- Никаких shell-only команд (`bash -c`, `&&` через shell=True).
+- Пути — только `pathlib.Path`, не f-string'и со слешами.
+- Claude CLI: `find_claude_cli()` ищет на обоих ОС, кешируется в
+  `_claude_cli_cache`.
+
+Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
+(`_MEI…\base_l…` карантин). См. [StoryboardStudio.spec:60-...](StoryboardStudio.spec:60).
+
+## Не-очевидные инварианты в коде
+
+Если видишь незнакомый паттерн — НЕ удаляй, найди запись в `_session_log.md`.
+
+- `block_wheel_event(widget)` ([storyboard_app.py](storyboard_app.py)) —
+  блокирует прокрутку колёсиком над QSlider/QComboBox/QSpinBox в Settings,
+  чтобы при скролле страницы значения не съезжали. Применяется к КАЖДОМУ
+  новому виджету настройки. См. CRITICAL_RULES.md.
+- `cross_fade_swap` — анимация смены превью.
+- `_active_regens` — словарь активных регенераций шотов.
+- `_unseen_shots` — set новых шотов для NEW-бейджей.
+- `_dot_step` — счётчик «…» в индикаторах загрузки.
+- `extract_shot_prompt`, `shot_path` — вытаскивание промпта/пути по индексу.
+- `ClaudeGeometryThread` — описание геометрии локации (этот класс остаётся
+  по имени но не вызывает Anthropic API; имя legacy).
+- `find_claude_cli`, `_claude_cli_cache` — ресолв пути к Claude CLI.
+- `no_console_kwargs()` — кросс-платформенные subprocess kwargs (Win:
+  `creationflags=CREATE_NO_WINDOW`; Mac: `{}`).
+
+## Distribution
+
+User — admin, единственный кто пушит. Коллеги получают через:
+1. Установка → `Storyboard Installer.app/.exe` → `DownloadProjectThread`
+   качает actors/ + version.json, `DownloadAppExeThread` качает Studio.
+2. Обновления → внутри Studio → баннер «Обновить приложение» →
+   `DownloadAppUpdateThread` подменяет bundle через bootstrap.
+
+`Send Update` (admin-only кнопка) → bump app_version → git push → optional
+upload .app/.exe в Release.
+
+Не-админский UI (Send Update, FetchStats) гейтится в коде — у коллег
+этих кнопок нет. См. memory: project_distribution.
+
+## Tech debt / known issues
+
+### Долг 1 — цвета строк планирования в чате
+[storyboard_app.py:829](storyboard_app.py:829) `detect_line_kind`. Сейчас
+матчит только голые префиксы `✓`/`✗`, не `- ✓` / `- ✗` (с дефисом списка).
+Нужно расширить regex на `^\s*[-*]\s*[✓✗▶!]`. Вынести общий рендер чата
+в `views/_chat_render.py` (helper уже есть). См. `_session_log.md` Долг 1
+для деталей.
+
+### Долг 2 — UI LUMZ-стиль остатки
+См. [_UI_TODO.md](_UI_TODO.md) (создан 2026-05-08, отложен). Список
+секций которые ещё не доведены до LUMZ-стиля: NewEpisodeView, вкладка
+«Актёры», и далее. Берём по порядку когда юзер вернётся к интерфейсу.
+
+### Долг 3 — семантические эмодзи в `montage_status_*`
+[i18n.py:412-417](i18n.py:412). Сейчас содержат `🔍`, `✏`, `✓`, `⚠`, `🎯`
+прямо в строках — формально это нарушение memory `feedback_icons_lucide`
+(весь UI должен быть на Lucide SVG). Эмодзи статичны и контекстны
+(статус прогресса), не критично, но при редизайне статус-бара заменить
+на текстовые маркеры или вынести как отдельные иконки.
+
+### Долг 4 — параллелизация Storyboard PromptWriter
+Обсуждалось: сейчас PromptWriter гоняется блок за блоком последовательно.
+Параллелизация по блокам внутри одного эпизода даст ~3× ускорение
+(каждый блок — независимый контекст). Отложено до того момента когда
+система правил и оптимизации Seedance стабилизируются.
