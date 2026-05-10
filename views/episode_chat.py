@@ -1380,14 +1380,18 @@ class EpisodeChatView(QWidget):
         existing_thread = self._outfit_threads.get(ep_id)
         if existing_thread is not None and existing_thread.isRunning():
             return
-        # Скрываем существующий GenButton (он отработал свою задачу).
+        # 2026-05-10: source_btn ОСТАЁТСЯ видимой, но переходит в режим
+        # «outfit picker open» — показывает только кнопку «📁 Выбрать
+        # существующий». Юзер может передумать пока AI крутит варианты
+        # одежды и сразу выбрать готовый реф.
+        # (Раньше source_btn.hide() — пряталась целиком, была недоступна.)
         source_btn = self._gen_button
         # Запоминаем display-name из source кнопки чтобы передать его
         # в баннер «Актёров» (юзеру важно видеть «Муж», а не «muzh»).
         display_for_banner = ""
         if source_btn is not None:
             try:
-                source_btn.hide()
+                source_btn.set_outfit_picker_mode(True)
                 display_for_banner = getattr(
                     source_btn, '_display', '') or ''
             except Exception:
@@ -1932,6 +1936,32 @@ class EpisodeChatView(QWidget):
                 sender_card = cur
         except Exception:
             sender_card = None
+        # 2026-05-10: если для текущего ep активен outfit picker И этот
+        # sender — его source_btn → юзер передумал пока AI крутит варианты
+        # одежды. Останавливаем SuggestOutfitsThread (terminate subprocess
+        # claude.exe) + удаляем picker из layout. Дальше идёт стандартный
+        # flow выбора рефа (RefPickerDialog).
+        ep_id = self._ep_id or ""
+        if (gen_type == 'character' and sender_card is not None
+                and self._outfit_source_btns.get(ep_id) is sender_card):
+            outfit_thread = self._outfit_threads.get(ep_id)
+            if outfit_thread is not None and outfit_thread.isRunning():
+                try:
+                    outfit_thread.stop()
+                except Exception:
+                    pass
+            self._outfit_threads.pop(ep_id, None)
+            outfit_picker = self._outfit_pickers.pop(ep_id, None)
+            if outfit_picker is not None:
+                try:
+                    outfit_picker.setParent(None)
+                    outfit_picker.deleteLater()
+                except Exception:
+                    pass
+            self._outfit_source_btns.pop(ep_id, None)
+            self._outfit_target_names.pop(ep_id, None)
+            self._outfit_target_displays.pop(ep_id, None)
+            self._outfit_seen_variants.pop(ep_id, None)
         try:
             cur_show = getattr(self._mw, '_current_show', None)
             if not cur_show:

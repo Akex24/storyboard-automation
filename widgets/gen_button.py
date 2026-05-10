@@ -377,6 +377,38 @@ class GenButton(QFrame):
         self._linked_filename = filename or ""
         self._apply_state()
 
+    def set_outfit_picker_mode(self, active: bool) -> None:
+        """2026-05-10: режим «outfit picker раскрыт сверху».
+
+        Когда юзер кликнул «🎨 Сгенерировать» для character — поверх
+        этой GenButton'ы появляется CharacterOutfitPicker с 3 вариантами
+        одежды. В этом режиме сама GenButton остаётся видимой, но
+        показывает ТОЛЬКО кнопку «📁 Выбрать существующий» (юзер может
+        передумать и выбрать готовый реф пока AI крутит варианты).
+
+        `active=True`: hide action_btn («Сгенерировать») + skip_btn
+        («🚫 Не нужен»). pick_btn («📁 Выбрать существующий») остаётся
+        видимой.
+        `active=False`: revert (обычное idle с тремя кнопками).
+
+        State машина GenButton'ы НЕ меняется — остаётся "idle" чтобы
+        `_on_pick_clicked` корректно эмитил `use_existing_requested`.
+        """
+        if self._state != "idle":
+            return
+        if active:
+            try:
+                self.action_btn.hide()
+                self.skip_btn.hide()
+            except Exception:
+                pass
+        else:
+            try:
+                self.action_btn.show()
+                self.skip_btn.show()
+            except Exception:
+                pass
+
     def apply_lang(self):
         """Перевод текстов на текущий язык."""
         if self._state == "idle":
