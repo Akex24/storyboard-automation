@@ -105,6 +105,33 @@ _FALLBACK_LINE_RE = re.compile(
     re.UNICODE
 )
 
+# 2026-05-10: ИНЛАЙН-формат когда AI пишет «summary»-шаг вместо секций.
+# Пример (Opus 4.7 на ep8 в реальном чате):
+#   «- ✗ НУЖНО СГЕНЕРИРОВАТЬ: private_house_living_room (локация),
+#                              taser (объект)»
+#   «- ✗ НУЖЕН ОТДЕЛЬНО (через «Актёры»): policeman»
+# Парсер ниже распознаёт обе формы и извлекает (name, type) пары.
+_INLINE_GEN_HEADER_RE = re.compile(
+    r'^\s*[-•*]\s*✗\s*(?:НУЖНО СГЕНЕРИРОВАТЬ|TO GENERATE|TO BE GENERATED)\b'
+    r'[^:]*:\s*(?P<rest>.+)$',
+    re.IGNORECASE | re.UNICODE)
+_INLINE_CHAR_HEADER_RE = re.compile(
+    r'^\s*[-•*]\s*✗\s*(?:НУЖЕН ОТДЕЛЬНО|NEEDED SEPARATELY)\b'
+    r'[^:]*:\s*(?P<rest>.+)$',
+    re.IGNORECASE | re.UNICODE)
+# Один item: `name (тип)`. Тип определяет gen_type.
+# Пример: `private_house_living_room (локация)`, `taser (объект)`,
+# `policeman (персонаж)`. Без скобок — просто имя (для CHAR_HEADER).
+_INLINE_ITEM_RE = re.compile(
+    r'(?P<name>[a-zа-яё][\w-]*)'
+    r'(?:\s*\((?P<typ>локация|location|объект|object|персонаж|character)\))?',
+    re.IGNORECASE | re.UNICODE)
+_TYPE_MAP = {
+    'локация': 'location', 'location': 'location',
+    'объект': 'object', 'object': 'object',
+    'персонаж': 'character', 'character': 'character',
+}
+
 
 def _to_slug(raw: str) -> str:
     """Превращает имя в ASCII snake_case slug. Для не-ASCII зовёт
@@ -152,6 +179,44 @@ def synthesize_gen_markers(full_text: str) -> List[GenMarker]:
     current_type: str = ''  # location / object / character / ''
     seen_names: set = set()  # дедуп — один name не должен попасть дважды
     for line in full_text.splitlines():
+        # 2026-05-10: inline-формат «- ✗ НУЖНО СГЕНЕРИРОВАТЬ: name1
+        # (локация), name2 (объект)» — Opus иногда пишет такой summary
+        # вместо section-headers. Распознаём ДО section-проверок чтобы
+        # не сбросить current_type зря.
+        m_inline = _INLINE_GEN_HEADER_RE.match(line)
+        if m_inline:
+            rest = m_inline.group('rest')
+            for it in _INLINE_ITEM_RE.finditer(rest):
+                raw_name = it.group('name') or ''
+                typ_raw = (it.group('typ') or '').lower()
+                gen_type = _TYPE_MAP.get(typ_raw)
+                if not raw_name or not gen_type:
+                    continue
+                slug = (_to_slug(raw_name) if not raw_name.isascii()
+                        else raw_name.lower())
+                if not slug or slug in seen_names:
+                    continue
+                seen_names.add(slug)
+                markers.append(GenMarker(
+                    type=gen_type, name=slug, description='', display=''))
+            continue
+        m_char_inline = _INLINE_CHAR_HEADER_RE.match(line)
+        if m_char_inline:
+            rest = m_char_inline.group('rest')
+            for it in _INLINE_ITEM_RE.finditer(rest):
+                raw_name = it.group('name') or ''
+                typ_raw = (it.group('typ') or '').lower()
+                gen_type = _TYPE_MAP.get(typ_raw, 'character')  # default
+                if not raw_name:
+                    continue
+                slug = (_to_slug(raw_name) if not raw_name.isascii()
+                        else raw_name.lower())
+                if not slug or slug in seen_names:
+                    continue
+                seen_names.add(slug)
+                markers.append(GenMarker(
+                    type=gen_type, name=slug, description='', display=''))
+            continue
         if _SECTION_LOCATION_RE.match(line):
             current_type = 'location'
             continue

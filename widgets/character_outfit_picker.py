@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QSizePolicy,
 )
@@ -51,13 +51,28 @@ class _ClickableLabelButton(QFrame):
 
     clicked = pyqtSignal()
 
+    # 2026-05-10 fix #2: после первого QFrame+QLabel patch'а юзер ещё
+    # видел узкие пустые окошки — корень: parent QVBoxLayout сжимал
+    # дочерние Preferred-policy виджеты ниже their sizeHint когда
+    # вертикали не хватало. QLabel.sizeHint() для wordWrap label —
+    # минимально (one-line), и Qt не знал что нужно больше под wrap'нутый
+    # текст. Решение: setMinimumHeight(50) гарантирует one-line baseline,
+    # heightForWidth() override пропагирует growth под multi-line.
+    _MIN_HEIGHT = 50  # одна строка 13px + padding 14×2 + рамка
+    _OUTER_PADDING_W = 36  # 18×2 (left+right margins)
+    _OUTER_PADDING_H = 28  # 14×2 (top+bottom margins)
+
     def __init__(self, text: str, obj_name: str = "outfit-variant",
                  parent=None):
         super().__init__(parent)
         self.setObjectName(obj_name)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Preferred)
+        # Vertical: MinimumExpanding — НЕ сжиматься ниже minimumHeight.
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding,
+                          QSizePolicy.Policy.MinimumExpanding)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+        self.setMinimumHeight(self._MIN_HEIGHT)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(0)
@@ -75,8 +90,31 @@ class _ClickableLabelButton(QFrame):
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         lay.addWidget(self._label)
 
+    # ── heightForWidth override: Qt пересчитает высоту QFrame'а под
+    #    содержимое QLabel при любой ширине. Без override родительский
+    #    layout не знает что виджет нуждается в multi-line высоте.
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        inner_w = max(50, w - self._OUTER_PADDING_W)
+        label_h = self._label.heightForWidth(inner_w)
+        if label_h < 0:
+            label_h = self._label.fontMetrics().height()
+        return max(self._MIN_HEIGHT, label_h + self._OUTER_PADDING_H)
+
+    def sizeHint(self) -> QSize:
+        # Базовый намёк: ширина 400 (parent expanded даст больше),
+        # высота под текущий текст. Qt пересчитает через heightForWidth
+        # когда узнает реальную ширину.
+        w = max(400, self.width())
+        return QSize(w, self.heightForWidth(w))
+
     def setText(self, text: str) -> None:
         self._label.setText(text)
+        # После смены текста просим layout пересчитать высоту.
+        self.updateGeometry()
 
     def text(self) -> str:
         return self._label.text()
