@@ -7,13 +7,20 @@ character'а после клика «🎨 Сгенерировать». Долг
 
 UX-состояния:
   • loading — «🤔 Подбираю варианты одежды для «{name}»…» + бегущие точки.
-  • ready   — заголовок + 3 кнопки с текстом одежды + «↻ Ещё 3 варианта».
+  • ready   — заголовок + 3 кнопки с текстом одежды + «↻ Ещё 3 варианта»
+              + «✎ Придумаю описание сам» (4-я плашка).
   • error   — «✗ Не получилось…» + кнопка «↻ Попробовать снова».
 
 Сигналы:
   • variant_chosen(text) — клик по одному из 3 вариантов.
   • retry_requested()    — клик «↻ Ещё 3 варианта» / повтор после ошибки.
-  • cancel_requested()   — клик по «✕» (закрыть карточку без выбора).
+  • custom_requested()   — клик «✎ Придумаю описание сам».
+
+2026-05-10: убрана кнопка «✕ Отмена» — по UX персонаж ОБЯЗАТЕЛЕН
+для эпизода, юзер не может «передумать». Единственный путь
+закрытия picker'а — выбор варианта (variant_chosen) или custom
+(custom_requested) → переход в Actors → создание рефа →
+`notify_character_generation_started` снимает picker.
 
 Виджет НЕ запускает тред сам — это делает caller (EpisodeChatView).
 Тред зовёт публичные методы set_loading() → set_variants(list) /
@@ -107,7 +114,6 @@ class CharacterOutfitPicker(QFrame):
 
     variant_chosen = pyqtSignal(str)
     retry_requested = pyqtSignal()
-    cancel_requested = pyqtSignal()
     custom_requested = pyqtSignal()  # «✎ Придумаю описание сам»
 
     def __init__(self, name: str, parent=None):
@@ -247,7 +253,8 @@ class CharacterOutfitPicker(QFrame):
         self.hint_lbl.hide()
         outer.addWidget(self.hint_lbl)
 
-        # Низ: кнопки retry / cancel
+        # Низ: только retry. 2026-05-10: cancel убрана — персонаж
+        # обязателен, юзер не может «передумать» через picker.
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         self.retry_btn = QPushButton(tr('outfit_picker_retry'))
@@ -256,12 +263,6 @@ class CharacterOutfitPicker(QFrame):
         self.retry_btn.clicked.connect(self._on_retry_clicked)
         self.retry_btn.hide()
         bottom.addWidget(self.retry_btn)
-
-        self.cancel_btn = QPushButton(tr('actors_pending_cancel'))
-        self.cancel_btn.setObjectName("outfit-cancel")
-        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cancel_btn.clicked.connect(self._on_cancel_clicked)
-        bottom.addWidget(self.cancel_btn)
         bottom.addStretch()
         outer.addLayout(bottom)
 
@@ -336,7 +337,6 @@ class CharacterOutfitPicker(QFrame):
                 tr('outfit_picker_loading', name=self._name))
         self.hint_lbl.setText(tr('outfit_picker_hint'))
         self.retry_btn.setText(tr('outfit_picker_retry'))
-        self.cancel_btn.setText(tr('actors_pending_cancel'))
         self.custom_btn.setText(tr('outfit_picker_custom'))
 
     # ── Внутренние слоты ─────────────────────────────────────────────
@@ -357,9 +357,6 @@ class CharacterOutfitPicker(QFrame):
         if self._state not in ("ready", "error"):
             return
         self.retry_requested.emit()
-
-    def _on_cancel_clicked(self):
-        self.cancel_requested.emit()
 
     def _on_custom_clicked(self):
         """«✎ Придумаю описание сам» — переход на вкладку Актёров без

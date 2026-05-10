@@ -1405,7 +1405,6 @@ class EpisodeChatView(QWidget):
         picker._associated_ep_id = ep_id
         picker.variant_chosen.connect(self._on_outfit_variant_chosen)
         picker.retry_requested.connect(self._on_outfit_retry)
-        picker.cancel_requested.connect(self._on_outfit_cancel)
         picker.custom_requested.connect(self._on_outfit_custom)
         self._gen_layout.addWidget(picker)
         self._outfit_pickers[ep_id] = picker
@@ -1546,31 +1545,6 @@ class EpisodeChatView(QWidget):
         """«✎ Придумаю описание сам» — то же что variant_chosen, но с
         пустым описанием. Юзер заполнит в попапе создания референса."""
         self._on_outfit_variant_chosen("")
-
-    def _on_outfit_cancel(self):
-        """Юзер закрыл пикер до выбора — убираем виджет, возвращаем
-        исходную GenButton.
-
-        2026-05-09: после удаления picker'а вызываем `_advance_gen_queue`
-        чтобы следующий маркер из `_pending_markers` (lora и т.п.) стал
-        активным. Без этого юзер мог застрять: picker для david отменён
-        → slot свободен → но lora остаётся в очереди и не показывается
-        (новый slot-busy guard не пропустил её при `_maybe_show_gen_button`,
-        пока picker был жив).
-        """
-        ep_id = self._ep_id or ""
-        thread = self._outfit_threads.get(ep_id)
-        if thread is not None and thread.isRunning():
-            try:
-                thread.stop()
-            except Exception:
-                pass
-        self._outfit_threads.pop(ep_id, None)
-        self._cleanup_outfit_picker(restore_source=True)
-        try:
-            self._advance_gen_queue()
-        except Exception:
-            traceback.print_exc()
 
     def _on_outfit_variant_chosen(self, text: str):
         """Юзер выбрал вариант одежды. Сценарий:
