@@ -26,6 +26,88 @@
   используется только в мёртвом `DownloadUpdateThread`** — расширять без
   причины не нужно (см. ниже секцию «Архитектура обновлений»).
 
+## Animal classification (BUG 2 fix)
+
+**С 2026-05-10 (commit 523fb17):** «🎨 Сгенерировать» на character-маркере
+из манифеста не запускает CharacterOutfitPicker если по эвристике это
+ЖИВОТНОЕ — Studio переклассифицирует в object-flow.
+
+**Двухуровневая защита:**
+
+**1. Agent-side (primary):**
+[PRODUCER_INSTRUCTIONS.md](instructions/PRODUCER_INSTRUCTIONS.md)
+секция «🔴 ПРАВИЛО: ЖИВОТНЫЕ И НЕ-ЛЮДИ — В СЕКЦИЮ ОБЪЕКТЫ» +
+аналогичный блок в `views/new_episode.py:_on_run` промпте говорят
+агенту класть бульдога/кота/лошадь в OBJECTS секцию с
+`[[GEN:object:slug:описание]]` маркером, не в CHARACTERS.
+
+**2. Studio-side (safety net):**
+[views/episode_chat.py](views/episode_chat.py):
+- Module-level `_ANIMAL_KEYWORDS` константа: 35 ключевых слов
+  (RU + UA + EN). Substring match, case-insensitive.
+- `_on_gen_button_clicked` для `gen_type == 'character'`:
+  - Если `_is_likely_animal(name, description)` → True →
+    redirect: emit system-сообщение «похоже на животное», set
+    `gen_type = 'object'`, fall-through к стандартному
+    AutonomousGenThread launch path.
+  - Иначе (real human) → `_start_outfit_picker(name)` как раньше.
+- `_is_likely_animal(name, description)` проверяет blob `name + " "
+  + description` (lowercased) против keywords. `description or ''`
+  защищает от None.
+
+Fall-through для редиректа использует существующую slug-collision
+detection (фикс БАГ 1) для `refs/objects/`. Никакого дублирования.
+
+**Object-промпт для животных:** [autonomous_gen.py](threads/autonomous_gen.py)
+имеет hardcoded «product shot, white background, no people» для
+объектов. Для животных это не идеально, но агент пишет промпт сам
+на основе `description` поля и может override'ить. PRODUCER_INSTRUCTIONS
+подсказывает писать «в естественной среде, photorealistic, без
+cinematic 16:9». Если в реальном использовании окажется что бульдоги
+получаются на белом фоне — смягчить хардкод отдельным фиксом.
+
+## Slug collision handling (refs)
+
+**С 2026-05-10 (commit b8b07ec):** «🎨 Сгенерировать» = всегда создаёт
+новый ref, никогда не перезаписывает существующий. Если slug уже занят
+в `refs/<sub>/` (location или object) — Studio автоматически переименует
+текущий slug в `<name>_2` / `<name>_3` / ... ДО запуска генерации.
+
+**Как работает:**
+
+`EpisodeChatView._on_gen_button_clicked`
+([views/episode_chat.py:1256](views/episode_chat.py:1256)) для
+`gen_type in ('location', 'object')` вызывает
+`_resolve_collision_free_slug(cur_show, gen_type, name)` ПЕРЕД
+созданием `AutonomousGenThread`. Если `refs/<sub>/<name>.*` пуст —
+имя возвращается как есть. Если коллизия — Studio:
+
+1. `glob` ищет первый свободный суффикс (`<name>_2`, `<name>_3`, ...).
+2. Обновляет `episodes.json[ep_id].refs.<sub>`: basename-match через
+   `rsplit(".", 1)`. Заменяет `<name>.<ext>` на `<new_name>.<ext>`,
+   сохраняя расширение. **basename match, не префикс** — иначе
+   `name="hall"` ошибочно зацепил бы `item="hallway.jpg"`.
+3. Эмитит system-сообщение в чат: «ℹ Слаг X уже занят, переименовал
+   в Y. Если хотел переиспользовать — жми «📁 Выбрать существующий».
+
+`AutonomousGenThread` получает уже-уникальный slug. В промпт
+агенту ([threads/autonomous_gen.py](threads/autonomous_gen.py))
+команда `pipeline.py generate` пишется БЕЗ флага `--force` —
+pipeline.py остаётся в default «refuse on collision» режиме как
+safety net. Если уникализация на Studio-стороне когда-то даст сбой
+(race condition, missed glob), pipeline.py отрефьюзит запись и юзер
+увидит ошибку — лучше чем silent overwrite.
+
+**Что НЕ так в архитектуре, осталось на потом:**
+- Refs остаются global per show (одна папка `refs/locations/`).
+  Episode-association живёт только в `episodes.json[ep].refs.<sub>`.
+- Если юзер хочет ВРУЧНУЮ переименовать ref после генерации —
+  поддержки нет, нужно править файлы и `episodes.json` руками.
+- Если юзер хочет regenerate существующий slug (replace), кнопка
+  «🎨 Сгенерировать» больше не появляется при `✓` маркере. Нужно
+  удалить файл из `refs/<sub>/` руками, тогда агент при следующем
+  Run эпизода сделает `✗` маркер и покажет кнопку.
+
 ## Single source of truth: `scenarios/ep{NN:02d}.txt`
 
 **С 2026-05-10 (commit f07b2d9):** для каждого эпизода единственный

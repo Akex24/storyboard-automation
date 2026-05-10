@@ -81,6 +81,31 @@ class ChatInputEdit(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
+# 2026-05-10: фикс БАГ 2 — keyword-эвристика «character marker — это
+# на самом деле животное?». Studio показывает CharacterOutfitPicker
+# для любого character-маркера, но для собак/кошек/лошадей выбор
+# одежды абсурден. Если описание/slug содержит хотя бы одно ключевое
+# слово ниже — animal-flow вместо outfit picker'а (=> object-генерация).
+# Это safety net: первичный фикс — правило в PRODUCER_INSTRUCTIONS +
+# new_episode.py промпт «животные → секция ОБЪЕКТЫ». Этот список —
+# страховка на случай если агент опять напутает.
+_ANIMAL_KEYWORDS = (
+    # RU
+    'пёс', 'пес', 'собак', 'кот', 'котён', 'кошк',
+    'лошад', 'конь', 'коня', 'коне',
+    'птиц', 'медвед', 'волк', 'лис',
+    'крыс', 'мыш', 'хомяк', 'кролик',
+    'животн',
+    # UA
+    'кіт', 'кішк', 'кінь', 'птах', 'тварин',
+    'ведмідь', 'вовк',
+    # EN
+    'dog', 'cat', 'horse', 'bird', 'rabbit', 'mouse', 'rat',
+    'bear', 'wolf', 'fox',
+    'animal', 'pet', 'creature', 'beast',
+)
+
+
 # ─── Чат конкретного эпизода (внутри Editor → content_stack page 2) ───────────
 
 class EpisodeChatView(QWidget):
@@ -1261,10 +1286,23 @@ class EpisodeChatView(QWidget):
         AutonomousGenThread (он не поддерживает character) — вместо
         этого подставляем CharacterOutfitPicker и зовём SuggestOutfitsThread
         чтобы AI предложил 3 варианта одежды. После клика по варианту
-        переключаем на вкладку Актёры с предзаполненным описанием."""
+        переключаем на вкладку Актёры с предзаполненным описанием.
+
+        2026-05-10 (БАГ 2 fix): если character marker по эвристике
+        выглядит как ЖИВОТНОЕ (бульдог, кот, лошадь и т.п.) — НЕ
+        показываем outfit picker (одежда для собаки бессмысленна),
+        а перенаправляем на object-flow (стандартный
+        AutonomousGenThread с gen_type='object'). См. _ANIMAL_KEYWORDS."""
         if gen_type == 'character':
-            self._start_outfit_picker(name)
-            return
+            if self._is_likely_animal(name, description):
+                self._append_animal_redirect_message(name)
+                gen_type = 'object'
+                # Fall through: запустим стандартный AutonomousGenThread
+                # с gen_type='object'. Slug-collision detection
+                # сработает на refs/objects/ автоматически.
+            else:
+                self._start_outfit_picker(name)
+                return
         # 2026-05-07: глобальный реестр в MW. Повторный клик по уже-
         # бегущему маркеру игнорируем.
         try:
@@ -1282,6 +1320,19 @@ class EpisodeChatView(QWidget):
             cur_show = _sa.get_current_show(self._mw._project_root)
         except Exception:
             cur_show = None
+        # 2026-05-10: Если slug уже существует в refs/<sub>/ (другой
+        # эпизод сгенерировал ref с тем же именем) — переименовываем
+        # в `<name>_2` / `<name>_3` и т.д. Без этого pipeline.py с
+        # `--force` перезаписал бы старый файл, ломая чужой эпизод.
+        # Сейчас pipeline.py запускается БЕЗ `--force` (см.
+        # threads/autonomous_gen.py) — это safety net на случай если
+        # уникализация даст сбой. См. `_resolve_collision_free_slug`.
+        if gen_type in ('location', 'object') and cur_show:
+            try:
+                name = self._resolve_collision_free_slug(
+                    cur_show, gen_type, name)
+            except Exception:
+                traceback.print_exc()
         thread = AutonomousGenThread(
             self._mw._project_root, gen_type, name, description,
             ep_id=self._ep_id, show_slug=cur_show,
@@ -1303,6 +1354,98 @@ class EpisodeChatView(QWidget):
         self._gen_button = None
         # Следующая idle из очереди — появляется сразу.
         self._advance_gen_queue()
+
+    def _is_likely_animal(self, name: str, description: str) -> bool:
+        """Эвристика для БАГ 2 fix: character-маркер — на самом деле
+        животное? Проверяем slug + описание против `_ANIMAL_KEYWORDS`.
+        Если хотя бы одно ключевое слово найдено (substring match,
+        case-insensitive) — True. Это safety net на случай если агент
+        не послушал PRODUCER_INSTRUCTIONS правило «животные → ОБЪЕКТЫ».
+        """
+        blob = f"{name} {description or ''}".lower()
+        return any(kw in blob for kw in _ANIMAL_KEYWORDS)
+
+    def _append_animal_redirect_message(self, name: str) -> None:
+        """System-сообщение в чат когда character-маркер
+        ре-классифицирован как animal/object."""
+        try:
+            line = (
+                f"ℹ `{name}` похоже на животное — генерирую через "
+                f"object-flow (без выбора одежды). Если это всё-таки "
+                f"человек — поправь манифест агента вручную.\n")
+            _sa.append_chat_message(
+                self._ep_id, "system", line, kind='system')
+            self._render_message(line, kind='system')
+        except Exception:
+            traceback.print_exc()
+
+    def _resolve_collision_free_slug(self, cur_show: str, gen_type: str,
+                                     name: str) -> str:
+        """Если `refs/<sub>/<name>.<ext>` уже существует — возвращает
+        новый slug `<name>_2` / `<name>_3` / ... (первый свободный).
+        Параллельно обновляет `episodes.json[ep_id].refs.<sub>`:
+        заменяет старое имя файла на новое, чтобы манифест эпизода
+        указывал на ещё-не-сгенерированный новый файл (а не на чужой
+        старый). И эмитит system-сообщение в чат — юзер видит что
+        слаг переименован.
+        Если коллизии нет — возвращает name как есть, ничего не пишет.
+        2026-05-10 — фикс БАГ 1 (slug-коллизия между эпизодами).
+        """
+        sub = 'locations' if gen_type == 'location' else 'objects'
+        refs_dir = (self._mw._project_root / "shows" / cur_show
+                    / "refs" / sub)
+        if not refs_dir.exists():
+            return name
+        if not list(refs_dir.glob(f"{name}.*")):
+            return name
+        # Коллизия — ищем первый свободный суффикс.
+        suffix = 2
+        while list(refs_dir.glob(f"{name}_{suffix}.*")):
+            suffix += 1
+        new_name = f"{name}_{suffix}"
+        # Обновляем episodes.json[ep_id].refs.<sub>: заменяем
+        # «<name>.<ext>» на «<new_name>.<ext>». Без этого манифест
+        # текущего эпизода продолжит указывать на чужой файл.
+        try:
+            import json as _json
+            ep_meta_path = (self._mw._project_root / "shows" / cur_show
+                            / "episodes.json")
+            if ep_meta_path.exists() and self._ep_id:
+                meta = _json.loads(
+                    ep_meta_path.read_text(encoding='utf-8')) or {}
+                ep_obj = meta.get(self._ep_id) or {}
+                refs = ep_obj.get("refs") or {}
+                arr = refs.get(sub) or []
+                for i, item in enumerate(arr):
+                    if not isinstance(item, str):
+                        continue
+                    if item == name:
+                        arr[i] = new_name
+                    elif "." in item and item.rsplit(".", 1)[0] == name:
+                        ext = item.rsplit(".", 1)[1]
+                        arr[i] = f"{new_name}.{ext}"
+                refs[sub] = arr
+                ep_obj["refs"] = refs
+                meta[self._ep_id] = ep_obj
+                ep_meta_path.write_text(
+                    _json.dumps(meta, ensure_ascii=False, indent=2)
+                    + "\n", encoding='utf-8')
+        except Exception:
+            traceback.print_exc()
+        # System-сообщение в чат.
+        try:
+            line = (
+                f"ℹ Слаг `{name}` уже занят в этом сериале — "
+                f"переименовал в `{new_name}` чтобы не перезаписать "
+                f"существующий реф. Если хотел переиспользовать тот же "
+                f"реф — жми «📁 Выбрать существующий» вместо "
+                f"«🎨 Сгенерировать».\n")
+            _sa.append_chat_message(
+                self._ep_id, "system", line, kind='system')
+            self._render_message(line, kind='system')
+        except Exception:
+            traceback.print_exc()
+        return new_name
 
     # 2026-05-07: слоты `_on_gen_progress / image_ready / finished /
     # error` переехали в MainWindow (`_on_active_gen_*`). EpisodeChatView
