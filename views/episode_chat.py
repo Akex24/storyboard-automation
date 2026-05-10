@@ -1555,42 +1555,24 @@ class EpisodeChatView(QWidget):
     def _on_outfit_pick_existing(self):
         """2026-05-10: клик «📁 Pick existing» внутри picker'а bottom row.
 
-        Закрывает весь блок генерации (picker + скрытый source_btn) и
-        открывает RefPickerDialog для выбора готового рефа. После
-        подтверждения — реф привязывается к эпизоду через
-        `_save_ref_decision`, source_btn удаляется, очередь продвигается
-        (`_advance_gen_queue`).
+        Открывает RefPickerDialog для выбора готового рефа. На:
+          • Accepted с picked_name → cleanup picker'а, stop thread'а,
+            save decision, delete source_btn, advance queue.
+          • Rejected (Cancel/Close в попапе) или Accepted с пустым
+            picked_name → pure NO-OP: picker остаётся на месте, thread
+            продолжает работать, sender_card не удаляется, очередь
+            не двигается. Юзер передумал — UI как был.
 
-        Логика повторяет `_on_gen_use_existing` (для обычной idle
-        GenButton без picker'а), но дополнительно стопит
-        SuggestOutfitsThread (терминэйт subprocess claude.exe чтобы
-        не тратить Max-tokens впустую) и удаляет picker из layout.
+        2026-05-10 fixup: cleanup перенесён ПОСЛЕ Accepted check —
+        раньше шёл ДО `dlg.exec()`, поэтому при Rejected picker уже
+        был удалён → пустота в чате на месте david'а + lora не
+        появлялась (advance_gen_queue не вызывался).
         """
         ep_id = self._ep_id or ""
         name = self._outfit_target_names.get(ep_id, "")
         sender_card = self._outfit_source_btns.get(ep_id)
         if not name or sender_card is None:
             return
-        # 1) Cleanup: stop thread + delete picker + clear registries.
-        outfit_thread = self._outfit_threads.get(ep_id)
-        if outfit_thread is not None and outfit_thread.isRunning():
-            try:
-                outfit_thread.stop()
-            except Exception:
-                pass
-        self._outfit_threads.pop(ep_id, None)
-        outfit_picker = self._outfit_pickers.pop(ep_id, None)
-        if outfit_picker is not None:
-            try:
-                outfit_picker.setParent(None)
-                outfit_picker.deleteLater()
-            except Exception:
-                pass
-        self._outfit_source_btns.pop(ep_id, None)
-        self._outfit_target_names.pop(ep_id, None)
-        self._outfit_target_displays.pop(ep_id, None)
-        self._outfit_seen_variants.pop(ep_id, None)
-        # 2) Open RefPickerDialog (тот же что для обычной idle GenButton).
         try:
             cur_show = getattr(self._mw, '_current_show', None)
             if not cur_show:
@@ -1602,15 +1584,41 @@ class EpisodeChatView(QWidget):
             from PyQt6.QtWidgets import QDialog
             title = tr('gen_picker_title', name=name)
             dlg = RefPickerDialog(refs_dir, title, parent=self)
+            # 1) Открываем диалог. До Accepted check — НИКАКИХ побочных
+            #    эффектов на picker / thread / source_btn. Если юзер
+            #    Cancel'нёт — всё остаётся как было.
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             picked_name = dlg.selected_filename
             if not picked_name:
                 return
+            # 2) Accepted с picked_name → теперь cleanup + save + advance.
+            #    Stop outfit thread (terminate claude.exe subprocess —
+            #    не тратим Max-tokens впустую если ещё бежит).
+            outfit_thread = self._outfit_threads.get(ep_id)
+            if outfit_thread is not None and outfit_thread.isRunning():
+                try:
+                    outfit_thread.stop()
+                except Exception:
+                    pass
+            self._outfit_threads.pop(ep_id, None)
+            # Delete picker.
+            outfit_picker = self._outfit_pickers.pop(ep_id, None)
+            if outfit_picker is not None:
+                try:
+                    outfit_picker.setParent(None)
+                    outfit_picker.deleteLater()
+                except Exception:
+                    pass
+            # Clear registries.
+            self._outfit_source_btns.pop(ep_id, None)
+            self._outfit_target_names.pop(ep_id, None)
+            self._outfit_target_displays.pop(ep_id, None)
+            self._outfit_seen_variants.pop(ep_id, None)
+            # Save decision + delete source_btn (скрытая GenButton в
+            # _gen_layout) + advance queue.
             self._save_ref_decision('character', name, "linked",
                                     filename=picked_name)
-            # 3) Удалить scratch source_btn (он скрыт, но в layout) +
-            #    advance queue.
             try:
                 sender_card.setParent(None)
                 sender_card.deleteLater()

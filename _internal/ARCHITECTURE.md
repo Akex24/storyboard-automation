@@ -234,3 +234,21 @@ Win .exe собирает GitHub Actions из push'а отдельно.
 Параллелизация по блокам внутри одного эпизода даст ~3× ускорение
 (каждый блок — независимый контекст). Отложено до того момента когда
 система правил и оптимизации Seedance стабилизируются.
+
+### Долг 5 — призрачные source_btn после повторных Cancel'ов в Pick existing
+В `EpisodeChatView._on_outfit_pick_existing` ([views/episode_chat.py](views/episode_chat.py)) — при Rejected (юзер открыл RefPickerDialog
+из picker'а bottom row, потом Cancel) cleanup не делается, picker
+остаётся живой. **Но** если юзер потом сделает любую navigation +
+вернётся → `_restore_gen_buttons_from_history` создаст НОВУЮ
+GenButton для david. А старая (скрытая, в `_outfit_source_btns`)
+остаётся в `_gen_layout` как призрак. При повторных Cancel-циклах
+накапливается несколько hidden GenButton'ов.
+
+**Симптом для юзера:** не виден — призраки скрыты. Технически —
+утечка widget'ов (минорная). Чинить когда будет общий рефакторинг
+управления `_gen_layout` (шире чем outfit picker).
+
+**Возможный фикс:** при `_restore_gen_buttons_from_history` для
+character маркера, у которого уже есть source_btn в
+`_outfit_source_btns[ep_id]` — переиспользовать его (re-show + reset)
+вместо создания новой. Или явный cleanup призраков на ep switch.
