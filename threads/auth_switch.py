@@ -20,10 +20,26 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
+
+
+def _no_console_kwargs() -> dict:
+    """CREATE_NO_WINDOW для Win — без него `auth status`/`logout` мигают
+    чёрными cmd-окнами при каждом polling cycle (2с × до 150 раз = до
+    5 мин мигания). На Mac/Linux — пустой dict (`creationflags` —
+    Win-only параметр subprocess'а).
+
+    Дублирует `storyboard_app.no_console_kwargs()` чтобы избежать
+    `_AppProxy`-зависимости в этом тонком thread-файле.
+    """
+    if sys.platform == 'win32':
+        return {'creationflags': 0x08000000}
+    return {}
 
 
 class AuthSwitchThread(QThread):
@@ -63,6 +79,7 @@ class AuthSwitchThread(QThread):
                     [self._cli, "auth", "logout"],
                     timeout=15, capture_output=True, text=True,
                     encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
+                    **_no_console_kwargs(),  # 2026-05-09: без CREATE_NO_WINDOW мигало cmd-окно на Win.
                 )
             except Exception:
                 # logout мог упасть если уже разлогинен — не fatal, идём дальше
@@ -90,23 +107,42 @@ class AuthSwitchThread(QThread):
                         encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
                     )
                 elif sys.platform == 'win32':
-                    # Предпочитаем Windows Terminal (wt.exe) если есть —
-                    # современный UX. Иначе классический cmd.exe.
-                    cli_quoted = f'"{self._cli}"'
-                    wt = shutil.which('wt.exe') or shutil.which('wt')
+                    # 2026-05-09: ранее использовали `cmd /K "<cli> auth
+                    # login"` (+ опционально wt.exe wrapper). На конфигурациях
+                    # где `find_claude_cli` резолвит .cmd-шим (npm install)
+                    # двойной cmd-wrapping ломал quoting → окно открывалось
+                    # и сразу закрывалось, claude не успевал напечатать
+                    # OAuth URL → браузер не дёргался. Юзер видел только
+                    # «мигающие чёрные окна» (на самом деле часть мигания —
+                    # это polling без CREATE_NO_WINDOW, см. _auth_status_email,
+                    # часть — этот crash'нувший cmd /K).
+                    #
+                    # Решение: создать .bat в %TEMP% с явным claude вызовом
+                    # и `pause >nul` в конце. Окно остаётся открытым пока
+                    # юзер не закроет — он может прочитать инструкции и
+                    # увидеть OAuth URL если браузер не открылся автоматически.
+                    bat_dir = Path(tempfile.gettempdir())
+                    bat_path = (bat_dir
+                                / f"storyboard_auth_login_{int(time.time())}.bat")
+                    bat_content = (
+                        "@echo off\r\n"
+                        "chcp 65001 >nul\r\n"  # UTF-8 для русских строк
+                        "echo.\r\n"
+                        "echo === Storyboard Studio: вход в Max-аккаунт ===\r\n"
+                        "echo Сейчас откроется браузер. Войди под нужным\r\n"
+                        "echo Max-аккаунтом и подтверди разрешение.\r\n"
+                        "echo.\r\n"
+                        f'"{self._cli}" auth login\r\n'
+                        "echo.\r\n"
+                        "echo Готово. Нажми любую клавишу чтобы закрыть окно.\r\n"
+                        "pause >nul\r\n"
+                    )
+                    bat_path.write_bytes(bat_content.encode('utf-8'))
                     CREATE_NEW_CONSOLE = 0x00000010
-                    if wt:
-                        subprocess.Popen(
-                            [wt, 'new-tab', 'cmd.exe', '/K',
-                             f'{cli_quoted} auth login'],
-                            creationflags=CREATE_NEW_CONSOLE
-                        )
-                    else:
-                        subprocess.Popen(
-                            ['cmd.exe', '/K',
-                             f'{cli_quoted} auth login'],
-                            creationflags=CREATE_NEW_CONSOLE
-                        )
+                    subprocess.Popen(
+                        ['cmd.exe', '/c', str(bat_path)],
+                        creationflags=CREATE_NEW_CONSOLE,
+                    )
                 else:
                     # Linux — попытка через xterm/gnome-terminal/konsole.
                     term = (shutil.which('gnome-terminal')
@@ -166,12 +202,19 @@ class AuthSwitchThread(QThread):
     # ── helpers ──
 
     def _auth_status_email(self) -> Optional[str]:
-        """Возвращает email текущего залогиненного аккаунта или None."""
+        """Возвращает email текущего залогиненного аккаунта или None.
+
+        2026-05-09: добавлен CREATE_NO_WINDOW для Win — этот метод
+        вызывается до 150 раз в polling-цикле (2с × 5 мин). Без флага
+        каждый вызов мигал чёрным cmd-окном — юзер видел «мигающие окна
+        которые нельзя закрыть».
+        """
         try:
             r = subprocess.run(
                 [self._cli, "auth", "status"],
                 timeout=10, capture_output=True, text=True,
                 encoding="utf-8", errors="replace",  # 2026-05-09 Win-fix.
+                **_no_console_kwargs(),
             )
             if r.returncode != 0:
                 return None
