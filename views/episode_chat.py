@@ -2335,19 +2335,18 @@ class EpisodeChatView(QWidget):
                 return ""
             scen_dir = (self._mw._project_root / "shows" / cur_show
                         / "scenarios")
-            # Сначала пробуем <ep_id>.txt, потом ep_id с zero-padding.
-            candidates = [
-                scen_dir / f"{self._ep_id}.txt",
-                scen_dir / f"{self._ep_id.lstrip('ep')}.txt",
-                scen_dir / "_active.txt",
-            ]
-            # Также пробуем варианты ep01.txt из ep1
+            # 2026-05-10: zero-pad ep{NN:02d}.txt — primary source of truth.
+            # _active.txt из кандидатов УБРАН — он stale и разъезжался с
+            # UI-эпизодом (баг «агент читает не тот сценарий»).
+            candidates = []
             try:
                 num_str = self._ep_id.lstrip('ep')
                 if num_str.isdigit():
                     candidates.append(scen_dir / f"ep{int(num_str):02d}.txt")
             except Exception:
                 pass
+            candidates.append(scen_dir / f"{self._ep_id}.txt")
+            candidates.append(scen_dir / f"{self._ep_id.lstrip('ep')}.txt")
             for p in candidates:
                 if p.exists() and p.is_file():
                     return p.read_text(encoding='utf-8', errors='replace')
