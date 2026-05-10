@@ -3584,6 +3584,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._project_root = project_root
         self._is_admin     = is_admin_mode(project_root)
+        # 2026-05-09: AI-auth state атрибуты инициализируем СРАЗУ —
+        # `_build_settings_tab` (вызывается ниже из tabs.addTab) дёргает
+        # `_refresh_claude_account_email`, который читает
+        # `_last_known_auth_email`. Раньше эти атрибуты ставились ниже,
+        # после tabs setup → AttributeError ловился try/except в helper'е,
+        # но `traceback.print_exc()` логировал шум при каждом старте.
+        self._last_known_auth_email: Optional[str] = None
+        self._last_known_auth_loggedin: bool = True
+        self._auth_dismissed_email: Optional[str] = None
+        self._auth_switch_thread: Optional[QThread] = None
 
         # 2026-05-08 (Шаг 2): post-bootstrap finalize.
         # 2026-05-09: добавлен detect failed bootstrap (через
@@ -4315,10 +4325,9 @@ class MainWindow(QMainWindow):
         # лимит / он сделал logout в другом инструменте / переключил аккаунт.
         # Studio через ≤90с заметит и покажет AuthBanner с одной кнопкой
         # «Войти в другой аккаунт».
-        self._last_known_auth_email: Optional[str] = None
-        self._last_known_auth_loggedin: bool = True
-        self._auth_dismissed_email: Optional[str] = None  # юзер скрыл — не доставать пока не сменится
-        self._auth_switch_thread: Optional[QThread] = None  # активный AuthSwitchThread
+        # 2026-05-09: атрибуты `_last_known_auth_email/_loggedin/_dismissed_email/_switch_thread`
+        # инициализируются в самом начале __init__ (см. выше) — Settings tab
+        # билдится раньше этой точки и читает их через `_refresh_claude_account_email`.
         # Первый замер при старте Studio (синхронный, 1с).
         # 2026-05-08: убран периодический QTimer (90s) — на Win показывал
         # чёрное окно cmd при каждом claude auth status. Теперь проверка
@@ -4426,18 +4435,25 @@ class MainWindow(QMainWindow):
         """Обновляет email-лейбл в Settings → секция «AI-АККАУНТ».
 
         Вызывается:
-          • После постройки Settings tab (первая отрисовка).
-          • Из `_auth_check_tick` (90с-таймер обнаружил смену).
+          • После постройки Settings tab (первая отрисовка через
+            `_build_settings_tab` — это происходит РАНЬШЕ initial-tick'а
+            `_auth_check_tick`, поэтому email на момент первого вызова
+            ещё None — лейбл покажет «Не залогинен», правильное значение
+            подставится через ~1с).
+          • Из `_auth_check_tick` (initial-tick + при переключении на
+            вкладку Settings).
           • Из `_on_auth_switch_done` (юзер сменил аккаунт через UI).
+          • Из `_apply_lang` (смена языка).
 
-        Защита: лейбл может не существовать если Settings tab ещё не построен
-        (initial-tick из `__init__` стреляет до `_build_settings_tab`).
+        Защита: лейбл может не существовать (Settings tab ещё не построен).
+        Атрибут `_last_known_auth_email` тоже может отсутствовать на
+        ранних стадиях init — читаем через `getattr` defensively.
         """
         try:
             lbl = getattr(self, 'claude_acc_email_lbl', None)
             if lbl is None:
                 return
-            email = self._last_known_auth_email
+            email = getattr(self, '_last_known_auth_email', None)
             lbl.setText(email or tr('ai_account_not_logged'))
         except Exception:
             traceback.print_exc()
