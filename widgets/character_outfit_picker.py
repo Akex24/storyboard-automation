@@ -12,15 +12,15 @@ UX-состояния:
   • error   — «✗ Не получилось…» + кнопка «↻ Попробовать снова».
 
 Сигналы:
-  • variant_chosen(text) — клик по одному из 3 вариантов.
-  • retry_requested()    — клик «↻ Ещё 3 варианта» / повтор после ошибки.
-  • custom_requested()   — клик «✎ Придумаю описание сам».
+  • variant_chosen(text)        — клик по одному из 3 вариантов.
+  • retry_requested()           — клик «↻ Ещё 3 варианта».
+  • custom_requested()          — клик «✎ Придумаю описание сам».
+  • pick_existing_requested()   — клик «📁 Pick existing» (bottom row).
 
 2026-05-10: убрана кнопка «✕ Отмена» — по UX персонаж ОБЯЗАТЕЛЕН
-для эпизода, юзер не может «передумать». Единственный путь
-закрытия picker'а — выбор варианта (variant_chosen) или custom
-(custom_requested) → переход в Actors → создание рефа →
-`notify_character_generation_started` снимает picker.
+для эпизода. Единственный путь закрытия picker'а — выбор варианта
+(variant_chosen) → Actors → ref creation, либо «📁 Pick existing»
+которая открывает RefPickerDialog внутри чата.
 
 Виджет НЕ запускает тред сам — это делает caller (EpisodeChatView).
 Тред зовёт публичные методы set_loading() → set_variants(list) /
@@ -115,6 +115,7 @@ class CharacterOutfitPicker(QFrame):
     variant_chosen = pyqtSignal(str)
     retry_requested = pyqtSignal()
     custom_requested = pyqtSignal()  # «✎ Придумаю описание сам»
+    pick_existing_requested = pyqtSignal()  # «📁 Pick existing» (bottom row)
 
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
@@ -181,6 +182,15 @@ class CharacterOutfitPicker(QFrame):
             " color:#a8c8ff; border:1px solid #4d6a8a; border-radius:6px;"
             " padding:6px 12px; font-size:12px; }"
             "QPushButton#outfit-retry:hover { background:#1a2638;"
+            " color:#d8e8ff; }"
+            # 2026-05-10: «Pick existing» внутри picker'а bottom row
+            # (рядом с retry). Раньше эту функцию выполняла кнопка на
+            # GenButton (source_btn) — но source_btn находился над
+            # picker'ом, плохо читалось как UX-флоу.
+            "QPushButton#outfit-pick-existing { background:transparent;"
+            " color:#a8c8ff; border:1px solid #4d6a8a; border-radius:6px;"
+            " padding:6px 12px; font-size:12px; }"
+            "QPushButton#outfit-pick-existing:hover { background:#1a2638;"
             " color:#d8e8ff; }"
             "QPushButton#outfit-cancel { background:transparent;"
             " color:#aaa; border:1px solid #4a4a4a; border-radius:6px;"
@@ -253,8 +263,11 @@ class CharacterOutfitPicker(QFrame):
         self.hint_lbl.hide()
         outer.addWidget(self.hint_lbl)
 
-        # Низ: только retry. 2026-05-10: cancel убрана — персонаж
-        # обязателен, юзер не может «передумать» через picker.
+        # Низ: retry + pick-existing. 2026-05-10:
+        # - cancel убрана (персонаж обязателен).
+        # - pick-existing добавлен сюда из source_btn (GenButton сверху
+        #   picker'а): UX чище когда обе альтернативы внутри одной
+        #   фиолетовой панели.
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         self.retry_btn = QPushButton(tr('outfit_picker_retry'))
@@ -263,6 +276,14 @@ class CharacterOutfitPicker(QFrame):
         self.retry_btn.clicked.connect(self._on_retry_clicked)
         self.retry_btn.hide()
         bottom.addWidget(self.retry_btn)
+
+        self.pick_existing_btn = QPushButton(tr('gen_btn_use_existing'))
+        self.pick_existing_btn.setObjectName("outfit-pick-existing")
+        self.pick_existing_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pick_existing_btn.clicked.connect(
+            self.pick_existing_requested.emit)
+        bottom.addWidget(self.pick_existing_btn)
+
         bottom.addStretch()
         outer.addLayout(bottom)
 
@@ -338,6 +359,7 @@ class CharacterOutfitPicker(QFrame):
         self.hint_lbl.setText(tr('outfit_picker_hint'))
         self.retry_btn.setText(tr('outfit_picker_retry'))
         self.custom_btn.setText(tr('outfit_picker_custom'))
+        self.pick_existing_btn.setText(tr('gen_btn_use_existing'))
 
     # ── Внутренние слоты ─────────────────────────────────────────────
 
