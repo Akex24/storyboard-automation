@@ -1282,6 +1282,19 @@ class EpisodeChatView(QWidget):
             cur_show = _sa.get_current_show(self._mw._project_root)
         except Exception:
             cur_show = None
+        # 2026-05-10: Если slug уже существует в refs/<sub>/ (другой
+        # эпизод сгенерировал ref с тем же именем) — переименовываем
+        # в `<name>_2` / `<name>_3` и т.д. Без этого pipeline.py с
+        # `--force` перезаписал бы старый файл, ломая чужой эпизод.
+        # Сейчас pipeline.py запускается БЕЗ `--force` (см.
+        # threads/autonomous_gen.py) — это safety net на случай если
+        # уникализация даст сбой. См. `_resolve_collision_free_slug`.
+        if gen_type in ('location', 'object') and cur_show:
+            try:
+                name = self._resolve_collision_free_slug(
+                    cur_show, gen_type, name)
+            except Exception:
+                traceback.print_exc()
         thread = AutonomousGenThread(
             self._mw._project_root, gen_type, name, description,
             ep_id=self._ep_id, show_slug=cur_show,
@@ -1303,6 +1316,74 @@ class EpisodeChatView(QWidget):
         self._gen_button = None
         # Следующая idle из очереди — появляется сразу.
         self._advance_gen_queue()
+
+    def _resolve_collision_free_slug(self, cur_show: str, gen_type: str,
+                                     name: str) -> str:
+        """Если `refs/<sub>/<name>.<ext>` уже существует — возвращает
+        новый slug `<name>_2` / `<name>_3` / ... (первый свободный).
+        Параллельно обновляет `episodes.json[ep_id].refs.<sub>`:
+        заменяет старое имя файла на новое, чтобы манифест эпизода
+        указывал на ещё-не-сгенерированный новый файл (а не на чужой
+        старый). И эмитит system-сообщение в чат — юзер видит что
+        слаг переименован.
+        Если коллизии нет — возвращает name как есть, ничего не пишет.
+        2026-05-10 — фикс БАГ 1 (slug-коллизия между эпизодами).
+        """
+        sub = 'locations' if gen_type == 'location' else 'objects'
+        refs_dir = (self._mw._project_root / "shows" / cur_show
+                    / "refs" / sub)
+        if not refs_dir.exists():
+            return name
+        if not list(refs_dir.glob(f"{name}.*")):
+            return name
+        # Коллизия — ищем первый свободный суффикс.
+        suffix = 2
+        while list(refs_dir.glob(f"{name}_{suffix}.*")):
+            suffix += 1
+        new_name = f"{name}_{suffix}"
+        # Обновляем episodes.json[ep_id].refs.<sub>: заменяем
+        # «<name>.<ext>» на «<new_name>.<ext>». Без этого манифест
+        # текущего эпизода продолжит указывать на чужой файл.
+        try:
+            import json as _json
+            ep_meta_path = (self._mw._project_root / "shows" / cur_show
+                            / "episodes.json")
+            if ep_meta_path.exists() and self._ep_id:
+                meta = _json.loads(
+                    ep_meta_path.read_text(encoding='utf-8')) or {}
+                ep_obj = meta.get(self._ep_id) or {}
+                refs = ep_obj.get("refs") or {}
+                arr = refs.get(sub) or []
+                for i, item in enumerate(arr):
+                    if not isinstance(item, str):
+                        continue
+                    if item == name:
+                        arr[i] = new_name
+                    elif "." in item and item.rsplit(".", 1)[0] == name:
+                        ext = item.rsplit(".", 1)[1]
+                        arr[i] = f"{new_name}.{ext}"
+                refs[sub] = arr
+                ep_obj["refs"] = refs
+                meta[self._ep_id] = ep_obj
+                ep_meta_path.write_text(
+                    _json.dumps(meta, ensure_ascii=False, indent=2)
+                    + "\n", encoding='utf-8')
+        except Exception:
+            traceback.print_exc()
+        # System-сообщение в чат.
+        try:
+            line = (
+                f"ℹ Слаг `{name}` уже занят в этом сериале — "
+                f"переименовал в `{new_name}` чтобы не перезаписать "
+                f"существующий реф. Если хотел переиспользовать тот же "
+                f"реф — жми «📁 Выбрать существующий» вместо "
+                f"«🎨 Сгенерировать».\n")
+            _sa.append_chat_message(
+                self._ep_id, "system", line, kind='system')
+            self._render_message(line, kind='system')
+        except Exception:
+            traceback.print_exc()
+        return new_name
 
     # 2026-05-07: слоты `_on_gen_progress / image_ready / finished /
     # error` переехали в MainWindow (`_on_active_gen_*`). EpisodeChatView
