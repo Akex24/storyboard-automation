@@ -1095,7 +1095,22 @@ class EpisodeChatView(QWidget):
         # Sub-MVP guard ТОЛЬКО для idle-карточек: если active idle уже
         # есть — новая idle уходит в очередь. Pre-decided карточки
         # рендерятся всегда (не блокируются sub-MVP).
-        if pre_decision is None and self._gen_button is not None:
+        # 2026-05-09: outfit picker для current ep тоже занимает slot.
+        # Без этого следующий character/object/location появлялся пока
+        # юзер ещё не выбрал вариант одежды для предыдущего character'а
+        # (lora всплывала когда picker для david ещё активен → David's
+        # picker визуально схлопывался вверх). После того как юзер создаст
+        # реф для david в Actors, `_purge_resolved_markers` уберёт picker
+        # и вызовет `_advance_gen_queue` — lora pop'нется из очереди.
+        slot_busy = self._gen_button is not None
+        if not slot_busy:
+            try:
+                cur_ep = self._ep_id or ""
+                if self._outfit_pickers.get(cur_ep) is not None:
+                    slot_busy = True
+            except Exception:
+                pass
+        if pre_decision is None and slot_busy:
             self._pending_markers.append(
                 (gen_type, name, description, display))
             return
@@ -1509,7 +1524,15 @@ class EpisodeChatView(QWidget):
 
     def _on_outfit_cancel(self):
         """Юзер закрыл пикер до выбора — убираем виджет, возвращаем
-        исходную GenButton."""
+        исходную GenButton.
+
+        2026-05-09: после удаления picker'а вызываем `_advance_gen_queue`
+        чтобы следующий маркер из `_pending_markers` (lora и т.п.) стал
+        активным. Без этого юзер мог застрять: picker для david отменён
+        → slot свободен → но lora остаётся в очереди и не показывается
+        (новый slot-busy guard не пропустил её при `_maybe_show_gen_button`,
+        пока picker был жив).
+        """
         ep_id = self._ep_id or ""
         thread = self._outfit_threads.get(ep_id)
         if thread is not None and thread.isRunning():
@@ -1519,6 +1542,10 @@ class EpisodeChatView(QWidget):
                 pass
         self._outfit_threads.pop(ep_id, None)
         self._cleanup_outfit_picker(restore_source=True)
+        try:
+            self._advance_gen_queue()
+        except Exception:
+            traceback.print_exc()
 
     def _on_outfit_variant_chosen(self, text: str):
         """Юзер выбрал вариант одежды. Сценарий:
