@@ -828,13 +828,36 @@ class GenerateActorRefThread(QThread):
                 return
 
             # Polling
+            # 2026-05-10 (БАГ 8 fix): добавлен timeout на весь polling-loop
+            # (5 минут) + progress.emit на каждой итерации с текущим
+            # статусом. Раньше при незнакомом status (queued/pending/...)
+            # loop крутился молча — юзер видел overlay «Генерирую…» и
+            # никаких update'ов, никаких error/finished emit'ов. Если
+            # API залипало → thread висел вечно.
+            POLL_TIMEOUT_SEC = 300  # 5 минут — потолок ожидания
+            poll_started = time.monotonic()
+            last_status = ""
             while True:
                 time.sleep(4)
-                r = session.get(f"{_sa.API_BASE}/api/v4/operations/{op_id}",
-                                timeout=30)
-                r.raise_for_status()
-                d = r.json()
-                status = d.get("status")
+                elapsed = int(time.monotonic() - poll_started)
+                if elapsed > POLL_TIMEOUT_SEC:
+                    self.error.emit(
+                        f"API timeout: статус «{last_status or 'unknown'}»"
+                        f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
+                    return
+                try:
+                    r = session.get(
+                        f"{_sa.API_BASE}/api/v4/operations/{op_id}",
+                        timeout=30)
+                    r.raise_for_status()
+                    d = r.json()
+                except Exception as poll_ex:
+                    # Сетевые ошибки во время polling — сразу выходим с
+                    # явной ошибкой, не молча.
+                    self.error.emit(f"Polling network error: {poll_ex}")
+                    return
+                status = (d.get("status") or "").lower()
+                last_status = status
                 if status == "success":
                     result = d.get("result") or []
                     uri = result[0] if isinstance(result, list) else result
@@ -857,6 +880,13 @@ class GenerateActorRefThread(QThread):
                 if status == "error":
                     self.error.emit(f"API error: {d.get('error')}")
                     return
+                # Любой другой status (queued/pending/processing/...) —
+                # эмитим progress чтобы юзер видел что thread жив и в
+                # каком статусе. Без этого UI overlay стоял с одним и
+                # тем же лейблом «Генерирую…» бесконечно.
+                self.progress.emit(
+                    tr('create_ref_polling_status',
+                       status=status or 'pending', sec=elapsed))
 
         except Exception as e:
             self.error.emit(str(e))

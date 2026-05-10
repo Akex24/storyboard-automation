@@ -1251,8 +1251,24 @@ class ActorsView(QWidget):
                     lambda new_text, slug=actor_slug:
                         self._on_prompt_retry(slug, new_text))
                 dlg.exec()
-            except Exception:
+            except Exception as retry_ex:
+                # 2026-05-10 (БАГ 8 fix): раньше падение PromptRetryDialog
+                # приводило к silent traceback.print_exc — юзер видел
+                # только «карточка осталась как была» без UI feedback'а.
+                # Теперь — fallback на QMessageBox с текстом исходной
+                # ошибки и причиной краха retry-попапа.
                 traceback.print_exc()
+                try:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(
+                        self,
+                        tr('create_ref_failed_title'),
+                        tr('create_ref_failed_msg',
+                           actor=display_name,
+                           error=msg or "?",
+                           retry_error=str(retry_ex)[:200]))
+                except Exception:
+                    pass
 
         thread.progress.connect(_on_progress)
         thread.finished.connect(_on_finished)
