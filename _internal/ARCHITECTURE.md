@@ -26,6 +26,48 @@
   используется только в мёртвом `DownloadUpdateThread`** — расширять без
   причины не нужно (см. ниже секцию «Архитектура обновлений»).
 
+## Slug collision handling (refs)
+
+**С 2026-05-10 (commit b8b07ec):** «🎨 Сгенерировать» = всегда создаёт
+новый ref, никогда не перезаписывает существующий. Если slug уже занят
+в `refs/<sub>/` (location или object) — Studio автоматически переименует
+текущий slug в `<name>_2` / `<name>_3` / ... ДО запуска генерации.
+
+**Как работает:**
+
+`EpisodeChatView._on_gen_button_clicked`
+([views/episode_chat.py:1256](views/episode_chat.py:1256)) для
+`gen_type in ('location', 'object')` вызывает
+`_resolve_collision_free_slug(cur_show, gen_type, name)` ПЕРЕД
+созданием `AutonomousGenThread`. Если `refs/<sub>/<name>.*` пуст —
+имя возвращается как есть. Если коллизия — Studio:
+
+1. `glob` ищет первый свободный суффикс (`<name>_2`, `<name>_3`, ...).
+2. Обновляет `episodes.json[ep_id].refs.<sub>`: basename-match через
+   `rsplit(".", 1)`. Заменяет `<name>.<ext>` на `<new_name>.<ext>`,
+   сохраняя расширение. **basename match, не префикс** — иначе
+   `name="hall"` ошибочно зацепил бы `item="hallway.jpg"`.
+3. Эмитит system-сообщение в чат: «ℹ Слаг X уже занят, переименовал
+   в Y. Если хотел переиспользовать — жми «📁 Выбрать существующий».
+
+`AutonomousGenThread` получает уже-уникальный slug. В промпт
+агенту ([threads/autonomous_gen.py](threads/autonomous_gen.py))
+команда `pipeline.py generate` пишется БЕЗ флага `--force` —
+pipeline.py остаётся в default «refuse on collision» режиме как
+safety net. Если уникализация на Studio-стороне когда-то даст сбой
+(race condition, missed glob), pipeline.py отрефьюзит запись и юзер
+увидит ошибку — лучше чем silent overwrite.
+
+**Что НЕ так в архитектуре, осталось на потом:**
+- Refs остаются global per show (одна папка `refs/locations/`).
+  Episode-association живёт только в `episodes.json[ep].refs.<sub>`.
+- Если юзер хочет ВРУЧНУЮ переименовать ref после генерации —
+  поддержки нет, нужно править файлы и `episodes.json` руками.
+- Если юзер хочет regenerate существующий slug (replace), кнопка
+  «🎨 Сгенерировать» больше не появляется при `✓` маркере. Нужно
+  удалить файл из `refs/<sub>/` руками, тогда агент при следующем
+  Run эпизода сделает `✗` маркер и покажет кнопку.
+
 ## Single source of truth: `scenarios/ep{NN:02d}.txt`
 
 **С 2026-05-10 (commit f07b2d9):** для каждого эпизода единственный
