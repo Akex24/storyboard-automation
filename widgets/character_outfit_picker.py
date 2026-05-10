@@ -24,9 +24,10 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QSizePolicy,
+    QLayout,
 )
 
 from i18n import tr
@@ -51,28 +52,23 @@ class _ClickableLabelButton(QFrame):
 
     clicked = pyqtSignal()
 
-    # 2026-05-10 fix #2: после первого QFrame+QLabel patch'а юзер ещё
-    # видел узкие пустые окошки — корень: parent QVBoxLayout сжимал
-    # дочерние Preferred-policy виджеты ниже their sizeHint когда
-    # вертикали не хватало. QLabel.sizeHint() для wordWrap label —
-    # минимально (one-line), и Qt не знал что нужно больше под wrap'нутый
-    # текст. Решение: setMinimumHeight(50) гарантирует one-line baseline,
-    # heightForWidth() override пропагирует growth под multi-line.
-    _MIN_HEIGHT = 50  # одна строка 13px + padding 14×2 + рамка
-    _OUTER_PADDING_W = 36  # 18×2 (left+right margins)
-    _OUTER_PADDING_H = 28  # 14×2 (top+bottom margins)
+    # 2026-05-10 fix #3 (Option A — после fix #2 не сработал):
+    # heightForWidth/sizeHint override не помогли — родительский layout
+    # игнорировал их и сжимал picker. Корень: minimum размеры на
+    # отдельных кнопках не суммировались парентом в picker'а минимум.
+    # Решение: жёсткий setMinimumHeight на КАЖДОЙ кнопке (60px) +
+    # на picker'е целиком (380px) + outer.setSizeConstraint(SetMinimumSize)
+    # чтобы parent QVBoxLayout считал эти минимумы реальными.
+    _MIN_BUTTON_HEIGHT = 60  # 1-2 строки текста + padding 14×2 + рамка
 
     def __init__(self, text: str, obj_name: str = "outfit-variant",
                  parent=None):
         super().__init__(parent)
         self.setObjectName(obj_name)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        # Vertical: MinimumExpanding — НЕ сжиматься ниже minimumHeight.
-        sp = QSizePolicy(QSizePolicy.Policy.Expanding,
-                          QSizePolicy.Policy.MinimumExpanding)
-        sp.setHeightForWidth(True)
-        self.setSizePolicy(sp)
-        self.setMinimumHeight(self._MIN_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Preferred)
+        self.setMinimumHeight(self._MIN_BUTTON_HEIGHT)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(0)
@@ -90,31 +86,8 @@ class _ClickableLabelButton(QFrame):
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         lay.addWidget(self._label)
 
-    # ── heightForWidth override: Qt пересчитает высоту QFrame'а под
-    #    содержимое QLabel при любой ширине. Без override родительский
-    #    layout не знает что виджет нуждается в multi-line высоте.
-
-    def hasHeightForWidth(self) -> bool:
-        return True
-
-    def heightForWidth(self, w: int) -> int:
-        inner_w = max(50, w - self._OUTER_PADDING_W)
-        label_h = self._label.heightForWidth(inner_w)
-        if label_h < 0:
-            label_h = self._label.fontMetrics().height()
-        return max(self._MIN_HEIGHT, label_h + self._OUTER_PADDING_H)
-
-    def sizeHint(self) -> QSize:
-        # Базовый намёк: ширина 400 (parent expanded даст больше),
-        # высота под текущий текст. Qt пересчитает через heightForWidth
-        # когда узнает реальную ширину.
-        w = max(400, self.width())
-        return QSize(w, self.heightForWidth(w))
-
     def setText(self, text: str) -> None:
         self._label.setText(text)
-        # После смены текста просим layout пересчитать высоту.
-        self.updateGeometry()
 
     def text(self) -> str:
         return self._label.text()
@@ -148,6 +121,14 @@ class CharacterOutfitPicker(QFrame):
         self._dot_timer.timeout.connect(self._tick_dots)
         self._setup_ui()
         self._apply_state()
+        # 2026-05-10 fix #3: жёсткий минимум на picker целиком — иначе
+        # parent QVBoxLayout (в EpisodeChatView) сжимал picker, а тот
+        # пропорционально сжимал свои children'ов ниже их minimumHeight.
+        # 380 = 4 buttons × 60 + 3 spacing × 8 + outer margins 32 +
+        #       title row ~24 + hint ~24 + bottom row ~36 + safety ~16.
+        self.setMinimumHeight(380)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.MinimumExpanding)
 
     # ── UI ────────────────────────────────────────────────────────────
 
@@ -204,6 +185,11 @@ class CharacterOutfitPicker(QFrame):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 16, 18, 16)
         outer.setSpacing(12)
+        # 2026-05-10 fix #3: SetMinimumSize заставляет outer layout
+        # считать реальные minimumHeight'ы children'ов. Без этого
+        # parent EpisodeChatView получает picker.sizeHint() который
+        # игнорирует minimum'ы и сжимает виджет.
+        outer.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         # Шапка: «👤 name» (видна всегда)
         head_row = QHBoxLayout()
