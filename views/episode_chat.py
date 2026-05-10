@@ -2448,6 +2448,17 @@ class EpisodeChatView(QWidget):
                 continue
             decision = d.get('decision')
             if decision == 'linked':
+                # 2026-05-10 (БАГ 3 safety net): проверяем что файл
+                # реально существует. В decisions может оказаться
+                # устаревший filename (например неверное расширение
+                # от старого auto-link до фикса БАГ 3, или юзер
+                # удалил файл вручную) — тогда считаем unresolved,
+                # CTA не показываем чтобы юзер не запустил монтаж
+                # с битой ссылкой.
+                if not self._linked_file_exists(
+                        m.type, d.get('filename') or ''):
+                    unresolved.append(m.name)
+                    continue
                 any_linked = True
             elif decision != 'skipped':
                 unresolved.append(m.name)
@@ -2469,6 +2480,37 @@ class EpisodeChatView(QWidget):
         # Все условия выполнены — показываем idle CTA.
         self._montage_cta.show_idle()
         self._montage_cta.show()
+
+    def _linked_file_exists(self, gen_type: str, filename: str) -> bool:
+        """Проверяет что файл рефа реально существует на диске.
+        Используется в `_check_montage_ready` как safety net для
+        linked-decisions с устаревшим filename (см. БАГ 3 — wrong
+        extension в decisions из-за слепого доверия hint'у агента).
+
+        Path layout:
+          • location:  refs/locations/<filename>
+          • object:    refs/objects/<filename>
+          • character: refs/characters/<filename>
+                       (filename содержит folder/file.jpg)
+        """
+        if not filename:
+            return False
+        try:
+            cur_show = getattr(self._mw, '_current_show', None)
+            if not cur_show:
+                return False
+            sub = {
+                'location': 'locations',
+                'object': 'objects',
+                'character': 'characters',
+            }.get(gen_type)
+            if not sub:
+                return False
+            path = (self._mw._project_root / "shows" / cur_show
+                    / "refs" / sub / filename)
+            return path.exists() and path.is_file()
+        except Exception:
+            return False
 
     def _load_scenario_text(self) -> str:
         """Возвращает текст сценария текущего эпизода или пустую строку."""
