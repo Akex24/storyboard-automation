@@ -227,15 +227,16 @@ class SuggestOutfitsThread(QThread):
         if not self.show_slug:
             return ("", "")
         show_root = self.project_root / "shows" / self.show_slug
-        # Сценарий конкретного эпизода
+        # 2026-05-10: zero-pad ep{NN:02d}.txt — single source of truth.
+        # _active.txt fallback УБРАН (stale, разъезжался с UI-эпизодом).
         if self.ep_id:
-            ep_path = show_root / "scenarios" / f"{self.ep_id}.txt"
+            num_str = self.ep_id.lstrip('ep')
+            if num_str.isdigit():
+                ep_path = (show_root / "scenarios"
+                           / f"ep{int(num_str):02d}.txt")
+            else:
+                ep_path = show_root / "scenarios" / f"{self.ep_id}.txt"
             scenario = _read_truncated(ep_path, _SCENARIO_MAX_CHARS)
-        # Если эпизодного файла нет — попробуем активный
-        if not scenario:
-            scenario = _read_truncated(
-                show_root / "scenarios" / "_active.txt",
-                _SCENARIO_MAX_CHARS)
         # Библия
         bible = _read_truncated(show_root / "bible.txt", _BIBLE_MAX_CHARS)
         return (scenario, bible)

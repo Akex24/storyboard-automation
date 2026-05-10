@@ -792,12 +792,19 @@ class NewEpisodeView(QWidget):
                     self._append_log(f"\n⚠ {warn_msg}\n", kind='warn')
             except Exception:
                 pass
-        active_path = scenarios_dir / "_active.txt"
-        try:
-            active_path.write_text(active_text, encoding="utf-8")
-        except Exception as ex:
-            self._set_status_error(f"write active: {ex}")
-            return
+        # 2026-05-10: single source of truth — scenarios/ep{NN:02d}.txt.
+        # _active.txt больше не пишется (legacy, разъезжался с UI-эпизодом
+        # → баг «агент читает не тот сценарий»). _inbox.txt пишется выше
+        # как черновик ввода формы «+» — это отдельная сущность, не источник
+        # сценария для агента.
+        if ep_num is not None:
+            ep_target = scenarios_dir / (
+                f"ep{ep_num:02d}.txt" if ep_num < 100 else f"ep{ep_num}.txt")
+            try:
+                ep_target.write_text(active_text, encoding="utf-8")
+            except Exception as ex:
+                self._set_status_error(f"write ep{ep_num}.txt: {ex}")
+                return
         if section_status is None:
             section_status = tr('new_ep_section_full', chars=len(active_text))
 
@@ -881,11 +888,21 @@ class NewEpisodeView(QWidget):
             'en': 'English',
         }.get(chat_lang, 'Russian')
 
+        # 2026-05-10: single source of truth — scenarios/ep{NN:02d}.txt.
+        # Раньше промпт hardcode говорил «Read _active.txt», но _active.txt
+        # разъезжался с UI-эпизодом (агент читал чужую серию). Теперь путь
+        # вычисляется по ep_num конкретного запуска.
+        ep_file = (
+            f"ep{ep_num:02d}.txt" if ep_num is not None and ep_num < 100
+            else f"ep{ep_num}.txt" if ep_num is not None
+            else None)
+        scenario_rel = (
+            f"scenarios/{ep_file}" if ep_file else "scenarios/")
         # Формируем промпт для Claude
         prompt = (
             f"User dropped a scenario document into Storyboard Studio. "
             f"They want to work on episode «{ep_query}». "
-            f"Read shows/{cur_show}/scenarios/_active.txt and follow CLAUDE.md "
+            f"Read shows/{cur_show}/{scenario_rel} and follow CLAUDE.md "
             f"(check refs for locations and characters, give a clear ✓/✗ list).\n\n"
             "🔴 КРИТИЧНОЕ ПРАВИЛО ОТВЕТА (читай ПЕРВЫМ):\n"
             "Твой первый ответ — это ВСЕГДА полный список вида:\n"
