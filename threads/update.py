@@ -393,19 +393,34 @@ class DownloadAppUpdateThread(QThread):
                 f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
                 "if not errorlevel 1 goto wait_for_studio\r\n"
                 'echo [%date% %time%] studio died >> "%LOG%" 2>&1\r\n'
-                "timeout /t 1 /nobreak > nul 2>&1\r\n"
+                # Force-kill любые оставшиеся инстансы (зомби, дочерние процессы) —
+                # их handle на .exe иначе блокирует move. /T = вместе с children.
+                'taskkill /F /IM "Storyboard Studio.exe" /T >> "%LOG%" 2>&1\r\n'
+                "timeout /t 2 /nobreak > nul 2>&1\r\n"
                 # Cleanup leftover .old от прошлого апдейта.
                 f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
-                # 2. Move target → .old (move /y даёт надёжный errorlevel,
-                #    в отличие от ren который тихо проваливается).
+                # 2. Move target → .old с retry-loop. Windows Defender / антивирус
+                #    могут держать handle на .exe секунд 5-10 после смерти процесса
+                #    (сканирование). Одной попытки мало — нужно 6 × 2 сек = до 12 сек
+                #    ожидания. move /y даёт надёжный errorlevel (ren тихо проваливается).
                 'echo [%date% %time%] moving target to .old >> "%LOG%" 2>&1\r\n'
+                "set /a move_tries=0\r\n"
+                ":try_move\r\n"
+                "set /a move_tries+=1\r\n"
+                'echo [%date% %time%] move attempt %move_tries% >> "%LOG%" 2>&1\r\n'
                 f'move /y "{target}" "{old_dir}" >> "%LOG%" 2>&1\r\n'
-                "if errorlevel 1 (\r\n"
-                '  echo [%date% %time%] MOVE FAILED -- target locked, aborting >> "%LOG%" 2>&1\r\n'
-                f'  echo move_failed > "{failed_marker}"\r\n'
-                f'  start "" "{studio_exe}"\r\n'
-                "  exit /b 1\r\n"
+                "if not errorlevel 1 goto move_ok\r\n"
+                'echo [%date% %time%]   attempt %move_tries% failed (target locked) >> "%LOG%" 2>&1\r\n'
+                "if %move_tries% LSS 6 (\r\n"
+                "  timeout /t 2 /nobreak > nul 2>&1\r\n"
+                "  goto try_move\r\n"
                 ")\r\n"
+                'echo [%date% %time%] MOVE FAILED after %move_tries% tries -- target locked, aborting >> "%LOG%" 2>&1\r\n'
+                f'echo move_failed > "{failed_marker}"\r\n'
+                f'start "" "{studio_exe}"\r\n'
+                "exit /b 1\r\n"
+                ":move_ok\r\n"
+                'echo [%date% %time%] move succeeded on attempt %move_tries% >> "%LOG%" 2>&1\r\n'
                 # 3. Copy new bundle.
                 'echo [%date% %time%] copying new bundle >> "%LOG%" 2>&1\r\n'
                 'powershell -NoProfile -ExecutionPolicy Bypass -Command '

@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-09
+**Последнее обновление:** 2026-05-10
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -105,7 +105,8 @@ overwrite'ит project pipeline.py из bundle если содержимое о�
 - Файлы проекта (`*.md`, `instructions/`, `agents/`, `.py`) при этом
   потоке **не трогаются**.
 
-**Hardened flow (2026-05-09 после Failure mode A на Win):**
+**Hardened flow (2026-05-09 после Failure mode A на Win,
++ 2026-05-10 retry-loop против Windows Defender lock):**
 - Studio пишет ДВА маркера в `project_root` ДО запуска bootstrap'а:
   - `pending_version.txt` = NEW версия → Studio при старте обновит
     `version.json[app_version]` на это.
@@ -113,6 +114,15 @@ overwrite'ит project pipeline.py из bundle если содержимое о�
 - Bat использует `move /y` (не `ren` — он тихо проваливается!) +
   errorlevel-check. На fail: запись `update_failed.txt`, старт СТАРОЙ
   Studio, exit 1. На copy fail: rollback `mv .old → target`.
+- **2026-05-10**: после `studio died` bat делает
+  `taskkill /F /IM "Storyboard Studio.exe" /T` (force-kill всех
+  инстансов + children) + `timeout 2`, затем move обёрнут в
+  retry-loop: 6 попыток × 2 сек = до 12 сек ожидания. Причина —
+  Windows Defender держит handle на убитом .exe секунд 5-10
+  для сканирования; одной попытки мало. Каждая попытка пишется в
+  bootstrap.log с номером (`move attempt N`, `attempt N failed`,
+  `move succeeded on attempt N`). См. `_session_log.md` запись
+  «Win auto-update: taskkill + retry-loop».
 - Bat пишет полный лог в `update_dir/bootstrap.log` (не stdout/stderr).
   `update_dir` НЕ удаляется bootstrap'ом — Studio при следующем старте
   чистит через `finalize_pending_update`, но защищает папку с активным
