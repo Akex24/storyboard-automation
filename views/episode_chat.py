@@ -1478,13 +1478,33 @@ class EpisodeChatView(QWidget):
         return None
 
     def _on_outfit_results(self, variants: list):
+        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА — убрать после Bug B.
+        try:
+            print(f"[outfit _on_outfit_results] ep_id_lookup_for_sender, "
+                  f"variants_received={list(variants)!r}", flush=True)
+        except Exception:
+            pass
         ep_id = self._outfit_ep_for_sender()
         if ep_id is None:
+            try:
+                print("[outfit _on_outfit_results] ep_id=None — drop", flush=True)
+            except Exception:
+                pass
             return
         picker = self._outfit_pickers.get(ep_id)
         if picker is None:
+            try:
+                print(f"[outfit _on_outfit_results] ep_id={ep_id!r} но picker=None — drop",
+                      flush=True)
+            except Exception:
+                pass
             self._outfit_threads.pop(ep_id, None)
             return
+        try:
+            print(f"[outfit _on_outfit_results] -> picker.set_variants for ep_id={ep_id!r}",
+                  flush=True)
+        except Exception:
+            pass
         try:
             picker.set_variants(list(variants))
         except Exception:
@@ -1501,6 +1521,11 @@ class EpisodeChatView(QWidget):
         self._outfit_threads.pop(ep_id, None)
 
     def _on_outfit_error(self, msg: str):
+        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА — убрать после Bug B.
+        try:
+            print(f"[outfit _on_outfit_error] msg={msg!r}", flush=True)
+        except Exception:
+            pass
         ep_id = self._outfit_ep_for_sender()
         if ep_id is None:
             return

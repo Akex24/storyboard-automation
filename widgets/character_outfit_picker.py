@@ -187,6 +187,16 @@ class CharacterOutfitPicker(QFrame):
     # ── Состояния ─────────────────────────────────────────────────────
 
     def _apply_state(self):
+        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА (убрать после расследования
+        # Bug B «пустые окошки вариантов»). Логирует state + variants
+        # на момент перерисовки. После stdout от юзера — print'ы убрать.
+        try:
+            print(f"[outfit _apply_state] name={self._name!r} "
+                  f"state={self._state!r} "
+                  f"len(variants)={len(self._variants)} "
+                  f"variants={self._variants!r}", flush=True)
+        except Exception:
+            pass
         self.setProperty("state", self._state)
         self.style().unpolish(self)
         self.style().polish(self)
@@ -210,6 +220,14 @@ class CharacterOutfitPicker(QFrame):
                 if i < len(self._variants):
                     btn.setText(self._variants[i])
                     btn.show()
+                    try:
+                        print(f"[outfit ready] btn[{i}].setText({self._variants[i]!r}); "
+                              f"isVisible_after_show={btn.isVisible()} "
+                              f"text_after_set={btn.text()!r} "
+                              f"size={btn.size().width()}x{btn.size().height()}",
+                              flush=True)
+                    except Exception:
+                        pass
                 else:
                     btn.hide()
             self.custom_btn.show()
@@ -235,11 +253,25 @@ class CharacterOutfitPicker(QFrame):
         self._apply_state()
 
     def set_variants(self, variants: List[str]):
+        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА — убрать после Bug B.
+        try:
+            print(f"[outfit set_variants] name={self._name!r} "
+                  f"received={variants!r} "
+                  f"after_filter={[v for v in (variants or []) if v.strip()][:3]!r}",
+                  flush=True)
+        except Exception:
+            pass
         self._variants = [v for v in (variants or []) if v.strip()][:3]
         if not self._variants:
             self.set_error(tr('outfit_picker_empty'))
             return
         self._state = "ready"
+        self._apply_state()
+
+    def refresh_view(self):
+        """2026-05-10: re-applies current state. Workaround on случай
+        Qt visibility quirks после long hide/show. ВРЕМЕННО — может
+        быть удалён если Bug B окажется не в этом."""
         self._apply_state()
 
     def set_error(self, msg: str):
