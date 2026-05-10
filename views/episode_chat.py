@@ -81,6 +81,31 @@ class ChatInputEdit(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
+# 2026-05-10: фикс БАГ 2 — keyword-эвристика «character marker — это
+# на самом деле животное?». Studio показывает CharacterOutfitPicker
+# для любого character-маркера, но для собак/кошек/лошадей выбор
+# одежды абсурден. Если описание/slug содержит хотя бы одно ключевое
+# слово ниже — animal-flow вместо outfit picker'а (=> object-генерация).
+# Это safety net: первичный фикс — правило в PRODUCER_INSTRUCTIONS +
+# new_episode.py промпт «животные → секция ОБЪЕКТЫ». Этот список —
+# страховка на случай если агент опять напутает.
+_ANIMAL_KEYWORDS = (
+    # RU
+    'пёс', 'пес', 'собак', 'кот', 'котён', 'кошк',
+    'лошад', 'конь', 'коня', 'коне',
+    'птиц', 'медвед', 'волк', 'лис',
+    'крыс', 'мыш', 'хомяк', 'кролик',
+    'животн',
+    # UA
+    'кіт', 'кішк', 'кінь', 'птах', 'тварин',
+    'ведмідь', 'вовк',
+    # EN
+    'dog', 'cat', 'horse', 'bird', 'rabbit', 'mouse', 'rat',
+    'bear', 'wolf', 'fox',
+    'animal', 'pet', 'creature', 'beast',
+)
+
+
 # ─── Чат конкретного эпизода (внутри Editor → content_stack page 2) ───────────
 
 class EpisodeChatView(QWidget):
@@ -1261,10 +1286,23 @@ class EpisodeChatView(QWidget):
         AutonomousGenThread (он не поддерживает character) — вместо
         этого подставляем CharacterOutfitPicker и зовём SuggestOutfitsThread
         чтобы AI предложил 3 варианта одежды. После клика по варианту
-        переключаем на вкладку Актёры с предзаполненным описанием."""
+        переключаем на вкладку Актёры с предзаполненным описанием.
+
+        2026-05-10 (БАГ 2 fix): если character marker по эвристике
+        выглядит как ЖИВОТНОЕ (бульдог, кот, лошадь и т.п.) — НЕ
+        показываем outfit picker (одежда для собаки бессмысленна),
+        а перенаправляем на object-flow (стандартный
+        AutonomousGenThread с gen_type='object'). См. _ANIMAL_KEYWORDS."""
         if gen_type == 'character':
-            self._start_outfit_picker(name)
-            return
+            if self._is_likely_animal(name, description):
+                self._append_animal_redirect_message(name)
+                gen_type = 'object'
+                # Fall through: запустим стандартный AutonomousGenThread
+                # с gen_type='object'. Slug-collision detection
+                # сработает на refs/objects/ автоматически.
+            else:
+                self._start_outfit_picker(name)
+                return
         # 2026-05-07: глобальный реестр в MW. Повторный клик по уже-
         # бегущему маркеру игнорируем.
         try:
@@ -1316,6 +1354,30 @@ class EpisodeChatView(QWidget):
         self._gen_button = None
         # Следующая idle из очереди — появляется сразу.
         self._advance_gen_queue()
+
+    def _is_likely_animal(self, name: str, description: str) -> bool:
+        """Эвристика для БАГ 2 fix: character-маркер — на самом деле
+        животное? Проверяем slug + описание против `_ANIMAL_KEYWORDS`.
+        Если хотя бы одно ключевое слово найдено (substring match,
+        case-insensitive) — True. Это safety net на случай если агент
+        не послушал PRODUCER_INSTRUCTIONS правило «животные → ОБЪЕКТЫ».
+        """
+        blob = f"{name} {description or ''}".lower()
+        return any(kw in blob for kw in _ANIMAL_KEYWORDS)
+
+    def _append_animal_redirect_message(self, name: str) -> None:
+        """System-сообщение в чат когда character-маркер
+        ре-классифицирован как animal/object."""
+        try:
+            line = (
+                f"ℹ `{name}` похоже на животное — генерирую через "
+                f"object-flow (без выбора одежды). Если это всё-таки "
+                f"человек — поправь манифест агента вручную.\n")
+            _sa.append_chat_message(
+                self._ep_id, "system", line, kind='system')
+            self._render_message(line, kind='system')
+        except Exception:
+            traceback.print_exc()
 
     def _resolve_collision_free_slug(self, cur_show: str, gen_type: str,
                                      name: str) -> str:
