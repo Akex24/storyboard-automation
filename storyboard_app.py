@@ -935,6 +935,49 @@ def finalize_pending_update(project_root: Path) -> Optional[Tuple[str, Optional[
     return update_failed
 
 
+def sync_pipeline_py_to_project(project_root: Path) -> None:
+    """Копирует `pipeline.py` из bundle (или dev-корня) в `project_root`.
+
+    Зачем: AutonomousGenThread запускает `claude -p ...` с
+    `cwd=project_root`. Агент через Bash tool вызывает
+    `python3 pipeline.py generate <name> "<prompt>"`. Если pipeline.py
+    отсутствует в project_root — субпроцесс падает с «pipeline.py not
+    found in working directory». Installer исторически НЕ копировал
+    pipeline.py в project_root (`ALLOW_FILES = {version.json}` до
+    2026-05-09).
+
+    Плюс self-healing skew: после auto-update bundle содержит свежий
+    pipeline.py, а в project_root остаётся старый. Этот синк убирает
+    skew — каждый запуск Studio overwrite'ит project pipeline.py из
+    bundle если содержимое отличается.
+
+    Все ошибки молча проглатываются — Studio не должна падать на старте
+    из-за проблем с этой синхронизацией.
+    """
+    try:
+        if getattr(sys, 'frozen', False):
+            # PyInstaller datas: на Mac .app/Contents/Resources, на Win
+            # onedir — _internal/. sys._MEIPASS указывает на корень.
+            bundle_root = Path(getattr(sys, '_MEIPASS', ''))
+        else:
+            # Dev-режим: pipeline.py рядом с storyboard_app.py.
+            bundle_root = Path(__file__).resolve().parent
+        src = bundle_root / "pipeline.py"
+        if not src.exists() or not src.is_file():
+            return  # bundle не содержит — нечего синкать
+        dst = project_root / "pipeline.py"
+        try:
+            # Если target существует и идентичен — не трогаем mtime.
+            if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                if src.read_bytes() == dst.read_bytes():
+                    return
+            shutil.copy2(str(src), str(dst))
+        except Exception:
+            traceback.print_exc()
+    except Exception:
+        traceback.print_exc()
+
+
 def no_console_kwargs() -> dict:
     """Возвращает kwargs для subprocess.run/Popen чтобы НЕ показывать
     чёрное окно cmd на Windows. На Mac/Linux возвращает пустой dict —
@@ -3553,6 +3596,15 @@ class MainWindow(QMainWindow):
         self._update_failure_info: Optional[Tuple[str, Optional[Path]]] = (
             finalize_pending_update(project_root))
         self._first_show_done: bool = False
+        # 2026-05-09: self-healing синк pipeline.py из bundle в project_root.
+        # Без этого AutonomousGenThread падал на «pipeline.py not found»
+        # у коллег которые ставили через Installer (whitelist не копировал
+        # .py до сегодняшнего дня), а после auto-update — у всех у кого
+        # bundle обновился но project pipeline.py остался старым.
+        try:
+            sync_pipeline_py_to_project(project_root)
+        except Exception:
+            traceback.print_exc()
         # Активный сериал и эпизод
         self._current_show:    Optional[str] = get_current_show(project_root)
         self._current_episode: Optional[str] = None

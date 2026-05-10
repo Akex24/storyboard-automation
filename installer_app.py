@@ -322,11 +322,20 @@ class DownloadProjectThread(QThread):
                 # уже зашито внутрь). Копируем ТОЛЬКО:
                 #   actors/        — фото актёров (синхрон от админа)
                 #   version.json   — версия проекта
+                #   pipeline.py    — утилита генерации рефов: AutonomousGenThread
+                #                    запускает claude CLI subprocess'ом, агент
+                #                    через Bash tool вызывает `python3 pipeline.py
+                #                    generate <name> "<prompt>"`. Без файла в
+                #                    project_root агент падает на «not found».
+                #                    Studio при старте дополнительно делает
+                #                    self-healing sync (sync_pipeline_py_to_project)
+                #                    из bundle — для existing-установок которые
+                #                    были до 2026-05-09 без этого файла.
                 # И создаём пустые папки для работы коллеги:
                 #   shows/, output/
                 # Игнорируем всё остальное.
                 ALLOW_DIRS  = {"actors"}
-                ALLOW_FILES = {"version.json"}
+                ALLOW_FILES = {"version.json", "pipeline.py"}
 
                 import shutil as _sh
                 for item in src.iterdir():

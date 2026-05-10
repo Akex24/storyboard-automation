@@ -85,9 +85,17 @@ installer_app.py     — отдельная программа Storyboard Instal
 [installer_app.py:280](installer_app.py:280) `DownloadProjectThread`:
 - Качает GitHub zip → жёсткий whitelist:
   - `ALLOW_DIRS = {"actors"}`
-  - `ALLOW_FILES = {"version.json"}`
+  - `ALLOW_FILES = {"version.json", "pipeline.py"}`
   - Создаются пустые `shows/`, `output/`.
-- Всё остальное **игнорируется**: `instructions/`, `agents/`, `*.py`, `*.md`, `.spec`, `.github/`, `tests/`.
+- Всё остальное **игнорируется**: `instructions/`, `agents/`, прочие `*.py`, `*.md`, `.spec`, `.github/`, `tests/`.
+
+`pipeline.py` нужен потому что AutonomousGenThread запускает `claude -p`
+с `cwd=project_root`, и агент через Bash tool вызывает
+`python3 pipeline.py generate <name> "<prompt>"` — файл должен быть
+в cwd. Дополнительно Studio при каждом старте делает self-healing
+sync через `sync_pipeline_py_to_project` ([storyboard_app.py](storyboard_app.py)) —
+overwrite'ит project pipeline.py из bundle если содержимое отличается
+(закрывает skew после auto-update'а .exe).
 
 ### B. Обновление приложения из работающей Studio
 [threads/update.py:200](threads/update.py:200) `DownloadAppUpdateThread`:
@@ -134,12 +142,18 @@ installer_app.py     — отдельная программа Storyboard Instal
 datas=[
     (certifi.where(), 'certifi'),
     ('assets/icons', 'assets/icons'),
+    ('pipeline.py', '.'),       # 2026-05-09: для self-healing sync в project_root
 ],
 ```
 Плюс автоматически — все импортируемые .py модули (включая `agents/*.py`).
 **НЕ зашиваются:** `instructions/*.txt`, `*.md`, `_session_log.md`. Если
 будущий feature потребует читать `instructions/*` в runtime — нужно
 явно добавить в `datas` spec.
+
+`pipeline.py` после распаковки находится через `sys._MEIPASS` (на Mac
+.app `Contents/Resources/pipeline.py`, на Win onedir `_internal/pipeline.py`).
+Studio при старте копирует его в `project_root` через
+`sync_pipeline_py_to_project` ([storyboard_app.py](storyboard_app.py)).
 
 ## Cross-platform (Mac / Win 10-11)
 

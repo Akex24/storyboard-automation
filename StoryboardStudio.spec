@@ -14,6 +14,13 @@ a = Analysis(
         (certifi.where(), 'certifi'),
         # Иконки табов (Lucide SVG) и иконки приложения
         ('assets/icons', 'assets/icons'),
+        # 2026-05-09: pipeline.py забандливается чтобы Studio при старте
+        # синхронизировала его в project_root. AutonomousGenThread зовёт
+        # `claude -p` с cwd=project_root, агент через Bash tool делает
+        # `python3 pipeline.py generate ...` — файл должен быть в cwd.
+        # На Mac разместится в Contents/Resources/, на Win onedir — в
+        # _internal/. sys._MEIPASS указывает на корень в обоих случаях.
+        ('pipeline.py', '.'),
     ],
     hiddenimports=[
         'PIL._tkinter_finder',
