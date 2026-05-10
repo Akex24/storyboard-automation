@@ -32,20 +32,63 @@ from PyQt6.QtWidgets import (
 from i18n import tr
 
 
-class _VariantButton(QPushButton):
-    """Кнопка одного варианта одежды — мультистрочная, с текстом по центру слева."""
+class _ClickableLabelButton(QFrame):
+    """2026-05-10: переписан с QPushButton на QFrame+QLabel.
 
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setObjectName("outfit-variant")
+    Корень бага «пустые окошки вариантов» (v1.0.35): QPushButton в
+    Qt 6 НЕ поддерживает word-wrap нативно. Длинные варианты одежды
+    (~100 символов) рендерились пустыми/обрезанными, кнопка визуально
+    схлопывалась по высоте. QSS `text-align:left` + padding капризно
+    работает в Qt 6.x.
+
+    Решение: QFrame-контейнер с внутренним QLabel(setWordWrap=True).
+    Click обрабатывается через mousePressEvent + custom signal.
+    Высота автоматически растёт под содержимое.
+
+    Параметр `obj_name` определяет CSS-селектор: `outfit-variant`
+    (фиолетовая solid-граница) или `outfit-custom` (синяя dashed).
+    """
+
+    clicked = pyqtSignal()
+
+    def __init__(self, text: str, obj_name: str = "outfit-variant",
+                 parent=None):
+        super().__init__(parent)
+        self.setObjectName(obj_name)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Preferred)
-        # Многострочный текст: enable word-wrap через QLabel-trick невозможен
-        # на QPushButton, поэтому полагаемся на встроенный wrap (text > width
-        # автоматически переносится на ширину кнопки в Qt 6 для текста с
-        # пробелами; setStyleSheet с text-align:left + padding делает чтение
-        # удобнее).
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(0)
+        self._label = QLabel(text)
+        self._label.setObjectName(f"{obj_name}-text")
+        self._label.setWordWrap(True)
+        self._label.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                   QSizePolicy.Policy.Preferred)
+        # Текст не интерактивен — клики идут на QFrame через bubble-up.
+        self._label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.NoTextInteraction)
+        # Прокидываем клик с лейбла на родителя (без него Qt может
+        # съесть клик внутри label area).
+        self._label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        lay.addWidget(self._label)
+
+    def setText(self, text: str) -> None:
+        self._label.setText(text)
+
+    def text(self) -> str:
+        return self._label.text()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+# Backwards-compat alias — старые имена ссылок.
+_VariantButton = _ClickableLabelButton
 
 
 class CharacterOutfitPicker(QFrame):
@@ -85,19 +128,30 @@ class CharacterOutfitPicker(QFrame):
             "QLabel#outfit-loading { color:#ffaa44; font-size:12px;"
             " font-family:'Menlo','Consolas',monospace; }"
             "QLabel#outfit-error { color:#cc6666; font-size:12px; }"
-            "QPushButton#outfit-variant {"
-            " background:#2a1f3d; color:#e8e0ff; border:1px solid #4a3a72;"
-            " border-radius:6px; padding:14px 18px; font-size:13px;"
-            " text-align:left; }"
-            "QPushButton#outfit-variant:hover {"
-            " background:#3a2a52; border-color:#6e4cc4; color:#fff; }"
-            "QPushButton#outfit-custom {"
-            " background:#1a1424; color:#a8c8ff;"
-            " border:1px dashed #4d6a8a; border-radius:6px;"
-            " padding:14px 18px; font-size:13px; text-align:left; }"
-            "QPushButton#outfit-custom:hover {"
-            " background:#1a2638; color:#d8e8ff;"
-            " border-color:#7d9bdb; }"
+            # 2026-05-10: variant и custom кнопки переписаны на
+            # QFrame+QLabel. CSS-селекторы:
+            #   QFrame#outfit-variant — внешний вид кнопки.
+            #   QLabel#outfit-variant-text — цвет/размер текста.
+            # padding переместили внутрь QFrame layout (см. _ClickableLabelButton),
+            # чтобы word-wrap на QLabel работал стабильно.
+            "QFrame#outfit-variant {"
+            " background:#2a1f3d; border:1px solid #4a3a72;"
+            " border-radius:6px; }"
+            "QFrame#outfit-variant:hover {"
+            " background:#3a2a52; border-color:#6e4cc4; }"
+            "QLabel#outfit-variant-text {"
+            " color:#e8e0ff; font-size:13px; background:transparent; }"
+            "QFrame#outfit-variant:hover QLabel#outfit-variant-text {"
+            " color:#fff; }"
+            "QFrame#outfit-custom {"
+            " background:#1a1424; border:1px dashed #4d6a8a;"
+            " border-radius:6px; }"
+            "QFrame#outfit-custom:hover {"
+            " background:#1a2638; border-color:#7d9bdb; }"
+            "QLabel#outfit-custom-text {"
+            " color:#a8c8ff; font-size:13px; background:transparent; }"
+            "QFrame#outfit-custom:hover QLabel#outfit-custom-text {"
+            " color:#d8e8ff; }"
             "QPushButton#outfit-retry { background:transparent;"
             " color:#a8c8ff; border:1px solid #4d6a8a; border-radius:6px;"
             " padding:6px 12px; font-size:12px; }"
@@ -140,9 +194,10 @@ class CharacterOutfitPicker(QFrame):
         var_layout = QVBoxLayout()
         var_layout.setSpacing(8)
         var_layout.setContentsMargins(0, 0, 0, 0)
-        self.var_btns: List[_VariantButton] = []
+        self.var_btns: List[_ClickableLabelButton] = []
         for _ in range(3):
-            btn = _VariantButton("", self)
+            btn = _ClickableLabelButton("", obj_name="outfit-variant",
+                                         parent=self)
             btn.clicked.connect(self._on_variant_clicked)
             btn.hide()
             var_layout.addWidget(btn)
@@ -150,9 +205,11 @@ class CharacterOutfitPicker(QFrame):
         # 4-я кнопка «✎ Придумаю описание сам» — вместо одного из 3 вариантов
         # юзер может выбрать ручной ввод. Тоже переключает на «Актёры» с
         # баннером, но с пустым описанием — юзер заполнит в попапе сам.
-        self.custom_btn = QPushButton(tr('outfit_picker_custom'))
-        self.custom_btn.setObjectName("outfit-custom")
-        self.custom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 2026-05-10: переписана на _ClickableLabelButton (QFrame+QLabel)
+        # для UX-симметрии с variant'ами + чтобы текст word-wrap'ился.
+        self.custom_btn = _ClickableLabelButton(
+            tr('outfit_picker_custom'),
+            obj_name="outfit-custom", parent=self)
         self.custom_btn.clicked.connect(self._on_custom_clicked)
         self.custom_btn.hide()
         var_layout.addWidget(self.custom_btn)
@@ -187,16 +244,6 @@ class CharacterOutfitPicker(QFrame):
     # ── Состояния ─────────────────────────────────────────────────────
 
     def _apply_state(self):
-        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА (убрать после расследования
-        # Bug B «пустые окошки вариантов»). Логирует state + variants
-        # на момент перерисовки. После stdout от юзера — print'ы убрать.
-        try:
-            print(f"[outfit _apply_state] name={self._name!r} "
-                  f"state={self._state!r} "
-                  f"len(variants)={len(self._variants)} "
-                  f"variants={self._variants!r}", flush=True)
-        except Exception:
-            pass
         self.setProperty("state", self._state)
         self.style().unpolish(self)
         self.style().polish(self)
@@ -220,14 +267,6 @@ class CharacterOutfitPicker(QFrame):
                 if i < len(self._variants):
                     btn.setText(self._variants[i])
                     btn.show()
-                    try:
-                        print(f"[outfit ready] btn[{i}].setText({self._variants[i]!r}); "
-                              f"isVisible_after_show={btn.isVisible()} "
-                              f"text_after_set={btn.text()!r} "
-                              f"size={btn.size().width()}x{btn.size().height()}",
-                              flush=True)
-                    except Exception:
-                        pass
                 else:
                     btn.hide()
             self.custom_btn.show()
@@ -253,25 +292,11 @@ class CharacterOutfitPicker(QFrame):
         self._apply_state()
 
     def set_variants(self, variants: List[str]):
-        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА — убрать после Bug B.
-        try:
-            print(f"[outfit set_variants] name={self._name!r} "
-                  f"received={variants!r} "
-                  f"after_filter={[v for v in (variants or []) if v.strip()][:3]!r}",
-                  flush=True)
-        except Exception:
-            pass
         self._variants = [v for v in (variants or []) if v.strip()][:3]
         if not self._variants:
             self.set_error(tr('outfit_picker_empty'))
             return
         self._state = "ready"
-        self._apply_state()
-
-    def refresh_view(self):
-        """2026-05-10: re-applies current state. Workaround on случай
-        Qt visibility quirks после long hide/show. ВРЕМЕННО — может
-        быть удалён если Bug B окажется не в этом."""
         self._apply_state()
 
     def set_error(self, msg: str):

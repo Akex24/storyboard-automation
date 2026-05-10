@@ -390,12 +390,20 @@ class EpisodeChatView(QWidget):
         каждые 400 мс пока есть активные генерации.
 
         2026-05-10: счётчик per-ep — см. `refresh_active_gens_button`.
+        Если на текущем эпизоде ничего не бежит — явно скрываем кнопку
+        (раньше был просто early-return, что оставляло кнопку видимой
+        с предыдущего эпизода когда юзер переключался без активной ген'и
+        на новом ep'е).
         """
         try:
             n = self._mw.active_gens_count_for_ep(self._ep_id or "")
         except Exception:
             n = 0
         if n <= 0:
+            try:
+                self.active_gens_btn.hide()
+            except Exception:
+                pass
             return
         dots_pattern = ["·    ", "· ·  ", "· · ·"]
         prefix = dots_pattern[dot_step % len(dots_pattern)]
@@ -429,6 +437,15 @@ class EpisodeChatView(QWidget):
         self.log_view.clear()
         self._chunk_buffer = ''
         self.status_lbl.setText("")
+        # 2026-05-10: пересчитать индикатор «🎨 N в работе» под новый ep.
+        # Без этого вызова кнопка оставалась видимой с предыдущего ep'а
+        # (с его счётом и текстом), но без анимации точек — юзер видел
+        # «1 в работе» на ep4 хотя реально ген на ep7. Раньше refresh
+        # звался только из `apply_lang` (смена языка), не из set_episode.
+        try:
+            self.refresh_active_gens_button()
+        except Exception:
+            traceback.print_exc()
         # Сбрасываем состояние GenButton ТОЛЬКО при смене эпизода
         # (другой ep_id) — иначе пред-установленная кнопка из
         # NewEpisodeView._on_run пропадёт при клике «→ Открыть чат»
@@ -1478,33 +1495,13 @@ class EpisodeChatView(QWidget):
         return None
 
     def _on_outfit_results(self, variants: list):
-        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА — убрать после Bug B.
-        try:
-            print(f"[outfit _on_outfit_results] ep_id_lookup_for_sender, "
-                  f"variants_received={list(variants)!r}", flush=True)
-        except Exception:
-            pass
         ep_id = self._outfit_ep_for_sender()
         if ep_id is None:
-            try:
-                print("[outfit _on_outfit_results] ep_id=None — drop", flush=True)
-            except Exception:
-                pass
             return
         picker = self._outfit_pickers.get(ep_id)
         if picker is None:
-            try:
-                print(f"[outfit _on_outfit_results] ep_id={ep_id!r} но picker=None — drop",
-                      flush=True)
-            except Exception:
-                pass
             self._outfit_threads.pop(ep_id, None)
             return
-        try:
-            print(f"[outfit _on_outfit_results] -> picker.set_variants for ep_id={ep_id!r}",
-                  flush=True)
-        except Exception:
-            pass
         try:
             picker.set_variants(list(variants))
         except Exception:
@@ -1521,11 +1518,6 @@ class EpisodeChatView(QWidget):
         self._outfit_threads.pop(ep_id, None)
 
     def _on_outfit_error(self, msg: str):
-        # 2026-05-10 ВРЕМЕННАЯ ДИАГНОСТИКА — убрать после Bug B.
-        try:
-            print(f"[outfit _on_outfit_error] msg={msg!r}", flush=True)
-        except Exception:
-            pass
         ep_id = self._outfit_ep_for_sender()
         if ep_id is None:
             return
