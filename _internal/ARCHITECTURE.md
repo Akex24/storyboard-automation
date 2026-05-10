@@ -26,6 +26,46 @@
   используется только в мёртвом `DownloadUpdateThread`** — расширять без
   причины не нужно (см. ниже секцию «Архитектура обновлений»).
 
+## Animal classification (BUG 2 fix)
+
+**С 2026-05-10 (commit 523fb17):** «🎨 Сгенерировать» на character-маркере
+из манифеста не запускает CharacterOutfitPicker если по эвристике это
+ЖИВОТНОЕ — Studio переклассифицирует в object-flow.
+
+**Двухуровневая защита:**
+
+**1. Agent-side (primary):**
+[PRODUCER_INSTRUCTIONS.md](instructions/PRODUCER_INSTRUCTIONS.md)
+секция «🔴 ПРАВИЛО: ЖИВОТНЫЕ И НЕ-ЛЮДИ — В СЕКЦИЮ ОБЪЕКТЫ» +
+аналогичный блок в `views/new_episode.py:_on_run` промпте говорят
+агенту класть бульдога/кота/лошадь в OBJECTS секцию с
+`[[GEN:object:slug:описание]]` маркером, не в CHARACTERS.
+
+**2. Studio-side (safety net):**
+[views/episode_chat.py](views/episode_chat.py):
+- Module-level `_ANIMAL_KEYWORDS` константа: 35 ключевых слов
+  (RU + UA + EN). Substring match, case-insensitive.
+- `_on_gen_button_clicked` для `gen_type == 'character'`:
+  - Если `_is_likely_animal(name, description)` → True →
+    redirect: emit system-сообщение «похоже на животное», set
+    `gen_type = 'object'`, fall-through к стандартному
+    AutonomousGenThread launch path.
+  - Иначе (real human) → `_start_outfit_picker(name)` как раньше.
+- `_is_likely_animal(name, description)` проверяет blob `name + " "
+  + description` (lowercased) против keywords. `description or ''`
+  защищает от None.
+
+Fall-through для редиректа использует существующую slug-collision
+detection (фикс БАГ 1) для `refs/objects/`. Никакого дублирования.
+
+**Object-промпт для животных:** [autonomous_gen.py](threads/autonomous_gen.py)
+имеет hardcoded «product shot, white background, no people» для
+объектов. Для животных это не идеально, но агент пишет промпт сам
+на основе `description` поля и может override'ить. PRODUCER_INSTRUCTIONS
+подсказывает писать «в естественной среде, photorealistic, без
+cinematic 16:9». Если в реальном использовании окажется что бульдоги
+получаются на белом фоне — смягчить хардкод отдельным фиксом.
+
 ## Slug collision handling (refs)
 
 **С 2026-05-10 (commit b8b07ec):** «🎨 Сгенерировать» = всегда создаёт
