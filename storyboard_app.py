@@ -4144,22 +4144,34 @@ class MainWindow(QMainWindow):
 
     def _resolve_active_gen_filename(self, gen_type: str, name: str,
                                       hint_path: str) -> str:
-        """Имя файла рефа после автономной генерации — проверяет hint и
-        стандартные расширения в refs/<sub>/."""
+        """Имя файла рефа после автономной генерации.
+
+        2026-05-10 (БАГ 3 fix): сначала глоб по диску (disk truth),
+        потом hint от агента с обязательным `exists()` check. Раньше
+        hint возвращался слепо — если агент эмитил `✓ done shotgun.png`
+        но pipeline.py создал `.jpg`, в decisions писалось `.png`,
+        list_episode_refs делал `(.png).exists() == False` и реф не
+        появлялся в РЕФЕРЕНСАХ эпизода (хотя файл реально лежал)."""
         try:
-            if hint_path and '.' in hint_path:
-                cand = hint_path.split('/')[-1]
-                if cand and not cand.endswith('/'):
-                    return cand
             cur_show = get_current_show(self._project_root)
             if not cur_show:
                 return f"{name}.jpg"
             sub = {'location': 'locations', 'object': 'objects'}.get(
                 gen_type, gen_type + 's')
             base = self._project_root / "shows" / cur_show / "refs" / sub
+            # 1. Disk truth — глоб по фактически лежащему файлу.
             for ext in ('.jpg', '.jpeg', '.png', '.webp'):
                 if (base / f"{name}{ext}").exists():
                     return f"{name}{ext}"
+            # 2. Fallback: hint от агента, но только если файл реально
+            #    существует (защита от hallucinated extension).
+            if hint_path and '.' in hint_path:
+                cand = hint_path.split('/')[-1]
+                if cand and not cand.endswith('/'):
+                    if (base / cand).exists():
+                        return cand
+            # 3. Last resort — стандартный .jpg (даже если файла нет;
+            #    list_episode_refs дальше сам проверит exists()).
             return f"{name}.jpg"
         except Exception:
             return f"{name}.jpg"
