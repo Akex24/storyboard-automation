@@ -67,13 +67,21 @@ def _read_truncated(path: Path, limit: int) -> str:
 
 def build_outfit_prompt(name: str, scenario_text: str = "",
                         bible_text: str = "",
+                        chat_description: str = "",
                         previous_variants: Optional[List[str]] = None) -> str:
     """Собирает промпт для AI: контекст + железные правила формата.
 
     2026-05-07: `previous_variants` — список ранее показанных вариантов.
     На retry («Ещё 3 варианта») передаём накопленный список — AI обязан
     предложить кардинально другие, иначе детерминированно повторяет
-    одно и то же при одинаковом промпте."""
+    одно и то же при одинаковом промпте.
+
+    2026-05-10 (БАГ 4 fix): `chat_description` — текст из манифеста
+    агента в чате эпизода для этого character'а (то что в скобках +
+    хвост строки `- ✗ mark (Марк — любовник Лоры) — ... Одежда сцен
+    7-8 — обнажённый торс / простыня по пояс`). Содержит per-scene
+    outfit notes которых в сценарии может не быть. Передаётся как
+    отдельный context-блок с приоритетом над эвристиками."""
     ctx_blocks = []
     if bible_text.strip():
         ctx_blocks.append("=== БИБЛИЯ СЕРИАЛА (фрагмент) ===\n"
@@ -81,6 +89,14 @@ def build_outfit_prompt(name: str, scenario_text: str = "",
     if scenario_text.strip():
         ctx_blocks.append("=== СЦЕНАРИЙ ЭПИЗОДА (фрагмент) ===\n"
                           + scenario_text.strip())
+    if chat_description.strip():
+        ctx_blocks.append(
+            "=== КОНТЕКСТ ОТ АГЕНТА В ЧАТЕ "
+            "(СЦЕНА-СПЕЦИФИЧНЫЕ ЗАМЕТКИ ПО ОДЕЖДЕ) ===\n"
+            + chat_description.strip()
+            + "\n\n🔴 ЕСЛИ ВЫШЕ ЯВНО УКАЗАНА ОДЕЖДА для конкретных "
+            "сцен — учти ЕЁ при выборе вариантов. Это override "
+            "любых эвристик из bible/scenario.")
     context = ("\n\n".join(ctx_blocks)).strip() or \
         "(контекст эпизода недоступен — придумай универсальные варианты)"
 
@@ -198,6 +214,7 @@ class SuggestOutfitsThread(QThread):
                  show_slug: Optional[str] = None,
                  model: Optional[str] = None,
                  previous_variants: Optional[List[str]] = None,
+                 chat_description: str = "",
                  parent=None):
         super().__init__(parent)
         self.project_root = Path(project_root)
@@ -208,6 +225,11 @@ class SuggestOutfitsThread(QThread):
         # 2026-05-07: список ранее показанных вариантов для текущего
         # персонажа. На retry («Ещё 3 варианта») передаётся в промпт.
         self.previous_variants = list(previous_variants or [])
+        # 2026-05-10 (БАГ 4 fix): rich description от агента из
+        # манифеста чата для этого character'а. Содержит per-scene
+        # outfit notes (пример: «Одежда сцен 7-8 — обнажённый торс /
+        # простыня по пояс в кровати»). См. build_outfit_prompt.
+        self.chat_description = chat_description or ""
         self._proc: Optional[subprocess.Popen] = None
         self._stop_requested = False
 
@@ -250,6 +272,7 @@ class SuggestOutfitsThread(QThread):
             scenario_text, bible_text = self._load_context()
             prompt = build_outfit_prompt(
                 self.character_name, scenario_text, bible_text,
+                chat_description=self.chat_description,
                 previous_variants=self.previous_variants)
             args = [cli]
             if self.model:

@@ -181,6 +181,12 @@ class EpisodeChatView(QWidget):
         # передаются в SuggestOutfitsThread чтобы AI не повторял
         # одно и то же. Чистится в `_cleanup_outfit_picker`. Key = ep_id.
         self._outfit_seen_variants: Dict[str, list] = {}
+        # 2026-05-10 (БАГ 4 fix): description от агента из манифеста
+        # чата для текущего character-маркера. Сохраняется при
+        # `_start_outfit_picker(name, description)` и читается в
+        # `_launch_outfit_thread` (включая retry «Ещё 3 варианта»).
+        # Чистится вместе с outfit picker'ом. Key = ep_id.
+        self._outfit_descriptions: Dict[str, str] = {}
         # Phase 2 hotfix #8: накопитель полного ответа AI для fallback-парсера.
         # Сбрасывается в `_on_send` перед стартом потока. Используется в
         # `_on_done` когда AI не вставил [[GEN:...]] маркеры — синтезируем
@@ -1249,6 +1255,7 @@ class EpisodeChatView(QWidget):
         self._outfit_target_names.pop(ep_id, None)
         self._outfit_target_displays.pop(ep_id, None)
         self._outfit_source_btns.pop(ep_id, None)
+        self._outfit_descriptions.pop(ep_id, None)
         # 2026-05-07: глобальные параллельные генерации (MW._active_gens)
         # тут НЕ трогаем — они живут на уровне MW и переживают удаление
         # эпизода (юзер увидит финиш через попап). Если юзер удалит
@@ -1301,7 +1308,12 @@ class EpisodeChatView(QWidget):
                 # с gen_type='object'. Slug-collision detection
                 # сработает на refs/objects/ автоматически.
             else:
-                self._start_outfit_picker(name)
+                # 2026-05-10 (БАГ 4 fix): пробрасываем description из
+                # манифеста агента (rich per-scene outfit notes) в
+                # outfit picker. Без него SuggestOutfitsThread получал
+                # только raw scenarios/<ep>.txt и игнорировал то что
+                # агент написал в чате про этого character'а.
+                self._start_outfit_picker(name, description)
                 return
         # 2026-05-07: глобальный реестр в MW. Повторный клик по уже-
         # бегущему маркеру игнорируем.
@@ -1512,10 +1524,16 @@ class EpisodeChatView(QWidget):
 
     # ── Долг 13 (2026-05-05): 3 варианта одежды для character ─────────
 
-    def _start_outfit_picker(self, character_name: str):
+    def _start_outfit_picker(self, character_name: str,
+                             description: str = ""):
         """Запускает SuggestOutfitsThread и подставляет CharacterOutfitPicker
         под текущей GenButton-карточкой персонажа. Если уже есть активный
-        пикер для ТЕКУЩЕГО эпизода — не дублируем (2026-05-07: per-episode)."""
+        пикер для ТЕКУЩЕГО эпизода — не дублируем (2026-05-07: per-episode).
+
+        2026-05-10 (БАГ 4 fix): `description` — текст из манифеста
+        агента в чате (rich per-scene outfit notes). Сохраняется в
+        `self._outfit_descriptions[ep_id]` чтобы при retry
+        («Ещё 3 варианта») передаваться повторно в SuggestOutfitsThread."""
         ep_id = self._ep_id or ""
         if not ep_id:
             return
@@ -1523,6 +1541,9 @@ class EpisodeChatView(QWidget):
         existing_thread = self._outfit_threads.get(ep_id)
         if existing_thread is not None and existing_thread.isRunning():
             return
+        # Сохраняем description для текущего outfit picker'а (для
+        # _launch_outfit_thread + retry).
+        self._outfit_descriptions[ep_id] = description or ""
         # Скрываем существующий GenButton (он отработал свою задачу).
         # 2026-05-10 (revert после 1ef1976): source_btn.hide() — как
         # было до попытки «оставить pick_btn видимым». Pick existing
@@ -1584,13 +1605,18 @@ class EpisodeChatView(QWidget):
         # (включая первый запуск — там пусто). На retry передаём список
         # чтобы AI выдал кардинально другие.
         prev = list(self._outfit_seen_variants.get(ep_id, []))
+        # 2026-05-10 (БАГ 4 fix): description от агента из манифеста
+        # сохранён в `_start_outfit_picker`, читаем здесь и передаём
+        # в SuggestOutfitsThread (включая retry-вызовы).
+        chat_desc = self._outfit_descriptions.get(ep_id, "") or ""
         thread = SuggestOutfitsThread(
             self._mw._project_root,
             character_name,
             ep_id=ep_id,
             show_slug=cur_show,
             model="claude-sonnet-4-6",  # 2026-05-09: структурный outfit picker — Sonnet справляется.
-            previous_variants=prev)
+            previous_variants=prev,
+            chat_description=chat_desc)
         thread.results.connect(self._on_outfit_results)
         thread.error.connect(self._on_outfit_error)
         self._outfit_threads[ep_id] = thread
@@ -1758,6 +1784,7 @@ class EpisodeChatView(QWidget):
             self._outfit_target_names.pop(ep_id, None)
             self._outfit_target_displays.pop(ep_id, None)
             self._outfit_seen_variants.pop(ep_id, None)
+            self._outfit_descriptions.pop(ep_id, None)
             # Save decision + delete source_btn (скрытая GenButton в
             # _gen_layout) + advance queue.
             self._save_ref_decision('character', name, "linked",
@@ -1871,6 +1898,7 @@ class EpisodeChatView(QWidget):
         self._outfit_target_names.pop(ep_id, None)
         self._outfit_target_displays.pop(ep_id, None)
         self._outfit_seen_variants.pop(ep_id, None)
+        self._outfit_descriptions.pop(ep_id, None)
         # Останавливаем фоновый SuggestOutfitsThread если ещё работает.
         thread = self._outfit_threads.pop(ep_id, None)
         if thread is not None:
@@ -1959,6 +1987,7 @@ class EpisodeChatView(QWidget):
         # 2026-05-07: накопленные seen-варианты тоже чистим — следующий
         # запуск picker'а для этого character'а начнёт с чистой памяти.
         self._outfit_seen_variants.pop(ep_id, None)
+        self._outfit_descriptions.pop(ep_id, None)
 
     # ── Долг 13 (2026-05-04 hotfix #10): три кнопки выбора в idle ────
 
