@@ -26,6 +26,55 @@
   используется только в мёртвом `DownloadUpdateThread`** — расширять без
   причины не нужно (см. ниже секцию «Архитектура обновлений»).
 
+## Single source of truth: `scenarios/ep{NN:02d}.txt`
+
+**С 2026-05-10 (commit f07b2d9):** для каждого эпизода единственный
+авторитетный файл сценария — `shows/<slug>/scenarios/ep{NN:02d}.txt`
+(zero-pad до 2: ep01, ep02 ... ep99; ep100+ без pad).
+
+**Кто пишет:**
+- `_on_scenario_file` ([storyboard_app.py:5653](storyboard_app.py:5653))
+  при drop файла — через `scenario_parser.save_parsed_doc` (парсит
+  «ЭПИЗОД N» маркеры, режет на epNN.txt).
+- `_on_run` ([views/new_episode.py:795-805](views/new_episode.py:795)) —
+  при клике Run в форме «+». Пишет `active_text` (sliced секцию)
+  напрямую в `ep{NN:02d}.txt`. Раньше писал в `_active.txt`.
+
+**Кто читает:**
+- Правая панель `_show_scenario_popup`
+  ([storyboard_app.py:6562](storyboard_app.py:6562)) — кандидаты:
+  `ep_id.txt`, `ep_id.lstrip('ep').txt`, `ep{NN:02d}.txt`.
+- Промпт нового эпизода
+  ([views/new_episode.py:891-901](views/new_episode.py:891)) —
+  hardcode `Read shows/<slug>/scenarios/ep{NN:02d}.txt`.
+- `_load_scenario_text` для монтажки/CTA
+  ([views/episode_chat.py:2330](views/episode_chat.py:2330)) — кандидаты:
+  zero-pad PRIMARY, потом `ep_id.txt`, `ep_id.lstrip('ep').txt`.
+- `SuggestOutfitsThread._load_context`
+  ([threads/suggest_outfits.py:228-238](threads/suggest_outfits.py:228))
+  — zero-pad PRIMARY, fallback на `ep_id.txt` без zero-pad.
+
+**Что больше НЕ используется:**
+- `scenarios/_active.txt` — legacy, разъезжался с UI-эпизодом (был
+  глобальный mutable, обновлялся только в `_on_run`, не сбрасывался при
+  `_select_episode`). Все code paths убраны 2026-05-10. На дисках у
+  коллег файл может остаться мусором — безвреден, никто не читает.
+- `scenarios/_inbox.txt` — пишется в `_on_run` как «черновик ввода»
+  (raw paste до парсинга). Никто не читает; оставлен на месте, может
+  пригодиться в будущем для restore последнего ввода в форму «+».
+
+**`active.txt` (без подчёркивания) — отдельная сущность:**
+`_history/<basename>/active.txt` ([storyboard_app.py:2851](storyboard_app.py:2851))
+— per-shot variant pointer (какая версия шота сейчас в работе). К
+сценариям отношения не имеет.
+
+**`episodes.json[ep].refs` — пишет Claude через Bash tool**
+(см. [PRODUCER_INSTRUCTIONS.md](instructions/PRODUCER_INSTRUCTIONS.md)
+ШАГ 1). Содержимое refs зависит от того что Claude прочитает по
+scenario-пути. После переключения чтения на zero-pad (2026-05-10) refs
+самовыправляются на следующем Run каждого эпизода — миграция в
+Python-коде не нужна.
+
 ## Hardcoded values
 
 ### `seedance_model = "claude-opus-4-7"` — [views/episode_chat.py:2836](views/episode_chat.py:2836)
