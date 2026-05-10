@@ -3948,7 +3948,21 @@ class MainWindow(QMainWindow):
         return f"{ep_id}:{gen_type}:{name}" in self._active_gens
 
     def active_gens_count(self) -> int:
+        """Глобальный счётчик активных генераций — сумма по всем эпизодам.
+        Используется для попапа `ActiveGensPanel` (там видно ВСЁ что бежит).
+        Для индикатора «N в работе» в шапке чата эпизода — НЕ подходит,
+        смотри `active_gens_count_for_ep` ниже."""
         return len(self._active_gens)
+
+    def active_gens_count_for_ep(self, ep_id: str) -> int:
+        """2026-05-10: per-ep счётчик. Используется индикатором
+        «🎨 N в работе» в шапке чата — раньше там был глобальный счёт,
+        протекал между эпизодами (запустил на ep7 → видно на ep4/5/6
+        тоже)."""
+        if not ep_id:
+            return 0
+        return sum(1 for info in self._active_gens.values()
+                   if info.get('ep_id') == ep_id)
 
     def has_active_gens_for_ep(self, ep_id: str) -> bool:
         for info in self._active_gens.values():

@@ -367,9 +367,14 @@ class EpisodeChatView(QWidget):
 
     def refresh_active_gens_button(self):
         """Зовётся MW при add/remove из реестра. Обновляет видимость
-        кнопки и её текст («🎨 N в работе»). Если N=0 — кнопка скрыта."""
+        кнопки и её текст («🎨 N в работе»). Если N=0 — кнопка скрыта.
+
+        2026-05-10: счётчик per-ep (был глобальный — протекал между
+        эпизодами: запустил на ep7 → видно «1 в работе» на ep4/5/6).
+        `set_episode` зовёт этот метод при переключении (line 355).
+        """
         try:
-            n = self._mw.active_gens_count()
+            n = self._mw.active_gens_count_for_ep(self._ep_id or "")
         except Exception:
             n = 0
         if n <= 0:
@@ -382,9 +387,12 @@ class EpisodeChatView(QWidget):
 
     def tick_active_gens_button(self, dot_step: int):
         """Анимация точек на кнопке. Зовётся из MainWindow._tick_dots
-        каждые 400 мс пока есть активные генерации."""
+        каждые 400 мс пока есть активные генерации.
+
+        2026-05-10: счётчик per-ep — см. `refresh_active_gens_button`.
+        """
         try:
-            n = self._mw.active_gens_count()
+            n = self._mw.active_gens_count_for_ep(self._ep_id or "")
         except Exception:
             n = 0
         if n <= 0:
