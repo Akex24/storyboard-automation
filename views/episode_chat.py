@@ -2599,6 +2599,55 @@ class EpisodeChatView(QWidget):
         any_linked = False
         for m in markers:
             d = decisions.get(m.type, {}).get(m.name)
+            # 2026-05-11 (v1.0.47) marker-alias fallback: AI в чате
+            # называет маркер исходным именем (например 'house_corridor'),
+            # но при collision-resolve файл переименован в
+            # 'house_corridor_2.jpg' и decisions ключ стал
+            # 'house_corridor_2' (либо через `_save_active_gen_decision`
+            # с new_name, либо через v1.0.46 heal bucket-key rename).
+            # Marker name из чата (`house_corridor`) не совпадает с
+            # decisions key (`house_corridor_2`) → direct lookup fails.
+            #
+            # Fallback: пробуем `<m.name>_2..._9` как alias ключи.
+            # Найдено РОВНО ОДНО с decision='linked' → используем.
+            # Несколько → ambiguity, считаем unresolved (safety).
+            # Это ТОЛЬКО read-side aliasing — НЕ мигрируем decisions,
+            # НЕ переименовываем ключи. Чистый fallback на чтении.
+            if not isinstance(d, dict):
+                import re as _re
+                # Skip alias search если marker уже заканчивается на _N
+                # (избегаем nested suffix lookup `_2_2`).
+                if not _re.search(r'_[2-9]$', m.name):
+                    type_bucket = decisions.get(m.type, {}) or {}
+                    alias_candidates = []
+                    for n in range(2, 10):
+                        alias_key = f"{m.name}_{n}"
+                        cand = type_bucket.get(alias_key)
+                        if (isinstance(cand, dict)
+                                and cand.get('decision') == 'linked'):
+                            alias_candidates.append((alias_key, cand))
+                    if len(alias_candidates) == 1:
+                        alias_key, d = alias_candidates[0]
+                        try:
+                            import sys as _sys
+                            _sys.stderr.write(
+                                f"[marker-alias] {self._ep_id}/{m.type}/"
+                                f"{m.name} resolved via alias "
+                                f"{alias_key}\n")
+                        except Exception:
+                            pass
+                    elif len(alias_candidates) > 1:
+                        try:
+                            import sys as _sys
+                            _sys.stderr.write(
+                                f"[marker-alias] {self._ep_id}/{m.type}/"
+                                f"{m.name}: ambiguous aliases "
+                                f"{[k for k, _ in alias_candidates]}, "
+                                f"treating as unresolved\n")
+                        except Exception:
+                            pass
+                        unresolved.append(m.name)
+                        continue
             if not isinstance(d, dict):
                 unresolved.append(m.name)
                 continue

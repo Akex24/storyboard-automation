@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.46** (см. `version.json`).
+- Текущая: **v1.0.47** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -573,6 +573,21 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
   передаёт `f"{name}/{picked_name}"`, (2) defense-in-depth в
   `_save_ref_decision` ([views/episode_chat.py:2081](views/episode_chat.py:2081))
   auto-prepend'ит folder если caller забыл, с warning в stderr.
+- **Marker-alias for collision-renamed decisions** (2026-05-11, v1.0.47):
+  AI в чате называет маркер исходным именем (например `house_corridor`),
+  но при collision-resolve файл переименован в `house_corridor_2.jpg`
+  и decisions ключ — `house_corridor_2`. Это исходное архитектурное
+  поведение `_resolve_collision_free_slug` + `_save_active_gen_decision`
+  с new_name (существовало с момента создания фичи в БАГ 1 fix).
+  `_check_montage_ready` парсит chat-text через `synthesize_gen_markers` →
+  marker.name = исходный `house_corridor` → direct lookup в decisions не
+  находит → marker считался unresolved → CTA блокировалась. Quick-fix
+  v1.0.47: после direct lookup miss пробуем alias ключи `<m.name>_2..._9`.
+  Найдено РОВНО ОДНО с decision='linked' → используем (с лог-тегом
+  `[marker-alias]`). Несколько → ambiguity treated as unresolved
+  (safety). Это **только read-side fallback** — никаких миграций или
+  bucket-key renames. Архитектурный фикс (decisions key = chat marker
+  name) отложен на будущее (Tech debt).
 - **Decisions key rename invariant** (2026-05-11, v1.0.46): при
   collision-resolve через `_resolve_collision_free_slug`
   ([views/episode_chat.py:1470](views/episode_chat.py:1470)) если slug
