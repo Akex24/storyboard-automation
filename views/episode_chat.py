@@ -135,7 +135,15 @@ class EpisodeChatView(QWidget):
         # новый эпизод и сразу переехал в чат). Свой `self._thread` ещё
         # None, но анимация thinking должна работать. begin_external_thinking
         # привязывает чужой тред и запускает тикер.
-        self._external_thread: Optional['RunEpisodeThread'] = None
+        #
+        # 2026-05-11 multi-ep fix: РЕЕСТР тредов per ep_id вместо одного
+        # слота. Симптом был — при параллельных генерациях в нескольких
+        # эпизодах завершение ЛЮБОГО треда гасило таймер для всех (один
+        # слот `_external_thread` + `thread.finished.connect` от каждого
+        # запуска). Теперь dict: ключ ep_id → его тред; finished-хендлер
+        # снимает только свой entry; тикер живёт пока у текущего ep_id
+        # есть хоть один живой тред.
+        self._external_threads: dict[str, 'RunEpisodeThread'] = {}
         # Буфер chunks от ассистента — рендерим построчно как в NewEpisodeView
         self._chunk_buffer: str = ''
         # Sub-MVP кнопки автономной генерации (Phase 1: одна idle за раз).
@@ -531,6 +539,14 @@ class EpisodeChatView(QWidget):
         # перерисовываем CTA соответствующе.
         if prev_ep != ep_id:
             self._restore_montage_cta_for_current_ep()
+        # 2026-05-11 multi-ep fix: пересчитать состояние тикера под
+        # новый ep_id. Если у него есть живой тред в реестре — анимация
+        # подхватится (история только что перерисована и содержит маркер
+        # `▶ Думаю`). Иначе — таймер останавливается, точек нет.
+        try:
+            self._refresh_thinking_for_current_ep()
+        except Exception:
+            traceback.print_exc()
 
     def _restore_montage_cta_for_current_ep(self):
         """Перерисовывает CTA при переключении на эпизод. Сценарии:
@@ -797,21 +813,33 @@ class EpisodeChatView(QWidget):
         else:
             self._render_message(text, kind)
 
+    def _has_live_thread_for(self, ep_id) -> bool:
+        """Есть ли у этого ep_id живой тред — in-chat followup (self._thread,
+        он по построению относится к self._ep_id) или external (из реестра
+        `_external_threads`, ключ ep_id). 2026-05-11 multi-ep fix."""
+        if not ep_id:
+            return False
+        if ep_id == self._ep_id:
+            own = self._thread
+            try:
+                if own is not None and own.isRunning():
+                    return True
+            except Exception:
+                pass
+        ext = self._external_threads.get(ep_id)
+        try:
+            if ext is not None and ext.isRunning():
+                return True
+        except Exception:
+            pass
+        return False
+
     def _tick_thinking(self):
-        # 2026-05-08 hand-off fix: тикер живёт пока есть ЛЮБОЙ работающий
-        # тред — свой (followup) ИЛИ чужой (из NewEpisodeView после
-        # hand-off, привязан через begin_external_thinking).
-        own = self._thread
-        ext = self._external_thread
-        try:
-            own_alive = own is not None and own.isRunning()
-        except Exception:
-            own_alive = False
-        try:
-            ext_alive = ext is not None and ext.isRunning()
-        except Exception:
-            ext_alive = False
-        if not self._thinking_active or not (own_alive or ext_alive):
+        # 2026-05-11 multi-ep fix: тикер живёт пока у ТЕКУЩЕГО ep_id есть
+        # хоть один живой тред (in-chat followup или external из реестра).
+        # Завершение тредов других эпизодов сюда не приходит — у них свои
+        # entry в `_external_threads`, finished-хендлер снимает только их.
+        if not self._thinking_active or not self._has_live_thread_for(self._ep_id):
             self._thinking_timer.stop()
             self._thinking_active = False
             # Финализируем «висящие» точки: `▶ Думаю·` → `▶ Думаю…`,
@@ -824,38 +852,86 @@ class EpisodeChatView(QWidget):
         self._update_thinking_dots(dots)
         self._update_slow_thinking_dots(dots)
 
-    def begin_external_thinking(self, thread):
+    def begin_external_thinking(self, thread, ep_id: Optional[str] = None):
         """Привязать чужой RunEpisodeThread (из NewEpisodeView после
-        hand-off в чат) — стартует тикер чтобы точки `▶ Думаю` бежали
-        прямо в чате при запуске нового эпизода."""
+        hand-off в чат) к конкретному ep_id. Тикер запустится, только
+        если этот ep_id сейчас открыт в view (self._ep_id). Если юзер
+        находится на другом эпизоде — тред просто регистрируется в
+        реестре; анимация подхватится, когда юзер вернётся на этот ep.
+
+        2026-05-11 multi-ep fix: per-ep_id реестр + per-instance lambda
+        для finished-сигнала, чтобы завершение одного треда не гасило
+        тикер для других эпизодов."""
         if thread is None:
             return
-        self._external_thread = thread
-        self._thinking_active = True
-        self._thinking_step = 0
-        self._thinking_timer.start()
+        if ep_id is None:
+            ep_id = self._ep_id
+        if not ep_id:
+            return
+        self._external_threads[ep_id] = thread
+        if self._ep_id == ep_id:
+            self._thinking_active = True
+            self._thinking_step = 0
+            self._thinking_timer.start()
         try:
-            # При завершении треда (любая причина) — глушим анимацию
+            # Лямбда замыкает свой ep_id и thread → при срабатывании
+            # снимаем только этот entry, остальные эпизоды не страдают.
             thread.finished.connect(
-                self._end_external_thinking,
+                lambda eid=ep_id, t=thread: self._end_external_thinking(eid, t),
                 type=Qt.ConnectionType.QueuedConnection)
         except Exception:
             pass
 
-    def _end_external_thinking(self):
-        self._external_thread = None
-        # Тикер сам остановится при следующем тике (own_alive=False
-        # ext_alive=False), но руками — быстрее
+    def _end_external_thinking(self, ep_id: Optional[str] = None,
+                               thread=None):
+        """Снять конкретный (ep_id, thread) entry из реестра. Тикер
+        останавливается только если у текущего ep_id больше нет живых
+        тредов (через `_maybe_stop_thinking`). 2026-05-11 multi-ep fix."""
+        if ep_id is not None:
+            cur = self._external_threads.get(ep_id)
+            if cur is thread or thread is None:
+                self._external_threads.pop(ep_id, None)
+        self._maybe_stop_thinking()
+
+    def _maybe_stop_thinking(self):
+        """Останавливает тикер и финализирует точки только если у
+        текущего ep_id больше нет живых тредов. Используется на
+        finished/error/stopped — чтобы завершение одного треда не
+        гасило анимацию параллельной генерации в том же эпизоде или
+        не сбрасывало точки в чужом эпизоде, открытом на экране.
+        2026-05-11 multi-ep fix."""
+        if self._has_live_thread_for(self._ep_id):
+            return
         self._thinking_active = False
         try:
             self._thinking_timer.stop()
         except Exception:
             pass
-        # Снимаем висящие точки с обеих строк
         try:
             self._finalize_thinking_dots()
         except Exception:
             pass
+
+    def _refresh_thinking_for_current_ep(self):
+        """Пересчитать состояние тикера под текущий self._ep_id —
+        зовётся из `set_episode` после перерисовки истории. Если у
+        нового ep_id есть живой тред → запускаем анимацию (история
+        уже содержит маркер `▶ Думаю`, тикер дорисует точки). Иначе —
+        стопим (история перерисована начисто, точек нет, финализация
+        не нужна). 2026-05-11 multi-ep fix."""
+        if self._has_live_thread_for(self._ep_id):
+            self._thinking_active = True
+            self._thinking_step = 0
+            try:
+                self._thinking_timer.start()
+            except Exception:
+                pass
+        else:
+            self._thinking_active = False
+            try:
+                self._thinking_timer.stop()
+            except Exception:
+                pass
 
     def _update_thinking_in_log(self, dots: str):
         """Совместимость со старым именем. Теперь обе анимации — точки:
@@ -2265,12 +2341,11 @@ class EpisodeChatView(QWidget):
             self._gen_button.reset_to_idle()
 
     def _on_done(self, _rc: int):
-        self._thinking_timer.stop()
-        self._thinking_active = False
-        try:
-            self._finalize_thinking_dots()
-        except Exception:
-            pass
+        # 2026-05-11 multi-ep fix: глушим тикер только если у текущего
+        # ep_id больше нет живых тредов (раньше было unconditional stop —
+        # это сносило анимацию параллельных генераций в других эпизодах,
+        # отображаемых через тот же EpisodeChatView).
+        self._maybe_stop_thinking()
         done = f"\n\n{tr('new_ep_log_done')}\n"
         if self._ep_id:
             _sa.append_chat_message(self._ep_id, "system", done, kind='ok')
@@ -2294,12 +2369,8 @@ class EpisodeChatView(QWidget):
         self.input_edit.setFocus()
 
     def _on_error(self, msg: str):
-        self._thinking_timer.stop()
-        self._thinking_active = False
-        try:
-            self._finalize_thinking_dots()
-        except Exception:
-            pass
+        # 2026-05-11 multi-ep fix: см. комментарий в `_on_done`.
+        self._maybe_stop_thinking()
         line = f"\n\n{tr('new_ep_log_error')}: {msg}\n"
         if self._ep_id:
             _sa.append_chat_message(self._ep_id, "system", line, kind='error')
@@ -2309,12 +2380,8 @@ class EpisodeChatView(QWidget):
         self.send_btn.setEnabled(True)
 
     def _on_stopped(self):
-        self._thinking_timer.stop()
-        self._thinking_active = False
-        try:
-            self._finalize_thinking_dots()
-        except Exception:
-            pass
+        # 2026-05-11 multi-ep fix: см. комментарий в `_on_done`.
+        self._maybe_stop_thinking()
         line = f"\n\n{tr('new_ep_log_stopped')}\n"
         if self._ep_id:
             _sa.append_chat_message(self._ep_id, "system", line, kind='warn')

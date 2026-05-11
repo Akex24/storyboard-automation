@@ -163,6 +163,59 @@ agent'а с interface language vs cultural context.
 «outdated / cheap-looking / low-budget rural»). Агент больше не
 видит эти токены как «valid в данном контексте».
 
+## Thinking dots animation — hand-off & multi-ep registry
+
+**С 2026-05-11:** анимация бегущих точек `▶ Думаю ····` в чатах эпизодов
+живёт в [views/episode_chat.py](views/episode_chat.py) — **один**
+`EpisodeChatView` на MainWindow (см. [storyboard_app.py:5275](storyboard_app.py:5275)).
+Виджет переключается между эпизодами через `set_episode(ep_id)`,
+перечитывая историю из `chats/<ep_id>.jsonl`. Маркер `▶ Думаю` пишется в
+jsonl при старте треда; тикер `_thinking_timer` (один QTimer, 400ms)
+дописывает к маркеру в текущем `log_view` хвост ` · / ·· / ··· / ····`.
+Иллюзия «анимация во всех эпизодах одновременно» — на самом деле работает
+один тикер по текущему виду; в чужих чатах в jsonl лежит лишь голый
+маркер, а точки появляются при `set_episode` (тикер дорисовывает на лету).
+
+**Реестр живых тредов (multi-ep fix):**
+`self._external_threads: dict[ep_id, RunEpisodeThread]` — заменил
+single-slot `_external_thread`. До фикса любой завершившийся внешний
+тред глушил `_thinking_timer` глобально, потому что:
+1. `_external_thread` — один слот, перезаписывался при каждом
+   `begin_external_thinking`; но `thread.finished.connect(_end_external_thinking)`
+   от каждого предыдущего треда оставался подключённым.
+2. `_end_external_thinking` делал безусловный `_thinking_timer.stop()` +
+   `_finalize_thinking_dots()` — это сносило анимацию параллельных
+   генераций в других эпизодах, отображаемых через тот же view.
+
+Теперь:
+- `begin_external_thinking(thread, ep_id)` регистрирует тред под ключом
+  `ep_id` и подключает `thread.finished` через **lambda, замыкающую
+  `ep_id` + `thread`** → `_end_external_thinking(ep_id, thread)` снимает
+  только этот entry, остальные эпизоды не страдают.
+- `_has_live_thread_for(ep_id)` — единый предикат: есть ли у этого ep_id
+  живой тред (in-chat followup `self._thread` если `ep_id == self._ep_id`,
+  или external из реестра).
+- `_tick_thinking` опирается на `_has_live_thread_for(self._ep_id)` —
+  завершение треда другого эпизода никак не влияет.
+- `_maybe_stop_thinking()` — общий хелпер: стопит таймер и финализирует
+  точки только если у текущего ep_id больше нет живых тредов. Используется
+  в `_on_done` / `_on_error` / `_on_stopped` вместо unconditional stop.
+- `_refresh_thinking_for_current_ep()` — зовётся из `set_episode` после
+  перерисовки истории: если у нового ep_id живой тред есть → стартует
+  тикер (история уже содержит маркер `▶ Думаю`); иначе стопит.
+
+**In-chat followup vs external:** `self._thread` (single) — это followup
+из `_on_send` (юзер набрал сообщение прямо в чате эпизода). Он по
+построению относится к `self._ep_id` на момент старта. Реестр
+`_external_threads` — отдельный для тредов из `NewEpisodeView` после
+hand-off (`begin_external_thinking`). Оба учитываются в
+`_has_live_thread_for`.
+
+**Caller:** [views/new_episode.py:1311](views/new_episode.py:1311) после
+`_switch_to_episode_chat` зовёт `ev.begin_external_thinking(self._thread,
+ep_id=self._current_ep_id)` — ep_id передаётся явно (раньше fallback на
+`ev._ep_id`).
+
 ## Slug collision handling (refs)
 
 **С 2026-05-10 (commit b8b07ec):** «🎨 Сгенерировать» = всегда создаёт

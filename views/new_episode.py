@@ -1307,8 +1307,13 @@ class NewEpisodeView(QWidget):
         try:
             ev = getattr(self._mw, 'episode_chat_view', None)
             if ev is not None and self._thread is not None:
+                # 2026-05-11 multi-ep fix: явный ep_id вместо неявного
+                # `ev._ep_id` — тред регистрируется в per-ep_id реестре
+                # `_external_threads`, что позволяет параллельным
+                # генерациям не глушить друг друга при finished.
                 if (getattr(ev, '_ep_id', None) == self._current_ep_id):
-                    ev.begin_external_thinking(self._thread)
+                    ev.begin_external_thinking(
+                        self._thread, ep_id=self._current_ep_id)
         except Exception:
             traceback.print_exc()
         # Очищаем визуальные поля. НЕ трогаем `_current_ep_id` / `_thread`
