@@ -478,6 +478,15 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
 - `find_claude_cli`, `_claude_cli_cache` — ресолв пути к Claude CLI.
 - `no_console_kwargs()` — кросс-платформенные subprocess kwargs (Win:
   `creationflags=CREATE_NO_WINDOW`; Mac: `{}`).
+- **Sender-aware JSONL routing в NewEpisodeView** (2026-05-11):
+  `_on_thread_finished` / `_on_thread_error` / `_on_thread_stopped`
+  пишут в чат через `target_ep = sender_ep or self._current_ep_id` и
+  `_sa.append_chat_message(target_ep, ...)` + `ev.on_external_append`,
+  **мимо** `_append_log_persist`. `_append_log_persist` роутит по
+  `self._current_ep_id` (id формы) — годится только для актуального
+  треда формы. Для параллельных фоновых тредов это вело к misrouting'у
+  сообщений `⏹ Остановлено` / `✗ Ошибка` в чужой чат. `_append_log`
+  (без persist) можно вызывать только если `is_current_form_thread`.
 
 ## Distribution
 

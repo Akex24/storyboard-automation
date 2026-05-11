@@ -1502,34 +1502,52 @@ class NewEpisodeView(QWidget):
             pass
 
     def _on_thread_error(self, msg: str):
-        self._thinking_timer.stop()
-        self._flush_chunk_buffer()
-        # Запись в jsonl + ev (через persist), на наш log_view скипается
-        # если уже handed_off.
-        self._append_log_persist(f"\n\n{tr('new_ep_log_error')}: {msg}\n", kind='error')
-        if not self._handed_off:
-            # Ошибочный текст содержит msg от AI — не переводим, ставим напрямую
-            self._status_key = None
-            self._status_params = {}
-            self._status_color = "#cc6666"
-            self.status_lbl.setText(f"{tr('new_ep_log_error')}: {msg[:120]}")
-            self.status_lbl.setStyleSheet("color:#cc6666; font-size:12px;")
-        self.stop_btn.setEnabled(False)
-        # Если уже был успешный run — оставляем чат активным (юзер может
-        # ответить и попробовать ещё раз).
-        # Если handed_off — UI на «+» уже очищен и creation_block видим,
-        # ничего восстанавливать не надо.
-        if self._has_initial_run and not self._handed_off:
-            self.send_btn.setEnabled(True)
-        elif not self._has_initial_run and not self._handed_off:
-            # Phase 2: ошибка ДО первого успеха → возвращаем creation-блок
-            # чтобы юзер мог поправить серию/текст и снова нажать Запустить.
-            self.creation_block.show()
-        # 2026-05-08: сбрасываем `_current_ep_id` только если упавший тред
-        # был для текущего эпизода формы (а не параллельный фоновый).
+        # 2026-05-11 multi-ep misrouting fix: sender-aware запись «✗ Ошибка»
+        # в JSONL правильного эпизода. Раньше шло через `_append_log_persist`,
+        # который пишет в `self._current_ep_id` формы — если форма уже
+        # переключилась на новый эпизод, сообщение «✗ Ошибка» от упавшего
+        # параллельного треда попадало в чужой чат. Теперь записываем
+        # напрямую в `target_ep` (sender_ep || form's current).
         sender_e = self.sender()
         sender_e_ep = getattr(sender_e, '_ep_id', None) if sender_e is not None else None
-        if (sender_e_ep == self._current_ep_id) and self._handed_off:
+        target_ep = sender_e_ep or self._current_ep_id
+        is_current_form_thread = (target_ep == self._current_ep_id)
+
+        self._flush_chunk_buffer()
+        err_text = f"\n\n{tr('new_ep_log_error')}: {msg}\n"
+        try:
+            if target_ep:
+                _sa.append_chat_message(target_ep, "system", err_text, kind='error')
+                ev = getattr(self._mw, 'episode_chat_view', None)
+                if ev is not None:
+                    ev.on_external_append(target_ep, err_text, 'error')
+            if is_current_form_thread and not self._handed_off:
+                self._append_log(err_text, kind='error')
+        except Exception:
+            traceback.print_exc()
+
+        # UI обновления — только для треда текущего эпизода формы.
+        # Параллельные треды других эпизодов не должны трогать вид «+».
+        if is_current_form_thread:
+            self._thinking_timer.stop()
+            self.stop_btn.setEnabled(False)
+            if not self._handed_off:
+                # Ошибочный текст содержит msg от AI — не переводим, ставим напрямую
+                self._status_key = None
+                self._status_params = {}
+                self._status_color = "#cc6666"
+                self.status_lbl.setText(f"{tr('new_ep_log_error')}: {msg[:120]}")
+                self.status_lbl.setStyleSheet("color:#cc6666; font-size:12px;")
+                # Если уже был успешный run — оставляем чат активным;
+                # иначе ошибка ДО первого успеха → возвращаем creation-блок.
+                if self._has_initial_run:
+                    self.send_btn.setEnabled(True)
+                else:
+                    self.creation_block.show()
+
+        # 2026-05-08: сбрасываем `_current_ep_id` только если упавший тред
+        # был для текущего эпизода формы (а не параллельный фоновый).
+        if is_current_form_thread and self._handed_off:
             self._current_ep_id = None
             self._handed_off = False
         try:
@@ -1540,22 +1558,40 @@ class NewEpisodeView(QWidget):
         self._update_run_btn_state()
 
     def _on_thread_stopped(self):
-        # 2026-05-08: то же что в _on_thread_error — sender-aware cleanup.
+        # 2026-05-11 multi-ep misrouting fix: sender-aware запись
+        # «⏹ Остановлено» в JSONL правильного эпизода. Раньше шло через
+        # `_append_log_persist` → попадала в `self._current_ep_id` формы,
+        # даже если остановился тред другого эпизода (юзер в форме уже
+        # начал заводить новый ep). См. зеркальный фикс в `_on_thread_error`.
         sender_s = self.sender()
         sender_s_ep = getattr(sender_s, '_ep_id', None) if sender_s is not None else None
-        is_current_form_thread = (sender_s_ep == self._current_ep_id)
+        target_ep = sender_s_ep or self._current_ep_id
+        is_current_form_thread = (target_ep == self._current_ep_id)
 
-        self._thinking_timer.stop()
         self._flush_chunk_buffer()
-        self._append_log_persist(f"\n\n{tr('new_ep_log_stopped')}\n", kind='warn')
-        if is_current_form_thread and not self._handed_off:
-            self._set_status('new_ep_log_stopped', color="#aaa")
-            self.stop_btn.setEnabled(False)
-            if self._has_initial_run:
-                self.send_btn.setEnabled(True)
-            elif not self._has_initial_run:
-                # Phase 2: стоп ДО первого успеха → возвращаем creation-блок.
-                self.creation_block.show()
+        stopped_text = f"\n\n{tr('new_ep_log_stopped')}\n"
+        try:
+            if target_ep:
+                _sa.append_chat_message(target_ep, "system", stopped_text, kind='warn')
+                ev = getattr(self._mw, 'episode_chat_view', None)
+                if ev is not None:
+                    ev.on_external_append(target_ep, stopped_text, 'warn')
+            if is_current_form_thread and not self._handed_off:
+                self._append_log(stopped_text, kind='warn')
+        except Exception:
+            traceback.print_exc()
+
+        # UI обновления — только для треда текущего эпизода формы.
+        if is_current_form_thread:
+            self._thinking_timer.stop()
+            if not self._handed_off:
+                self._set_status('new_ep_log_stopped', color="#aaa")
+                self.stop_btn.setEnabled(False)
+                if self._has_initial_run:
+                    self.send_btn.setEnabled(True)
+                else:
+                    # Phase 2: стоп ДО первого успеха → возвращаем creation-блок.
+                    self.creation_block.show()
         if is_current_form_thread and self._handed_off:
             self._current_ep_id = None
             self._handed_off = False
