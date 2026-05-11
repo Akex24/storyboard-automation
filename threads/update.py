@@ -406,9 +406,26 @@ class DownloadAppUpdateThread(QThread):
             # ожидания. НЕ читает stdin, надёжный sleep idiom с DOS-времён.
             # Формула: `ping -n {sec+1}` ≈ {sec} секунд ожидания.
             #
-            # Также увеличен move retry: 6 → 15 (×2с = 30-секундное окно).
+            # Также увеличен move retry: 6 → 30 (×2с = 60-секундное окно).
             # Defender release window обычно 5-15 сек, нужен запас на медленные
-            # машины с агрессивным AV (Kaspersky/ESET могут до 30с держать).
+            # машины с агрессивным AV. На v1.0.41 наблюдался кейс где
+            # Defender + Yandex Protect стэком держали handle > 30 сек —
+            # 30 попыток × 2 сек дают 60 сек что покрывает стэк двух AV.
+            #
+            # 2026-05-11 + pre-flight warmup (опция E1): ДО первой попытки
+            # move PowerShell проходит target onedir и open/close каждый
+            # файл через [System.IO.File]::Open. Это форсит Defender'у
+            # начать post-close-scan СЕЙЧАС пока bootstrap ещё ждёт ~10
+            # сек, вместо того чтобы AV догонял уже во время move retry.
+            # Эффективность переменная (если scan-cache валиден, open
+            # быстрый), но «продуктивная задержка» = безусловный плюс.
+            #
+            # 2026-05-11 + диагностический логгинг AV (опция диагностики
+            # без Sysinternals): на каждой 3-й failed-попытке move bat
+            # пишет в bootstrap.log снимок активных AV-процессов через
+            # `tasklist | findstr` — для будущей диагностики если 60 сек
+            # тоже не хватит. Покрывает Defender, Yandex, MBAM, ESET,
+            # Kaspersky, AVG, Avast.
             # ────────────────────────────────────────────────────────────────
             content = (
                 "@echo off\r\n"
@@ -429,10 +446,24 @@ class DownloadAppUpdateThread(QThread):
                 "ping -n 6 127.0.0.1 > nul 2>&1\r\n"   # ≈ 5 sec (was timeout /t 2 — broken)
                 # Cleanup leftover .old от прошлого апдейта.
                 f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
+                # 2026-05-11 pre-flight warmup (опция E1): открываем-закрываем
+                # каждый файл в target onedir через [System.IO.File]::Open.
+                # Цель — спровоцировать Defender начать post-close-scan СЕЙЧАС,
+                # пока bootstrap ждёт окончания PS-цикла (~5-15 сек на 200
+                # файлов PyInstaller bundle), а не во время следующего move.
+                # $EAP='SilentlyContinue' глотает access-denied на закрытых
+                # системой файлах. Write-Output → захватывается через >> в LOG.
+                'echo [%date% %time%] pre-flight warmup: opening files to flush AV scan queue >> "%LOG%" 2>&1\r\n'
+                'powershell -NoProfile -ExecutionPolicy Bypass -Command '
+                "\"$EAP='SilentlyContinue'; $n=0; "
+                f"Get-ChildItem -LiteralPath '{target}' -Recurse -File -ErrorAction SilentlyContinue "
+                "| ForEach-Object { try { $f=[System.IO.File]::Open($_.FullName,'Open','Read','ReadWrite'); $f.Close(); $n++ } catch {} }; "
+                "Write-Output ('warmup opened ' + $n + ' files')\" "
+                '>> "%LOG%" 2>&1\r\n'
                 # 2. Move target → .old с retry-loop. Windows Defender / антивирус
-                #    могут держать handle на .exe секунд 5-30 после смерти процесса
-                #    (real-time scan). 15 попыток × 2 сек = 30-секундное окно.
-                #    Раньше было 6×2=12с но `timeout` не работал — реально 0 сек.
+                #    могут держать handle на .exe секунд 5-60 после смерти процесса
+                #    (real-time scan). 30 попыток × 2 сек = 60-секундное окно.
+                #    На v1.0.41 наблюдался кейс Defender+Yandex стэком > 30с.
                 #    move /y даёт надёжный errorlevel (ren тихо проваливается).
                 'echo [%date% %time%] moving target to .old >> "%LOG%" 2>&1\r\n'
                 "set /a move_tries=0\r\n"
@@ -442,7 +473,17 @@ class DownloadAppUpdateThread(QThread):
                 f'move /y "{target}" "{old_dir}" >> "%LOG%" 2>&1\r\n'
                 "if not errorlevel 1 goto move_ok\r\n"
                 'echo [%date% %time%]   attempt %move_tries% failed (target locked) >> "%LOG%" 2>&1\r\n'
-                "if %move_tries% LSS 15 (\r\n"
+                # Диагностика: на каждой 3-й failed-попытке логгируем
+                # активные AV-процессы. Покрывает основные AV на Win:
+                # MsMpEng (Defender), Yandex*, AntimalwareSvc, MBAMService
+                # (Malwarebytes), ekrn (ESET), avp* (Kaspersky), avast*,
+                # avg*. findstr /I делает регистронезависимый substring match.
+                "set /a mod_check=%move_tries% %% 3\r\n"
+                "if %mod_check% EQU 0 (\r\n"
+                '  echo [%date% %time%]   active AV processes snapshot: >> "%LOG%" 2>&1\r\n'
+                '  tasklist 2>nul | findstr /I "MsMpEng Yandex AntimalwareSvc MBAMService ekrn avp avast avg" >> "%LOG%" 2>&1\r\n'
+                ")\r\n"
+                "if %move_tries% LSS 30 (\r\n"
                 '  echo [%date% %time%]   waiting 2s before retry >> "%LOG%" 2>&1\r\n'
                 "  ping -n 3 127.0.0.1 > nul 2>&1\r\n"   # ≈ 2 sec
                 "  goto try_move\r\n"

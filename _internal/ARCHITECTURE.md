@@ -7,16 +7,22 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.40** (см. `version.json`).
+- Текущая: **v1.0.41** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
   upload .app/.exe в Release.
-- **v1.0.41 — verification release** (запланирован): проверка что фикс Win
-  auto-update (commit `a1bd4b9`) реально работает при апдейте v1.0.40 → v1.0.41.
-  v1.0.39 → v1.0.40 апдейт упал ожидаемо — v1.0.39 не содержит фикса в своём
-  bundle, генерит bat по старому шаблону (chicken-and-egg in-process updater).
-  Полезной нагрузки в v1.0.41 нет — только этот doc-bump для не-пустого diff'а.
+- **История Win auto-update фиксов:**
+  - **v1.0.39 → v1.0.40 апдейт упал** — chicken-and-egg in-process updater'а:
+    bat генерится РАБОТАЮЩЕЙ Studio (v1.0.39 без фикса) → старый шаблон
+    с `timeout` → instant exit под `stdin=DEVNULL`.
+  - **v1.0.40 → v1.0.41 апдейт упал** — bat был НОВЫЙ (v1.0.40 уже с
+    ping-фиксом), timestamps в bootstrap.log показали реальные секундные
+    gap'ы (фикс sleep-idiom работает!), но все 15 попыток × 2 сек = 30
+    сек не хватило — Defender + Yandex Protect стэком держали handle > 30с.
+  - **v1.0.42 (текущая цель)** — расширение retry до 60 сек + pre-flight
+    warmup + AV-snapshot logging. См. секцию «Архитектура обновлений →
+    Hardened flow → 2026-05-11 (v1.0.42)».
 
 ## Архитектурные решения которые легко забыть
 
@@ -407,7 +413,7 @@ overwrite'ит project pipeline.py из bundle если содержимое о�
   5-30 для real-time scan; одной попытки мало. Каждая попытка
   пишется в bootstrap.log с номером (`move attempt N`,
   `attempt N failed`, `move succeeded on attempt N`).
-- **2026-05-11 — КРИТИЧНЫЙ ФИКС sleep idiom + retry window:**
+- **2026-05-11 — КРИТИЧНЫЙ ФИКС sleep idiom (v1.0.40+):**
   Все `timeout /t N /nobreak > nul 2>&1` в bat'е заменены на
   `ping -n N+1 127.0.0.1 > nul 2>&1`. Причина: bat запускается
   из Studio через `subprocess.Popen` со `stdin=DEVNULL`
@@ -420,11 +426,24 @@ overwrite'ит project pipeline.py из bundle если содержимое о�
   «MOVE FAILED — target locked» практически гарантированно.
   Формула: `ping -n {sec+1} 127.0.0.1` ≈ `sec` секунд реального
   ожидания, не читает stdin. Идиома стабильна с DOS-времён.
-  Параллельно retry window расширен: 6 → **15 попыток × 2 сек =
-  30-секундное окно**. Post-taskkill пауза 2с → **5с**. См.
-  `_session_log.md` запись «Win auto-update bootstrap sleep fix».
   **НЕ ПРАВИТЬ обратно на `timeout` без понимания причины** —
   есть предупреждающий комментарий в `_make_bootstrap`.
+- **2026-05-11 (v1.0.42) — handle release on slow AV stacks:**
+  v1.0.41 на машинах с Defender+Yandex Protect стэком показал
+  release > 30 сек → 15 retries не хватало. Три правки в Win-ветке
+  `_make_bootstrap`:
+  (1) Retry: 15 → **30 попыток × 2 сек = 60-секундное окно**.
+  Post-taskkill пауза 2с → **5с** (`ping -n 6`).
+  (2) **Pre-flight warmup** ДО первой move: PowerShell проходит
+  target onedir, open/close каждый файл через `[System.IO.File]::Open`.
+  Провоцирует Defender начать post-close-scan СЕЙЧАС пока bootstrap
+  занят ~10 сек warmup'ом — продуктивная задержка.
+  (3) **AV-snapshot logging** на каждой 3-й failed-попытке:
+  `tasklist | findstr /I "MsMpEng Yandex AntimalwareSvc MBAMService
+  ekrn avp avast avg"` пишет в bootstrap.log активные AV-процессы.
+  Будущая диагностика без Sysinternals.
+  Если 60 сек не хватит — следующий шаг **Restart Manager API**
+  через PowerShell P/Invoke (v1.0.43+).
 - Bat пишет полный лог в `update_dir/bootstrap.log` (не stdout/stderr).
   `update_dir` НЕ удаляется bootstrap'ом — Studio при следующем старте
   чистит через `finalize_pending_update`, но защищает папку с активным
