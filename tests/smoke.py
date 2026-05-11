@@ -857,6 +857,37 @@ def test_gen_markers_and_button() -> None:
         return
     ok(f"AutonomousGenThread API на месте ({len(sig_methods)})")
 
+    # 2026-05-11 (БАГ 12 regression test): synthesize_gen_markers должен
+    # парсить character-маркеры с nested скобками в description.
+    # Раньше `[^)]+` останавливался на первой внутренней `)` → marker
+    # не создавался → CTA «Make storyboards» показывалась когда
+    # character ещё не сгенерирован.
+    try:
+        from views._chat_render import synthesize_gen_markers
+    except Exception as e:
+        fail("import synthesize_gen_markers", str(e))
+        return
+    ok("synthesize_gen_markers импортируется")
+    full_text_nested = (
+        "ПЕРСОНАЖИ:\n"
+        "- ✗ david (Дэвид — муж) — рефа нет\n"
+        "- ✗ lora (Лора — жена. Сцены 7-8 — обнажена; "
+        "сцены 9-12 — в халате (надевает выскакивая из кровати). "
+        "Нужны два состояния) — рефа нет\n"
+        "- ✗ mark (Марк — любовник) — нужен реф\n"
+    )
+    nested_markers = synthesize_gen_markers(full_text_nested)
+    char_names = [m.name for m in nested_markers if m.type == 'character']
+    if 'lora' not in char_names:
+        fail("БАГ 12 regression",
+             f"lora с nested () не распарсилась — char_names={char_names}")
+        return
+    if char_names != ['david', 'lora', 'mark']:
+        fail("БАГ 12 regression",
+             f"ожидали [david, lora, mark], получили {char_names}")
+        return
+    ok("synthesize_gen_markers парсит nested скобки (БАГ 12 regression test)")
+
 
 # ─── Тест 4: block_wheel_event применяется ───────────────────────
 def test_block_wheel_event() -> None:

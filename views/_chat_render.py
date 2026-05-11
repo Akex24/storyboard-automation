@@ -100,7 +100,15 @@ _SECTION_CHARACTER_RE = re.compile(
 # `\w` с re.UNICODE матчит латиницу, кириллицу, цифры, подчёркивание.
 _FALLBACK_LINE_RE = re.compile(
     r'^\s*[-•*]\s*✗\s*(?P<name>[\w-]+)'
-    r'\s*(?:\((?P<orig>[^)]+)\))?'   # опц. (оригинал) если AI следует промпту
+    # 2026-05-11 (БАГ 12 fix): `(?P<orig>.+)` (greedy с backtracking)
+    # вместо старого `[^)]+`. Старый паттерн останавливался на ПЕРВОЙ
+    # внутренней `)` если в description есть nested скобки
+    # «(надевает выскакивая из кровати)» — match падал, marker не
+    # создавался, character выпадал из synthesize_gen_markers → CTA
+    # «Make storyboards» думала что всё resolved. Greedy `.+` находит
+    # ПРАВУЮ `)` через backtrack + проверку что после неё идёт
+    # separator ` — `.
+    r'(?:\s*\((?P<orig>.+)\))?'
     r'\s*[—:\-–]\s*(?P<desc>.+?)\s*$',
     re.UNICODE
 )
