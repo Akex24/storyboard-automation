@@ -12,6 +12,7 @@ import sys
 import io
 import json
 import time
+import threading
 import webbrowser
 import base64
 import shutil
@@ -1522,26 +1523,46 @@ def list_episode_refs(ep: str) -> Dict[str, List[Dict]]:
         # Раньше manifest-driven логика подгружала рефы автоматически —
         # юзер видел «магически» появившиеся локации/объекты в
         # РЕФЕРЕНСАХ ещё до своего первого клика.
+        # 2026-05-10 (БАГ 10 fix — read-side self-healing): если filename
+        # в decisions устарел (например `.png` от агентского overwrite, а
+        # на диске реально лежит `.jpg`), пытаемся найти actual файл
+        # через glob `{name}.*`. Защита независимо от write-side фиксов
+        # — даже если кто-то снаружи (agent через bash) затрёт decisions
+        # с неправильным расширением, render всё равно покажет файл.
+        def _find_on_disk(base_dir: Path, slug: str,
+                          hint_filename: str) -> Optional[Path]:
+            # 1. Hint exists — return as is.
+            if hint_filename:
+                p = base_dir / hint_filename
+                if p.exists() and p.is_file():
+                    return p
+            # 2. Glob `{slug}.*` — disk truth fallback.
+            for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                p = base_dir / f"{slug}{ext}"
+                if p.exists() and p.is_file():
+                    return p
+            return None
+
         loc_decisions = decisions.get('location') if isinstance(decisions, dict) else None
         if isinstance(loc_decisions, dict):
             for loc_name, entry in loc_decisions.items():
                 if not isinstance(entry, dict) or entry.get('decision') != 'linked':
                     continue
                 fn = entry.get('filename') or f"{loc_name}.jpg"
-                cand = LOCATIONS_DIR / fn
-                if cand.exists():
+                cand = _find_on_disk(LOCATIONS_DIR, loc_name, fn)
+                if cand is not None:
                     locs.append({'name': _pretty_stem(cand.stem),
-                                 'filename': fn, 'path': cand})
+                                 'filename': cand.name, 'path': cand})
         obj_decisions = decisions.get('object') if isinstance(decisions, dict) else None
         if isinstance(obj_decisions, dict):
             for obj_name, entry in obj_decisions.items():
                 if not isinstance(entry, dict) or entry.get('decision') != 'linked':
                     continue
                 fn = entry.get('filename') or f"{obj_name}.jpg"
-                cand = OBJECTS_DIR / fn
-                if cand.exists():
+                cand = _find_on_disk(OBJECTS_DIR, obj_name, fn)
+                if cand is not None:
                     objs.append({'name': _pretty_stem(cand.stem),
-                                 'filename': fn, 'path': cand})
+                                 'filename': cand.name, 'path': cand})
         # Phase 2 hotfix #14 (характеры — было сделано раньше, теперь
         # тот же подход применён ко ВСЕМ типам рефов):
         char_decisions = decisions.get('character') if isinstance(decisions, dict) else None
@@ -3584,6 +3605,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._project_root = project_root
         self._is_admin     = is_admin_mode(project_root)
+        # 2026-05-10 (БАГ 10 fix): Python-side lock для атомарного
+        # read-modify-write episodes.json. Защищает от параллельных
+        # `_save_active_gen_decision` вызовов когда несколько
+        # AutonomousGenThread заканчиваются одновременно (shotgun+phone
+        # генерились parallel — race на write losses). Cross-process
+        # защита (от внешнего agent'а в claude -p) — через atomic
+        # `os.replace()` в самом `_save_active_gen_decision`.
+        self._episodes_json_lock = threading.Lock()
         # 2026-05-09: AI-auth state атрибуты инициализируем СРАЗУ —
         # `_build_settings_tab` (вызывается ниже из tabs.addTab) дёргает
         # `_refresh_claude_account_email`, который читает
@@ -4180,38 +4209,77 @@ class MainWindow(QMainWindow):
                                    name: str, decision: str,
                                    filename: str = ""):
         """Аналог `EpisodeChatView._save_ref_decision`, но MW-уровневый —
-        умеет писать decision для любого ep_id (не только текущего)."""
+        умеет писать decision для любого ep_id (не только текущего).
+
+        2026-05-10 (БАГ 10 fix):
+          • Disk-validation параметра `filename` — если файла нет на
+            диске под этим именем, ищем actual file через glob `{name}.*`.
+            Это safety net в дополнение к `_resolve_active_gen_filename`
+            на случай TOCTOU race или вызова из других мест.
+          • Threading.Lock вокруг read-modify-write — защита от Python-
+            side race (parallel finished_ok).
+          • Atomic write через temp-file + `os.replace()` — защита от
+            частичных записей если процесс убьют посередине; на POSIX
+            atomic rename (cross-process gate, хотя agent в claude -p
+            может всё равно overwrite после нас).
+        """
         try:
             shows_root = self._project_root / "shows"
             cur_show = get_current_show(self._project_root)
             if not cur_show:
                 return
-            ep_meta = (shows_root / cur_show / "episodes.json")
-            import json
-            data = {}
-            if ep_meta.exists():
+            # Disk-validation filename — защита от устаревшего расширения.
+            if filename and gen_type in ('location', 'object'):
                 try:
-                    data = json.loads(ep_meta.read_text(encoding='utf-8')) or {}
+                    sub = ('locations' if gen_type == 'location'
+                           else 'objects')
+                    base = (self._project_root / "shows" / cur_show
+                            / "refs" / sub)
+                    if not (base / filename).exists():
+                        # Filename НЕ найден на диске — ищем real file
+                        # с тем же base name через glob.
+                        for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                            p = base / f"{name}{ext}"
+                            if p.exists():
+                                filename = f"{name}{ext}"
+                                break
                 except Exception:
-                    data = {}
-            ep_block = data.get(ep_id) or {}
-            if not isinstance(ep_block, dict):
-                ep_block = {}
-            decisions = ep_block.get('refs_decisions') or {}
-            if not isinstance(decisions, dict):
-                decisions = {}
-            type_map = decisions.get(gen_type) or {}
-            if not isinstance(type_map, dict):
-                type_map = {}
-            entry = {'decision': decision}
-            if filename:
-                entry['filename'] = filename
-            type_map[name] = entry
-            decisions[gen_type] = type_map
-            ep_block['refs_decisions'] = decisions
-            data[ep_id] = ep_block
-            ep_meta.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                               encoding='utf-8')
+                    pass
+            ep_meta = (shows_root / cur_show / "episodes.json")
+            # Lock + atomic write.
+            with self._episodes_json_lock:
+                import json
+                data = {}
+                if ep_meta.exists():
+                    try:
+                        data = json.loads(
+                            ep_meta.read_text(encoding='utf-8')) or {}
+                    except Exception:
+                        data = {}
+                ep_block = data.get(ep_id) or {}
+                if not isinstance(ep_block, dict):
+                    ep_block = {}
+                decisions = ep_block.get('refs_decisions') or {}
+                if not isinstance(decisions, dict):
+                    decisions = {}
+                type_map = decisions.get(gen_type) or {}
+                if not isinstance(type_map, dict):
+                    type_map = {}
+                entry = {'decision': decision}
+                if filename:
+                    entry['filename'] = filename
+                type_map[name] = entry
+                decisions[gen_type] = type_map
+                ep_block['refs_decisions'] = decisions
+                data[ep_id] = ep_block
+                # Atomic write: temp + os.replace(). Имя tmp включает
+                # PID — защита от collision если юзер случайно запустил
+                # две Studio процесса одновременно.
+                tmp = ep_meta.with_suffix(f'.json.tmp.{os.getpid()}')
+                tmp.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2),
+                    encoding='utf-8')
+                os.replace(tmp, ep_meta)
         except Exception:
             import traceback
             traceback.print_exc()
