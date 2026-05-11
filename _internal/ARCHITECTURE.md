@@ -397,13 +397,29 @@ overwrite'ит project pipeline.py из bundle если содержимое о�
   Studio, exit 1. На copy fail: rollback `mv .old → target`.
 - **2026-05-10**: после `studio died` bat делает
   `taskkill /F /IM "Storyboard Studio.exe" /T` (force-kill всех
-  инстансов + children) + `timeout 2`, затем move обёрнут в
-  retry-loop: 6 попыток × 2 сек = до 12 сек ожидания. Причина —
-  Windows Defender держит handle на убитом .exe секунд 5-10
-  для сканирования; одной попытки мало. Каждая попытка пишется в
-  bootstrap.log с номером (`move attempt N`, `attempt N failed`,
-  `move succeeded on attempt N`). См. `_session_log.md` запись
-  «Win auto-update: taskkill + retry-loop».
+  инстансов + children) + пауза, затем move обёрнут в retry-loop.
+  Причина — Windows Defender держит handle на убитом .exe секунд
+  5-30 для real-time scan; одной попытки мало. Каждая попытка
+  пишется в bootstrap.log с номером (`move attempt N`,
+  `attempt N failed`, `move succeeded on attempt N`).
+- **2026-05-11 — КРИТИЧНЫЙ ФИКС sleep idiom + retry window:**
+  Все `timeout /t N /nobreak > nul 2>&1` в bat'е заменены на
+  `ping -n N+1 127.0.0.1 > nul 2>&1`. Причина: bat запускается
+  из Studio через `subprocess.Popen` со `stdin=DEVNULL`
+  ([threads/update.py:526](threads/update.py:526)), а `timeout.exe`
+  в этих условиях **мгновенно выходит** с ошибкой «Input redirection
+  is not supported» (даже с `/nobreak` — он подавляет только
+  keypress). Stderr→NUL → визуально не видно. Эффект: на v1.0.37/38
+  **никакой** sleep в bat'е не работал, «6 retries × 2 сек = 12с»
+  выполнялись за 300мс, Defender не успевал отпустить handle →
+  «MOVE FAILED — target locked» практически гарантированно.
+  Формула: `ping -n {sec+1} 127.0.0.1` ≈ `sec` секунд реального
+  ожидания, не читает stdin. Идиома стабильна с DOS-времён.
+  Параллельно retry window расширен: 6 → **15 попыток × 2 сек =
+  30-секундное окно**. Post-taskkill пауза 2с → **5с**. См.
+  `_session_log.md` запись «Win auto-update bootstrap sleep fix».
+  **НЕ ПРАВИТЬ обратно на `timeout` без понимания причины** —
+  есть предупреждающий комментарий в `_make_bootstrap`.
 - Bat пишет полный лог в `update_dir/bootstrap.log` (не stdout/stderr).
   `update_dir` НЕ удаляется bootstrap'ом — Studio при следующем старте
   чистит через `finalize_pending_update`, но защищает папку с активным

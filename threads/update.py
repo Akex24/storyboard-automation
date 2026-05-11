@@ -382,27 +382,58 @@ class DownloadAppUpdateThread(QThread):
             target_name = target.name           # «Storyboard Studio» (папка)
             studio_exe = target / "Storyboard Studio.exe"
             old_dir = target_parent / f"{target_name}.old"
+            # ────────────────────────────────────────────────────────────────
+            # 2026-05-11 КРИТИЧНО: НЕ ПРАВИТЬ `ping -n N+1 127.0.0.1` обратно
+            # на `timeout /t N`. Это известный Windows gotcha.
+            #
+            # Bat запускается из Studio через subprocess.Popen со
+            # stdin=subprocess.DEVNULL (см. _launch_bootstrap). Внутри такого
+            # bat'а команда `timeout.exe` детектит redirected stdin и
+            # МГНОВЕННО выходит с ошибкой «ERROR: Input redirection is not
+            # supported, exiting the process immediately.» (даже с флагом
+            # /nobreak — он подавляет только keypress, не stdin-check).
+            # Stderr перенаправлен в NUL → визуально незаметно, но НИ ОДИН
+            # `timeout` не спит реально 0 секунд.
+            #
+            # На v1.0.37/v1.0.38 это вылилось в баг «MOVE FAILED — target
+            # locked»: задумывалось «6 retries × 2 sec = 12 сек окно» для
+            # отпускания handle Defender'ом, по факту 6 попыток выполнялись
+            # за 300мс, AV не успевал scan завершить → handle на .exe лочил
+            # папку → апдейт фейлился.
+            #
+            # `ping -n N 127.0.0.1` отправляет N пакетов loopback с 1-сек
+            # интервалом (первый мгновенно), даёт ≈ N-1 секунд реального
+            # ожидания. НЕ читает stdin, надёжный sleep idiom с DOS-времён.
+            # Формула: `ping -n {sec+1}` ≈ {sec} секунд ожидания.
+            #
+            # Также увеличен move retry: 6 → 15 (×2с = 30-секундное окно).
+            # Defender release window обычно 5-15 сек, нужен запас на медленные
+            # машины с агрессивным AV (Kaspersky/ESET могут до 30с держать).
+            # ────────────────────────────────────────────────────────────────
             content = (
                 "@echo off\r\n"
-                "rem Storyboard Studio update bootstrap (onedir, hardened 2026-05-09)\r\n"
+                "rem Storyboard Studio update bootstrap (onedir, hardened 2026-05-11)\r\n"
+                "rem НЕ заменять `ping -n N+1 127.0.0.1` на `timeout` — см. комментарий в _make_bootstrap.\r\n"
                 f'set "LOG={log_path}"\r\n'
                 'echo [%date% %time%] bootstrap start >> "%LOG%" 2>&1\r\n'
-                # 1. Wait for Studio process to die.
+                # 1. Wait for Studio process to die. Polling loop 1×/sec.
                 ":wait_for_studio\r\n"
-                "timeout /t 1 /nobreak > nul 2>&1\r\n"
+                "ping -n 2 127.0.0.1 > nul 2>&1\r\n"   # ≈ 1 sec (timeout broken under DEVNULL stdin)
                 f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
                 "if not errorlevel 1 goto wait_for_studio\r\n"
                 'echo [%date% %time%] studio died >> "%LOG%" 2>&1\r\n'
                 # Force-kill любые оставшиеся инстансы (зомби, дочерние процессы) —
                 # их handle на .exe иначе блокирует move. /T = вместе с children.
                 'taskkill /F /IM "Storyboard Studio.exe" /T >> "%LOG%" 2>&1\r\n'
-                "timeout /t 2 /nobreak > nul 2>&1\r\n"
+                'echo [%date% %time%] waiting 5s for AV/Defender to release handles >> "%LOG%" 2>&1\r\n'
+                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"   # ≈ 5 sec (was timeout /t 2 — broken)
                 # Cleanup leftover .old от прошлого апдейта.
                 f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
                 # 2. Move target → .old с retry-loop. Windows Defender / антивирус
-                #    могут держать handle на .exe секунд 5-10 после смерти процесса
-                #    (сканирование). Одной попытки мало — нужно 6 × 2 сек = до 12 сек
-                #    ожидания. move /y даёт надёжный errorlevel (ren тихо проваливается).
+                #    могут держать handle на .exe секунд 5-30 после смерти процесса
+                #    (real-time scan). 15 попыток × 2 сек = 30-секундное окно.
+                #    Раньше было 6×2=12с но `timeout` не работал — реально 0 сек.
+                #    move /y даёт надёжный errorlevel (ren тихо проваливается).
                 'echo [%date% %time%] moving target to .old >> "%LOG%" 2>&1\r\n'
                 "set /a move_tries=0\r\n"
                 ":try_move\r\n"
@@ -411,8 +442,9 @@ class DownloadAppUpdateThread(QThread):
                 f'move /y "{target}" "{old_dir}" >> "%LOG%" 2>&1\r\n'
                 "if not errorlevel 1 goto move_ok\r\n"
                 'echo [%date% %time%]   attempt %move_tries% failed (target locked) >> "%LOG%" 2>&1\r\n'
-                "if %move_tries% LSS 6 (\r\n"
-                "  timeout /t 2 /nobreak > nul 2>&1\r\n"
+                "if %move_tries% LSS 15 (\r\n"
+                '  echo [%date% %time%]   waiting 2s before retry >> "%LOG%" 2>&1\r\n'
+                "  ping -n 3 127.0.0.1 > nul 2>&1\r\n"   # ≈ 2 sec
                 "  goto try_move\r\n"
                 ")\r\n"
                 'echo [%date% %time%] MOVE FAILED after %move_tries% tries -- target locked, aborting >> "%LOG%" 2>&1\r\n'
@@ -438,19 +470,23 @@ class DownloadAppUpdateThread(QThread):
                 #    увидит что markerа нет → НЕ откатит version.json).
                 'echo [%date% %time%] success -- deleting rollback marker >> "%LOG%" 2>&1\r\n'
                 f'if exist "{rollback_marker}" del /f /q "{rollback_marker}" >> "%LOG%" 2>&1\r\n'
-                "timeout /t 2 /nobreak > nul 2>&1\r\n"
+                'echo [%date% %time%] waiting 2s before launching new Studio >> "%LOG%" 2>&1\r\n'
+                "ping -n 3 127.0.0.1 > nul 2>&1\r\n"   # ≈ 2 sec (was timeout /t 2 — broken)
                 # 5. Start updated Studio with retry-loop.
                 "set /a tries=0\r\n"
                 ":try_start\r\n"
                 "set /a tries+=1\r\n"
+                'echo [%date% %time%] start attempt %tries% >> "%LOG%" 2>&1\r\n'
                 f'start "" "{studio_exe}"\r\n'
-                "timeout /t 5 /nobreak > nul 2>&1\r\n"
+                'echo [%date% %time%]   waiting 5s for Studio to appear in tasklist >> "%LOG%" 2>&1\r\n'
+                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"   # ≈ 5 sec (was timeout /t 5 — broken)
                 'tasklist /FI "IMAGENAME eq Storyboard Studio.exe" 2>nul '
                 '| find /I "Storyboard Studio.exe" >nul\r\n'
                 "if errorlevel 1 (\r\n"
                 "  if %tries% LSS 3 goto try_start\r\n"
                 ")\r\n"
-                "timeout /t 5 /nobreak > nul 2>&1\r\n"
+                'echo [%date% %time%] waiting 5s before cleanup >> "%LOG%" 2>&1\r\n'
+                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"   # ≈ 5 sec
                 # 6. Cleanup .old (update_dir НЕ удаляем — log нужен).
                 f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
                 'echo [%date% %time%] bootstrap complete >> "%LOG%" 2>&1\r\n'
