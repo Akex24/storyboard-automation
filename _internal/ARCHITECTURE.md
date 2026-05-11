@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.45** (см. `version.json`).
+- Текущая: **v1.0.46** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -566,7 +566,23 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
 - `find_claude_cli`, `_claude_cli_cache` — ресолв пути к Claude CLI.
 - `no_console_kwargs()` — кросс-платформенные subprocess kwargs (Win:
   `creationflags=CREATE_NO_WINDOW`; Mac: `{}`).
-- **Decisions filename self-heal** (2026-05-11, v1.0.45):
+- **Character filename invariant** (2026-05-11, v1.0.46): в
+  `refs_decisions[<ep>].character[<slug>].filename` ВСЕГДА хранится
+  формат `<character_slug>/<file>.<ext>`. Контролируется на двух
+  уровнях: (1) caller `_on_outfit_accepted` ([views/episode_chat.py:1866](views/episode_chat.py:1866))
+  передаёт `f"{name}/{picked_name}"`, (2) defense-in-depth в
+  `_save_ref_decision` ([views/episode_chat.py:2081](views/episode_chat.py:2081))
+  auto-prepend'ит folder если caller забыл, с warning в stderr.
+- **Decisions key rename invariant** (2026-05-11, v1.0.46): при
+  collision-resolve через `_resolve_collision_free_slug`
+  ([views/episode_chat.py:1470](views/episode_chat.py:1470)) если slug
+  переименовывается в `<slug>_N`, то УСТАРЕВШИЙ entry в
+  `refs_decisions[ep][<sub_singular>]` под старым slug **удаляется**.
+  Новая запись будет добавлена `_on_active_gen_finished` под new_name.
+  Без этого decisions продолжал указывать на чужой файл от другого
+  эпизода (тот же первоначальный slug, другая картинка). heal на старте
+  Studio тоже умеет это лечить через `[heal-manifest-driven]` ветку.
+- **Decisions filename self-heal** (2026-05-11, v1.0.45, расширено v1.0.46):
   `heal_stale_decisions(project_root)` вызывается ОДИН РАЗ в
   `MainWindow.__init__` после `finalize_pending_update`. Проходит по
   всем `shows/<slug>/episodes.json`, для каждой записи в

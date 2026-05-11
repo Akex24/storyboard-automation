@@ -878,38 +878,60 @@ def _finalize_pending_reboot(project_root: Path,
 
 
 def heal_stale_decisions(project_root: Path) -> int:
-    """2026-05-11 (v1.0.45): self-heal битых filename'ов в
-    `episodes.json[<ep>].refs_decisions` при старте Studio.
+    """2026-05-11 (v1.0.45, expanded v1.0.46): self-heal битых
+    filename'ов в `episodes.json[<ep>].refs_decisions` при старте Studio.
 
-    Зачем: после регенерации/переименования файлов рефа в decisions
-    мог остаться устаревший filename (например `.png` в decisions,
-    а на диске реально `.jpg`). Это незаметно ломает CTA «Сделать
-    сториборды» (которая через `_linked_file_exists` проверяет
-    существование файла), отображение в РЕФЕРЕНСАХ и т.д. До v1.0.45
-    лечение было только реактивным через disk-glob fallback в
-    `_linked_file_exists` (для location/object). Теперь — proactive
-    исправление прямо в JSON при старте.
+    Зачем: при регенерации / collision-resolve / character outfit-pick'е
+    в decisions мог остаться устаревший filename. Симптомы:
+      - extension changed (.png в decisions, .jpg на диске) → ломает CTA
+      - character filename без folder prefix (legacy bug до v1.0.46) →
+        CTA hide потому что `<file>` без `<folder>/<file>` не находится
+      - location/object collision-resolve переименовал slug в `<slug>_N`,
+        но decisions остался под старым slug с filename первого ep'а →
+        storyboard pipeline берёт чужой файл
 
-    Алгоритм:
-      1. Проходим по всем `shows/<slug>/episodes.json`.
-      2. В каждом episode → каждом `refs_decisions[<kind>][<slug>]`
-         с `decision == 'linked'`:
-         - location/object: если filename НЕ существует → пробуем
-           disk-glob `<show>/refs/<sub>/<stem>.<{jpg,jpeg,png,webp}>`.
-           Найден → обновляем filename.
-         - character: если filename `<folder>/<file>` не существует →
-           **НЕ подставляем другой outfit**. Логируем в stderr и
-           оставляем filename как есть. Outfit-safety: тихая подмена
-           одежды персонажа хуже чем сломанная CTA (юзер не заметит
-           что Дэвид в другой куртке).
-      3. Атомарная запись через temp + os.replace для каждого show.
+    Алгоритм по kind (приоритет веток сверху вниз):
 
-    Возвращает: число эпизодов, в которых что-то реально обновили
-    (для диагностики через stderr / logs).
+      **character:**
+        - filename с `/` И файл существует → no-op
+        - filename с `/` но файла нет → outfit-safety SKIP + log
+        - filename БЕЗ `/` (legacy v1.0.45-) → ищем `refs/characters/
+          <slug>/<filename>`. Найдено → heal на `<slug>/<filename>`,
+          slug-based lookup (НЕ scan'ить все subdirs). Не найдено → log.
 
-    Cross-platform: pure Python (json, pathlib, os.replace). Никаких
-    Win-специфичных вызовов. Работает одинаково на Mac и Win.
+      **location/object:**
+        A) [no-op] filename существует И в manifest `refs.<sub>` → ok.
+        B) [heal-disk-glob] filename НЕ существует → ищем
+           `<stem>.<{jpg,jpeg,png,webp}>` И `<slug>.<{...}>` в той же
+           подпапке.
+        C) [heal-suffix-variant] filename НЕ существует И disk-glob не
+           помог → пробуем suffix variants `<slug>_2..._9.<ext>`. Найдено
+           РОВНО ОДНО → переименовать bucket key + filename. Найдено
+           несколько → ambiguity SKIP + log. (Skip если slug уже ends
+           in _N — не плодим nested suffixes.)
+        D) [heal-manifest-driven] (v1.0.46) filename СУЩЕСТВУЕТ на диске
+           НО НЕ в manifest `episodes.json[ep].refs.<sub>` — это значит
+           decisions указывает на чужой файл (от другого эпизода после
+           collision-resolve). Ищем в manifest entries со slug-prefix
+           `<slug>(_[2-9])?\.<ext>`. РОВНО ОДНО → heal к manifest variant
+           (с переименованием bucket key если slug отличается). Несколько
+           → ambiguity SKIP. Пусто → leave as-is (file существует, может
+           быть валидный сценарий).
+        E) [heal-skip] ничего не помогло → log skip, user должен relink.
+
+      Атомарная запись через temp + os.replace для каждого show.
+
+    Bucket key rename: для location/object suffix/manifest heal слаг
+    в decisions меняется (например `house_corridor` → `house_corridor_2`).
+    Применяется ПОСЛЕ итерации через `pending_renames` list — нельзя
+    модифицировать dict во время iteration.
+
+    Возвращает: число эпизодов, в которых что-то реально обновили.
+
+    Cross-platform: pure Python. Mac и Win одинаково.
     """
+    sys.stderr.write(
+        f"[heal] starting scan, project_root={project_root}\n")
     healed_eps = 0
     try:
         shows_root = project_root / "shows"
@@ -919,6 +941,7 @@ def heal_stale_decisions(project_root: Path) -> int:
                    'object': 'objects',
                    'character': 'characters'}
         exts = ('.jpg', '.jpeg', '.png', '.webp')
+        import re as _re
         for show_dir in shows_root.iterdir():
             if not show_dir.is_dir():
                 continue
@@ -947,7 +970,21 @@ def heal_stale_decisions(project_root: Path) -> int:
                     sub_base = show_dir / "refs" / sub
                     if not sub_base.is_dir():
                         continue
-                    for slug, entry in bucket.items():
+                    # Manifest (только для location/object) — для (7b)
+                    # manifest-driven branch.
+                    manifest_list: List = []
+                    if kind in ('location', 'object'):
+                        refs_block = ep.get('refs')
+                        if isinstance(refs_block, dict):
+                            ml = refs_block.get(sub)
+                            if isinstance(ml, list):
+                                manifest_list = [
+                                    s for s in ml if isinstance(s, str)]
+                    # Pending bucket-key renames для location/object —
+                    # применяем ПОСЛЕ iteration (нельзя мутировать dict
+                    # во время for-loop).
+                    pending_renames: List = []
+                    for slug, entry in list(bucket.items()):
                         if not isinstance(entry, dict):
                             continue
                         if entry.get('decision') != 'linked':
@@ -955,55 +992,190 @@ def heal_stale_decisions(project_root: Path) -> int:
                         old_fn = entry.get('filename', '') or ''
                         if not old_fn:
                             continue
-                        # Check direct existence first
+
+                        # ── CHARACTER ──
                         if kind == 'character':
-                            # filename = "folder/file.ext"
-                            folder_part, _, file_part = old_fn.partition('/')
-                            if not folder_part or not file_part:
-                                continue
-                            full_path = sub_base / folder_part / file_part
-                            if full_path.exists() and full_path.is_file():
-                                continue  # OK, nothing to heal
-                            # Outfit-safety: НЕ подменяем другим outfit'ом.
-                            # Только лог.
-                            sys.stderr.write(
-                                f"[heal] {show_dir.name}/{ep_id}/"
-                                f"character/{slug}: outfit file not found "
-                                f"on disk ({old_fn}), skipping heal "
-                                f"(user must relink via UI)\n")
+                            if '/' in old_fn:
+                                folder_part, _, file_part = old_fn.partition('/')
+                                if not folder_part or not file_part:
+                                    continue
+                                full_path = sub_base / folder_part / file_part
+                                if full_path.exists() and full_path.is_file():
+                                    continue  # OK
+                                # Outfit-safety: НЕ подменяем.
+                                sys.stderr.write(
+                                    f"[heal-character-skip] {show_dir.name}/"
+                                    f"{ep_id}/character/{slug}: outfit file "
+                                    f"not found on disk ({old_fn}), skipping "
+                                    f"(user must relink via UI)\n")
+                            else:
+                                # v1.0.46: filename без folder prefix —
+                                # slug-based lookup (НЕ scan все subdirs).
+                                candidate = sub_base / slug / old_fn
+                                if (candidate.exists()
+                                        and candidate.is_file()):
+                                    new_fn = f"{slug}/{old_fn}"
+                                    entry['filename'] = new_fn
+                                    ep_changed = True
+                                    sys.stderr.write(
+                                        f"[heal-character-slug] "
+                                        f"{show_dir.name}/{ep_id}/character/"
+                                        f"{slug}: {old_fn} → {new_fn} "
+                                        f"(added folder prefix)\n")
+                                else:
+                                    sys.stderr.write(
+                                        f"[heal-character-skip] "
+                                        f"{show_dir.name}/{ep_id}/character/"
+                                        f"{slug}: legacy filename without "
+                                        f"folder, file refs/characters/"
+                                        f"{slug}/{old_fn} not found, "
+                                        f"skipping\n")
                             continue
-                        # location / object
+
+                        # ── LOCATION / OBJECT ──
                         full_path = sub_base / old_fn
-                        if full_path.exists() and full_path.is_file():
-                            continue  # OK
-                        # Disk-glob: find file with same stem
+                        file_exists = (full_path.exists()
+                                       and full_path.is_file())
+
+                        # (A) [no-op] file exists AND in manifest (or no
+                        # manifest available).
+                        if file_exists and (
+                                not manifest_list or old_fn in manifest_list):
+                            continue
+
+                        # (D) [heal-manifest-driven]: file existsНО not in
+                        # manifest. Find candidates in manifest with same
+                        # slug-prefix.
+                        if file_exists and manifest_list:
+                            slug_re = _re.compile(
+                                rf'^{_re.escape(slug)}(_[2-9])?$')
+                            candidates_md = []
+                            for m_entry in manifest_list:
+                                m_stem = Path(m_entry).stem
+                                if m_stem == slug:
+                                    # base slug в manifest — это и есть
+                                    # old_fn? Уже проверили above (in
+                                    # manifest → no-op). Если нет —
+                                    # значит current decisions filename
+                                    # отличается от manifest base.
+                                    if m_entry != old_fn:
+                                        candidates_md.append(m_entry)
+                                elif slug_re.match(m_stem):
+                                    candidates_md.append(m_entry)
+                            if len(candidates_md) == 1:
+                                new_fn = candidates_md[0]
+                                new_stem = Path(new_fn).stem
+                                if new_stem != slug:
+                                    # Bucket key rename
+                                    pending_renames.append(
+                                        (slug, new_stem, new_fn))
+                                    sys.stderr.write(
+                                        f"[heal-manifest-driven] "
+                                        f"{show_dir.name}/{ep_id}/{kind}/"
+                                        f"{slug}: {old_fn} → {new_stem}/"
+                                        f"{new_fn} (key+filename rename, "
+                                        f"manifest match)\n")
+                                else:
+                                    entry['filename'] = new_fn
+                                    ep_changed = True
+                                    sys.stderr.write(
+                                        f"[heal-manifest-driven] "
+                                        f"{show_dir.name}/{ep_id}/{kind}/"
+                                        f"{slug}: {old_fn} → {new_fn} "
+                                        f"(filename only)\n")
+                            elif len(candidates_md) > 1:
+                                sys.stderr.write(
+                                    f"[heal-manifest-driven] "
+                                    f"{show_dir.name}/{ep_id}/{kind}/"
+                                    f"{slug}: ambiguous manifest candidates "
+                                    f"{candidates_md}, skipping\n")
+                            else:
+                                # 0 candidates: file exists, no manifest
+                                # slug-prefix match. Возможно legitimate
+                                # (slug=X, manifest=[Y.jpg] без явной
+                                # связи) — leave as-is, но логируем чтобы
+                                # юзер мог проверить если что-то странное.
+                                sys.stderr.write(
+                                    f"[heal-manifest-driven] "
+                                    f"{show_dir.name}/{ep_id}/{kind}/"
+                                    f"{slug}: file exists but no "
+                                    f"slug-prefix match in manifest "
+                                    f"({manifest_list}), leaving as-is\n")
+                            continue
+
+                        # File doesn't exist — (B) [heal-disk-glob]
+                        new_fn = None
+                        log_branch = None
                         old_stem = Path(old_fn).stem
-                        new_fn: Optional[str] = None
                         for ext in exts:
                             cand = sub_base / f"{old_stem}{ext}"
                             if cand.exists() and cand.is_file():
                                 new_fn = f"{old_stem}{ext}"
+                                log_branch = 'heal-disk-glob'
                                 break
-                        # Также пробуем по slug (на случай если old_stem
-                        # вообще ничего общего с реальным slug — старые
-                        # decisions могли иметь хвосты вроде "_v2").
                         if new_fn is None:
                             for ext in exts:
                                 cand = sub_base / f"{slug}{ext}"
                                 if cand.exists() and cand.is_file():
                                     new_fn = f"{slug}{ext}"
+                                    log_branch = 'heal-disk-glob'
                                     break
-                        if new_fn:
+
+                        # (C) [heal-suffix-variant] — slug_2..._9.
+                        new_slug_to_rename = None
+                        if (new_fn is None
+                                and not _re.search(r'_[2-9]$', slug)):
+                            suffix_matches = []
+                            for n in range(2, 10):
+                                variant_stem = f"{slug}_{n}"
+                                for ext in exts:
+                                    cand = sub_base / f"{variant_stem}{ext}"
+                                    if cand.exists() and cand.is_file():
+                                        suffix_matches.append(
+                                            (variant_stem,
+                                             f"{variant_stem}{ext}"))
+                                        break
+                            if len(suffix_matches) == 1:
+                                new_slug_to_rename, new_fn = suffix_matches[0]
+                                log_branch = 'heal-suffix-variant'
+                            elif len(suffix_matches) > 1:
+                                sys.stderr.write(
+                                    f"[heal-suffix-variant] "
+                                    f"{show_dir.name}/{ep_id}/{kind}/"
+                                    f"{slug}: ambiguous variants "
+                                    f"{suffix_matches}, skipping\n")
+
+                        if new_fn and new_slug_to_rename:
+                            pending_renames.append(
+                                (slug, new_slug_to_rename, new_fn))
+                            sys.stderr.write(
+                                f"[{log_branch}] {show_dir.name}/{ep_id}/"
+                                f"{kind}/{slug}: {old_fn} → "
+                                f"{new_slug_to_rename}/{new_fn} "
+                                f"(bucket key rename)\n")
+                        elif new_fn:
                             entry['filename'] = new_fn
                             ep_changed = True
                             sys.stderr.write(
-                                f"[heal] {show_dir.name}/{ep_id}/{kind}/"
-                                f"{slug}: {old_fn} → {new_fn}\n")
+                                f"[{log_branch}] {show_dir.name}/{ep_id}/"
+                                f"{kind}/{slug}: {old_fn} → {new_fn}\n")
                         else:
                             sys.stderr.write(
-                                f"[heal] {show_dir.name}/{ep_id}/{kind}/"
-                                f"{slug}: no matching file for {old_fn}, "
-                                f"skipping (user must relink via UI)\n")
+                                f"[heal-skip] {show_dir.name}/{ep_id}/"
+                                f"{kind}/{slug}: no matching file for "
+                                f"{old_fn}, skipping (user must relink "
+                                f"via UI)\n")
+
+                    # Apply pending bucket-key renames AFTER iteration.
+                    for old_slug, new_slug, new_fn in pending_renames:
+                        old_entry = bucket.pop(old_slug, None)
+                        if old_entry is None:
+                            continue
+                        if not isinstance(old_entry, dict):
+                            old_entry = {'decision': 'linked'}
+                        old_entry['filename'] = new_fn
+                        bucket[new_slug] = old_entry
+                        ep_changed = True
                 if ep_changed:
                     changed = True
                     healed_eps += 1
@@ -1020,6 +1192,8 @@ def heal_stale_decisions(project_root: Path) -> int:
                     traceback.print_exc()
     except Exception:
         traceback.print_exc()
+    sys.stderr.write(
+        f"[heal] scan complete, healed_eps={healed_eps}\n")
     return healed_eps
 
 
@@ -3947,6 +4121,17 @@ class MainWindow(QMainWindow):
         setup_paths_for_show(project_root, self._current_show)
         if self._current_show:
             self._meta = read_episodes_meta(SHOW_ROOT)
+        # 2026-05-11 (v1.0.46) diagnostic: для расследования "empty chats
+        # after auto-update". Если проблема повторится — запуск из
+        # терминала с `2>&1 | tee log.txt` соберёт SHOW_ROOT + meta state
+        # на старте.
+        try:
+            sys.stderr.write(
+                f"[init] current_show={self._current_show!r} "
+                f"SHOW_ROOT={SHOW_ROOT} "
+                f"_meta loaded with {len(self._meta)} episodes\n")
+        except Exception:
+            pass
 
         self.setWindowTitle("Storyboard Studio")
         # Размер окна = ровно под 4 шота 9:16 + chrome без горизонтального скролла.

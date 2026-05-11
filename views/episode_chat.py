@@ -507,6 +507,18 @@ class EpisodeChatView(QWidget):
         if not ep_id:
             return
         msgs = _sa.load_chat_messages(ep_id)
+        # 2026-05-11 (v1.0.46) diagnostic: для расследования "empty
+        # chats after auto-update" (если повторится — собрать stderr
+        # с запуска через terminal). Минимальный overhead — 1 write
+        # на пере-загрузку чата.
+        try:
+            import sys as _sys
+            _chat_path = _sa.chat_log_path(ep_id)
+            _sys.stderr.write(
+                f"[set_episode] ep={ep_id} msgs={len(msgs) if msgs else 0} "
+                f"path={_chat_path} exists={_chat_path.exists()}\n")
+        except Exception:
+            pass
         if not msgs:
             self._render_empty_state()
             return
@@ -1514,6 +1526,31 @@ class EpisodeChatView(QWidget):
                         arr[i] = f"{new_name}.{ext}"
                 refs[sub] = arr
                 ep_obj["refs"] = refs
+                # 2026-05-11 (v1.0.46): cleanup устаревшего refs_decisions
+                # entry под старым slug. Иначе после регенерации decisions
+                # продолжит указывать на чужой файл (от другого эпизода
+                # с тем же первоначальным slug). Новая запись будет добавлена
+                # позже в `_on_active_gen_finished` под new_name.
+                sub_singular = ('location' if gen_type == 'location'
+                                else 'object')
+                decisions_block = ep_obj.get("refs_decisions") or {}
+                bucket = decisions_block.get(sub_singular) or {}
+                if name in bucket:
+                    old_entry = bucket.pop(name)
+                    if not bucket:
+                        decisions_block.pop(sub_singular, None)
+                    if not decisions_block:
+                        ep_obj.pop("refs_decisions", None)
+                    else:
+                        ep_obj["refs_decisions"] = decisions_block
+                    try:
+                        import sys as _sys
+                        _sys.stderr.write(
+                            f"[collision-resolve] {self._ep_id}/"
+                            f"{sub_singular}/{name} → {new_name}: removed "
+                            f"stale decision {old_entry!r}\n")
+                    except Exception:
+                        pass
                 meta[self._ep_id] = ep_obj
                 ep_meta_path.write_text(
                     _json.dumps(meta, ensure_ascii=False, indent=2)
@@ -1863,8 +1900,14 @@ class EpisodeChatView(QWidget):
             self._outfit_descriptions.pop(ep_id, None)
             # Save decision + delete source_btn (скрытая GenButton в
             # _gen_layout) + advance queue.
-            self._save_ref_decision('character', name, "linked",
-                                    filename=picked_name)
+            # 2026-05-11 (v1.0.46): character filename ВСЕГДА хранится с
+            # folder prefix `<character_slug>/<file>`. Раньше передавали
+            # просто picked_name без префикса → decisions ломались и
+            # _linked_file_exists возвращал False → CTA блокировалась.
+            # `name` здесь — это character_slug (имя в чате AI).
+            self._save_ref_decision(
+                'character', name, "linked",
+                filename=f"{name}/{picked_name}")
             try:
                 sender_card.setParent(None)
                 sender_card.deleteLater()
@@ -2087,9 +2130,26 @@ class EpisodeChatView(QWidget):
           • "skipped"  — реф не нужен (AI не цепляет к промптам).
           • "linked"   — юзер выбрал существующий файл `filename`.
           • "" (пустое) — стирает запись (для undo).
+
+        2026-05-11 (v1.0.46): defense-in-depth для character filename.
+        Инвариант: character filename ВСЕГДА хранится с folder prefix
+        `<character_slug>/<file>`. Если caller забыл prefix —
+        автоматически добавляем + log warning. Защищает от регрессии
+        вроде до-v1.0.46 бага в `_on_outfit_accepted`.
         """
         if not self._ep_id:
             return
+        if (gen_type == 'character' and filename
+                and '/' not in filename):
+            old = filename
+            filename = f"{name}/{filename}"
+            try:
+                import sys as _sys
+                _sys.stderr.write(
+                    f"[save_ref_decision] auto-prepended character folder: "
+                    f"{old} → {filename}\n")
+            except Exception:
+                pass
         path = self._ep_meta_path()
         if path is None:
             return
@@ -2552,7 +2612,7 @@ class EpisodeChatView(QWidget):
                 # CTA не показываем чтобы юзер не запустил монтаж
                 # с битой ссылкой.
                 if not self._linked_file_exists(
-                        m.type, d.get('filename') or ''):
+                        m.type, d.get('filename') or '', slug=m.name):
                     unresolved.append(m.name)
                     continue
                 any_linked = True
@@ -2577,7 +2637,8 @@ class EpisodeChatView(QWidget):
         self._montage_cta.show_idle()
         self._montage_cta.show()
 
-    def _linked_file_exists(self, gen_type: str, filename: str) -> bool:
+    def _linked_file_exists(self, gen_type: str, filename: str,
+                             slug: Optional[str] = None) -> bool:
         """Проверяет что файл рефа реально существует на диске.
         Используется в `_check_montage_ready` как safety net для
         linked-decisions с устаревшим filename (см. БАГ 3 — wrong
@@ -2623,21 +2684,46 @@ class EpisodeChatView(QWidget):
             # подменяем только расширение в пределах одной outfit-папки.
             # Это безопасно (выбранный outfit персонажа = та же
             # папка), но защищает от устаревшего hint'а от агента.
+            # 2026-05-11 (v1.0.46): для character БЕЗ '/' в filename
+            # (legacy bug до v1.0.46) — slug-based lookup. Для
+            # location/object — suffix-variant lookup `<slug>_2..._9`.
             from pathlib import Path as _Path
+            exts = ('.jpg', '.jpeg', '.png', '.webp')
             if gen_type in ('location', 'object') and '/' not in filename:
-                slug = _Path(filename).stem
-                for ext in ('.jpg', '.jpeg', '.png', '.webp'):
-                    if (base / f"{slug}{ext}").exists():
+                stem = _Path(filename).stem
+                for ext in exts:
+                    if (base / f"{stem}{ext}").exists():
                         return True
-            elif gen_type == 'character' and '/' in filename:
-                # character: filename = "folder/file.ext"
-                folder, _, file_part = filename.partition('/')
-                file_stem = _Path(file_part).stem
-                folder_path = base / folder
-                if folder_path.is_dir():
-                    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
-                        if (folder_path / f"{file_stem}{ext}").exists():
-                            return True
+                # v1.0.46: suffix variants <slug>_N.<ext> для
+                # collision-resolve кейсов где decisions устарел.
+                # Используем slug если передан, иначе stem.
+                lookup_slug = slug or stem
+                import re as _re
+                if not _re.search(r'_[2-9]$', lookup_slug):
+                    for n in range(2, 10):
+                        for ext in exts:
+                            if (base / f"{lookup_slug}_{n}{ext}").exists():
+                                return True
+            elif gen_type == 'character':
+                if '/' in filename:
+                    # character: filename = "folder/file.ext"
+                    folder, _, file_part = filename.partition('/')
+                    file_stem = _Path(file_part).stem
+                    folder_path = base / folder
+                    if folder_path.is_dir():
+                        for ext in exts:
+                            if (folder_path / f"{file_stem}{ext}").exists():
+                                return True
+                elif slug:
+                    # v1.0.46: filename без folder prefix (legacy bug
+                    # до v1.0.46). Используем slug как имя character-
+                    # folder. НЕ scan'им все subdirs — outfit-safety.
+                    file_stem = _Path(filename).stem
+                    folder_path = base / slug
+                    if folder_path.is_dir():
+                        for ext in exts:
+                            if (folder_path / f"{file_stem}{ext}").exists():
+                                return True
             return False
         except Exception:
             return False
