@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.48** (см. `version.json`).
+- Текущая: **v1.0.49** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -185,6 +185,28 @@ agent'а с interface language vs cultural context.
 примеров в `threads/autonomous_gen.py` (заменены на нейтральное
 «outdated / cheap-looking / low-budget rural»). Агент больше не
 видит эти токены как «valid в данном контексте».
+
+## Description channels for autonomous gen (v1.0.49)
+
+При парсинге ✗-строк в чате эпизода используется приоритет каналов:
+
+1. `[[GEN:type:name:description]]` маркер — primary, через
+   `parse_gen_markers` ([views/_chat_render.py:41](views/_chat_render.py:41)).
+2. Скобки `(описание)` после slug — fallback для location/object,
+   через `_FALLBACK_LINE_RE` ([views/_chat_render.py:280](views/_chat_render.py:280)).
+3. Хвост после `— ` — последний fallback. Обычно служебная фраза
+   («нужен реф» / «рефа нет»), без полезной информации.
+
+До v1.0.49 канал #2 выбрасывался для location/object (`display = ""`,
+description = только хвост после `— `) → gen-agent получал «нужен реф»
+вместо реального описания → промпт для FastGen без контекста →
+generic-default картинка (helmet → tactical combat вместо
+construction hard hat).
+
+Defensive instructions в [threads/autonomous_gen.py:78-104](threads/autonomous_gen.py:78)
+(location SOCIAL/GENRE) и [autonomous_gen.py:124-160](threads/autonomous_gen.py:124)
+(object) остаются safety-net'ом поверх — переводят luxury/expensive/etc.
+в English-промпт. Они не конфликтуют с fallback-каналом, а дополняют его.
 
 ## Thinking dots animation — hand-off & multi-ep registry
 

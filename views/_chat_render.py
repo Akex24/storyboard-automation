@@ -277,7 +277,20 @@ def synthesize_gen_markers(full_text: str) -> List[GenMarker]:
             if not slug or slug in seen_names:
                 continue
             seen_names.add(slug)
-            desc = m.group('desc').strip()
+            # 2026-05-11 (v1.0.49): для location/object содержимое скобок
+            # `(описание)` — это РЕАЛЬНОЕ описание предмета/места (см.
+            # `[[GEN:type:name:description]]` в new_episode.py). Хвост
+            # после `— ` всегда служебная фраза («нужен реф» / «рефа нет»
+            # / «буду генерировать») — в pipeline её тащить нельзя, иначе
+            # gen-agent на голом slug рисует generic-default (helmet →
+            # tactical combat вместо строительной каски). Скобки как
+            # fallback КОГДА AI забыл вставить `[[GEN:...]]` маркер.
+            # Character-ветка не задета — orig там идёт в display (имя).
+            raw_desc = m.group('desc').strip()
+            if current_type in ('location', 'object') and orig:
+                desc = orig
+            else:
+                desc = raw_desc
             markers.append(GenMarker(
                 type=current_type,
                 name=slug,
