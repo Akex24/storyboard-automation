@@ -776,20 +776,131 @@ class _SceneHighlighter:
         return _Real(document)
 
 
-def finalize_pending_update(project_root: Path) -> Optional[Tuple[str, Optional[Path]]]:
+def _finalize_pending_reboot(project_root: Path,
+                              reboot_marker: Path) -> Optional[Tuple]:
+    """2026-05-11 (v1.0.44): обработчик `pending_reboot.txt`.
+
+    Маркер пишется PowerShell-helper'ом в bootstrap'е когда retry-loop
+    не отвинтил handle на target onedir (Defender держит). Helper
+    через MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT) планирует move/copy
+    на следующий рестарт Windows и пишет в `pending_reboot.txt`:
+        target_version=X.Y.Z
+        scheduled_at=<ISO UTC>
+
+    Логика финализации:
+      1. Парсим target_version + scheduled_at.
+      2. На Win получаем last boot time через ctypes
+         `kernel32.GetTickCount64()` → boot_time = now - uptime_ms/1000.
+      3. Если boot_time > scheduled_at → reboot ПРОИЗОШЁЛ после планирования
+         → Windows применила MoveFileEx'ы из registry → bundle подменён →
+         bump version.json, удаляем markers, возвращаем
+         ('reboot_install_success', target_version, None, None).
+      4. Иначе → reboot ещё не было → возвращаем
+         ('reboot_pending', target_version, None, scheduled_at_unix)
+         чтобы MainWindow показал inline-баннер «нужна перезагрузка».
+      5. На Mac (where defer-marker не должен появляться) — defensive
+         cleanup маркера, возвращаем None.
+    """
+    if sys.platform != 'win32':
+        # Defensive cleanup на не-Windows — defer-маркер тут не создаётся.
+        try:
+            reboot_marker.unlink()
+        except Exception:
+            pass
+        return None
+
+    try:
+        content = reboot_marker.read_text(encoding='utf-8').strip()
+        kv = {}
+        for line in content.splitlines():
+            if '=' in line:
+                k, v = line.split('=', 1)
+                kv[k.strip()] = v.strip()
+        target_version = kv.get('target_version', '?')
+        scheduled_at_str = kv.get('scheduled_at', '')
+        # Parse ISO UTC timestamp (e.g. "2026-05-11T15:30:00Z").
+        scheduled_at_unix: Optional[float] = None
+        if scheduled_at_str:
+            try:
+                # Python 3.7+: fromisoformat не понимает 'Z' до 3.11 → strip.
+                s = scheduled_at_str.rstrip('Z')
+                dt = datetime.datetime.fromisoformat(s)
+                # Treat as UTC. Convert to Unix epoch.
+                scheduled_at_unix = dt.replace(
+                    tzinfo=datetime.timezone.utc).timestamp()
+            except Exception:
+                traceback.print_exc()
+
+        # Last boot time via ctypes GetTickCount64.
+        boot_time_unix: Optional[float] = None
+        try:
+            import ctypes as _ct
+            ticks_ms = _ct.windll.kernel32.GetTickCount64()
+            boot_time_unix = time.time() - (ticks_ms / 1000.0)
+        except Exception:
+            traceback.print_exc()
+
+        if (scheduled_at_unix is not None and
+                boot_time_unix is not None and
+                boot_time_unix > scheduled_at_unix):
+            # Reboot произошёл после планирования → MoveFileEx применился →
+            # install completed. Bump version.json и чистим markers.
+            try:
+                vfile = project_root / "version.json"
+                data = (json.loads(vfile.read_text(encoding='utf-8'))
+                        if vfile.exists() else {})
+                data["app_version"] = target_version
+                data["version"] = target_version  # legacy compat
+                tmp = vfile.with_suffix(".json.tmp")
+                tmp.write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                    encoding='utf-8',
+                )
+                import os as _os
+                _os.replace(str(tmp), str(vfile))
+            except Exception:
+                traceback.print_exc()
+            for marker in ("pending_reboot.txt", "pending_version.txt",
+                           "pending_rollback.txt"):
+                try:
+                    p = project_root / marker
+                    if p.exists():
+                        p.unlink()
+                except Exception:
+                    pass
+            return ('reboot_install_success', target_version, None, None)
+
+        # Reboot ещё не было → показываем баннер.
+        return ('reboot_pending', target_version, None, scheduled_at_unix)
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+def finalize_pending_update(project_root: Path) -> Optional[Tuple]:
     """Финализирует авто-обновление после рестарта через bootstrap-скрипт.
 
-    Вызывается из MainWindow.__init__ при каждом старте Studio. Делает
-    три вещи (все опциональны, ошибки молча проглатываются):
+    Вызывается из MainWindow.__init__ при каждом старте Studio. Делает:
 
       1. Маркеры от прошлого DownloadAppUpdateThread:
+         - `pending_reboot.txt` (v1.0.44+) — bootstrap'у не удалось подменить
+           bundle сразу (Defender лочит), вместо ошибки запланирован move
+           через MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT). Содержит
+           `target_version=X.Y.Z` и `scheduled_at=<ISO UTC>`. Сравниваем
+           `scheduled_at` с last boot time через ctypes GetTickCount64:
+           - если boot был ПОСЛЕ scheduled → reboot произошёл → MoveFileEx
+             применился Windows'ом до user logon → install completed →
+             bump version.json + удаляем все markers → возвращаем
+             ('reboot_install_success', target_version, None, None).
+           - если boot ДО scheduled → reboot ещё не было → возвращаем
+             ('reboot_pending', target_version, None, scheduled_at_unix)
+             чтобы MainWindow показал inline-баннер «нужна перезагрузка».
          - `pending_rollback.txt` (содержит OLD app_version) — если bat
            ЗАВЕРШИЛСЯ УСПЕШНО, он сам удалил этот файл. Если файл ОСТАЛСЯ
            → bat упал на середине → подмена .exe не удалась →
            откатываем `version.json[app_version]` на старое значение и
-           возвращаем кортеж (attempted_version, log_path) чтобы
-           MainWindow показал popup-предупреждение со ссылкой на
-           ручный Installer.
+           возвращаем ('update_failed', attempted_version, log_path, None)
+           чтобы MainWindow показал popup со ссылкой на ручный Installer.
          - `pending_version.txt` (содержит NEW app_version) — пишется
            всегда вместе с rollback. При success-сценарии: только этот
            файл существует → обновляем `version.json[app_version]` на
@@ -804,16 +915,27 @@ def finalize_pending_update(project_root: Path) -> Optional[Tuple[str, Optional[
          rename trick.
 
     Возвращает:
-        None — обычный случай (нет update либо успех).
-        (attempted_version, log_path) — bootstrap упал. MainWindow
-        должен показать popup. log_path может быть None если лог не
-        найден (диагностика всё равно полезна юзеру с указанием
-        попытки версии).
+        None — обычный случай (нет update либо clean success).
+        4-tuple (state, target_version, log_path, scheduled_at) где
+        state ∈ {'update_failed', 'reboot_pending', 'reboot_install_success'}.
+        MainWindow в showEvent / на старте обрабатывает по state.
 
     Все операции внутри try/except — Studio не должна падать при старте
     из-за проблем с update-инфраструктурой.
     """
-    update_failed: Optional[Tuple[str, Optional[Path]]] = None
+    # 2026-05-11 (v1.0.44): сначала проверяем pending_reboot.txt — это
+    # «defer-mode» маркер от RM API + MoveFileEx escalation в bootstrap.
+    # Если есть — определяем, был ли реальный рестарт Windows после
+    # планирования (boot_time > scheduled_at), и либо финализируем install
+    # либо ждём reboot.
+    try:
+        reboot_marker = project_root / "pending_reboot.txt"
+        if reboot_marker.exists():
+            return _finalize_pending_reboot(project_root, reboot_marker)
+    except Exception:
+        traceback.print_exc()
+
+    update_failed: Optional[Tuple] = None
     try:
         rollback_marker = project_root / "pending_rollback.txt"
         version_marker = project_root / "pending_version.txt"
@@ -854,7 +976,7 @@ def finalize_pending_update(project_root: Path) -> Optional[Tuple[str, Optional[
                         log_path = candidates[0]
                 except Exception:
                     pass
-                update_failed = (attempted or "?", log_path)
+                update_failed = ('update_failed', attempted or "?", log_path, None)
                 # Удалить markers (мы уже обработали fail).
                 try:
                     rollback_marker.unlink()
@@ -898,9 +1020,10 @@ def finalize_pending_update(project_root: Path) -> Optional[Tuple[str, Optional[
         tmp_root = Path(_tf.gettempdir())
         # Если у нас есть active log_path для popup'а — не трогаем его dir,
         # юзер кликнет на ссылку «Открыть лог».
+        # update_failed = (state, version, log_path, scheduled_at), индекс 2 = log_path.
         protected_dir = None
-        if update_failed is not None and update_failed[1] is not None:
-            protected_dir = update_failed[1].parent
+        if update_failed is not None and update_failed[2] is not None:
+            protected_dir = update_failed[2].parent
         for p in tmp_root.glob("storyboard_update_*"):
             try:
                 if p.is_dir() and p != protected_dir:
@@ -3627,12 +3750,18 @@ class MainWindow(QMainWindow):
         # 2026-05-08 (Шаг 2): post-bootstrap finalize.
         # 2026-05-09: добавлен detect failed bootstrap (через
         # `pending_rollback.txt`). Если bat упал на середине, finalize
-        # откатывает version.json и возвращает (attempted_version, log_path)
-        # → показываем popup пользователю чтобы скачал Installer вручную.
+        # откатывает version.json → показываем popup пользователю.
         # Отложенный показ — через showEvent + 200мс QTimer, чтобы окно
         # успело отрисоваться даже на медленных Win-машинах (фиксированный
         # 500мс не гарантировал на slow-моделях).
-        self._update_failure_info: Optional[Tuple[str, Optional[Path]]] = (
+        # 2026-05-11 (v1.0.44): finalize_pending_update возвращает 4-tuple
+        # `(state, target_version, log_path, scheduled_at)` либо None.
+        # state ∈ {'update_failed', 'reboot_pending', 'reboot_install_success'}.
+        # `_update_failure_info` хранит весь tuple; диспатч в showEvent
+        # идёт по индексу 0. Доступ к полям — ТОЛЬКО через индексы
+        # (info[1], info[2], info[3]), НЕ через unpacking — чтобы изменения
+        # формы tuple'а в будущем не ломали call sites.
+        self._update_failure_info: Optional[Tuple] = (
             finalize_pending_update(project_root))
         self._first_show_done: bool = False
         # 2026-05-09: self-healing синк pipeline.py из bundle в project_root.
@@ -4619,21 +4748,37 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         if not getattr(self, '_first_show_done', False):
             self._first_show_done = True
-            if getattr(self, '_update_failure_info', None) is not None:
-                QTimer.singleShot(200, self._show_update_failed_dialog)
+            info = getattr(self, '_update_failure_info', None)
+            if info is not None:
+                # 2026-05-11 (v1.0.44): диспатч по state[0]:
+                #   'update_failed'           → popup со ссылкой на Installer
+                #   'reboot_pending'          → inline баннер «нужна перезагрузка»
+                #   'reboot_install_success'  → toast «обновлено»
+                state = info[0] if info else None
+                if state == 'reboot_pending':
+                    QTimer.singleShot(200, self._show_reboot_pending_banner)
+                elif state == 'reboot_install_success':
+                    QTimer.singleShot(200, self._show_install_success_toast)
+                else:
+                    QTimer.singleShot(200, self._show_update_failed_dialog)
 
     def _show_update_failed_dialog(self):
         """Popup при старте если предыдущий auto-update упал на середине.
 
-        Triggered: `finalize_pending_update` вернул кортеж (attempted, log).
+        Triggered: `finalize_pending_update` вернул кортеж с state='update_failed'.
         Действия: показать QMessageBox с кликабельной ссылкой на Installer
         и (если есть) на bootstrap.log. После клика OK — popup исчезает.
+
+        2026-05-11 (v1.0.44): info теперь 4-tuple (state, version, log, scheduled_at),
+        разворачиваем индексы 1 (version) и 2 (log).
         """
         info = getattr(self, '_update_failure_info', None)
         if not info:
             return
         self._update_failure_info = None  # show only once
-        attempted_version, log_path = info
+        # info = (state, target_version, log_path, scheduled_at)
+        attempted_version = info[1]
+        log_path = info[2]
 
         msg = QMessageBox(self)
         msg.setWindowTitle(tr('update_failed_title'))
@@ -4657,6 +4802,132 @@ class MainWindow(QMainWindow):
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         try:
             msg.exec()
+        except Exception:
+            traceback.print_exc()
+
+    def _show_reboot_pending_banner(self):
+        """2026-05-11 (v1.0.44): inline-баннер «нужна перезагрузка» если
+        прошлый bootstrap'у пришлось эскалировать в reboot-defer fallback
+        (RM API + MoveFileEx). Триггер: `finalize_pending_update` вернул
+        кортеж с state='reboot_pending'. info=(state, target_ver, None,
+        scheduled_at_unix).
+
+        UX: появляется НЕ-блокирующим баннером в шапке (после auth-баннера).
+        Кнопка «Понятно» скрывает баннер до следующего запуска. Если
+        прошло >7 дней с момента scheduled_at — текст становится более
+        настойчивым (включает версию)."""
+        info = getattr(self, '_update_failure_info', None)
+        if not info or info[0] != 'reboot_pending':
+            return
+        self._update_failure_info = None
+        target_version = info[1]
+        scheduled_at_unix = info[3]
+
+        days_passed = 0
+        if scheduled_at_unix is not None:
+            try:
+                days_passed = (time.time() - scheduled_at_unix) / 86400.0
+            except Exception:
+                pass
+        if days_passed >= 7:
+            text = tr('update_pending_reboot_urgent').format(
+                version=target_version)
+        else:
+            text = tr('update_pending_reboot_short')
+        try:
+            self._build_and_show_reboot_banner(text)
+        except Exception:
+            traceback.print_exc()
+
+    def _build_and_show_reboot_banner(self, text: str):
+        """Создаёт inline-баннер «нужна перезагрузка» и вставляет в layout
+        рядом с auth-баннером. Скрыть — кнопка «Понятно» (баннер удаляется
+        из layout). На следующем запуске Studio баннер появится снова
+        пока `pending_reboot.txt` существует И boot_time < scheduled_at."""
+        from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
+        banner = QFrame(self)
+        banner.setObjectName("reboot-banner")
+        banner.setStyleSheet(
+            "QFrame#reboot-banner { background: #2c2240; "
+            "border: 1px solid #4a3a6a; border-radius: 8px; padding: 6px; }"
+            "QLabel { color: #e0d0ff; font-size: 13px; }"
+            "QPushButton { background: #3a2d55; color: #fff; "
+            "border: 1px solid #5a4a78; border-radius: 6px; padding: 6px 14px; }"
+            "QPushButton:hover { background: #4a3a6a; }"
+        )
+        lay = QHBoxLayout(banner)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.setSpacing(10)
+        label = QLabel(f"🔄  {text}")
+        label.setWordWrap(True)
+        dismiss = QPushButton(tr('update_pending_reboot_dismiss'))
+        dismiss.clicked.connect(lambda: self._dismiss_reboot_banner(banner))
+        lay.addWidget(label, 1)
+        lay.addWidget(dismiss, 0)
+        # Вставляем в main layout сразу после auth-banner если он есть,
+        # иначе в начало content area.
+        try:
+            ab = getattr(self, 'auth_banner', None)
+            if ab is not None and ab.parent() is not None:
+                parent_layout = ab.parent().layout()
+                if parent_layout is not None:
+                    idx = parent_layout.indexOf(ab)
+                    if idx >= 0:
+                        parent_layout.insertWidget(idx + 1, banner)
+                        self._reboot_banner = banner
+                        return
+        except Exception:
+            traceback.print_exc()
+        # Fallback: добавляем в центральный widget.
+        try:
+            cw = self.centralWidget()
+            if cw is not None and cw.layout() is not None:
+                cw.layout().insertWidget(0, banner)
+                self._reboot_banner = banner
+        except Exception:
+            traceback.print_exc()
+
+    def _dismiss_reboot_banner(self, banner):
+        """Скрыть reboot-баннер до следующего запуска Studio. НЕ удаляем
+        `pending_reboot.txt` — при следующем старте баннер появится снова
+        (если reboot всё ещё не произошёл)."""
+        try:
+            banner.setParent(None)
+            banner.deleteLater()
+        except Exception:
+            traceback.print_exc()
+
+    def _show_install_success_toast(self):
+        """2026-05-11 (v1.0.44): short notification что reboot произошёл и
+        deferred install был применён Windows'ом до user logon. Триггер:
+        `finalize_pending_update` вернул state='reboot_install_success' —
+        version.json уже забампан, markers удалены. Юзеру просто покажем
+        тостер «обновлено до vX.Y.Z» на 5 секунд."""
+        info = getattr(self, '_update_failure_info', None)
+        if not info or info[0] != 'reboot_install_success':
+            return
+        self._update_failure_info = None
+        target_version = info[1]
+        try:
+            from PyQt6.QtWidgets import QLabel
+            from PyQt6.QtCore import Qt as _Qt
+            toast = QLabel(self)
+            toast.setText(
+                tr('update_install_success_toast').format(version=target_version))
+            toast.setStyleSheet(
+                "background: #2d4a2d; color: #d0ffd0; "
+                "border: 1px solid #4a6e4a; border-radius: 8px; "
+                "padding: 10px 18px; font-size: 13px;")
+            toast.setWindowFlags(
+                _Qt.WindowType.ToolTip | _Qt.WindowType.FramelessWindowHint)
+            toast.adjustSize()
+            # Позиционируем по центру-снизу окна.
+            geo = self.geometry()
+            toast.move(
+                geo.x() + (geo.width() - toast.width()) // 2,
+                geo.y() + geo.height() - toast.height() - 80)
+            toast.show()
+            QTimer.singleShot(5000, toast.deleteLater)
         except Exception:
             traceback.print_exc()
 

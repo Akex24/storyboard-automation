@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.42** (см. `version.json`).
+- Текущая: **v1.0.43** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -24,11 +24,17 @@
     в bundle ещё не имеет warmup + 30 retries, генерит свой старый bat
     (15 retries, без warmup). v1.0.42 установлен на Windows вручную через
     Installer.exe в обход in-process updater'а.
-  - **v1.0.43 — verification release**: проверка что новый bat от v1.0.42
-    (с warmup + 30 retries × 2с = 60с окно + AV-snapshot logging) реально
-    работает при апдейте v1.0.42 → v1.0.43 на Win-машинах со стэком
-    Defender + Yandex Protect. Полезной нагрузки в v1.0.43 нет — только
-    этот doc-bump для не-пустого diff'а чтобы Send Update смог собрать.
+  - **v1.0.42 → v1.0.43 апдейт упал** — новый bat сработал (warmup
+    лог, 30 retries × 2с = 64с реального ожидания, AV snapshot работает),
+    но Defender (PID 5208, MsMpEng.exe) держал handle ВСЕ 64 секунды
+    беспрерывно. Yandex Protect ни разу не появился в AV-snapshot'ах —
+    единственный виновник Defender. «Просто увеличить окно — лотерея».
+  - **v1.0.44 — RM API + reboot-deferred install fallback**: после
+    исчерпания retry-loop bat зовёт `update_helper.ps1 -Mode Defer`,
+    который через Restart Manager API логгирует точных holder'ов и через
+    `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` планирует подмену bundle
+    на следующий рестарт Windows. Studio показывает inline-баннер «нужна
+    перезагрузка» вместо popup ошибки. См. секцию «Failure mode B».
 
 ## Архитектурные решения которые легко забыть
 
@@ -450,6 +456,42 @@ overwrite'ит project pipeline.py из bundle если содержимое о�
   Будущая диагностика без Sysinternals.
   Если 60 сек не хватит — следующий шаг **Restart Manager API**
   через PowerShell P/Invoke (v1.0.43+).
+- **2026-05-11 (v1.0.44) — Failure mode B (reboot-deferred install):**
+  На v1.0.43 наблюдался кейс где Defender держит handle ВСЕ 64 сек
+  retry-loop'а беспрерывно — увеличение окна = лотерея. Решение —
+  канонический Windows installer pattern: рядом с `update.bat` теперь
+  лежит `update_helper.ps1` (генерится в `_make_bootstrap` Win-ветке
+  из константы `_PS_HELPER_TEMPLATE`). Два режима:
+  - **`-Mode Diagnose`** заменяет старый `tasklist | findstr` AV-snapshot
+    на авторитетный Restart Manager API (rstrtmgr.dll) через C# P/Invoke
+    stubs. Возвращает точный список holder'ов: PID, AppName, ServiceName,
+    Type (Critical / Service / MainWindow / Explorer / etc).
+  - **`-Mode Defer`** — escalation после исчерпания 30-сек retry-loop.
+    Шаги: (1) RM Diagnose (для лога); (2) Copy new bundle в staging dir
+    `<target>.new` (нет AV race — это NEW путь); (3) `MoveFileEx(
+    MOVEFILE_DELAY_UNTIL_REBOOT)` через kernel32 P/Invoke: schedule
+    deletion для всех файлов и папок target + schedule rename
+    staging → target; (4) Write `pending_reboot.txt` в project_root с
+    `target_version` + `scheduled_at` (ISO UTC); (5) Delete
+    `pending_rollback.txt` (НЕ откатываем версию — install запланирован).
+  - **На рестарте Windows** session manager применяет MoveFileEx-очередь
+    из реестра (`HKLM\System\CurrentControlSet\Control\Session Manager\
+    PendingFileRenameOperations`) ДО загрузки user-сервисов — Defender
+    ещё не запущен в эту фазу boot, нет race.
+  - **Studio при следующем старте** (`finalize_pending_update` →
+    `_finalize_pending_reboot`): получает last boot time через
+    `ctypes.windll.kernel32.GetTickCount64()`. Если boot был ПОСЛЕ
+    `scheduled_at` → reboot произошёл → MoveFileEx применился → bump
+    `version.json[app_version]` на target + удалить все markers →
+    показать toast «обновлено». Иначе → reboot ещё не было → показать
+    inline-баннер «нужна перезагрузка» (через 7 дней — более настойчивый
+    текст с указанием версии).
+  - **КРИТИЧНО:** НЕ пытаемся RmShutdown терминировать Defender.
+    `MsMpEng.exe` — Protected Process Light (PPL), даже SYSTEM с admin
+    не убьёт его. RM API используется ТОЛЬКО для диагностики.
+  - **i18n keys:** `update_pending_reboot_short`,
+    `update_pending_reboot_urgent`, `update_pending_reboot_dismiss`,
+    `update_install_success_toast` — ru/uk/en.
 - Bat пишет полный лог в `update_dir/bootstrap.log` (не stdout/stderr).
   `update_dir` НЕ удаляется bootstrap'ом — Studio при следующем старте
   чистит через `finalize_pending_update`, но защищает папку с активным

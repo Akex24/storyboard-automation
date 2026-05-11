@@ -349,6 +349,230 @@ class DownloadAppUpdateThread(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+    # 2026-05-11 (v1.0.44): PowerShell helper для Win bootstrap'а.
+    # Содержит два режима:
+    #   -Mode Diagnose — авторитетно через Restart Manager API (rstrtmgr.dll)
+    #     определяет процессы держащие файлы target onedir. Заменяет
+    #     эвристический `tasklist | findstr` snapshot на точные PID/AppName/
+    #     ServiceName/Type (Critical/Service/MainWindow/etc).
+    #   -Mode Defer — escalation path после исчерпания retry-loop:
+    #     1) Diagnose holders (для лога).
+    #     2) Copy new bundle в staging dir `target.new` (NEW путь, нет AV race).
+    #     3) MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT) через P/Invoke kernel32:
+    #        - schedule delete всех файлов и папок target/
+    #        - schedule rename staging → target
+    #     4) Write `pending_reboot.txt` в project_root.
+    #     5) Delete `pending_rollback.txt` (НЕ откатываем — install запланирован
+    #        на следующий рестарт Windows).
+    #     6) Exit 0. Studio запускается старая (current bundle), показывает
+    #        non-blocking баннер «нужна перезагрузка». На рестарте Windows
+    #        ДО загрузки user-сервисов применяет MoveFileEx из реестра
+    #        HKLM\System\CurrentControlSet\Control\Session Manager\
+    #        PendingFileRenameOperations — bundle подменяется без Defender'а
+    #        (он ещё не запущен в эту фазу boot).
+    #
+    # КРИТИЧНО: НЕ пытаемся RmShutdown терминировать Defender. MsMpEng.exe —
+    # Protected Process Light (PPL), даже SYSTEM с admin не убьёт его.
+    # RM API используется ТОЛЬКО для диагностики (логгирование holders).
+    #
+    # Файл генерируется как UTF-8 с BOM (utf-8-sig) чтобы PowerShell корректно
+    # парсил unicode (русские пути / app names в RM API могут содержать non-ASCII).
+    _PS_HELPER_TEMPLATE = r'''[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][ValidateSet('Diagnose','Defer')]
+    [string]$Mode,
+    [Parameter(Mandatory=$true)][string]$Target,
+    [Parameter(Mandatory=$false)][string]$NewSrc,
+    [Parameter(Mandatory=$false)][string]$ProjectRoot,
+    [Parameter(Mandatory=$false)][string]$TargetVersion,
+    [Parameter(Mandatory=$true)][string]$LogPath
+)
+$ErrorActionPreference = 'Continue'
+
+function Log {
+    param([string]$Msg)
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    try { Add-Content -Path $LogPath -Value "[$ts] [helper-$Mode] $Msg" -ErrorAction SilentlyContinue } catch {}
+}
+
+# C# stubs: Restart Manager API + MoveFileEx P/Invoke.
+# -ErrorAction SilentlyContinue: если тип уже зарегистрирован (повторный вызов в
+#   одной PS-сессии — теоретически не наш кейс, но defensive).
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+
+public class RestartManager {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RM_UNIQUE_PROCESS {
+        public int dwProcessId;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+    }
+    public const int CCH_RM_MAX_APP_NAME = 255;
+    public const int CCH_RM_MAX_SVC_NAME = 63;
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct RM_PROCESS_INFO {
+        public RM_UNIQUE_PROCESS Process;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCH_RM_MAX_APP_NAME + 1)]
+        public string strAppName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCH_RM_MAX_SVC_NAME + 1)]
+        public string strServiceShortName;
+        public uint ApplicationType;
+        public uint AppStatus;
+        public uint TSSessionId;
+        [MarshalAs(UnmanagedType.Bool)] public bool bRestartable;
+    }
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Auto)]
+    public static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, string strSessionKey);
+    [DllImport("rstrtmgr.dll")]
+    public static extern int RmEndSession(uint pSessionHandle);
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Auto)]
+    public static extern int RmRegisterResources(uint pSessionHandle, uint nFiles, string[] rgsFilenames,
+        uint nApplications, RM_UNIQUE_PROCESS[] rgApplications, uint nServices, string[] rgsServiceNames);
+    [DllImport("rstrtmgr.dll")]
+    public static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo,
+        [In, Out] RM_PROCESS_INFO[] rgAffectedApps, ref uint lpdwRebootReasons);
+}
+public class Win32File {
+    public const uint MOVEFILE_REPLACE_EXISTING = 0x1;
+    public const uint MOVEFILE_DELAY_UNTIL_REBOOT = 0x4;
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+}
+"@ -ErrorAction SilentlyContinue
+
+function Get-FileHolders {
+    param([string[]]$Files)
+    [uint32]$sessionHandle = 0
+    $sessionKey = [System.Guid]::NewGuid().ToString()
+    $rc = [RestartManager]::RmStartSession([ref]$sessionHandle, 0, $sessionKey)
+    if ($rc -ne 0) { Log "RmStartSession failed: rc=$rc"; return @() }
+    try {
+        $rc = [RestartManager]::RmRegisterResources($sessionHandle, $Files.Count, $Files, 0, $null, 0, $null)
+        if ($rc -ne 0) { Log "RmRegisterResources failed: rc=$rc"; return @() }
+        [uint32]$needed = 0; [uint32]$got = 64; [uint32]$reasons = 0
+        $procs = New-Object 'RestartManager+RM_PROCESS_INFO[]' 64
+        $rc = [RestartManager]::RmGetList($sessionHandle, [ref]$needed, [ref]$got, $procs, [ref]$reasons)
+        if ($rc -ne 0 -and $rc -ne 234) { Log "RmGetList failed: rc=$rc"; return @() }
+        $results = @()
+        for ($i = 0; $i -lt $got; $i++) {
+            $results += [PSCustomObject]@{
+                PID         = $procs[$i].Process.dwProcessId
+                AppName     = $procs[$i].strAppName
+                ServiceName = $procs[$i].strServiceShortName
+                Type        = $procs[$i].ApplicationType
+                Restartable = $procs[$i].bRestartable
+            }
+        }
+        return $results
+    } finally {
+        [void][RestartManager]::RmEndSession($sessionHandle)
+    }
+}
+
+# === MAIN ===
+Log "starting (Mode=$Mode, Target=$Target)"
+
+# Gather sample files to register: .exe + up to 20 .dll/.pyd из _internal/
+$exe = Join-Path $Target 'Storyboard Studio.exe'
+$files = @()
+if (Test-Path -LiteralPath $exe) { $files += $exe }
+$internal = Join-Path $Target '_internal'
+if (Test-Path -LiteralPath $internal) {
+    $extra = Get-ChildItem -LiteralPath $internal -Recurse -File -Include '*.dll','*.pyd' -ErrorAction SilentlyContinue | Select-Object -First 20
+    $files += ($extra | ForEach-Object { $_.FullName })
+}
+Log "registered $($files.Count) files for RM Diagnose"
+
+$holders = @(Get-FileHolders -Files $files)
+if ($holders.Count -eq 0) {
+    Log "RM API: no holders detected (target appears free)"
+} else {
+    Log "RM API: $($holders.Count) holder(s) found:"
+    foreach ($h in $holders) {
+        $typeName = switch ([int]$h.Type) {
+            1 { 'MainWindow' }
+            2 { 'OtherWindow' }
+            3 { 'Service' }
+            4 { 'Explorer' }
+            5 { 'Console' }
+            1000 { 'Critical' }
+            default { "Type$($h.Type)" }
+        }
+        Log "  PID=$($h.PID) Type=$typeName AppName='$($h.AppName)' Service='$($h.ServiceName)' Restartable=$($h.Restartable)"
+    }
+}
+
+if ($Mode -eq 'Diagnose') { exit 0 }
+
+# ============ Defer mode ============
+Log "entering reboot-defer fallback"
+
+$staging = "$Target.new"
+try {
+    if (Test-Path -LiteralPath $staging) {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Log "copying new bundle to staging: $staging"
+    Copy-Item -LiteralPath $NewSrc -Destination $staging -Recurse -Force
+    Log "staging copy completed"
+} catch {
+    Log "FATAL: staging copy failed: $_"
+    exit 1
+}
+
+$failed = 0; $scheduled = 0
+
+# Schedule deletion of every file in target (DELAY_UNTIL_REBOOT, dst=$null)
+Get-ChildItem -LiteralPath $Target -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $ok = [Win32File]::MoveFileEx($_.FullName, $null, [Win32File]::MOVEFILE_DELAY_UNTIL_REBOOT)
+    if ($ok) { $scheduled++ } else { $failed++; Log "MoveFileEx delete-file failed: $($_.FullName) err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+}
+# Schedule deletion of every subdir (depth-first → leaves first)
+Get-ChildItem -LiteralPath $Target -Recurse -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object {
+    $ok = [Win32File]::MoveFileEx($_.FullName, $null, [Win32File]::MOVEFILE_DELAY_UNTIL_REBOOT)
+    if ($ok) { $scheduled++ } else { $failed++; Log "MoveFileEx delete-dir failed: $($_.FullName)" }
+}
+# Top-level target dir itself
+$ok = [Win32File]::MoveFileEx($Target, $null, [Win32File]::MOVEFILE_DELAY_UNTIL_REBOOT)
+if ($ok) { $scheduled++ } else { $failed++; Log "MoveFileEx delete target-root failed" }
+
+# Schedule rename staging → target (DELAY_UNTIL_REBOOT applies after deletes)
+$flags = [Win32File]::MOVEFILE_REPLACE_EXISTING -bor [Win32File]::MOVEFILE_DELAY_UNTIL_REBOOT
+$ok = [Win32File]::MoveFileEx($staging, $Target, $flags)
+if ($ok) { $scheduled++ } else { $failed++; Log "MoveFileEx rename staging→target failed" }
+
+Log "MoveFileEx: scheduled=$scheduled failed=$failed"
+
+if ($failed -gt 0) {
+    Log "FATAL: $failed MoveFileEx calls failed — rolling back staging, exit 1"
+    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+
+# Write pending_reboot.txt
+$rebootMarker = Join-Path $ProjectRoot 'pending_reboot.txt'
+$now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$content = "target_version=$TargetVersion`r`nscheduled_at=$now`r`n"
+try {
+    [System.IO.File]::WriteAllText($rebootMarker, $content)
+    Log "wrote pending_reboot.txt (target=$TargetVersion scheduled_at=$now)"
+} catch {
+    Log "FATAL: failed to write pending_reboot.txt: $_"
+    exit 1
+}
+
+# Delete pending_rollback.txt (НЕ откатываем версию — install запланирован)
+$rollback = Join-Path $ProjectRoot 'pending_rollback.txt'
+if (Test-Path -LiteralPath $rollback) {
+    try { Remove-Item -LiteralPath $rollback -Force -ErrorAction SilentlyContinue; Log "removed pending_rollback.txt" } catch {}
+}
+
+Log "Defer mode: reboot-deferred install scheduled successfully (exit 0)"
+exit 0
+'''
+
     def _make_bootstrap(self, new_src: Path, target: Path,
                          update_dir: Path, is_win: bool,
                          project_root: Path) -> Path:
@@ -382,6 +606,12 @@ class DownloadAppUpdateThread(QThread):
             target_name = target.name           # «Storyboard Studio» (папка)
             studio_exe = target / "Storyboard Studio.exe"
             old_dir = target_parent / f"{target_name}.old"
+            # 2026-05-11 (v1.0.44): рядом с update.bat пишем PS-helper для
+            # RM API + MoveFileEx escalation. UTF-8 с BOM (utf-8-sig) чтобы
+            # PowerShell корректно парсил unicode в путях / AppName'ах.
+            ps_helper_path = update_dir / "update_helper.ps1"
+            ps_helper_path.write_bytes(
+                self._PS_HELPER_TEMPLATE.encode('utf-8-sig'))
             # ────────────────────────────────────────────────────────────────
             # 2026-05-11 КРИТИЧНО: НЕ ПРАВИТЬ `ping -n N+1 127.0.0.1` обратно
             # на `timeout /t N`. Это известный Windows gotcha.
@@ -473,22 +703,51 @@ class DownloadAppUpdateThread(QThread):
                 f'move /y "{target}" "{old_dir}" >> "%LOG%" 2>&1\r\n'
                 "if not errorlevel 1 goto move_ok\r\n"
                 'echo [%date% %time%]   attempt %move_tries% failed (target locked) >> "%LOG%" 2>&1\r\n'
-                # Диагностика: на каждой 3-й failed-попытке логгируем
-                # активные AV-процессы. Покрывает основные AV на Win:
-                # MsMpEng (Defender), Yandex*, AntimalwareSvc, MBAMService
-                # (Malwarebytes), ekrn (ESET), avp* (Kaspersky), avast*,
-                # avg*. findstr /I делает регистронезависимый substring match.
+                # 2026-05-11 (v1.0.44): на каждой 3-й failed-попытке вызываем
+                # update_helper.ps1 в режиме Diagnose. Заменяет эвристический
+                # `tasklist | findstr` на авторитетный Restart Manager API,
+                # который через rstrtmgr.dll возвращает точный список holder'ов
+                # (PID, AppName, ServiceName, Type=Critical/Service/MainWindow/etc).
                 "set /a mod_check=%move_tries% %% 3\r\n"
                 "if %mod_check% EQU 0 (\r\n"
-                '  echo [%date% %time%]   active AV processes snapshot: >> "%LOG%" 2>&1\r\n'
-                '  tasklist 2>nul | findstr /I "MsMpEng Yandex AntimalwareSvc MBAMService ekrn avp avast avg" >> "%LOG%" 2>&1\r\n'
+                '  echo [%date% %time%]   RM API diagnose snapshot: >> "%LOG%" 2>&1\r\n'
+                "  powershell -NoProfile -ExecutionPolicy Bypass "
+                f'-File "{ps_helper_path}" -Mode Diagnose '
+                f'-Target "{target}" -LogPath "{log_path}" >> "%LOG%" 2>&1\r\n'
                 ")\r\n"
                 "if %move_tries% LSS 30 (\r\n"
                 '  echo [%date% %time%]   waiting 2s before retry >> "%LOG%" 2>&1\r\n'
                 "  ping -n 3 127.0.0.1 > nul 2>&1\r\n"   # ≈ 2 sec
                 "  goto try_move\r\n"
                 ")\r\n"
-                'echo [%date% %time%] MOVE FAILED after %move_tries% tries -- target locked, aborting >> "%LOG%" 2>&1\r\n'
+                'echo [%date% %time%] retry exhausted, escalating to RM API + reboot-defer fallback >> "%LOG%" 2>&1\r\n'
+                # 2026-05-11 (v1.0.44): escalation вместо немедленного fail.
+                # update_helper.ps1 -Mode Defer:
+                #   1) RM Diagnose (точный список holder'ов в лог).
+                #   2) Copy new bundle в staging dir `target.new` (нет AV race).
+                #   3) MoveFileEx P/Invoke: schedule delete target/* + rename
+                #      staging → target ПРИ СЛЕДУЮЩЕМ рестарте Windows.
+                #   4) Write pending_reboot.txt в project_root.
+                #   5) Delete pending_rollback.txt (НЕ откатываем версию).
+                # Exit 0 если defer сработал → Studio показывает баннер
+                # «нужна перезагрузка» вместо popup'а ошибки.
+                # Exit 1 если даже MoveFileEx упал → старый failed-path.
+                "powershell -NoProfile -ExecutionPolicy Bypass "
+                f'-File "{ps_helper_path}" -Mode Defer '
+                f'-Target "{target}" -NewSrc "{new_src}" '
+                f'-ProjectRoot "{project_root}" -TargetVersion "{self.target_version}" '
+                f'-LogPath "{log_path}" >> "%LOG%" 2>&1\r\n'
+                "if errorlevel 1 (\r\n"
+                '  echo [%date% %time%] RM API + MoveFileEx defer fallback ALSO failed, writing failed marker >> "%LOG%" 2>&1\r\n'
+                f'  echo move_failed > "{failed_marker}"\r\n'
+                f'  start "" "{studio_exe}"\r\n'
+                "  exit /b 1\r\n"
+                ")\r\n"
+                'echo [%date% %time%] reboot-deferred install scheduled successfully >> "%LOG%" 2>&1\r\n'
+                f'start "" "{studio_exe}"\r\n'
+                "exit /b 0\r\n"
+                "rem ---- legacy path retained below for reference but never reached after defer ----\r\n"
+                'echo [%date% %time%] (legacy) MOVE FAILED after %move_tries% tries -- target locked, aborting >> "%LOG%" 2>&1\r\n'
                 f'echo move_failed > "{failed_marker}"\r\n'
                 f'start "" "{studio_exe}"\r\n'
                 "exit /b 1\r\n"
