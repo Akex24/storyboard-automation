@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.47** (см. `version.json`).
+- Текущая: **v1.0.48** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -573,6 +573,28 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
   передаёт `f"{name}/{picked_name}"`, (2) defense-in-depth в
   `_save_ref_decision` ([views/episode_chat.py:2081](views/episode_chat.py:2081))
   auto-prepend'ит folder если caller забыл, с warning в stderr.
+- **Twin decisions cleanup** (2026-05-11, v1.0.48): после collision-resolve
+  в `episodes.json[ep].refs_decisions[<kind>]` могут оказаться ДВЕ записи
+  под разными ключами, указывающие на ОДИН файл:
+  K1 = chat-marker name (например `house_corridor`),
+  K2 = stem от collision-renamed file (например `house_corridor_2`,
+  stem от `house_corridor_2.jpg`). Оба `linked`, оба
+  filename=`house_corridor_2.jpg`. `list_episode_refs` итерирует
+  decisions и отрисовывает обе как отдельные карточки в UI References
+  (юзер видит «House corridor 2» два раза, img7+img8).
+  **Защита на двух уровнях:**
+  (1) **Prevention** — `_on_gen_use_existing` ([views/episode_chat.py:2303](views/episode_chat.py:2303))
+    при Pick existing для location/object: если `stem(picked_name)` !=
+    `name` и в decisions есть entry под `picked_stem` с `linked` —
+    удалить её (это устаревший autogen twin) перед сохранением новой
+    записи под marker name.
+  (2) **Healing** — `heal_stale_decisions` ([storyboard_app.py:880](storyboard_app.py:880))
+    при старте Studio для каждого bucket'а location/object: найти пары
+    `(K1, K2)` где `K2 = K1 + _[2-9]`, оба `linked`, одинаковый filename,
+    stem(filename) == K2. Удалить K2 (technical artifact), оставить K1
+    (chat marker). Лог `[heal-twin-cleanup]`. Character handler не
+    задействован — у character key = имя персонажа, structurally нет
+    twin.
 - **Marker-alias for collision-renamed decisions** (2026-05-11, v1.0.47):
   AI в чате называет маркер исходным именем (например `house_corridor`),
   но при collision-resolve файл переименован в `house_corridor_2.jpg`

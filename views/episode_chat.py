@@ -2345,6 +2345,44 @@ class EpisodeChatView(QWidget):
             picked_name = dlg.selected_filename
             if not picked_name:
                 return
+            # 2026-05-11 (v1.0.48): cleanup устаревшего twin entry перед
+            # сохранением. Сценарий: AI назвал маркер X → запустил
+            # autogen → collision-resolve переименовал в X_N → autogen
+            # завершился → decisions['<kind>']['X_N'] записан с
+            # filename='X_N.<ext>'. Теперь юзер кликает Pick existing для
+            # маркера X (без _N), выбирает 'X_N.<ext>' (тот же файл).
+            # Если оставить старый entry под X_N — в decisions будет
+            # ДВА linked entries указывающих на один файл → UI
+            # References отрисует 2 одинаковые карточки (img7+img8 кейс).
+            # Чистим: stem(picked) != name И есть entry под picked_stem
+            # с decision=linked → удаляем его. Только для location/object
+            # (у character key=имя персонажа, structurally нет twin).
+            if gen_type in ('location', 'object'):
+                from pathlib import Path as _Path
+                picked_stem = _Path(picked_name).stem
+                if picked_stem != name:
+                    try:
+                        existing = (
+                            self._read_refs_decisions()
+                            .get(gen_type, {})
+                            .get(picked_stem))
+                        if (isinstance(existing, dict)
+                                and existing.get('decision') == 'linked'):
+                            # Удаляем twin через _save_ref_decision с
+                            # пустым decision (это путь undo в _save).
+                            self._save_ref_decision(
+                                gen_type, picked_stem, "")
+                            try:
+                                import sys as _sys
+                                _sys.stderr.write(
+                                    f"[pick-existing-twin-cleanup] "
+                                    f"{self._ep_id}/{gen_type}/{name}: "
+                                    f"removed twin {picked_stem!r} "
+                                    f"(was filename={existing.get('filename')!r})\n")
+                            except Exception:
+                                pass
+                    except Exception:
+                        traceback.print_exc()
             # Сохраняем имя файла относительно refs_dir.
             self._save_ref_decision(gen_type, name, "linked",
                                     filename=picked_name)

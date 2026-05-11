@@ -1176,6 +1176,55 @@ def heal_stale_decisions(project_root: Path) -> int:
                         old_entry['filename'] = new_fn
                         bucket[new_slug] = old_entry
                         ep_changed = True
+
+                    # 2026-05-11 (v1.0.48) [heal-twin-cleanup] — для
+                    # location/object. После collision-resolve в decisions
+                    # могут оказаться ДВЕ записи под разными ключами,
+                    # указывающие на ОДИН файл:
+                    #   K1 = chat-marker name (e.g., 'house_corridor')
+                    #   K2 = stem от collision-renamed file (e.g.,
+                    #        'house_corridor_2', stem от 'house_corridor_2.jpg')
+                    # Оба linked, оба filename='house_corridor_2.jpg'.
+                    # Тогда `list_episode_refs` отрисует ДВЕ карточки
+                    # одинакового файла в UI References (img7+img8 кейс).
+                    # Лечим: оставляем K1 (chat marker, "правдивее"),
+                    # удаляем K2 (technical artifact).
+                    if kind in ('location', 'object'):
+                        keys_to_delete: List = []
+                        for k2 in list(bucket.keys()):
+                            entry2 = bucket.get(k2)
+                            if not isinstance(entry2, dict):
+                                continue
+                            if entry2.get('decision') != 'linked':
+                                continue
+                            # K2 must end in `_[2-9]`
+                            mt = _re.search(r'^(.+?)_([2-9])$', k2)
+                            if not mt:
+                                continue
+                            k1 = mt.group(1)
+                            entry1 = bucket.get(k1)
+                            if not isinstance(entry1, dict):
+                                continue
+                            if entry1.get('decision') != 'linked':
+                                continue
+                            fn1 = entry1.get('filename') or ''
+                            fn2 = entry2.get('filename') or ''
+                            if not fn1 or fn1 != fn2:
+                                continue
+                            # Дополнительная safety: stem(filename)
+                            # должен совпадать с K2 (это значит K2 —
+                            # technical artifact от collision-resolve,
+                            # а не legitimate slug с _N суффиксом).
+                            if Path(fn2).stem != k2:
+                                continue
+                            keys_to_delete.append((k1, k2, fn2))
+                        for k1, k2, fn in keys_to_delete:
+                            bucket.pop(k2, None)
+                            ep_changed = True
+                            sys.stderr.write(
+                                f"[heal-twin-cleanup] {show_dir.name}/"
+                                f"{ep_id}/{kind}: removed twin {k2!r} "
+                                f"(kept {k1!r}, both pointed to {fn!r})\n")
                 if ep_changed:
                     changed = True
                     healed_eps += 1
