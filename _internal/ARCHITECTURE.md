@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.43** (см. `version.json`).
+- Текущая: **v1.0.45** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -566,6 +566,38 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
 - `find_claude_cli`, `_claude_cli_cache` — ресолв пути к Claude CLI.
 - `no_console_kwargs()` — кросс-платформенные subprocess kwargs (Win:
   `creationflags=CREATE_NO_WINDOW`; Mac: `{}`).
+- **Decisions filename self-heal** (2026-05-11, v1.0.45):
+  `heal_stale_decisions(project_root)` вызывается ОДИН РАЗ в
+  `MainWindow.__init__` после `finalize_pending_update`. Проходит по
+  всем `shows/<slug>/episodes.json`, для каждой записи в
+  `refs_decisions[<kind>][<slug>]` с `decision == 'linked'` проверяет
+  существование filename на диске.
+  - **location/object**: если filename не найден → disk-glob по
+    `{stem,slug}.{jpg,jpeg,png,webp}` в той же подпапке refs/.
+    Найден → обновляет filename в JSON атомарно (temp + os.replace).
+  - **character**: filename = `<folder>/<file>`. Если прямой путь не
+    найден → **outfit-safety: НЕ подменяем другим outfit'ом**, только
+    лог в stderr. Тихая подмена outfit'а опаснее чем сломанная CTA —
+    юзер не заметит что Дэвид сменил куртку.
+  Реактивная защита от тех же mismatch'ов — `_linked_file_exists`
+  (views/episode_chat.py) теперь имеет disk-glob fallback и для
+  character (только смена расширения в пределах одной outfit-folder).
+  Также `_sync_decision_filenames_after_regen` (storyboard_app.py)
+  обновляет decisions после успешной регенерации в РЕФЕРЕНСАХ — чтобы
+  не плодить новые битые decisions.
+- **closeEvent graceful thread shutdown** (2026-05-11, v1.0.45):
+  до v1.0.45 `closeEvent` полагался на «потоки умрут вместе с процессом»,
+  но Qt destructor живого QThread вызывает `qFatal` → SIGABRT. Особенно
+  стабильно крашилось при закрытии во время `SeedancePipelineThread`
+  + дочерних `GenerateThread`'ов. Теперь:
+  1. `_count_active_tasks` считает все типы threads (storyboard, montage,
+     outfit, autogen, auth — раньше учитывались только shot/ref/geometry/
+     episode).
+  2. `_collect_all_threads` возвращает плоский dedup'нутый список из всех
+     реестров (MainWindow + EpisodeChatView + NewEpisodeView).
+  3. `_graceful_shutdown_all_threads` (вызывается перед `event.accept()`):
+     stop() → wait(2s) → terminate() + wait(500ms). После — Qt destructor
+     видит мёртвые QThread'ы, никаких SIGABRT.
 - **Sender-aware JSONL routing в NewEpisodeView** (2026-05-11):
   `_on_thread_finished` / `_on_thread_error` / `_on_thread_stopped`
   пишут в чат через `target_ep = sender_ep or self._current_ep_id` и

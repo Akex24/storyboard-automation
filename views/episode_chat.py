@@ -2616,15 +2616,28 @@ class EpisodeChatView(QWidget):
             path = base / filename
             if path.exists() and path.is_file():
                 return True
-            # 2. Disk-glob fallback — ТОЛЬКО для location/object
-            # (у character filename = "folder/file.jpg", folder
-            # prefix не glob'ится этой логикой).
+            # 2. Disk-glob fallback для location/object.
+            # 2026-05-11 (v1.0.45): расширено на character — для
+            # filename вида `folder/file.jpg` ищем `folder/file.<ext>`
+            # с тем же базовым именем. Folder остаётся неизменным:
+            # подменяем только расширение в пределах одной outfit-папки.
+            # Это безопасно (выбранный outfit персонажа = та же
+            # папка), но защищает от устаревшего hint'а от агента.
+            from pathlib import Path as _Path
             if gen_type in ('location', 'object') and '/' not in filename:
-                from pathlib import Path as _Path
                 slug = _Path(filename).stem
                 for ext in ('.jpg', '.jpeg', '.png', '.webp'):
                     if (base / f"{slug}{ext}").exists():
                         return True
+            elif gen_type == 'character' and '/' in filename:
+                # character: filename = "folder/file.ext"
+                folder, _, file_part = filename.partition('/')
+                file_stem = _Path(file_part).stem
+                folder_path = base / folder
+                if folder_path.is_dir():
+                    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                        if (folder_path / f"{file_stem}{ext}").exists():
+                            return True
             return False
         except Exception:
             return False

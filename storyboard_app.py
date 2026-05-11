@@ -877,6 +877,152 @@ def _finalize_pending_reboot(project_root: Path,
         return None
 
 
+def heal_stale_decisions(project_root: Path) -> int:
+    """2026-05-11 (v1.0.45): self-heal битых filename'ов в
+    `episodes.json[<ep>].refs_decisions` при старте Studio.
+
+    Зачем: после регенерации/переименования файлов рефа в decisions
+    мог остаться устаревший filename (например `.png` в decisions,
+    а на диске реально `.jpg`). Это незаметно ломает CTA «Сделать
+    сториборды» (которая через `_linked_file_exists` проверяет
+    существование файла), отображение в РЕФЕРЕНСАХ и т.д. До v1.0.45
+    лечение было только реактивным через disk-glob fallback в
+    `_linked_file_exists` (для location/object). Теперь — proactive
+    исправление прямо в JSON при старте.
+
+    Алгоритм:
+      1. Проходим по всем `shows/<slug>/episodes.json`.
+      2. В каждом episode → каждом `refs_decisions[<kind>][<slug>]`
+         с `decision == 'linked'`:
+         - location/object: если filename НЕ существует → пробуем
+           disk-glob `<show>/refs/<sub>/<stem>.<{jpg,jpeg,png,webp}>`.
+           Найден → обновляем filename.
+         - character: если filename `<folder>/<file>` не существует →
+           **НЕ подставляем другой outfit**. Логируем в stderr и
+           оставляем filename как есть. Outfit-safety: тихая подмена
+           одежды персонажа хуже чем сломанная CTA (юзер не заметит
+           что Дэвид в другой куртке).
+      3. Атомарная запись через temp + os.replace для каждого show.
+
+    Возвращает: число эпизодов, в которых что-то реально обновили
+    (для диагностики через stderr / logs).
+
+    Cross-platform: pure Python (json, pathlib, os.replace). Никаких
+    Win-специфичных вызовов. Работает одинаково на Mac и Win.
+    """
+    healed_eps = 0
+    try:
+        shows_root = project_root / "shows"
+        if not shows_root.is_dir():
+            return 0
+        sub_map = {'location': 'locations',
+                   'object': 'objects',
+                   'character': 'characters'}
+        exts = ('.jpg', '.jpeg', '.png', '.webp')
+        for show_dir in shows_root.iterdir():
+            if not show_dir.is_dir():
+                continue
+            ep_meta = show_dir / "episodes.json"
+            if not ep_meta.exists():
+                continue
+            try:
+                data = json.loads(ep_meta.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            changed = False
+            for ep_id, ep in data.items():
+                if not isinstance(ep, dict):
+                    continue
+                decisions = ep.get('refs_decisions')
+                if not isinstance(decisions, dict):
+                    continue
+                ep_changed = False
+                for kind in ('location', 'object', 'character'):
+                    bucket = decisions.get(kind)
+                    if not isinstance(bucket, dict):
+                        continue
+                    sub = sub_map[kind]
+                    sub_base = show_dir / "refs" / sub
+                    if not sub_base.is_dir():
+                        continue
+                    for slug, entry in bucket.items():
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get('decision') != 'linked':
+                            continue
+                        old_fn = entry.get('filename', '') or ''
+                        if not old_fn:
+                            continue
+                        # Check direct existence first
+                        if kind == 'character':
+                            # filename = "folder/file.ext"
+                            folder_part, _, file_part = old_fn.partition('/')
+                            if not folder_part or not file_part:
+                                continue
+                            full_path = sub_base / folder_part / file_part
+                            if full_path.exists() and full_path.is_file():
+                                continue  # OK, nothing to heal
+                            # Outfit-safety: НЕ подменяем другим outfit'ом.
+                            # Только лог.
+                            sys.stderr.write(
+                                f"[heal] {show_dir.name}/{ep_id}/"
+                                f"character/{slug}: outfit file not found "
+                                f"on disk ({old_fn}), skipping heal "
+                                f"(user must relink via UI)\n")
+                            continue
+                        # location / object
+                        full_path = sub_base / old_fn
+                        if full_path.exists() and full_path.is_file():
+                            continue  # OK
+                        # Disk-glob: find file with same stem
+                        old_stem = Path(old_fn).stem
+                        new_fn: Optional[str] = None
+                        for ext in exts:
+                            cand = sub_base / f"{old_stem}{ext}"
+                            if cand.exists() and cand.is_file():
+                                new_fn = f"{old_stem}{ext}"
+                                break
+                        # Также пробуем по slug (на случай если old_stem
+                        # вообще ничего общего с реальным slug — старые
+                        # decisions могли иметь хвосты вроде "_v2").
+                        if new_fn is None:
+                            for ext in exts:
+                                cand = sub_base / f"{slug}{ext}"
+                                if cand.exists() and cand.is_file():
+                                    new_fn = f"{slug}{ext}"
+                                    break
+                        if new_fn:
+                            entry['filename'] = new_fn
+                            ep_changed = True
+                            sys.stderr.write(
+                                f"[heal] {show_dir.name}/{ep_id}/{kind}/"
+                                f"{slug}: {old_fn} → {new_fn}\n")
+                        else:
+                            sys.stderr.write(
+                                f"[heal] {show_dir.name}/{ep_id}/{kind}/"
+                                f"{slug}: no matching file for {old_fn}, "
+                                f"skipping (user must relink via UI)\n")
+                if ep_changed:
+                    changed = True
+                    healed_eps += 1
+            if changed:
+                # Atomic write
+                try:
+                    tmp = ep_meta.with_suffix('.json.tmp')
+                    tmp.write_text(
+                        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                        encoding='utf-8')
+                    import os as _os
+                    _os.replace(str(tmp), str(ep_meta))
+                except Exception:
+                    traceback.print_exc()
+    except Exception:
+        traceback.print_exc()
+    return healed_eps
+
+
 def finalize_pending_update(project_root: Path) -> Optional[Tuple]:
     """Финализирует авто-обновление после рестарта через bootstrap-скрипт.
 
@@ -3763,6 +3909,21 @@ class MainWindow(QMainWindow):
         # формы tuple'а в будущем не ломали call sites.
         self._update_failure_info: Optional[Tuple] = (
             finalize_pending_update(project_root))
+        # 2026-05-11 (v1.0.45): self-heal битых filename'ов в
+        # `refs_decisions` всех episodes.json. Лечит mismatches от
+        # старых регенераций (например `.png` в decisions, `.jpg` на
+        # диске). Безопасно даже на пустых проектах — no-op если
+        # ничего не найдено. Character outfit'ы НЕ подменяются
+        # (outfit-safety, только лог в stderr). Подробности — в
+        # `heal_stale_decisions` docstring.
+        try:
+            healed_n = heal_stale_decisions(project_root)
+            if healed_n:
+                sys.stderr.write(
+                    f"[heal] startup self-heal: updated decisions in "
+                    f"{healed_n} episode(s)\n")
+        except Exception:
+            traceback.print_exc()
         self._first_show_done: bool = False
         # 2026-05-09: self-healing синк pipeline.py из bundle в project_root.
         # Без этого AutonomousGenThread падал на «pipeline.py not found»
@@ -4424,6 +4585,97 @@ class MainWindow(QMainWindow):
         if 'characters' in parts:
             return 'character'
         return 'location'
+
+    def _sync_decision_filenames_after_regen(self, image_path: Path,
+                                              kind: str) -> None:
+        """2026-05-11 (v1.0.45): после успешной регенерации рефа обновить
+        filename в `refs_decisions` всех эпизодов **текущего show** где
+        этот реф был `linked`. Кросс-show мы НЕ трогаем — реф из show A
+        не должен влиять на decisions show B (даже если у них совпадают
+        slug'и). Текущий show определяется через `get_current_show`.
+
+        Защита от устаревших filename'ов (например `.png` в decisions,
+        а на диске после regen теперь `.jpg`).
+
+        Логика по kind:
+          location/object — slug = image_path.stem, filename = image_path.name.
+            Обновляем decisions[<kind>][<slug>] если filename отличается.
+          character — folder = parent dir name, file = image_path.name.
+            decision filename для character имеет формат `<folder>/<file>`.
+            slug в decisions = имя character'а (как в чате AI). Обновляем
+            только если existing entry имеет matching folder prefix
+            (чтобы не подменить другой outfit того же character'а).
+
+        Атомарно через `_episodes_json_lock` + temp + os.replace
+        (для episodes.json текущего show).
+        """
+        try:
+            cur_show = get_current_show(self._project_root)
+            if not cur_show:
+                return
+            ep_meta_path = (self._project_root / "shows" / cur_show
+                            / "episodes.json")
+            if not ep_meta_path.exists():
+                return
+            new_name = image_path.name
+            slug = image_path.stem
+            char_folder = image_path.parent.name if kind == 'character' else None
+            with self._episodes_json_lock:
+                data = json.loads(ep_meta_path.read_text(encoding='utf-8'))
+                changed = False
+                for ep_id, ep in data.items():
+                    if not isinstance(ep, dict):
+                        continue
+                    decisions = ep.get('refs_decisions')
+                    if not isinstance(decisions, dict):
+                        continue
+                    bucket = decisions.get(kind)
+                    if not isinstance(bucket, dict):
+                        continue
+                    for name, entry in bucket.items():
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get('decision') != 'linked':
+                            continue
+                        old_fn = entry.get('filename', '')
+                        if kind == 'character':
+                            # decision filename format: "<folder>/<file>"
+                            # Обновляем только если folder matches.
+                            if '/' not in old_fn:
+                                continue
+                            old_folder, _, _ = old_fn.partition('/')
+                            if old_folder != char_folder:
+                                continue
+                            new_full = f"{char_folder}/{new_name}"
+                            if old_fn == new_full:
+                                continue
+                            entry['filename'] = new_full
+                            changed = True
+                            sys.stderr.write(
+                                f"[sync] {ep_id}/{kind}/{name}: "
+                                f"{old_fn} → {new_full}\n")
+                        else:
+                            if old_fn == new_name:
+                                continue
+                            # Проверяем что slug совпадает (защита от
+                            # подмены другого рефа с тем же extension)
+                            old_slug = Path(old_fn).stem
+                            if old_slug != slug:
+                                continue
+                            entry['filename'] = new_name
+                            changed = True
+                            sys.stderr.write(
+                                f"[sync] {ep_id}/{kind}/{name}: "
+                                f"{old_fn} → {new_name}\n")
+                if changed:
+                    tmp = ep_meta_path.with_suffix('.json.tmp')
+                    tmp.write_text(
+                        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                        encoding='utf-8')
+                    import os as _os
+                    _os.replace(str(tmp), str(ep_meta_path))
+        except Exception:
+            traceback.print_exc()
 
     def _set_refs_pill_notice(self, has_notice: bool):
         """Поднимает/снимает оранжевую подсветку пилюли «Референсы»."""
@@ -6437,10 +6689,22 @@ class MainWindow(QMainWindow):
 
     def _count_active_tasks(self) -> Dict[str, int]:
         """Считает активные фоновые задачи разных типов.
-        Возвращает dict: {'shot': N, 'ref': N, 'geometry': N, 'episode': N}.
-        Используется в closeEvent чтобы решить — показывать ли подтверждение.
+
+        2026-05-11 (v1.0.45): расширено для покрытия ВСЕХ типов QThread'ов
+        в проекте, иначе при закрытии Studio во время генерации сторибордов
+        / монтажа / outfit-picker'а Qt destroys live QThread → fatal
+        SIGABRT. Раньше учитывались только shot/ref/geometry/episode —
+        SeedancePipeline, MontageOrchestrator, SuggestOutfits, AutonomousGen
+        и treads из мульти-эпизодных реестров (`_external_threads`,
+        `_threads`) проходили мимо счётчика → диалог подтверждения не
+        показывался → закрытие → краш.
+
+        Возвращает dict: {'shot', 'ref', 'geometry', 'episode',
+        'storyboard', 'montage', 'outfit', 'autogen', 'auth'}.
         """
-        counts = {'shot': 0, 'ref': 0, 'geometry': 0, 'episode': 0}
+        counts = {'shot': 0, 'ref': 0, 'geometry': 0, 'episode': 0,
+                  'storyboard': 0, 'montage': 0, 'outfit': 0,
+                  'autogen': 0, 'auth': 0}
         try:
             # Регенерации шотов (GenerateThread)
             counts['shot'] = sum(
@@ -6466,21 +6730,125 @@ class MainWindow(QMainWindow):
                 t = getattr(nev, '_thread', None)
                 if t is not None and t.isRunning():
                     episode_count += 1
+                # 2026-05-11 (v1.0.45): per-ep реестр от multi-ep fix.
+                nev_threads = getattr(nev, '_threads', None) or {}
+                for t in nev_threads.values():
+                    if t is not None and t.isRunning():
+                        episode_count += 1
             ev = getattr(self, 'episode_chat_view', None)
             if ev is not None:
                 t = getattr(ev, '_thread', None)
                 if t is not None and t.isRunning():
                     episode_count += 1
+                ext_threads = getattr(ev, '_external_threads', None) or {}
+                for t in ext_threads.values():
+                    if t is not None and t.isRunning():
+                        episode_count += 1
             counts['episode'] = episode_count
+
+            # 2026-05-11 (v1.0.45): новые категории.
+            # Seedance pipeline (генерация сторибордов) + regen шотов через Seedance.
+            if ev is not None:
+                t = getattr(ev, '_seedance_pipeline_thread', None)
+                if t is not None and t.isRunning():
+                    counts['storyboard'] += 1
+            seedance_regen = getattr(self, '_seedance_regen_threads', [])
+            counts['storyboard'] += sum(
+                1 for t in seedance_regen
+                if t is not None and t.isRunning())
+
+            # MontageOrchestrator per ep_id
+            if ev is not None:
+                montage_threads = getattr(ev, '_montage_threads', None) or {}
+                counts['montage'] = sum(
+                    1 for t in montage_threads.values()
+                    if t is not None and t.isRunning())
+
+            # Outfit picker thread per ep_id
+            if ev is not None:
+                outfit_threads = getattr(ev, '_outfit_threads', None) or {}
+                counts['outfit'] = sum(
+                    1 for t in outfit_threads.values()
+                    if t is not None and t.isRunning())
+
+            # AutonomousGen (location/object autonomous generation).
+            # _active_gens — dict с тредами и метаданными; берём только тред.
+            active_gens = getattr(self, '_active_gens', None) or {}
+            for entry in active_gens.values():
+                t = entry.get('thread') if isinstance(entry, dict) else entry
+                if t is not None and hasattr(t, 'isRunning') and t.isRunning():
+                    counts['autogen'] += 1
+
+            # Auth switch (OAuth flow).
+            auth_t = getattr(self, '_auth_switch_thread', None)
+            if auth_t is not None and auth_t.isRunning():
+                counts['auth'] = 1
         except Exception:
             traceback.print_exc()
         return counts
 
+    def _collect_all_threads(self) -> List:
+        """2026-05-11 (v1.0.45): собирает плоский список ВСЕХ QThread'ов
+        из реестров MainWindow + EpisodeChatView + NewEpisodeView.
+        Используется в `closeEvent` для graceful shutdown — перед
+        фактическим закрытием Studio мы вызываем `.stop()` + `.wait()`
+        на каждом, чтобы избежать SIGABRT от Qt при destruction'е
+        живого QThread'а.
+        """
+        threads = []
+        try:
+            threads.extend(self._active_regens.values())
+            threads.extend(getattr(self, '_ref_threads', []) or [])
+            threads.extend(getattr(self, '_geometry_threads', []) or [])
+            threads.extend(getattr(self, '_seedance_regen_threads', []) or [])
+            t = getattr(self, '_auth_switch_thread', None)
+            if t is not None:
+                threads.append(t)
+            active_gens = getattr(self, '_active_gens', None) or {}
+            for entry in active_gens.values():
+                t = entry.get('thread') if isinstance(entry, dict) else entry
+                if t is not None:
+                    threads.append(t)
+            nev = getattr(self, 'new_episode_view', None)
+            if nev is not None:
+                t = getattr(nev, '_thread', None)
+                if t is not None:
+                    threads.append(t)
+                threads.extend(
+                    (getattr(nev, '_threads', None) or {}).values())
+            ev = getattr(self, 'episode_chat_view', None)
+            if ev is not None:
+                t = getattr(ev, '_thread', None)
+                if t is not None:
+                    threads.append(t)
+                threads.extend(
+                    (getattr(ev, '_external_threads', None) or {}).values())
+                threads.extend(
+                    (getattr(ev, '_outfit_threads', None) or {}).values())
+                threads.extend(
+                    (getattr(ev, '_montage_threads', None) or {}).values())
+                t = getattr(ev, '_seedance_pipeline_thread', None)
+                if t is not None:
+                    threads.append(t)
+        except Exception:
+            traceback.print_exc()
+        # Уникальные ненулевые
+        return [t for t in {id(t): t for t in threads if t is not None}.values()]
+
     def closeEvent(self, event):
         """Перехват закрытия окна. Если есть активные фоновые задачи —
         показываем CloseConfirmDialog. По reject (Подождать) — отмена
-        закрытия. По accept (Закрыть всё равно) — обычное закрытие
-        (потоки умрут вместе с процессом).
+        закрытия. По accept (Закрыть всё равно) — graceful shutdown
+        всех QThread'ов перед фактическим закрытием.
+
+        2026-05-11 (v1.0.45): добавлен graceful shutdown. Раньше код
+        полагался на «потоки умрут вместе с процессом», но Qt destructor
+        QThread'а на live thread вызывает qFatal → SIGABRT. Особенно
+        стабильно крашилось при закрытии во время генерации сторибордов
+        (SeedancePipelineThread + дочерние GenerateThread'ы). Теперь
+        проходим по всем потокам через `_collect_all_threads`, вызываем
+        `.stop()` если есть, ждём ~2 сек каждого. После — Qt уже видит
+        мёртвый QThread, деструкторы безопасны.
         """
         try:
             counts = self._count_active_tasks()
@@ -6496,6 +6864,38 @@ class MainWindow(QMainWindow):
                     lines.append(tr('close_task_geometry', n=counts['geometry']))
                 if counts['episode']:
                     lines.append(tr('close_task_episode', n=counts['episode']))
+                # 2026-05-11 (v1.0.45): новые категории. Если перевода
+                # нет (старая Studio) — fallback на raw имя категории.
+                if counts.get('storyboard'):
+                    try:
+                        lines.append(tr('close_task_storyboard',
+                                        n=counts['storyboard']))
+                    except Exception:
+                        lines.append(f"сторибордов: {counts['storyboard']}")
+                if counts.get('montage'):
+                    try:
+                        lines.append(tr('close_task_montage',
+                                        n=counts['montage']))
+                    except Exception:
+                        lines.append(f"монтажных карт: {counts['montage']}")
+                if counts.get('outfit'):
+                    try:
+                        lines.append(tr('close_task_outfit',
+                                        n=counts['outfit']))
+                    except Exception:
+                        lines.append(f"outfit-генераций: {counts['outfit']}")
+                if counts.get('autogen'):
+                    try:
+                        lines.append(tr('close_task_autogen',
+                                        n=counts['autogen']))
+                    except Exception:
+                        lines.append(f"авто-генераций: {counts['autogen']}")
+                if counts.get('auth'):
+                    try:
+                        lines.append(tr('close_task_auth',
+                                        n=counts['auth']))
+                    except Exception:
+                        lines.append(f"смена AI-аккаунта: {counts['auth']}")
 
                 overlay = apply_modal_dim(self)
                 try:
@@ -6516,10 +6916,59 @@ class MainWindow(QMainWindow):
                 _gs.sync()
             except Exception:
                 traceback.print_exc()
+            # 2026-05-11 (v1.0.45): graceful shutdown всех QThread'ов
+            # ПЕРЕД event.accept() чтобы избежать Qt fatal'а при
+            # destruction'е живого thread'а.
+            try:
+                self._graceful_shutdown_all_threads()
+            except Exception:
+                traceback.print_exc()
             event.accept()
         except Exception:
             traceback.print_exc()
             event.accept()
+
+    def _graceful_shutdown_all_threads(self) -> None:
+        """2026-05-11 (v1.0.45): корректно останавливает все QThread'ы
+        перед закрытием Studio.
+
+        Шаги:
+          1. Собираем все потоки через `_collect_all_threads`.
+          2. Для каждого: если есть метод `.stop()` — вызываем (выставит
+             флаг + terminate subprocess'а CLI у нас в любом thread-классе).
+          3. `wait(2000)` — даём 2 сек на graceful exit.
+          4. Если всё ещё running → `terminate()` + `wait(500)` (Qt-level,
+             не abort).
+
+        Без этого Qt при destruction'е QObject-иерархии MainWindow натыкается
+        на живые QThread → `qFatal("QThread: Destroyed while thread is still
+        running")` → SIGABRT. Особенно болезненно при закрытии во время
+        генерации сторибордов (SeedancePipelineThread + child GenerateThreads).
+        """
+        threads = self._collect_all_threads()
+        # Phase 1: ask nicely.
+        for t in threads:
+            try:
+                if hasattr(t, 'stop'):
+                    t.stop()
+            except Exception:
+                pass
+        # Phase 2: wait briefly.
+        for t in threads:
+            try:
+                if hasattr(t, 'isRunning') and t.isRunning():
+                    t.wait(2000)
+            except Exception:
+                pass
+        # Phase 3: nuke остатки.
+        for t in threads:
+            try:
+                if hasattr(t, 'isRunning') and t.isRunning():
+                    t.terminate()
+                    if hasattr(t, 'wait'):
+                        t.wait(500)
+            except Exception:
+                pass
 
     def _on_delete_episode_clicked(self):
         """Обработчик кнопки «🗑 Удалить эпизод».
@@ -8422,6 +8871,19 @@ class MainWindow(QMainWindow):
             self._active_image_paths.pop(image_path.resolve(), None)
         except Exception:
             pass
+
+        # 2026-05-11 (v1.0.45): auto-update filename в `refs_decisions` для
+        # ВСЕХ эпизодов где этот реф был `linked`. Раньше после регенерации
+        # на этой же карточке (которая может прийти с другим расширением,
+        # если pipeline сохранил содержимое не по hint-у — БАГ 10 era)
+        # filename в decisions оставался устаревшим (например `.png` в
+        # decisions, `.jpg` на диске). Для location/object у нас был disk-
+        # glob fallback в `_linked_file_exists`, но он маскировал проблему
+        # и не лечил источник. Теперь чиним при каждой удачной регенерации.
+        try:
+            self._sync_decision_filenames_after_regen(image_path, kind)
+        except Exception:
+            traceback.print_exc()
 
         on_refs_view = (
             hasattr(self, 'content_stack')
