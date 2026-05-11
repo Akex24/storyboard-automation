@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.41** (см. `version.json`).
+- Текущая: **v1.0.42** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -20,9 +20,15 @@
     ping-фиксом), timestamps в bootstrap.log показали реальные секундные
     gap'ы (фикс sleep-idiom работает!), но все 15 попыток × 2 сек = 30
     сек не хватило — Defender + Yandex Protect стэком держали handle > 30с.
-  - **v1.0.42 (текущая цель)** — расширение retry до 60 сек + pre-flight
-    warmup + AV-snapshot logging. См. секцию «Архитектура обновлений →
-    Hardened flow → 2026-05-11 (v1.0.42)».
+  - **v1.0.41 → v1.0.42 апдейт упал** — снова chicken-and-egg: v1.0.41
+    в bundle ещё не имеет warmup + 30 retries, генерит свой старый bat
+    (15 retries, без warmup). v1.0.42 установлен на Windows вручную через
+    Installer.exe в обход in-process updater'а.
+  - **v1.0.43 — verification release**: проверка что новый bat от v1.0.42
+    (с warmup + 30 retries × 2с = 60с окно + AV-snapshot logging) реально
+    работает при апдейте v1.0.42 → v1.0.43 на Win-машинах со стэком
+    Defender + Yandex Protect. Полезной нагрузки в v1.0.43 нет — только
+    этот doc-bump для не-пустого diff'а чтобы Send Update смог собрать.
 
 ## Архитектурные решения которые легко забыть
 
