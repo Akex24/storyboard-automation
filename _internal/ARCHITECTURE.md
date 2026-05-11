@@ -7,7 +7,7 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.49** (см. `version.json`).
+- Текущая: **v1.0.50** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
@@ -186,27 +186,85 @@ agent'а с interface language vs cultural context.
 «outdated / cheap-looking / low-budget rural»). Агент больше не
 видит эти токены как «valid в данном контексте».
 
-## Description channels for autonomous gen (v1.0.49)
+## Description channels for autonomous gen (v1.0.49, расширено v1.0.50)
 
-При парсинге ✗-строк в чате эпизода используется приоритет каналов:
+При парсинге `✗`/`✓`-строк в чате эпизода используется приоритет каналов:
 
 1. `[[GEN:type:name:description]]` маркер — primary, через
    `parse_gen_markers` ([views/_chat_render.py:41](views/_chat_render.py:41)).
-2. Скобки `(описание)` после slug — fallback для location/object,
-   через `_FALLBACK_LINE_RE` ([views/_chat_render.py:280](views/_chat_render.py:280)).
+2. Скобки `(описание)` после slug — fallback для location/object/character,
+   через `_FALLBACK_LINE_RE` (✗-ветка, [views/_chat_render.py:280](views/_chat_render.py:280))
+   и через `m_full`-парсер (✓-ветка, [views/_chat_render.py:355](views/_chat_render.py:355)).
 3. Хвост после `— ` — последний fallback. Обычно служебная фраза
-   («нужен реф» / «рефа нет»), без полезной информации.
+   («нужен реф» / «рефа нет» / «реф есть»), без полезной информации.
 
-До v1.0.49 канал #2 выбрасывался для location/object (`display = ""`,
-description = только хвост после `— `) → gen-agent получал «нужен реф»
-вместо реального описания → промпт для FastGen без контекста →
-generic-default картинка (helmet → tactical combat вместо
-construction hard hat).
+**v1.0.49** закрыл канал #2 для ✗-ветки: до фикса content скобок
+выбрасывался → gen-agent получал «нужен реф» вместо реального описания →
+generic-default картинка (helmet → tactical combat вместо construction
+hard hat).
+
+**v1.0.50** закрыл канал #2 для ✓-ветки (симметрично). Это safety-net
+для случая когда AI ослушался all-✗ инструкции и поставил ✓ —
+description всё равно подбирается корректно. Кроме того, regex
+`_FALLBACK_LINE_RE` сделан с опциональной группой `desc` — поддерживает
+новый формат «`- ✗ name (описание) [[GEN:...]]`» без хвоста `— `.
 
 Defensive instructions в [threads/autonomous_gen.py:78-104](threads/autonomous_gen.py:78)
 (location SOCIAL/GENRE) и [autonomous_gen.py:124-160](threads/autonomous_gen.py:124)
 (object) остаются safety-net'ом поверх — переводят luxury/expensive/etc.
 в English-промпт. Они не конфликтуют с fallback-каналом, а дополняют его.
+
+## All-✗ default for references (v1.0.50)
+
+**Архитектурный принцип:** Программа НИКОГДА не помечает референсы как
+`✓` автоматически на основе наличия файла на диске. ВСЕ референсы
+текущего эпизода (location + object + character) AI помечает как `✗`.
+Решение «🎨 сгенерировать новый» vs «📁 выбрать существующий из
+библиотеки» vs «🚫 не нужен» принимает только юзер на каждой карточке.
+
+**Логика:** одинаковые названия не значат одинаковые объекты. «Лесная
+тропинка» в ep1 и «лесная тропинка» в ep5 — две разные тропинки. Даже
+одна и та же локация может потребоваться в другом ракурсе / свете /
+времени суток. `refs/<type>/` — это **библиотека** существующих рефов
+сериала, не «indicator нужен или не нужен».
+
+**До v1.0.50:** analyst-агент инструктировался в
+[PRODUCER_INSTRUCTIONS.md:137-141](instructions/PRODUCER_INSTRUCTIONS.md:137)
+проверять `refs/<type>/` и ставить ✓ если файл есть. Это вело к
+дублям (3 helmet'а в ep2 — БАГ 14) и кривым промптам (✓-ветка
+парсера выбрасывала description из скобок — БАГ 13).
+
+**После v1.0.50:** инструкция переписана в
+[PRODUCER_INSTRUCTIONS.md:132+](instructions/PRODUCER_INSTRUCTIONS.md:132)
+и [views/new_episode.py:902+](views/new_episode.py:902) — analyst всегда
+ставит `✗` с маркером `[[GEN:type:name:description]]`, не проверяет
+файлы. Character тоже `✗` (раньше character с папкой в refs/ → ✓;
+теперь character всегда `✗`, при клике 🎨 откроется outfit picker
+для ПЕРВОЙ сцены этого персонажа в эпизоде, [threads/suggest_outfits.py:131+](threads/suggest_outfits.py:131)).
+
+**Collision-rename** ([views/episode_chat.py:1561+](views/episode_chat.py:1561))
+переформулировано из «уже занят — переименовал» (звучит как conflict)
+в «🆕 Создаю новый вариант» (нейтральная формулировка) — юзер видит
+ДО старта генерации что Studio делает второй вариант рядом с
+существующим, не перезаписывает.
+
+## Diagnostic logging (v1.0.50)
+
+Helper [`_diag_log_append`](views/episode_chat.py:760+) в `EpisodeChatView`
+пишет диагностические строки в `shows/<active>/_studio_diag.log`
+(append-only, переживает рестарт Studio). Fallback на stderr если
+active show нет.
+
+Зачем нужен файл: `.app` запускается кликом по иконке — `sys.stderr`
+уходит в /dev/null. Существующие диагностические логи через
+`sys.stderr.write` (`[init]`, `[heal]`, `[set_episode]`,
+`[collision-resolve]`, `[marker-alias]`) для юзера невидимы.
+
+В v1.0.50 helper используется в `_check_montage_ready` — при изменении
+состояния CTA (`ready` / `hidden_unresolved` / `hidden_no_linked` /
+`hidden_no_scenario`) пишет одну строку с количеством маркеров и
+списком нерешённых. Логирование at-state-change (не каждые 2с) —
+файл не разрастается.
 
 ## Thinking dots animation — hand-off & multi-ep registry
 

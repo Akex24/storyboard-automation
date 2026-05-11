@@ -756,6 +756,39 @@ class EpisodeChatView(QWidget):
         except Exception:
             return {}
 
+    def _diag_log_append(self, tag: str, msg: str) -> None:
+        """Append diagnostic line to `shows/<active>/_studio_diag.log`.
+        Active show нет → fallback на stderr (видно только из терминала).
+        Не валит UI — все ошибки задавлены.
+
+        2026-05-11 (v1.0.50): добавлено для debug `_check_montage_ready`
+        state transitions. .app запускается кликом по иконке (stderr идёт
+        в /dev/null), поэтому существующие `[init]`/`[heal]`/`[set_episode]`
+        / `[collision-resolve]` логи через stderr для юзера невидимы.
+        Этот helper пишет в файл рядом с эпизодами — переживает рестарт
+        Studio и доступен для пересылки в чат при отладке."""
+        try:
+            from pathlib import Path as _Path
+            from datetime import datetime
+            cur_show = getattr(self._mw, '_current_show', None)
+            proj_root = getattr(self._mw, '_project_root', None)
+            if cur_show and proj_root:
+                log_path = (_Path(proj_root) / "shows" / cur_show
+                            / "_studio_diag.log")
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"{ts} [{tag}] {msg}\n")
+            else:
+                import sys as _sys
+                _sys.stderr.write(f"[{tag}] {msg}\n")
+        except Exception:
+            try:
+                import sys as _sys
+                _sys.stderr.write(f"[{tag}] {msg}\n")
+            except Exception:
+                pass
+
     def _render_empty_state(self):
         # Серый хинт по центру
         from html import escape as _esc
@@ -1557,14 +1590,16 @@ class EpisodeChatView(QWidget):
                     + "\n", encoding='utf-8')
         except Exception:
             traceback.print_exc()
-        # System-сообщение в чат.
+        # System-сообщение в чат — ДО старта генерации (юзер видит
+        # ясный «создаю новый вариант» вместо постфактумного
+        # «уже занят, переименовал»).
         try:
             line = (
-                f"ℹ Слаг `{name}` уже занят в этом сериале — "
-                f"переименовал в `{new_name}` чтобы не перезаписать "
-                f"существующий реф. Если хотел переиспользовать тот же "
-                f"реф — жми «📁 Выбрать существующий» вместо "
-                f"«🎨 Сгенерировать».\n")
+                f"🆕 Создаю новый вариант `{new_name}.jpg`. "
+                f"`{name}.jpg` уже существует в библиотеке сериала "
+                f"от предыдущей генерации — оставляю его без изменений. "
+                f"Если хотел переиспользовать существующий — отмени и "
+                f"нажми «📁 Выбрать существующий» на этой же карточке.\n")
             _sa.append_chat_message(
                 self._ep_id, "system", line, kind='system')
             self._render_message(line, kind='system')
@@ -2708,21 +2743,47 @@ class EpisodeChatView(QWidget):
         if unresolved:
             # Есть упомянутый маркер без решения — рефы ещё не дособраны.
             self._montage_cta.hide()
+            # 2026-05-11 (v1.0.50): diagnostic log при изменении состояния.
+            new_state = f"hidden_unresolved({len(unresolved)})"
+            if getattr(self, '_last_montage_state', None) != new_state:
+                self._last_montage_state = new_state
+                resolved_count = len(markers) - len(unresolved)
+                self._diag_log_append('montage_ready',
+                    f"ep={self._ep_id} state=hidden "
+                    f"markers={len(markers)} resolved={resolved_count} "
+                    f"unresolved={sorted(set(unresolved))[:5]}")
             return
         if not any_linked:
             # Все маркеры skipped, ни одного linked — нечего монтировать.
             self._montage_cta.hide()
+            new_state = "hidden_no_linked"
+            if getattr(self, '_last_montage_state', None) != new_state:
+                self._last_montage_state = new_state
+                self._diag_log_append('montage_ready',
+                    f"ep={self._ep_id} state=hidden_no_linked "
+                    f"markers={len(markers)} (all skipped or no decisions)")
             return
 
         # 5. Должен быть текст сценария.
         scenario_text = self._load_scenario_text()
         if not scenario_text or len(scenario_text.strip()) < 50:
             self._montage_cta.hide()
+            new_state = "hidden_no_scenario"
+            if getattr(self, '_last_montage_state', None) != new_state:
+                self._last_montage_state = new_state
+                self._diag_log_append('montage_ready',
+                    f"ep={self._ep_id} state=hidden_no_scenario")
             return
 
         # Все условия выполнены — показываем idle CTA.
         self._montage_cta.show_idle()
         self._montage_cta.show()
+        new_state = "ready"
+        if getattr(self, '_last_montage_state', None) != new_state:
+            self._last_montage_state = new_state
+            self._diag_log_append('montage_ready',
+                f"ep={self._ep_id} state=ready markers={len(markers)} "
+                f"all linked/skipped → CTA shown")
 
     def _linked_file_exists(self, gen_type: str, filename: str,
                              slug: Optional[str] = None) -> bool:

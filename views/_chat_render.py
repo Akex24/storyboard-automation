@@ -113,6 +113,21 @@ _FALLBACK_LINE_RE = re.compile(
     re.UNICODE
 )
 
+# 2026-05-11 (v1.0.50): второй regex для НОВОГО формата без `— ` хвоста.
+# Analyst-агент после v1.0.50 пишет «- ✗ name (описание) [[GEN:...]]»
+# без хвоста. После предочистки от [[GEN:...]] строка выглядит как
+# «- ✗ name (описание)» — старый _FALLBACK_LINE_RE её не матчит
+# (требует `— ` separator). Этот regex покрывает кейс без хвоста.
+# Применяется ТОЛЬКО если первый regex не сработал — порядок важен,
+# чтобы старый формат с nested parens («(описание) — хвост (сцены)»)
+# корректно матчился через greedy backtrack первого regex'а.
+_FALLBACK_LINE_RE_NO_TAIL = re.compile(
+    r'^\s*[-•*]\s*✗\s*(?P<name>[\w-]+)'
+    r'(?:\s*\((?P<orig>.+)\))?'
+    r'\s*$',
+    re.UNICODE
+)
+
 # 2026-05-10: ИНЛАЙН-формат когда AI пишет «summary»-шаг вместо секций.
 # Пример (Opus 4.7 на ep8 в реальном чате):
 #   «- ✗ НУЖНО СГЕНЕРИРОВАТЬ: private_house_living_room (локация),
@@ -248,7 +263,24 @@ def synthesize_gen_markers(full_text: str) -> List[GenMarker]:
         # в AutonomousGenThread — для них юзер использует «Выбрать
         # существующий» (открывает refs/characters/<name>/) или вкладку
         # «Актёры» для создания нового рефа.
-        m = _FALLBACK_LINE_RE.match(line)
+        # 2026-05-11 (v1.0.50): убираем `[[GEN:type:name:description]]`
+        # маркеры из строки ПЕРЕД regex match. Иначе для нового формата
+        # «- ✗ name (описание) [[GEN:...]]» без `— ` хвоста regex не
+        # дойдёт до `\s*$` (между `)` и концом строки висит маркер) и
+        # ✗-строка не парсится → карточка не появляется. parse_gen_markers
+        # извлекает маркер отдельно (через GEN_MARKER_RE), здесь он не
+        # нужен — это fallback для случая когда AI забыл маркер.
+        line_for_match = GEN_MARKER_RE.sub('', line).rstrip()
+        # 2026-05-11 (v1.0.50): сначала пробуем regex со ВКЛЮЧЁННЫМ `— `
+        # хвостом (старый формат + nested parens). Если не матчится —
+        # fallback на regex БЕЗ хвоста (новый формат после v1.0.50).
+        # Порядок важен: для строки «- ✗ X (описание) — нужен реф (сцены 1,2)»
+        # greedy `.+` в первом regex'е через backtrack находит правильную
+        # правую `)`. Если бы second regex шёл первым — orig жадно съел бы
+        # всю строку до последней `)`.
+        m = _FALLBACK_LINE_RE.match(line_for_match)
+        if not m:
+            m = _FALLBACK_LINE_RE_NO_TAIL.match(line_for_match)
         if m:
             raw_name = m.group('name').strip()
             orig = (m.group('orig') or '').strip()
@@ -285,9 +317,15 @@ def synthesize_gen_markers(full_text: str) -> List[GenMarker]:
             # gen-agent на голом slug рисует generic-default (helmet →
             # tactical combat вместо строительной каски). Скобки как
             # fallback КОГДА AI забыл вставить `[[GEN:...]]` маркер.
-            # Character-ветка не задета — orig там идёт в display (имя).
-            raw_desc = m.group('desc').strip()
-            if current_type in ('location', 'object') and orig:
+            # 2026-05-11 (v1.0.50): character теперь тоже с `[[GEN:...]]`
+            # маркером (all-✗ default). orig попадает в description для
+            # character (идёт в outfit picker chat_description). Display
+            # вычисляется выше (имя из «Имя — роль»). Безопасно: для
+            # character description не пайплайнится в Gemini, идёт в
+            # claude CLI outfit picker как rich контекст. m.groupdict()
+            # вместо m.group('desc') — второй regex без группы desc.
+            raw_desc = (m.groupdict().get('desc') or '').strip()
+            if current_type in ('location', 'object', 'character') and orig:
                 desc = orig
             else:
                 desc = raw_desc
@@ -369,7 +407,20 @@ def synthesize_gen_markers(full_text: str) -> List[GenMarker]:
             elif (head_name_raw and not head_name_raw.isascii()
                     and head_name_raw.lower() != name):
                 display = head_name_raw
-            desc = rest_text or stripped
+            # 2026-05-11 (v1.0.50): симметричный фикс v1.0.49 для ✓-ветки.
+            # Для location/object/character — если paren_inner непустой,
+            # description = paren_inner (реальное описание объекта/места/
+            # персонажа). Без этого ✓-карточки уходили в pipeline с
+            # description=rest_text=«реф есть — сцены X-Y» — служебная
+            # фраза без контекста, gen-agent рисует generic-default
+            # (helmet → tactical combat вместо строительной каски).
+            # Для character description идёт в outfit picker chat_description,
+            # не в Gemini pipeline — но всё равно полнее контекст лучше
+            # для подбора одежды (per-scene outfit notes).
+            if current_type in ('location', 'object', 'character') and paren_inner:
+                desc = paren_inner
+            else:
+                desc = rest_text or stripped
             markers.append(GenMarker(
                 type=current_type,
                 name=name,
