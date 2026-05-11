@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-10
+**Последнее обновление:** 2026-05-11
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -65,6 +65,103 @@ detection (фикс БАГ 1) для `refs/objects/`. Никакого дубл�
 подсказывает писать «в естественной среде, photorealistic, без
 cinematic 16:9». Если в реальном использовании окажется что бульдоги
 получаются на белом фоне — смягчить хардкод отдельным фиксом.
+
+## Refs auto-link reliability (БАГ 10 fix, 3 слоя защиты)
+
+**С 2026-05-10/11 (commits ef78d7b + 87091f0):** auto-link decision
+после автономной генерации защищён тремя независимыми слоями.
+
+**Контекст проблемы:** при параллельной генерации нескольких объектов
+(shotgun + phone одновременно) `_save_active_gen_decision` мог записать
+filename с НЕВЕРНЫМ расширением (`shotgun.png` когда на диске `.jpg`)
+из-за слепого доверия hint'у агента + race на read-modify-write
+episodes.json. Раньше → файл существовал на диске, но `list_episode_refs`
+не находил по неверному filename → refs panel пуст, CTA «Make
+storyboards» false-positive активна.
+
+### Layer 1 — `_save_active_gen_decision` (write-side)
+[storyboard_app.py:4180+](storyboard_app.py:4180):
+- **Disk-validation filename** перед записью: если файла нет под
+  переданным именем — глоб `{name}.{jpg,jpeg,png,webp}` находит
+  актуальное расширение.
+- **`threading.Lock`** (`self._episodes_json_lock`) вокруг
+  read-modify-write — защита от Python-side race при параллельных
+  `_on_active_gen_finished` callbacks.
+- **Atomic write** через temp-file `{name}.json.tmp.<PID>` +
+  `os.replace()`. POSIX-atomic rename. PID-суффикс защищает от
+  collision если юзер запустил две Studio параллельно.
+
+### Layer 2 — `list_episode_refs` (read-side self-healing)
+[storyboard_app.py:1525+](storyboard_app.py:1525):
+- Nested helper `_find_on_disk(base_dir, slug, hint_filename)`:
+  1) сначала hint (если файл там есть);
+  2) fallback на glob `{slug}.{jpg,jpeg,png,webp}`.
+- Loc/obj entries из decisions проходят через helper. В результате
+  `filename` = `cand.name` (актуальное имя на диске), не stale `fn`
+  из decisions. Render всегда показывает реальный файл.
+- Character (`folder/file.jpg` filename pattern) — не glob'ится этой
+  логикой (другая схема, требует отдельного фикса).
+
+### Layer 3 — `_linked_file_exists` (CTA readiness check)
+[views/episode_chat.py:2521+](views/episode_chat.py:2521):
+- Mirror логики Layer 2 для `_check_montage_ready`: если hint
+  filename не существует, тот же disk-glob fallback.
+- Защита от несовместимости Layer 2 (refs panel показывает) vs
+  строгая проверка (CTA скрыта). Раньше БАГ 11 — refs panel
+  работал но CTA пряталась.
+
+**Cross-process защита:** atomic rename — гарантия от частичных
+записей если процесс убьют. Agent в `claude -p` (внешний subprocess)
+может всё равно overwrite episodes.json — для этого слой 2+3
+независимо self-heal'ятся на read. Также агентский promпт ([views/
+new_episode.py:1020+](views/new_episode.py:1020)) явно запрещает
+трогать `refs_decisions`.
+
+## Cultural context decomposition (БАГ 9 v2)
+
+**С 2026-05-11 (commit 87091f0):** при формировании English-промптов
+для Gemini cultural context разделён на **географию** и **уровень
+достатка** — раздельные оси.
+
+**Контекст проблемы:** Gemini генерила «обшарпанный советский
+дачный экстерьер» вместо luxury загородного дома хотя agent в
+manifest писал «luxury / богатый». Причина — token leakage в
+инструкциях («Russian / Soviet / dacha» в плохих примерах) + путаница
+agent'а с interface language vs cultural context.
+
+### Декомпозиция
+
+- **География:** дефолт — generic Western/European contemporary
+  (БЕЗ luxury по умолчанию). НЕ применять национально-окрашенные
+  стили (русский / советский / dacha / постсоветский / японский /
+  арабский) если bible этого ЯВНО не указал.
+
+- **Уровень достатка:** определяется ОТДЕЛЬНО — из описания
+  конкретной локации в сценарии. Сериал может содержать локации
+  РАЗНЫХ уровней одновременно. НЕ применять `luxury` ко ВСЕМ
+  локациям подряд. Маппинг:
+  - «дешёвый мотель Sunset» → `cheap motel run-down`
+  - «элитный ресторан» → `upscale fine dining`
+  - «квартира адвоката» → `professional middle-class apartment`
+  - «стройка» → `working construction site`
+  - «трущобы / гетто» → `grungy / impoverished`
+  - «обычная квартира семьи» → `middle-class apartment`
+
+### Места правил
+
+- [views/new_episode.py:1183+](views/new_episode.py:1183) — блок
+  «🔴 INTERFACE LANGUAGE ≠ CULTURAL CONTEXT» в промпте.
+- [threads/autonomous_gen.py:84+](threads/autonomous_gen.py:84) —
+  Geographic+economic rules в location/object pipelines.
+- [instructions/PRODUCER_INSTRUCTIONS.md:213+](instructions/PRODUCER_INSTRUCTIONS.md:213)
+  — зеркальные правила в producer-инструкциях.
+
+### Token leakage очищен
+
+Слова «Russian / dacha / Soviet / советский» убраны из плохих
+примеров в `threads/autonomous_gen.py` (заменены на нейтральное
+«outdated / cheap-looking / low-budget rural»). Агент больше не
+видит эти токены как «valid в данном контексте».
 
 ## Slug collision handling (refs)
 
@@ -393,3 +490,44 @@ GenButton для david. А старая (скрытая, в `_outfit_source_btns
 character маркера, у которого уже есть source_btn в
 `_outfit_source_btns[ep_id]` — переиспользовать его (re-show + reset)
 вместо создания новой. Или явный cleanup призраков на ep switch.
+
+### Долг 6 (PRIORITY 1) — manifest format degradation (БАГ 13)
+
+На длинных задачах Opus 4.7 иногда сокращает manifest от секционного
+формата (`ЛОКАЦИИ: / ОБЪЕКТЫ: / ПЕРСОНАЖИ:` + `- ✗ name (...)`) до
+prose summary:
+
+> «Manifest ep3 записан: bedroom + house_lawn в локациях,
+> double_barrel_shotgun + phone + buldog в объектах. Не хватает
+> 3 рефов — house_lawn, phone, buldog. Жми кнопки 🎨...»
+
+Парсер `_FALLBACK_LINE_RE` + `_INLINE_GEN_HEADER_RE` в
+[views/_chat_render.py](views/_chat_render.py) не распознаёт prose
+формат → markers = пусто → кнопки не появляются.
+
+**История:** Pre-existing. Два расширения парсера уже было:
+- `5df52f9` (2026-05-10) — формат «- ✗ НУЖНО СГЕНЕРИРОВАТЬ: ...»
+- `526b5c0` (2026-05-11, БАГ 12) — nested parens в descriptions.
+Это **третий формат** — кошки-мышки.
+
+**Архитектурно правильное решение:** Studio должна использовать
+**`episodes.json` как source of truth** для markers, а chat-парсер
+делать косметическим. Pipeline:
+1. Agent пишет manifest в `episodes.json[ep].refs.{locations,objects}`
+   (как и сейчас) — это data layer.
+2. Studio при `_check_montage_ready` / `_advance_gen_queue`:
+   читает `refs.locations/objects` из `episodes.json` + проверяет
+   соответствующие файлы на диске → формирует список (slug, status).
+3. UI кнопки строит из этого списка, не из чата.
+4. Chat-парсер остаётся только для description/display name (UX
+   feedback), но кнопки появляются гарантированно если manifest
+   в `episodes.json` валидный.
+
+**Объём:** ~150 строк refactor в `_check_montage_ready`,
+`_advance_gen_queue`, `_restore_gen_buttons_from_history`. Также
+нужно убедиться что agent ВСЕГДА пишет в episodes.json (это уже
+gated в промпте).
+
+**Срочность:** P1 — баг наблюдается у юзера на каждой 3-й параллельной
+генерации Opus 4.7. До решения промпт уже содержит запреты на prose
+формат, но Opus иногда нарушает при long-running tasks.
