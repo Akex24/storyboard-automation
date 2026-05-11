@@ -7,11 +7,16 @@
 коллегам через installer; bundle через PyInstaller тоже не включает).
 
 ## Версия и статус
-- Текущая: **v1.0.30** (см. `version.json`).
+- Текущая: **v1.0.40** (см. `version.json`).
 - Релизный канал коллег: GitHub Releases, asset `Storyboard Studio v<ver>-{mac,win}.zip`.
 - Как пуляются обновления: админ → «📤 Отправить обновление» → `SendUpdateThread`
   ([threads/update.py:460](threads/update.py:460)) → bump version + git push +
   upload .app/.exe в Release.
+- **v1.0.41 — verification release** (запланирован): проверка что фикс Win
+  auto-update (commit `a1bd4b9`) реально работает при апдейте v1.0.40 → v1.0.41.
+  v1.0.39 → v1.0.40 апдейт упал ожидаемо — v1.0.39 не содержит фикса в своём
+  bundle, генерит bat по старому шаблону (chicken-and-egg in-process updater).
+  Полезной нагрузки в v1.0.41 нет — только этот doc-bump для не-пустого diff'а.
 
 ## Архитектурные решения которые легко забыть
 
