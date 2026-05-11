@@ -2,25 +2,46 @@
   "artem": {
     "display_name": "Артем",
     "roles": {
-      "finalnyy_raschet": "david"
+      "finalnyy_raschet_s_imenami": "david",
+      "finalnyy_raschet_s_imenami_2": "david",
+      "finalnyy_rachet_3": "david",
+      "finalnyy_raschet_4": "david",
+      "finalgyy_raschet_5": "david",
+      "finalnyy_raschet_6": "david",
+      "finalnyy_raschet_7": "david",
+      "finalnyy_raschet_8": "david",
+      "finalnyy_raschet_9": "david"
     }
   },
   "zhenya": {
     "display_name": "Женя",
-    "roles": {
-      "finalnyy_raschet": "advokat"
-    }
+    "roles": {}
   },
   "vova": {
     "display_name": "Вова",
     "roles": {
-      "finalnyy_raschet": "mark"
+      "finalnyy_raschet_s_imenami": "mark",
+      "finalnyy_raschet_s_imenami_2": "mark",
+      "finalnyy_rachet_3": "mark",
+      "finalnyy_raschet_4": "mark",
+      "finalgyy_raschet_5": "mark",
+      "finalnyy_raschet_6": "mark",
+      "finalnyy_raschet_7": "mark",
+      "finalnyy_raschet_8": "mark",
+      "finalnyy_raschet_9": "mark"
     }
   },
   "akter_4": {
     "display_name": "актер 4",
     "roles": {
-      "finalnyy_raschet": "lora"
+      "finalnyy_raschet_s_imenami": "lora",
+      "finalnyy_raschet_s_imenami_2": "lora",
+      "finalnyy_rachet_3": "lora",
+      "finalnyy_raschet_4": "lora",
+      "finalnyy_raschet_6": "lora",
+      "finalnyy_raschet_7": "lora",
+      "finalnyy_raschet_8": "lora",
+      "finalnyy_raschet_9": "lora"
     }
   },
   "akter_5": {
@@ -28,8 +49,6 @@
   },
   "akter_6": {
     "display_name": "актер 6",
-    "roles": {
-      "finalnyy_raschet": "policeman"
-    }
+    "roles": {}
   }
 }
