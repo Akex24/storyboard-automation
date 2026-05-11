@@ -2521,6 +2521,14 @@ class EpisodeChatView(QWidget):
           • object:    refs/objects/<filename>
           • character: refs/characters/<filename>
                        (filename содержит folder/file.jpg)
+
+        2026-05-11 (БАГ 11 fix): для location/object добавлен
+        disk-glob fallback — если hint filename не существует
+        (например `.png` в decisions, а на диске `.jpg`), ищем
+        реальный файл с тем же base name через glob. Mirror
+        логики `list_episode_refs` layer 2 self-healing
+        (БАГ 10 fix). Без этого fallback CTA «Make storyboards»
+        пряталась даже когда refs panel показывал файлы.
         """
         if not filename:
             return False
@@ -2535,9 +2543,22 @@ class EpisodeChatView(QWidget):
             }.get(gen_type)
             if not sub:
                 return False
-            path = (self._mw._project_root / "shows" / cur_show
-                    / "refs" / sub / filename)
-            return path.exists() and path.is_file()
+            base = (self._mw._project_root / "shows" / cur_show
+                    / "refs" / sub)
+            # 1. Hint exists check.
+            path = base / filename
+            if path.exists() and path.is_file():
+                return True
+            # 2. Disk-glob fallback — ТОЛЬКО для location/object
+            # (у character filename = "folder/file.jpg", folder
+            # prefix не glob'ится этой логикой).
+            if gen_type in ('location', 'object') and '/' not in filename:
+                from pathlib import Path as _Path
+                slug = _Path(filename).stem
+                for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                    if (base / f"{slug}{ext}").exists():
+                        return True
+            return False
         except Exception:
             return False
 
