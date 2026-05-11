@@ -11,12 +11,15 @@
       "finalnyy_raschet_7": "david",
       "finalnyy_raschet_8": "david",
       "finalnyy_raschet_9": "david",
-      "nazvanie_seriyala_1": "david"
+      "nazvanie_seriyala_1": "david",
+      "nazvanie_seriala_2": "david"
     }
   },
   "zhenya": {
     "display_name": "Женя",
-    "roles": {}
+    "roles": {
+      "nazvanie_seriyala_1": "viktor"
+    }
   },
   "vova": {
     "display_name": "Вова",
@@ -30,7 +33,8 @@
       "finalnyy_raschet_7": "mark",
       "finalnyy_raschet_8": "mark",
       "finalnyy_raschet_9": "mark",
-      "nazvanie_seriyala_1": "mark"
+      "nazvanie_seriyala_1": "mark",
+      "nazvanie_seriala_2": "mark"
     }
   },
   "akter_4": {
@@ -44,7 +48,8 @@
       "finalnyy_raschet_7": "lora",
       "finalnyy_raschet_8": "lora",
       "finalnyy_raschet_9": "lora",
-      "nazvanie_seriyala_1": "lora"
+      "nazvanie_seriyala_1": "lora",
+      "nazvanie_seriala_2": "laura"
     }
   },
   "akter_5": {
