@@ -675,8 +675,18 @@ class EpisodeChatView(QWidget):
         decisions = self._read_refs_decisions()
         for m in markers:
             d = decisions.get(m.type, {}).get(m.name)
-            if isinstance(d, dict) and d.get('decision') in ('skipped', 'linked'):
-                continue  # юзер уже разрешил — кнопка не нужна
+            if isinstance(d, dict):
+                dec = d.get('decision')
+                if dec == 'skipped':
+                    continue  # юзер пометил «не нужен» — карточку не плодим
+                if dec == 'linked':
+                    # v1.0.58: linked → continue ТОЛЬКО если файл реально
+                    # на диске. agent может писать ложные linked для
+                    # несуществующих файлов — тогда карточка ДОЛЖНА
+                    # появиться. См. фикс в _maybe_show_gen_button.
+                    fn = d.get('filename', '') or ''
+                    if self._linked_file_exists(m.type, fn, slug=m.name):
+                        continue  # реф реально готов — кнопка не нужна
             # 2026-05-07: если за этот маркер сейчас работает тред в
             # глобальном реестре MW — idle-карточку в чате НЕ показываем
             # (running-строка живёт в попапе `ActiveGensPanel`).
@@ -1266,6 +1276,18 @@ class EpisodeChatView(QWidget):
                 if dec in ('linked', 'skipped'):
                     pre_decision = dec
                     pre_filename = d.get('filename', '') or ''
+                    # v1.0.58: disk-check для linked-decisions. agent
+                    # может писать ложные linked для несуществующих
+                    # файлов в episodes.json через Bash tool. Если файла
+                    # нет на диске — игнорируем decision, карточка
+                    # станет active idle с кнопкой «Сгенерировать».
+                    # Симметрично с `list_episode_refs` (окно РЕФЕРЕНСЫ)
+                    # и `_linked_file_exists` (CTA-готовность) — везде
+                    # один критерий: linked AND файл реально на диске.
+                    if dec == 'linked' and not self._linked_file_exists(
+                            gen_type, pre_filename, slug=name):
+                        pre_decision = None
+                        pre_filename = ""
         except Exception:
             pass
 
@@ -2251,7 +2273,20 @@ class EpisodeChatView(QWidget):
 
         def _resolved(gen_type: str, name: str) -> bool:
             d = decisions.get(gen_type, {}).get(name)
-            return isinstance(d, dict) and d.get('decision') in ('skipped', 'linked')
+            if not isinstance(d, dict):
+                return False
+            dec = d.get('decision')
+            if dec == 'skipped':
+                return True
+            if dec == 'linked':
+                # v1.0.58: linked засчитываем resolved ТОЛЬКО если файл
+                # реально на диске. Ложные linked от agent через Bash
+                # tool (decision=linked без файла) НЕ считаются resolved
+                # — маркер останется в queue и юзер увидит кнопку
+                # «Сгенерировать». Симметрия с окном РЕФЕРЕНСЫ и CTA.
+                fn = d.get('filename', '') or ''
+                return self._linked_file_exists(gen_type, fn, slug=name)
+            return False
 
         # 1) Чистим очередь pending'ов — выкидываем уже разрешённые.
         if self._pending_markers:
