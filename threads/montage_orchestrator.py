@@ -64,11 +64,18 @@ class MontageOrchestratorThread(QThread):
     # 2026-05-09: per-agent model routing. Юзер не выбирает модели для
     # пайплайнов — каждый агент прибит к задаче. Validator — механический
     # чек-лист (формула тайминга, whitelist значений), Sonnet справляется
-    # отлично и даёт ~3× ускорение. Остальные три агента — творческие/
-    # семантические, остаются на Opus.
+    # отлично и даёт ~3× ускорение. Scriptwriter и Context Reviewer —
+    # творческие/семантические, остаются на Opus.
     MODEL_SCRIPTWRITER     = "claude-opus-4-7"
     MODEL_VALIDATOR        = "claude-sonnet-4-6"
-    MODEL_EDITOR           = "claude-opus-4-7"
+    # 2026-05-12 (v1.0.54): Editor переведён на Sonnet 4.6.
+    # Задача дисциплинированная — применить N исправлений из errors[]
+    # к JSON-карте (тайминги реплик, расстановка шотов, разбивка
+    # блоков). Творческие элементы (микромимика, стилевая ДНК) идут
+    # позже в PromptWriter (Nano Banana) / Seedance — там Opus остаётся.
+    # Ожидаемый эффект: монтажная карта ~15 мин → ~5-7 мин на эпизод
+    # (Editor — самая прожорливая стадия, 60-70% времени).
+    MODEL_EDITOR           = "claude-sonnet-4-6"
     MODEL_CONTEXT_REVIEWER = "claude-opus-4-7"
 
     def __init__(self, claude_cli_path: str,
