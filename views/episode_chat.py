@@ -3176,9 +3176,10 @@ class EpisodeChatView(QWidget):
             pass
 
         # 2026-05-09: модели монтажки прибиты per-agent в
-        # MontageOrchestratorThread (MODEL_* константы класса) —
-        # Validator на Sonnet 4.6, остальные на Opus 4.7. Дропдаун
-        # шапки чата больше НЕ влияет на пайплайны.
+        # MontageOrchestratorThread (MODEL_* константы класса).
+        # С v1.0.58 все 4 агента на Sonnet 4.6 (см. комментарий
+        # над MODEL_* в montage_orchestrator.py). Дропдаун шапки
+        # чата НЕ влияет на эти пайплайны.
 
         # 2026-05-06: подгружаем контекст сериала (Bible + другие
         # эпизоды) — Сценарист, Редактор, Чекер и Context Reviewer

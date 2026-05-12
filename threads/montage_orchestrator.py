@@ -62,21 +62,22 @@ class MontageOrchestratorThread(QThread):
     SUBPROCESS_TIMEOUT_SEC = 600  # 10 минут на каждый вызов CLI
 
     # 2026-05-09: per-agent model routing. Юзер не выбирает модели для
-    # пайплайнов — каждый агент прибит к задаче. Validator — механический
-    # чек-лист (формула тайминга, whitelist значений), Sonnet справляется
-    # отлично и даёт ~3× ускорение. Scriptwriter и Context Reviewer —
-    # творческие/семантические, остаются на Opus.
-    MODEL_SCRIPTWRITER     = "claude-opus-4-7"
+    # пайплайнов — каждый агент прибит к задаче.
+    # 2026-05-12 (v1.0.54): Editor переведён на Sonnet 4.6 (применение
+    # N исправлений к JSON-карте — дисциплинированная задача).
+    # 2026-05-12 (v1.0.58): ВСЕ 4 агента переведены на Sonnet 4.6.
+    # Обоснование: админ в реальной работе делает монтажные карты в
+    # клод-чате на Sonnet 4.6 — выходит качественно. Опасение
+    # «Sonnet хуже структурирует» необоснованно. Творческие элементы
+    # (микромимика, стилевая ДНК) живут в PromptWriter (Nano Banana) /
+    # Seedance, не в монтажной карте — там Opus остаётся.
+    # Ожидаемый эффект: монтажная карта ~15 мин → ~3-5 мин на эпизод
+    # (Scriptwriter+Context Reviewer теперь тоже быстрые).
+    # Откат при регрессии качества — git revert этого коммита.
+    MODEL_SCRIPTWRITER     = "claude-sonnet-4-6"
     MODEL_VALIDATOR        = "claude-sonnet-4-6"
-    # 2026-05-12 (v1.0.54): Editor переведён на Sonnet 4.6.
-    # Задача дисциплинированная — применить N исправлений из errors[]
-    # к JSON-карте (тайминги реплик, расстановка шотов, разбивка
-    # блоков). Творческие элементы (микромимика, стилевая ДНК) идут
-    # позже в PromptWriter (Nano Banana) / Seedance — там Opus остаётся.
-    # Ожидаемый эффект: монтажная карта ~15 мин → ~5-7 мин на эпизод
-    # (Editor — самая прожорливая стадия, 60-70% времени).
     MODEL_EDITOR           = "claude-sonnet-4-6"
-    MODEL_CONTEXT_REVIEWER = "claude-opus-4-7"
+    MODEL_CONTEXT_REVIEWER = "claude-sonnet-4-6"
 
     def __init__(self, claude_cli_path: str,
                  scenario_text: str,
