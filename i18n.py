@@ -427,9 +427,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # Стадии оркестратора (показываются на CTA как бегущая строка)
         'montage_status_scriptwriter': 'Сценарист пишет монтажную карту',
         'montage_status_validator': '🔍 Чекер проверяет тайминги (раунд {round}/{max_rounds})',
-        'montage_status_editor': '✏ Редактор правит {errors_count} ошибок',
+        'montage_status_editor': '✏ Редактор правит {errors_count} {errors_word}',
         'montage_status_round_done_clean': '✓ Раунд {round}: ошибок не найдено',
-        'montage_status_round_done_errors': '⚠ Раунд {round}: найдено {errors_count} ошибок',
+        'montage_status_round_done_errors': '⚠ Раунд {round}: найдено {errors_count} {errors_word}',
         'montage_status_context_reviewer': '🎯 Финальный редактор сверяет с Библией сериала (раунд {round})',
         'montage_status_context_reviewer_clean': '✓ Финальный редактор: всё соответствует Библии',
         'montage_status_context_reviewer_concerns': '⚠ Финальный редактор нашёл {concerns_count} несоответствий — правлю',
@@ -853,9 +853,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_button_cancel': '✗ Перервати',
         'montage_status_scriptwriter': 'Сценарист пише монтажну карту',
         'montage_status_validator': '🔍 Чекер перевіряє тайминги (раунд {round}/{max_rounds})',
-        'montage_status_editor': '✏ Редактор виправляє {errors_count} помилок',
+        'montage_status_editor': '✏ Редактор виправляє {errors_count} {errors_word}',
         'montage_status_round_done_clean': '✓ Раунд {round}: помилок не знайдено',
-        'montage_status_round_done_errors': '⚠ Раунд {round}: знайдено {errors_count} помилок',
+        'montage_status_round_done_errors': '⚠ Раунд {round}: знайдено {errors_count} {errors_word}',
         'montage_status_context_reviewer': '🎯 Фінальний редактор звіряє з Біблією серіалу (раунд {round})',
         'montage_status_context_reviewer_clean': '✓ Фінальний редактор: все відповідає Біблії',
         'montage_status_context_reviewer_concerns': '⚠ Фінальний редактор знайшов {concerns_count} невідповідностей — виправляю',
@@ -1277,9 +1277,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_button_cancel': '✗ Cancel',
         'montage_status_scriptwriter': 'Scriptwriter is drafting the montage card',
         'montage_status_validator': '🔍 Checker is validating timings (round {round}/{max_rounds})',
-        'montage_status_editor': '✏ Editor is fixing {errors_count} errors',
+        'montage_status_editor': '✏ Editor is fixing {errors_count} {errors_word}',
         'montage_status_round_done_clean': '✓ Round {round}: no errors',
-        'montage_status_round_done_errors': '⚠ Round {round}: {errors_count} errors found',
+        'montage_status_round_done_errors': '⚠ Round {round}: {errors_count} {errors_word} found',
         'montage_status_context_reviewer': '🎯 Final reviewer cross-checks with show Bible (round {round})',
         'montage_status_context_reviewer_clean': '✓ Final reviewer: all matches Bible',
         'montage_status_context_reviewer_concerns': '⚠ Final reviewer found {concerns_count} concerns — fixing',
@@ -1346,11 +1346,60 @@ def set_lang(lang: str) -> None:
     QSettings(_QS_ORG, _QS_NAME).setValue("ui_lang", lang)
 
 
+def _plural_slavic(n: int, one: str, few: str, many: str) -> str:
+    """Правила склонения для русского и украинского:
+    - последние 2 цифры 11-14 → many ("ошибок"/"помилок")
+    - последняя цифра 1 → one ("ошибку"/"помилку")
+    - последняя цифра 2-4 → few ("ошибки"/"помилки")
+    - остальное → many
+
+    Пример (ru, one='ошибку', few='ошибки', many='ошибок'):
+      1 → ошибку, 2-4 → ошибки, 5-20 → ошибок, 21 → ошибку, 25 → ошибок.
+    """
+    n = abs(int(n))
+    if 11 <= n % 100 <= 14:
+        return many
+    last = n % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
+
+
+def plural_errors(n: int, lang: str = None) -> str:
+    """Правильная форма слова «ошибка» для языка интерфейса (ru/uk/en).
+
+    Используется через auto-inject в `tr()`: когда в `kwargs` есть
+    `errors_count` и в template есть `{errors_word}` — `tr()` сам
+    подставит правильную форму. См. `tr()` ниже.
+    """
+    if lang is None:
+        lang = get_lang()
+    if lang == 'ru':
+        return _plural_slavic(n, 'ошибку', 'ошибки', 'ошибок')
+    if lang == 'uk':
+        return _plural_slavic(n, 'помилку', 'помилки', 'помилок')
+    # English: только two forms (singular/plural).
+    return 'error' if abs(int(n)) == 1 else 'errors'
+
+
 def tr(key: str, **kwargs) -> str:
-    """Перевод по ключу. Fallback на русский, потом на сам ключ."""
+    """Перевод по ключу. Fallback на русский, потом на сам ключ.
+
+    2026-05-12 (v1.0.52): auto-plural для слова «ошибка/помилка/error».
+    Если в kwargs передан `errors_count` и template содержит
+    `{errors_word}` — `tr()` сам подставит правильную форму через
+    `plural_errors(errors_count, lang)`. Позволяет писать в template
+    `'Редактор правит {errors_count} {errors_word}'` без явной передачи
+    `errors_word` в каждом сайте вызова.
+    """
     lang = get_lang()
     table = TRANSLATIONS.get(lang, TRANSLATIONS['ru'])
     text  = table.get(key) or TRANSLATIONS['ru'].get(key, key)
+    # Auto-inject errors_word если в kwargs есть errors_count.
+    if 'errors_count' in kwargs and 'errors_word' not in kwargs:
+        kwargs['errors_word'] = plural_errors(kwargs['errors_count'], lang)
     if kwargs:
         try:
             text = text.format(**kwargs)
