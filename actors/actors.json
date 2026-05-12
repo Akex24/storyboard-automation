@@ -40,7 +40,7 @@
     }
   },
   "akter_4": {
-    "display_name": "актер 4",
+    "display_name": "Оля",
     "roles": {
       "finalnyy_raschet_s_imenami": "lora",
       "finalnyy_raschet_s_imenami_2": "lora",
@@ -56,10 +56,10 @@
     }
   },
   "akter_5": {
-    "display_name": "актер 5"
+    "display_name": "Тарас"
   },
   "akter_6": {
-    "display_name": "актер 6",
+    "display_name": "Артем",
     "roles": {
       "nazvanie_seriala_2": "policeman"
     }
@@ -71,6 +71,6 @@
     "display_name": "Временный актер 2"
   },
   "akter_7": {
-    "display_name": "актер 7"
+    "display_name": "Настя"
   }
 }
