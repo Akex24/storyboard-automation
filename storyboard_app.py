@@ -5690,6 +5690,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'open_log_btn'):
             self.open_log_btn.setText(tr('open_log_btn'))
             self.open_log_btn.setToolTip(tr('open_log_btn_tooltip'))
+        # 2026-05-12 (v1.0.53): кнопка «🔄 Проверить обновления».
+        if hasattr(self, 'check_updates_btn'):
+            self.check_updates_btn.setText(tr('check_updates_btn'))
+            self.check_updates_btn.setToolTip(tr('check_updates_btn_tooltip'))
         # AI-АККАУНТ — секция, лейбл «Текущий аккаунт:», кнопка «Сменить».
         # Email (claude_acc_email_lbl) обновляем через refresh — там либо
         # сам email (не переводится), либо tr('ai_account_not_logged').
@@ -6135,6 +6139,20 @@ class MainWindow(QMainWindow):
         self.app_ver_val_lbl.setObjectName("settings-row-val")
         ra.addWidget(self.app_ver_val_lbl)
         af.addWidget(row_app)
+
+        # 2026-05-12 (v1.0.53): кнопка ручной проверки обновлений.
+        # Auto-check работает только при старте Studio (QTimer.singleShot
+        # через 2 сек). Если юзер открыл Studio неделю назад и не
+        # перезапускал — новые версии он не увидит. Эта кнопка
+        # позволяет проверить прямо сейчас без перезапуска.
+        # Особенно полезна для коллег после обновления через Installer:
+        # «нажми эту кнопку чтобы убедиться что auto-update работает».
+        self.check_updates_btn = QPushButton(tr('check_updates_btn'))
+        self.check_updates_btn.setObjectName("settings-row-btn")
+        self.check_updates_btn.setToolTip(tr('check_updates_btn_tooltip'))
+        self.check_updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check_updates_btn.clicked.connect(self._on_manual_check_updates)
+        af.addWidget(self.check_updates_btn)
 
         lay.addWidget(about_frame)
 
@@ -10180,6 +10198,66 @@ class MainWindow(QMainWindow):
         self._update_thread.no_update.connect(lambda: None)
         self._update_thread.error.connect(
             lambda e: self.status_bar.showMessage(f"Не удалось проверить обновления: {e}"))
+        self._update_thread.start()
+
+    def _on_manual_check_updates(self):
+        """2026-05-12 (v1.0.53): обработчик кнопки «🔄 Проверить
+        обновления» в Settings. В отличие от auto-check при старте,
+        этот вызов даёт UI feedback — кнопка в busy-состоянии, статус
+        в status_bar, явное «✓ у тебя последняя версия» через toast
+        если обновлений нет.
+
+        Полезно для коллег после ручной установки через Installer:
+        «нажми кнопку чтобы убедиться что auto-update работает».
+        """
+        if self._update_thread and self._update_thread.isRunning():
+            self.status_bar.showMessage(tr('check_updates_busy'), 3000)
+            return
+        if not hasattr(self, 'check_updates_btn'):
+            return
+        # UI feedback — кнопка disabled + текст «Проверяю…».
+        try:
+            self.check_updates_btn.setEnabled(False)
+            self.check_updates_btn.setText(tr('check_updates_busy'))
+        except Exception:
+            pass
+
+        def _restore_btn():
+            try:
+                self.check_updates_btn.setEnabled(True)
+                self.check_updates_btn.setText(tr('check_updates_btn'))
+            except Exception:
+                pass
+
+        def _on_no_update():
+            try:
+                curr = read_local_app_version(self._project_root)
+                self.status_bar.showMessage(
+                    tr('check_updates_no_update', version=curr), 6000)
+            except Exception:
+                pass
+            _restore_btn()
+
+        def _on_error(err: str):
+            try:
+                self.status_bar.showMessage(
+                    tr('check_updates_error', msg=str(err)[:200]), 8000)
+            except Exception:
+                pass
+            _restore_btn()
+
+        def _on_update_found(curr_proj, latest_proj, curr_app, latest_app):
+            # Показываем стандартный update banner (как auto-check).
+            try:
+                self._show_update_banner(curr_proj, latest_proj, curr_app, latest_app)
+            except Exception:
+                pass
+            _restore_btn()
+
+        self._update_thread = CheckUpdateThread(self._project_root)
+        self._update_thread.update_found.connect(_on_update_found)
+        self._update_thread.no_update.connect(_on_no_update)
+        self._update_thread.error.connect(_on_error)
         self._update_thread.start()
 
     def _show_update_banner(self, curr_proj: str, latest_proj: str,

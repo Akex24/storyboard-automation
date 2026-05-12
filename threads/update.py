@@ -203,10 +203,101 @@ class DownloadAppUpdateThread(QThread):
     finished = pyqtSignal(str, str)   # (new_app_version, install_path)
     error    = pyqtSignal(str)
 
+    # 2026-05-12 (v1.0.53): системные пути на Windows куда update_dir
+    # никогда не должен попасть. Если tempfile.gettempdir() вернул что-то
+    # из этого списка (как было с C:\Windows\System32 в v1.0.39 у админа
+    # запущенного из admin PowerShell) — fallback на LOCALAPPDATA.
+    _WIN_SYSTEM_PATH_PREFIXES = (
+        r'c:\windows',
+        r'c:\program files',
+        r'c:\program files (x86)',
+        r'c:\programdata',
+    )
+
     def __init__(self, target_version: str, root: Path):
         super().__init__()
         self.target_version = target_version
         self.root = root
+        self._early_log_path = None  # установится в run() как можно раньше
+
+    # ─────────────────────────────────────────────────────────────────
+    # 2026-05-12 (v1.0.53): раннее логирование в гарантированно
+    # безопасное место. Пишется в %LOCALAPPDATA%\StoryboardStudio\logs\
+    # на Win, ~/Library/Logs/StoryboardStudio/ на Mac. Используется
+    # для диагностики когда update_dir не создалась / network упал /
+    # любой exception ДО создания bootstrap.log.
+    # ─────────────────────────────────────────────────────────────────
+
+    def _open_early_log(self) -> Path:
+        """Открывает (создаёт) файл раннего лога. Возвращает Path.
+        Не валит pipeline если не получилось — возвращает None."""
+        try:
+            if sys.platform == 'win32':
+                base = Path(os.environ.get('LOCALAPPDATA', '')
+                            or (Path.home() / 'AppData' / 'Local'))
+                log_dir = base / 'StoryboardStudio' / 'logs'
+            else:
+                log_dir = Path.home() / 'Library' / 'Logs' / 'StoryboardStudio'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            return log_dir / f"update_{self.target_version}.log"
+        except Exception:
+            return None
+
+    def _early_log(self, msg: str) -> None:
+        """Append строку в файл раннего лога. Безопасно — не валит pipeline."""
+        try:
+            if self._early_log_path is None:
+                return
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(self._early_log_path, 'a', encoding='utf-8') as f:
+                f.write(f"{ts}  {msg}\n")
+        except Exception:
+            pass
+
+    def _choose_update_dir(self) -> Path:
+        """Возвращает безопасный путь для рабочей папки обновления.
+
+        2026-05-12 (v1.0.53): фикс кейса когда update_dir попадал в
+        C:\\Windows\\System32 (см. _WIN_SYSTEM_PATH_PREFIXES). Раньше
+        использовалось tempfile.gettempdir() напрямую — на Win её
+        последний fallback это os.getcwd(), что может быть System32
+        если Studio запущена из admin PowerShell без явного -WorkingDirectory.
+
+        Логика:
+          • На Win: пытаемся %LOCALAPPDATA%\\Temp\\StoryboardStudio.
+            Если LOCALAPPDATA сломан / не задан → fallback на
+            %USERPROFILE%\\AppData\\Local\\Temp\\StoryboardStudio.
+            Если и этот путь оказался в системной папке → exception.
+          • На Mac: gettempdir() возвращает /var/folders/... — безопасно,
+            используем как раньше.
+        """
+        if sys.platform == 'win32':
+            localapp = os.environ.get('LOCALAPPDATA', '')
+            if localapp:
+                base = Path(localapp) / 'Temp' / 'StoryboardStudio'
+            else:
+                base = (Path.home() / 'AppData' / 'Local' / 'Temp'
+                        / 'StoryboardStudio')
+            # Защита: если получился путь внутри системной папки —
+            # тоже отказываемся и берём %USERPROFILE%\AppData fallback.
+            base_lower = str(base).lower().replace('/', '\\')
+            for prefix in self._WIN_SYSTEM_PATH_PREFIXES:
+                if base_lower.startswith(prefix):
+                    base = (Path.home() / 'AppData' / 'Local' / 'Temp'
+                            / 'StoryboardStudio')
+                    break
+            # Финальная проверка: всё ещё в системной папке — raise.
+            final_lower = str(base).lower().replace('/', '\\')
+            for prefix in self._WIN_SYSTEM_PATH_PREFIXES:
+                if final_lower.startswith(prefix):
+                    raise RuntimeError(
+                        f"Не удалось выбрать безопасный путь для обновления — "
+                        f"все варианты ведут в системную папку. "
+                        f"Проверь env-переменные LOCALAPPDATA / USERPROFILE.")
+        else:
+            # Mac: gettempdir() возвращает /var/folders/... — пользовательский путь.
+            base = Path(tempfile.gettempdir()) / 'StoryboardStudio'
+        return base / f"storyboard_update_{self.target_version}_{os.getpid()}"
 
     def run(self):
         """Скачивает новую версию + создаёт bootstrap-скрипт + запускает его.
@@ -230,14 +321,45 @@ class DownloadAppUpdateThread(QThread):
           5. emit finished → caller вызывает QApplication.quit().
           6. Bootstrap делает свою работу → юзер видит новую Studio.
         """
+        # 2026-05-12 (v1.0.53): максимально раннее логирование диагностики.
+        # Файл всегда в %LOCALAPPDATA%\StoryboardStudio\logs\ (Win) или
+        # ~/Library/Logs/StoryboardStudio/ (Mac) — независимо от того
+        # куда tempfile.gettempdir() уйдёт. Юзер при failure обновления
+        # увидит точный путь к этому логу в popup'е и сможет переслать.
+        self._early_log_path = self._open_early_log()
+        try:
+            self._early_log(
+                f"=== DownloadAppUpdateThread.run() start ===")
+            self._early_log(
+                f"target_version={self.target_version}, "
+                f"sys.platform={sys.platform}")
+            self._early_log(
+                f"sys.executable={sys.executable}")
+            self._early_log(
+                f"os.getcwd()={os.getcwd()}")
+            self._early_log(
+                f"tempfile.gettempdir()={tempfile.gettempdir()}")
+            self._early_log(
+                f"env LOCALAPPDATA={os.environ.get('LOCALAPPDATA', '<unset>')}")
+            self._early_log(
+                f"env TEMP={os.environ.get('TEMP', '<unset>')}, "
+                f"TMP={os.environ.get('TMP', '<unset>')}")
+        except Exception:
+            pass
+
         try:
             self.progress.emit("Ищу релиз на GitHub…", 5)
+            self._early_log("fetching release asset info...")
             asset = _sa.fetch_release_asset_info(self.target_version)
             if not asset:
-                self.error.emit(
-                    f"Не найден .zip в релизе app-v{self.target_version}.\n"
-                    "Попробуй обновить вручную — скачай с GitHub Releases.")
+                msg = (f"Не найден .zip в релизе app-v{self.target_version}.\n"
+                       "Попробуй обновить вручную — скачай с GitHub Releases.")
+                self._early_log(f"FAIL: {msg}")
+                self.error.emit(msg)
                 return
+            self._early_log(
+                f"asset found: name={asset.get('name','?')}, "
+                f"size={asset.get('size', 0)}")
 
             download_url = asset["browser_download_url"]
             size_bytes   = asset.get("size", 0)
@@ -287,14 +409,26 @@ class DownloadAppUpdateThread(QThread):
             # ВАЖНО: НЕ TemporaryDirectory — она удалится когда Thread
             # умрёт, а bootstrap должен прочитать new_app_src ПОСЛЕ
             # выхода из Studio. Bootstrap сам удалит эту папку в конце.
-            update_dir = (Path(tempfile.gettempdir())
-                          / f"storyboard_update_{self.target_version}_{os.getpid()}")
+            # 2026-05-12 (v1.0.53): _choose_update_dir() гарантирует
+            # путь в пользовательской папке (%LOCALAPPDATA%\Temp\StoryboardStudio
+            # на Win, /var/folders/.../StoryboardStudio на Mac) и
+            # отказывается возвращать путь внутри C:\Windows\System32
+            # или C:\Program Files (бывшая проблема — см. v1.0.39 след).
+            update_dir = self._choose_update_dir()
+            self._early_log(f"chosen update_dir={update_dir}")
             if update_dir.exists():
                 shutil.rmtree(update_dir, ignore_errors=True)
             update_dir.mkdir(parents=True, exist_ok=True)
+            if not update_dir.exists():
+                msg = f"Не удалось создать рабочую папку обновления: {update_dir}"
+                self._early_log(f"FAIL: {msg}")
+                self.error.emit(msg)
+                return
+            self._early_log(f"update_dir created OK")
 
             with zipfile.ZipFile(buf) as z:
                 z.extractall(update_dir)
+            self._early_log(f"zip extracted to update_dir")
 
             # На Win ищем папку «Storyboard Studio» (onedir),
             # внутри которой .exe + _internal/.
@@ -339,15 +473,31 @@ class DownloadAppUpdateThread(QThread):
                 pass  # некритично — popup при следующем старте появится без old_version
 
             # Bootstrap-скрипт + запуск detached
+            self._early_log(f"creating bootstrap script in {update_dir}")
             script_path = self._make_bootstrap(
                 new_app_src, target_path, update_dir, is_win,
                 project_root=self.root)
+            self._early_log(f"bootstrap created at {script_path}")
             self._launch_bootstrap(script_path, is_win)
+            self._early_log("bootstrap launched detached, Studio will quit")
 
             self.progress.emit("Перезапуск…", 100)
             self.finished.emit(self.target_version, str(target_path))
         except Exception as e:
-            self.error.emit(str(e))
+            # 2026-05-12 (v1.0.53): полный traceback в early-лог чтобы
+            # юзер мог переслать причину failure (старый код терял
+            # traceback в stderr который на Win .exe идёт в /dev/null).
+            try:
+                import traceback as _tb
+                self._early_log(
+                    f"FATAL EXCEPTION:\n{_tb.format_exc()}")
+            except Exception:
+                pass
+            # В сообщение для popup кладём ссылку на лог если он есть.
+            err_msg = str(e)
+            if self._early_log_path is not None:
+                err_msg += f"\n\nЛог обновления: {self._early_log_path}"
+            self.error.emit(err_msg)
 
     # 2026-05-11 (v1.0.44): PowerShell helper для Win bootstrap'а.
     # Содержит два режима:
