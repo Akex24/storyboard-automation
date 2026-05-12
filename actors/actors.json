@@ -57,6 +57,8 @@
   },
   "akter_6": {
     "display_name": "актер 6",
-    "roles": {}
+    "roles": {
+      "nazvanie_seriala_2": "policeman"
+    }
   }
 }
