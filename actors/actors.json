@@ -19,7 +19,8 @@
   "zhenya": {
     "display_name": "Женя",
     "roles": {
-      "nazvanie_seriyala_1": "viktor"
+      "nazvanie_seriyala_1": "viktor",
+      "finalnyy_raschet": "viktor"
     }
   },
   "vova": {
