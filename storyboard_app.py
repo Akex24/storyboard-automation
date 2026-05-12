@@ -1334,6 +1334,15 @@ def finalize_pending_update(project_root: Path) -> Optional[Tuple]:
                         traceback.print_exc()
                 # Найти лог bootstrap'а в %TEMP% (последний по mtime —
                 # это и есть тот что только что упал).
+                # TODO v1.0.56: с v1.0.55 update_dir выбирается через
+                # DownloadAppUpdateThread._choose_update_dir() в
+                # %LOCALAPPDATA%\Temp\StoryboardStudio\ — НЕ всегда
+                # совпадает с tempfile.gettempdir(). Нужно искать
+                # bootstrap.log и в новом пути тоже:
+                #   shared_dir/Temp/StoryboardStudio/storyboard_update_*
+                #   + tempfile.gettempdir()/storyboard_update_* (legacy).
+                # Также cleanup старых папок (ниже на ~1396) нужно
+                # расширить аналогично.
                 log_path: Optional[Path] = None
                 try:
                     import tempfile as _tf
@@ -4093,8 +4102,109 @@ def build_actor_ref_filename(actor_slug: str, description: str) -> str:
 # ─── Главное окно ─────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
+
+    # 2026-05-12 (v1.0.55): защита от запуска Studio через ярлык во время
+    # auto-update. Splash-PS-процесс пишет свой PID в lock-file при старте,
+    # удаляет в FormClosing. Если Studio стартует через ярлык пока bat
+    # обновляет bundle — мы видим lock + PID жив → показываем popup и
+    # закрываемся. Это убирает основную причину move_failed багов
+    # v1.0.39-v1.0.54: юзер тыкал ярлык, открывал старую .exe, лочил
+    # bundle для bat → апдейт падал.
+    @staticmethod
+    def _get_update_lock_path() -> Path:
+        """Путь к lock-file. Cross-platform но реально использует только Win."""
+        if sys.platform == 'win32':
+            base = Path(os.environ.get('LOCALAPPDATA', '')
+                        or (Path.home() / 'AppData' / 'Local'))
+            return base / 'StoryboardStudio' / 'updating.lock'
+        return (Path.home() / 'Library' / 'Application Support'
+                / 'StoryboardStudio' / 'updating.lock')
+
+    @staticmethod
+    def _is_update_pid_alive(pid: int) -> bool:
+        """True если процесс с этим PID живёт. На Win через tasklist
+        (с no_console_kwargs чтобы не мигало чёрное окно), на Mac через
+        os.kill(pid, 0). Возвращает False если PID мёртв или check упал."""
+        if sys.platform == 'win32':
+            try:
+                r = subprocess.run(
+                    ['tasklist', '/FI', f'PID eq {pid}'],
+                    capture_output=True, text=True, timeout=5,
+                    **no_console_kwargs())
+                return str(pid) in (r.stdout or '')
+            except Exception:
+                return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, OSError):
+            return False
+
+    def _check_update_lock_alive(self) -> bool:
+        """True если сейчас идёт auto-update (PS-splash жив с lock-file).
+        False если lock-file нет или PID в нём мёртв (orphan — удаляем).
+
+        Используется в __init__ для отказа стартовать Studio пока bat
+        обновляет bundle."""
+        lock_path = self._get_update_lock_path()
+        if not lock_path.exists():
+            return False
+        try:
+            pid_str = lock_path.read_text(encoding='utf-8').strip()
+            pid = int(pid_str)
+        except (ValueError, IOError, OSError):
+            try:
+                lock_path.unlink()  # corrupted lock — удаляем
+            except Exception:
+                pass
+            return False
+        if self._is_update_pid_alive(pid):
+            return True
+        # Orphan lock (PS crashed без cleanup) — удаляем, продолжаем старт.
+        try:
+            lock_path.unlink()
+        except Exception:
+            pass
+        return False
+
     def __init__(self, project_root: Path):
         super().__init__()
+        # 2026-05-12 (v1.0.55): защита от race с активным auto-update.
+        # Если splash-PS процесс жив с lock-file — другой bootstrap прямо
+        # сейчас обновляет Studio. Показываем popup и закрываемся —
+        # иначе мы залочим bundle и сломаем bat'у move. Эта защита
+        # дополняет QMessageBox перед quit (там юзер ПРЕДУПРЕЖДЁН не
+        # запускать) — fail-safe на случай если юзер всё равно тыкнул ярлык.
+        try:
+            if self._check_update_lock_alive():
+                QMessageBox.warning(
+                    None, tr('update_lock_title'),
+                    tr('update_lock_text'))
+                QTimer.singleShot(0, QApplication.quit)
+                return
+        except Exception:
+            # 2026-05-12 (v1.0.55): на .exe-сборке stderr идёт в /dev/null,
+            # traceback.print_exc() невидим. Пишем в файл рядом с update_*.log
+            # чтобы при падении lock-check юзер мог переслать диагностику.
+            try:
+                import traceback as _tb
+                if sys.platform == 'win32':
+                    log_dir = (Path(os.environ.get('LOCALAPPDATA', '')
+                                    or (Path.home() / 'AppData' / 'Local'))
+                               / 'StoryboardStudio' / 'logs')
+                else:
+                    log_dir = (Path.home() / 'Library' / 'Logs'
+                               / 'StoryboardStudio')
+                log_dir.mkdir(parents=True, exist_ok=True)
+                from datetime import datetime as _dt
+                ts = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(log_dir / 'studio_startup.log', 'a',
+                          encoding='utf-8') as _f:
+                    _f.write(f"{ts}  [lock_check_failed]\n")
+                    _f.write(_tb.format_exc())
+                    _f.write("\n")
+            except Exception:
+                pass  # никогда не валим pipeline из-за логирования
         self._project_root = project_root
         self._is_admin     = is_admin_mode(project_root)
         # 2026-05-10 (БАГ 10 fix): Python-side lock для атомарного
@@ -10342,8 +10452,32 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Перезапускаюсь до v{new_version}…")
 
+        # 2026-05-12 (v1.0.55): explicit pre-quit popup. Объясняет юзеру
+        # что произойдёт: Studio закроется на 30-60 сек, потом сама
+        # откроется обновлённая. Главное — предупреждаем НЕ запускать
+        # Studio через ярлык в эти 60 сек (это была главная причина
+        # move_failed багов в v1.0.39-v1.0.54: юзер тыкал ярлык, открывал
+        # старую .exe, лочил bundle для bat).
+        # Параллельно bootstrap.bat запустит TopMost splash-окно которое
+        # будет видно на экране весь процесс.
+        try:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle(tr('update_quit_msg_title'))
+            box.setText(tr('update_quit_msg_text', version=new_version))
+            box.setStandardButtons(QMessageBox.StandardButton.NoButton)
+            box.addButton(tr('update_quit_msg_btn'),
+                          QMessageBox.ButtonRole.AcceptRole)
+            box.exec()
+        except Exception:
+            pass
+
         # Дать UI отрисовать статус + thread'у мирно завершиться, потом quit.
         # Bootstrap-скрипт в это время уже ждёт смерти нашего PID.
+        # 1500мс — необходимое окно для graceful shutdown background-thread'ов
+        # (DownloadAppUpdateThread должен flush'ить file handles перед exit).
+        # QMessageBox.exec() выше блокирует ТОЛЬКО Qt event loop, фоновые
+        # QThread'ы продолжают работать — им нужно физическое время на cleanup.
         QTimer.singleShot(1500, QApplication.quit)
 
     def _on_app_update_error(self, msg: str):

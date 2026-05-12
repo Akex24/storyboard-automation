@@ -723,6 +723,139 @@ Log "Defer mode: reboot-deferred install scheduled successfully (exit 0)"
 exit 0
 '''
 
+    # ────────────────────────────────────────────────────────────────────────
+    # 2026-05-12 (v1.0.55): WinForms splash window для UX'а во время update.
+    # Раньше юзер видел пустой экран 60-90 сек после Studio.quit() пока bat
+    # обновлял bundle. Главные последствия:
+    #   1. Юзер думал «зависло» → запускал Studio через ярлык → старая .exe
+    #      открывалась → залочивала bundle для bat → move_failed.
+    #   2. Юзер думал «не сработало» → шёл искать Installer руками.
+    # Splash решает обе проблемы:
+    #   • TopMost окно — юзер видит что обновление идёт.
+    #   • ControlBox=$false — окно нельзя закрыть до завершения (доп. защита
+    #     от любопытных кликов).
+    #   • Lock-file с PID этого PS-процесса — Studio при старте через ярлык
+    #     видит lock + alive PID → показывает «идёт обновление» + closes.
+    # PS-скрипт запускается через `start "" powershell ... -File splash.ps1`
+    # — это создаёт ОТДЕЛЬНЫЙ процесс, detached от bat. При смерти bat
+    # splash продолжает жить, читает status-файл, ждёт `done` или watchdog.
+    # ────────────────────────────────────────────────────────────────────────
+    _SPLASH_PS_TEMPLATE = r'''[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][string]$StatusFile,
+    [Parameter(Mandatory=$true)][string]$LockFile,
+    [Parameter(Mandatory=$true)][string]$LogDir,
+    [Parameter(Mandatory=$true)][string]$Version,
+    [Parameter(Mandatory=$true)][string]$LabelPreparing,
+    [Parameter(Mandatory=$true)][string]$LabelUpdating,
+    [Parameter(Mandatory=$true)][string]$LabelLaunching,
+    [Parameter(Mandatory=$true)][string]$LabelStalled,
+    [Parameter(Mandatory=$true)][string]$LabelFailed,
+    [Parameter(Mandatory=$true)][string]$LabelRebootNeeded,
+    [Parameter(Mandatory=$true)][string]$LabelClose,
+    [Parameter(Mandatory=$true)][string]$WindowTitle
+)
+
+# Lock-file: пишем свой PID — Studio при старте через ярлык увидит
+# lock + проверит что наш PID жив → покажет popup и закроется.
+try {
+    [System.IO.File]::WriteAllText($LockFile, $PID.ToString())
+} catch {
+    # Не валим pipeline — lock-file опциональная защита.
+}
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$form = New-Object Windows.Forms.Form
+$form.Text = $WindowTitle
+$form.Size = New-Object Drawing.Size(500, 170)
+$form.StartPosition = 'CenterScreen'
+$form.FormBorderStyle = 'FixedSingle'
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+$form.TopMost = $true
+$form.ControlBox = $false  # юзер не может закрыть окно (нет [×])
+
+$label = New-Object Windows.Forms.Label
+$label.Location = New-Object Drawing.Point(20, 30)
+$label.Size = New-Object Drawing.Size(460, 50)
+$label.Text = $LabelPreparing
+$label.Font = New-Object Drawing.Font('Segoe UI', 11)
+$label.TextAlign = 'MiddleLeft'
+$form.Controls.Add($label)
+
+# Кнопка Закрыть — скрыта по умолчанию, появляется только при stall/failed.
+$btnClose = New-Object Windows.Forms.Button
+$btnClose.Text = $LabelClose
+$btnClose.Location = New-Object Drawing.Point(370, 95)
+$btnClose.Size = New-Object Drawing.Size(100, 30)
+$btnClose.Visible = $false
+$btnClose.Add_Click({ $form.Close() })
+$form.Controls.Add($btnClose)
+
+$script:lastStatus = ''
+$script:lastUpdate = [DateTime]::Now
+
+$timer = New-Object Windows.Forms.Timer
+$timer.Interval = 500
+$timer.Add_Tick({
+    try {
+        # 2026-05-12 (v1.0.55, fix): watchdog активен ТОЛЬКО пока status пуст
+        # или 'preparing'. Долгий robocopy ('updating' status) законен — он
+        # может работать 2-3 минуты на медленных машинах с Defender, и в это
+        # время bat ничего не пишет в status. Watchdog ловит реальное
+        # зависание: bat не стартанул вообще, или умер до первой status-записи.
+        # После любого следующего status — выключаем watchdog, доверяем bat'у.
+        if (($script:lastStatus -eq '' -or $script:lastStatus -eq 'preparing') -and
+            [DateTime]::Now.Subtract($script:lastUpdate).TotalSeconds -gt 180) {
+            $label.Text = ($LabelStalled -replace '\{log_dir\}', $LogDir)
+            $btnClose.Visible = $true
+            $timer.Stop()
+            return
+        }
+        if (Test-Path -LiteralPath $StatusFile) {
+            $status = (Get-Content -LiteralPath $StatusFile -Raw -ErrorAction SilentlyContinue)
+            if ($status) { $status = $status.Trim() }
+            if ($status -and $status -ne $script:lastStatus) {
+                $script:lastStatus = $status
+                $script:lastUpdate = [DateTime]::Now
+                switch ($status) {
+                    'preparing'     { $label.Text = $LabelPreparing }
+                    'updating'      { $label.Text = ($LabelUpdating -replace '\{version\}', $Version) }
+                    'launching'     { $label.Text = $LabelLaunching }
+                    'done'          { $form.Close() }
+                    'reboot_needed' {
+                        $label.Text = $LabelRebootNeeded
+                        $btnClose.Visible = $true
+                        $timer.Stop()
+                    }
+                    'failed_final'  {
+                        $label.Text = ($LabelFailed -replace '\{log_dir\}', $LogDir)
+                        $btnClose.Visible = $true
+                        $timer.Stop()
+                    }
+                }
+            }
+        }
+    } catch {}
+})
+$timer.Start()
+
+# При закрытии формы (через Close() или кнопку) — снимаем lock-file.
+$form.Add_FormClosing({
+    try {
+        if (Test-Path -LiteralPath $LockFile) {
+            Remove-Item -LiteralPath $LockFile -Force -ErrorAction SilentlyContinue
+        }
+        $timer.Stop()
+        $timer.Dispose()
+    } catch {}
+})
+
+[void][Windows.Forms.Application]::Run($form)
+'''
+
     def _make_bootstrap(self, new_src: Path, target: Path,
                          update_dir: Path, is_win: bool,
                          project_root: Path) -> Path:
@@ -807,121 +940,191 @@ exit 0
             # тоже не хватит. Покрывает Defender, Yandex, MBAM, ESET,
             # Kaspersky, AVG, Avast.
             # ────────────────────────────────────────────────────────────────
+            # 2026-05-12 (v1.0.55): кардинальная переработка bat-flow.
+            # Удалены: move/rename target папки (хрупкое — нужно free-all-files
+            # одновременно, AV блокировал), 30-retry loop, pre-flight warmup,
+            # Copy-Item после move. Заменены на: robocopy /MIR (per-file replace
+            # с retry per-file), splash window (TopMost WinForms через PS),
+            # lock-file (защита от запуска Studio через ярлык во время апдейта),
+            # status-файл (splash читает и обновляет label).
+            #
+            # Структура файлов:
+            #   $LOG          — bootstrap.log в update_dir (как раньше)
+            #   $STATUS       — update_status.txt в %LOCALAPPDATA%\StoryboardStudio
+            #                   (splash polls это раз в 500мс)
+            #   $LOCK         — updating.lock в %LOCALAPPDATA%\StoryboardStudio
+            #                   (содержит PID splash-процесса; Studio при старте
+            #                   видит → отказывается стартовать)
+            #   splash.ps1    — WinForms окно в update_dir (рядом с update.bat)
+            # shared_dir — публичная директория для UX-state файлов,
+            # видимая Studio при следующем запуске (НЕ внутри Temp\).
+            shared_dir = (Path(os.environ.get(
+                'LOCALAPPDATA',
+                str(Path.home() / 'AppData' / 'Local')))
+                / 'StoryboardStudio')
+            status_file = shared_dir / 'update_status.txt'
+            lock_file = shared_dir / 'updating.lock'
+            log_dir = shared_dir / 'logs'
+
+            # Splash PowerShell-скрипт + локализованные labels из i18n.
+            # 2026-05-12 (v1.0.55): UTF-8 без BOM по требованию юзера.
+            # ВНИМАНИЕ: PowerShell 5.1 без BOM может интерпретировать .ps1
+            # как Windows-1251 → кириллица в labels сломается. Если на
+            # каком-то юзере проявится garbled splash text — добавь
+            # 'chcp 65001 >> "%LOG%" 2>&1\r\n' в bat-content ДО splash
+            # invocation, либо верни `encode('utf-8-sig')` (BOM решает
+            # проблему PS 5.1 кодировки автоматически).
+            splash_ps = update_dir / 'splash.ps1'
+            splash_ps.write_bytes(
+                self._SPLASH_PS_TEMPLATE.encode('utf-8'))
+            try:
+                from i18n import tr as _tr
+                label_preparing = _tr('splash_preparing')
+                label_updating = _tr('splash_updating')
+                label_launching = _tr('splash_launching')
+                label_stalled = _tr('splash_stalled')
+                label_failed = _tr('splash_failed')
+                label_reboot_needed = _tr('splash_reboot_needed')
+                label_close = _tr('splash_close_btn')
+                window_title = _tr('update_quit_msg_title')
+            except Exception:
+                # Fallback на RU если i18n недоступен.
+                label_preparing = 'Подготовка...'
+                label_updating = 'Обновление до v{version}...'
+                label_launching = 'Запуск новой версии...'
+                label_stalled = 'Обновление зависло, см. логи: {log_dir}'
+                label_failed = 'Обновление не удалось. Логи: {log_dir}'
+                label_reboot_needed = 'Установка отложена до перезагрузки Windows.'
+                label_close = 'Закрыть'
+                window_title = 'Обновление Storyboard Studio'
+
             content = (
                 "@echo off\r\n"
-                "rem Storyboard Studio update bootstrap (onedir, hardened 2026-05-11)\r\n"
+                "rem Storyboard Studio update bootstrap v1.0.55 — robocopy + splash + lock.\r\n"
                 "rem НЕ заменять `ping -n N+1 127.0.0.1` на `timeout` — см. комментарий в _make_bootstrap.\r\n"
                 f'set "LOG={log_path}"\r\n'
-                'echo [%date% %time%] bootstrap start >> "%LOG%" 2>&1\r\n'
+                f'set "STATUS={status_file}"\r\n'
+                f'set "LOCK={lock_file}"\r\n'
+                f'set "SHARED_DIR={shared_dir}"\r\n'
+                'echo [%date% %time%] bootstrap start (v1.0.55 robocopy flow) >> "%LOG%" 2>&1\r\n'
+                # Создаём shared dir если её нет.
+                'if not exist "%SHARED_DIR%" mkdir "%SHARED_DIR%" >> "%LOG%" 2>&1\r\n'
+                # Cleanup стейл status/lock от прошлой неудачной попытки.
+                'if exist "%STATUS%" del /F /Q "%STATUS%" >> "%LOG%" 2>&1\r\n'
+                'if exist "%LOCK%" del /F /Q "%LOCK%" >> "%LOG%" 2>&1\r\n'
                 # 1. Wait for Studio process to die. Polling loop 1×/sec.
                 ":wait_for_studio\r\n"
-                "ping -n 2 127.0.0.1 > nul 2>&1\r\n"   # ≈ 1 sec (timeout broken under DEVNULL stdin)
+                "ping -n 2 127.0.0.1 > nul 2>&1\r\n"
                 f'tasklist /FI "PID eq {studio_pid}" 2>nul | find /I "{studio_pid}" >nul\r\n'
                 "if not errorlevel 1 goto wait_for_studio\r\n"
                 'echo [%date% %time%] studio died >> "%LOG%" 2>&1\r\n'
-                # Force-kill любые оставшиеся инстансы (зомби, дочерние процессы) —
-                # их handle на .exe иначе блокирует move. /T = вместе с children.
                 'taskkill /F /IM "Storyboard Studio.exe" /T >> "%LOG%" 2>&1\r\n'
+                # 2. СРАЗУ запускаем splash detached — юзер видит окно
+                # «Подготовка...» пока bat ждёт AV release. start "" создаёт
+                # отдельный процесс не-child bat'а — переживёт смерть bat.
+                # -WindowStyle Hidden скрывает console окно powershell.exe;
+                # WinForms Form показывается отдельно через Application::Run.
+                'echo preparing > "%STATUS%"\r\n'
+                'echo [%date% %time%] launching splash detached >> "%LOG%" 2>&1\r\n'
+                'start "" powershell -NoProfile -ExecutionPolicy Bypass '
+                '-WindowStyle Hidden '
+                f'-File "{splash_ps}" '
+                '-StatusFile "%STATUS%" '
+                '-LockFile "%LOCK%" '
+                f'-LogDir "{log_dir}" '
+                f'-Version "{self.target_version}" '
+                f'-LabelPreparing "{label_preparing}" '
+                f'-LabelUpdating "{label_updating}" '
+                f'-LabelLaunching "{label_launching}" '
+                f'-LabelStalled "{label_stalled}" '
+                f'-LabelFailed "{label_failed}" '
+                f'-LabelRebootNeeded "{label_reboot_needed}" '
+                f'-LabelClose "{label_close}" '
+                f'-WindowTitle "{window_title}"\r\n'
+                # 3. AV release window. 5 сек на старт scan'а после taskkill.
+                # Splash уже показан — юзер видит «Подготовка...» эти 5 сек.
                 'echo [%date% %time%] waiting 5s for AV/Defender to release handles >> "%LOG%" 2>&1\r\n'
-                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"   # ≈ 5 sec (was timeout /t 2 — broken)
-                # Cleanup leftover .old от прошлого апдейта.
-                f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
-                # 2026-05-11 pre-flight warmup (опция E1): открываем-закрываем
-                # каждый файл в target onedir через [System.IO.File]::Open.
-                # Цель — спровоцировать Defender начать post-close-scan СЕЙЧАС,
-                # пока bootstrap ждёт окончания PS-цикла (~5-15 сек на 200
-                # файлов PyInstaller bundle), а не во время следующего move.
-                # $EAP='SilentlyContinue' глотает access-denied на закрытых
-                # системой файлах. Write-Output → захватывается через >> в LOG.
-                'echo [%date% %time%] pre-flight warmup: opening files to flush AV scan queue >> "%LOG%" 2>&1\r\n'
-                'powershell -NoProfile -ExecutionPolicy Bypass -Command '
-                "\"$EAP='SilentlyContinue'; $n=0; "
-                f"Get-ChildItem -LiteralPath '{target}' -Recurse -File -ErrorAction SilentlyContinue "
-                "| ForEach-Object { try { $f=[System.IO.File]::Open($_.FullName,'Open','Read','ReadWrite'); $f.Close(); $n++ } catch {} }; "
-                "Write-Output ('warmup opened ' + $n + ' files')\" "
-                '>> "%LOG%" 2>&1\r\n'
-                # 2. Move target → .old с retry-loop. Windows Defender / антивирус
-                #    могут держать handle на .exe секунд 5-60 после смерти процесса
-                #    (real-time scan). 30 попыток × 2 сек = 60-секундное окно.
-                #    На v1.0.41 наблюдался кейс Defender+Yandex стэком > 30с.
-                #    move /y даёт надёжный errorlevel (ren тихо проваливается).
-                'echo [%date% %time%] moving target to .old >> "%LOG%" 2>&1\r\n'
-                "set /a move_tries=0\r\n"
-                ":try_move\r\n"
-                "set /a move_tries+=1\r\n"
-                'echo [%date% %time%] move attempt %move_tries% >> "%LOG%" 2>&1\r\n'
-                f'move /y "{target}" "{old_dir}" >> "%LOG%" 2>&1\r\n'
-                "if not errorlevel 1 goto move_ok\r\n"
-                'echo [%date% %time%]   attempt %move_tries% failed (target locked) >> "%LOG%" 2>&1\r\n'
-                # 2026-05-11 (v1.0.44): на каждой 3-й failed-попытке вызываем
-                # update_helper.ps1 в режиме Diagnose. Заменяет эвристический
-                # `tasklist | findstr` на авторитетный Restart Manager API,
-                # который через rstrtmgr.dll возвращает точный список holder'ов
-                # (PID, AppName, ServiceName, Type=Critical/Service/MainWindow/etc).
-                "set /a mod_check=%move_tries% %% 3\r\n"
-                "if %mod_check% EQU 0 (\r\n"
-                '  echo [%date% %time%]   RM API diagnose snapshot: >> "%LOG%" 2>&1\r\n'
-                "  powershell -NoProfile -ExecutionPolicy Bypass "
-                f'-File "{ps_helper_path}" -Mode Diagnose '
-                f'-Target "{target}" -LogPath "{log_path}" >> "%LOG%" 2>&1\r\n'
-                ")\r\n"
-                "if %move_tries% LSS 30 (\r\n"
-                '  echo [%date% %time%]   waiting 2s before retry >> "%LOG%" 2>&1\r\n'
-                "  ping -n 3 127.0.0.1 > nul 2>&1\r\n"   # ≈ 2 sec
-                "  goto try_move\r\n"
-                ")\r\n"
-                'echo [%date% %time%] retry exhausted, escalating to RM API + reboot-defer fallback >> "%LOG%" 2>&1\r\n'
-                # 2026-05-11 (v1.0.44): escalation вместо немедленного fail.
-                # update_helper.ps1 -Mode Defer:
-                #   1) RM Diagnose (точный список holder'ов в лог).
-                #   2) Copy new bundle в staging dir `target.new` (нет AV race).
-                #   3) MoveFileEx P/Invoke: schedule delete target/* + rename
-                #      staging → target ПРИ СЛЕДУЮЩЕМ рестарте Windows.
+                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"
+                # 4. ROBOCOPY /MIR — per-file replace in-place.
+                # /MIR mirrors source to target (extra files in target deleted).
+                # /W:2 /R:30 — 2 sec wait, 30 retries per locked file
+                #   (per-file, не whole-bundle, как было с move).
+                # /NP — no progress percent (loud в логе иначе).
+                # /NJH /NJS — no job header/summary (compact log).
+                # /NDL — no directory list.
+                # /LOG+ append to bootstrap.log.
+                # Exit codes: 0-7 = success (in different shades),
+                #             8+ = real failure → escalation to defer.
+                'echo updating > "%STATUS%"\r\n'
+                'echo [%date% %time%] starting robocopy /MIR new -> target >> "%LOG%" 2>&1\r\n'
+                f'robocopy "{new_src}" "{target}" '
+                '/MIR /W:2 /R:30 /NP /NJH /NJS /NDL '
+                '/LOG+:"%LOG%"\r\n'
+                # if errorlevel 8 = "is >= 8" — это failure.
+                "if errorlevel 8 goto robocopy_failed\r\n"
+                'echo [%date% %time%] robocopy succeeded (exit code 0-7) >> "%LOG%" 2>&1\r\n'
+                "goto robocopy_ok\r\n"
+                # ─── robocopy_failed: escalation на RM API + MoveFileEx defer ───
+                ":robocopy_failed\r\n"
+                'echo [%date% %time%] robocopy failed (exit >= 8), escalating to defer fallback >> "%LOG%" 2>&1\r\n'
+                # RM API + MoveFileEx defer (как было в v1.0.44):
+                #   1) RM Diagnose — список holder'ов в лог.
+                #   2) Copy new bundle в staging dir `target.new`.
+                #   3) MoveFileEx schedule delete target/* + rename staging→target
+                #      ПРИ СЛЕДУЮЩЕМ ребуте Windows.
                 #   4) Write pending_reboot.txt в project_root.
-                #   5) Delete pending_rollback.txt (НЕ откатываем версию).
-                # Exit 0 если defer сработал → Studio показывает баннер
-                # «нужна перезагрузка» вместо popup'а ошибки.
-                # Exit 1 если даже MoveFileEx упал → старый failed-path.
+                #   5) Delete pending_rollback.txt (НЕ откатываем).
                 "powershell -NoProfile -ExecutionPolicy Bypass "
                 f'-File "{ps_helper_path}" -Mode Defer '
                 f'-Target "{target}" -NewSrc "{new_src}" '
                 f'-ProjectRoot "{project_root}" -TargetVersion "{self.target_version}" '
                 f'-LogPath "{log_path}" >> "%LOG%" 2>&1\r\n'
                 "if errorlevel 1 (\r\n"
-                '  echo [%date% %time%] RM API + MoveFileEx defer fallback ALSO failed, writing failed marker >> "%LOG%" 2>&1\r\n'
+                '  echo [%date% %time%] defer fallback ALSO failed >> "%LOG%" 2>&1\r\n'
+                '  echo failed_final > "%STATUS%"\r\n'
                 f'  echo move_failed > "{failed_marker}"\r\n'
                 f'  start "" "{studio_exe}"\r\n'
                 "  exit /b 1\r\n"
                 ")\r\n"
                 'echo [%date% %time%] reboot-deferred install scheduled successfully >> "%LOG%" 2>&1\r\n'
+                'echo reboot_needed > "%STATUS%"\r\n'
                 f'start "" "{studio_exe}"\r\n'
                 "exit /b 0\r\n"
-                "rem ---- legacy path retained below for reference but never reached after defer ----\r\n"
-                'echo [%date% %time%] (legacy) MOVE FAILED after %move_tries% tries -- target locked, aborting >> "%LOG%" 2>&1\r\n'
-                f'echo move_failed > "{failed_marker}"\r\n'
-                f'start "" "{studio_exe}"\r\n'
-                "exit /b 1\r\n"
-                ":move_ok\r\n"
-                'echo [%date% %time%] move succeeded on attempt %move_tries% >> "%LOG%" 2>&1\r\n'
-                # 3. Copy new bundle.
-                'echo [%date% %time%] copying new bundle >> "%LOG%" 2>&1\r\n'
-                'powershell -NoProfile -ExecutionPolicy Bypass -Command '
-                f'"Copy-Item -LiteralPath \'{new_src}\' -Destination \'{target}\' '
-                '-Recurse -Force" >> "%LOG%" 2>&1\r\n'
-                "if errorlevel 1 (\r\n"
-                '  echo [%date% %time%] COPY FAILED, rolling back >> "%LOG%" 2>&1\r\n'
-                f'  if exist "{target}" rmdir /s /q "{target}" >> "%LOG%" 2>&1\r\n'
-                f'  move /y "{old_dir}" "{target}" >> "%LOG%" 2>&1\r\n'
-                f'  echo copy_failed > "{failed_marker}"\r\n'
-                f'  start "" "{studio_exe}"\r\n'
-                "  exit /b 1\r\n"
-                ")\r\n"
-                # 4. SUCCESS — delete rollback marker (Studio при старте
-                #    увидит что markerа нет → НЕ откатит version.json).
+                # ─── robocopy_ok: успех, запускаем новую Studio ───
+                ":robocopy_ok\r\n"
+                # Delete rollback marker — Studio при старте видит, что
+                # rollback не нужен, и применяет pending_version → version.json.
                 'echo [%date% %time%] success -- deleting rollback marker >> "%LOG%" 2>&1\r\n'
                 f'if exist "{rollback_marker}" del /f /q "{rollback_marker}" >> "%LOG%" 2>&1\r\n'
-                'echo [%date% %time%] waiting 2s before launching new Studio >> "%LOG%" 2>&1\r\n'
-                "ping -n 3 127.0.0.1 > nul 2>&1\r\n"   # ≈ 2 sec (was timeout /t 2 — broken)
+                'echo launching > "%STATUS%"\r\n'
+                'echo [%date% %time%] signaling splash done >> "%LOG%" 2>&1\r\n'
+                # 2026-05-12 (v1.0.55, RACE FIX): двухфазное закрытие
+                # splash → unlock → start Studio. Раньше bat сам удалял
+                # lock-file перед start'ом — это давало race-окно: lock
+                # удалён, Studio ещё не запустилась, юзер тыкает ярлык →
+                # запускается вторая копия без защиты. Теперь:
+                #   1. echo done > STATUS — splash начинает закрываться.
+                #   2. Splash в FormClosing удаляет lock-file (атомарно
+                #      внутри splash-процесса).
+                #   3. Bat poll'ит `if not exist LOCK` каждые 200мс,
+                #      timeout 5 сек.
+                #   4. Только когда lock реально исчез — start Studio.
+                # Lock остаётся пока окно splash visible → если юзер
+                # за это время тыкнет ярлык, Studio при __init__
+                # увидит alive lock → откажется стартовать.
+                'echo done > "%STATUS%"\r\n'
+                "set /a wait_tries=0\r\n"
+                ":wait_lock_release\r\n"
+                'if not exist "%LOCK%" goto lock_released\r\n'
+                "set /a wait_tries+=1\r\n"
+                "if %wait_tries% GEQ 25 goto lock_timeout\r\n"
+                "ping -n 1 127.0.0.1 > nul 2>&1\r\n"   # ≈ 200ms
+                "goto wait_lock_release\r\n"
+                ":lock_timeout\r\n"
+                'echo [%date% %time%] WARN: splash did not release lock in 5s, forcing unlock >> "%LOG%" 2>&1\r\n'
+                'if exist "%LOCK%" del /F /Q "%LOCK%" >> "%LOG%" 2>&1\r\n'
+                ":lock_released\r\n"
+                'echo [%date% %time%] lock released, starting new Studio >> "%LOG%" 2>&1\r\n'
                 # 5. Start updated Studio with retry-loop.
                 "set /a tries=0\r\n"
                 ":try_start\r\n"
@@ -929,16 +1132,16 @@ exit 0
                 'echo [%date% %time%] start attempt %tries% >> "%LOG%" 2>&1\r\n'
                 f'start "" "{studio_exe}"\r\n'
                 'echo [%date% %time%]   waiting 5s for Studio to appear in tasklist >> "%LOG%" 2>&1\r\n'
-                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"   # ≈ 5 sec (was timeout /t 5 — broken)
+                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"
                 'tasklist /FI "IMAGENAME eq Storyboard Studio.exe" 2>nul '
                 '| find /I "Storyboard Studio.exe" >nul\r\n'
                 "if errorlevel 1 (\r\n"
                 "  if %tries% LSS 3 goto try_start\r\n"
                 ")\r\n"
-                'echo [%date% %time%] waiting 5s before cleanup >> "%LOG%" 2>&1\r\n'
-                "ping -n 6 127.0.0.1 > nul 2>&1\r\n"   # ≈ 5 sec
-                # 6. Cleanup .old (update_dir НЕ удаляем — log нужен).
-                f'if exist "{old_dir}" rmdir /s /q "{old_dir}" >> "%LOG%" 2>&1\r\n'
+                # update_dir НЕ удаляем намеренно — bootstrap.log нужен
+                # для диагностики. Cleanup старых storyboard_update_*
+                # папок делает Studio при старте через
+                # finalize_pending_update (см. storyboard_app.py:1249+).
                 'echo [%date% %time%] bootstrap complete >> "%LOG%" 2>&1\r\n'
             )
             script.write_bytes(content.encode('utf-8'))
