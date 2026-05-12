@@ -160,6 +160,7 @@ class MontageCTA(QFrame):
             self.warning_lbl.setText(tr('montage_cta_warning_os_popups'))
             self.warning_lbl.show()
             self.status_lbl.hide()
+            self.start_btn.setText(tr('montage_cta_button_start'))
             self.start_btn.show()
             self.retry_btn.hide()
             self.cancel_btn.hide()
@@ -172,6 +173,7 @@ class MontageCTA(QFrame):
             self.status_lbl.show()
             self.start_btn.hide()
             self.retry_btn.hide()
+            self.cancel_btn.setText(tr('montage_cta_button_cancel'))
             self.cancel_btn.show()
         else:  # KIND_FAILED
             self.title_lbl.setText(tr('montage_cta_title_failed'))
@@ -179,6 +181,7 @@ class MontageCTA(QFrame):
             self.warning_lbl.hide()
             self.status_lbl.hide()
             self.start_btn.hide()
+            self.retry_btn.setText(tr('montage_cta_button_retry'))
             self.retry_btn.show()
             self.cancel_btn.hide()
         self._apply_style()

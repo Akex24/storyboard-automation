@@ -5766,6 +5766,18 @@ class MainWindow(QMainWindow):
                 self.auth_banner.retranslate()
             except Exception:
                 traceback.print_exc()
+        # 2026-05-12 (v1.0.56): MontageCTA внутри EpisodeChatView — кнопки
+        # start/retry/cancel ставили текст только в __init__/retranslate.
+        # При смене языка через UI без перезапуска CTA-кнопки оставались
+        # в исходном языке. retranslate() тут синхронизирует тексты; _render()
+        # внутри MontageCTA дополнительно зовёт setText для активной кнопки
+        # (defense-in-depth — на случай если retranslate миновали).
+        ev = getattr(self, 'episode_chat_view', None)
+        if ev is not None and hasattr(ev, '_montage_cta'):
+            try:
+                ev._montage_cta.retranslate()
+            except Exception:
+                traceback.print_exc()
         # 2026-05-05: refs-view (заголовки секций «ЛОКАЦИИ/ОБЪЕКТЫ/
         # ПЕРСОНАЖИ» + кнопка «+ Добавить персонажа») создаётся в
         # `_build_refs_view` через `tr(...)`. Сама вьюха не имеет
