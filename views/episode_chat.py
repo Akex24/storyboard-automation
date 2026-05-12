@@ -674,15 +674,9 @@ class EpisodeChatView(QWidget):
             return
         decisions = self._read_refs_decisions()
         for m in markers:
-            # v1.0.57: фильтр resolved → continue только для character.
-            # Для location/object карточка показывается ВСЕГДА — юзер сам
-            # решит жать «🎨 Сгенерировать» или нет. Decision=linked у
-            # location/object мог быть записан agent'ом через Bash tool
-            # с несуществующим файлом — игнорируем для UI.
-            if m.type == 'character':
-                d = decisions.get(m.type, {}).get(m.name)
-                if isinstance(d, dict) and d.get('decision') in ('skipped', 'linked'):
-                    continue  # юзер уже разрешил character — карточку не плодим
+            d = decisions.get(m.type, {}).get(m.name)
+            if isinstance(d, dict) and d.get('decision') in ('skipped', 'linked'):
+                continue  # юзер уже разрешил — кнопка не нужна
             # 2026-05-07: если за этот маркер сейчас работает тред в
             # глобальном реестре MW — idle-карточку в чате НЕ показываем
             # (running-строка живёт в попапе `ActiveGensPanel`).
@@ -1263,28 +1257,17 @@ class EpisodeChatView(QWidget):
         # • Если decision нет (idle) — карточка занимает active слот
         #   (sub-MVP: только одна idle активна за раз). Остальные idle
         #   ждут в `_pending_markers`.
-        # v1.0.57: pre_decision check ТОЛЬКО для character. Для location/
-        # object — карточка ВСЕГДА active idle с кнопкой «Сгенерировать»,
-        # независимо от того что в refs_decisions. Юзер сам решает —
-        # программа не выбирает за него «уже готово».
-        # Причина: agent может через Bash tool записать decision=linked
-        # для несуществующих файлов (нарушая запрет в промпте), и раньше
-        # карточка становилась history-режимом без кнопок генерации. CTA
-        # «Сделать монтажную карту» по-прежнему опирается на
-        # `_linked_file_exists` (проверка файла на диске) — не ломаем.
-        # Character оставляем как было: outfit picker workflow.
         pre_decision = None
         pre_filename = ""
-        if gen_type == 'character':
-            try:
-                d = self._read_refs_decisions().get(gen_type, {}).get(name)
-                if isinstance(d, dict):
-                    dec = d.get('decision')
-                    if dec in ('linked', 'skipped'):
-                        pre_decision = dec
-                        pre_filename = d.get('filename', '') or ''
-            except Exception:
-                pass
+        try:
+            d = self._read_refs_decisions().get(gen_type, {}).get(name)
+            if isinstance(d, dict):
+                dec = d.get('decision')
+                if dec in ('linked', 'skipped'):
+                    pre_decision = dec
+                    pre_filename = d.get('filename', '') or ''
+        except Exception:
+            pass
 
         # Sub-MVP guard ТОЛЬКО для idle-карточек: если active idle уже
         # есть — новая idle уходит в очередь. Pre-decided карточки
@@ -2267,15 +2250,6 @@ class EpisodeChatView(QWidget):
             return
 
         def _resolved(gen_type: str, name: str) -> bool:
-            # v1.0.57: resolved-фильтр работает ТОЛЬКО для character.
-            # Для location/object карточки никогда не выкидываются из
-            # _pending_markers по decisions — юзер сам решает жать
-            # «Сгенерировать». См. _maybe_show_gen_button (где
-            # pre_decision также ограничен character).
-            # Outfit-picker секция ниже зовёт _resolved('character', ...)
-            # явно — этот гейт не мешает её работе.
-            if gen_type != 'character':
-                return False
             d = decisions.get(gen_type, {}).get(name)
             return isinstance(d, dict) and d.get('decision') in ('skipped', 'linked')
 
