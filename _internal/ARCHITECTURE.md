@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-13 (v1.0.63 — per-stage timings в попапе монтажки)
+**Последнее обновление:** 2026-05-13 (v1.0.64 — eyebrow rule conflict + script adaptation priorities)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -492,6 +492,33 @@ UI: [widgets/montage_summary_dialog.py](widgets/montage_summary_dialog.py)
 не локализуются (технические имена агентов). Локализуются только
 `timing_section_title` и `timing_total`. Формат времени:
 `<60 сек` → `'X сек'`, `≥60 сек` → `'X мин Y сек'`.
+
+**v1.0.64 (2026-05-13) — eyebrow rule conflict + script adaptation:**
+
+1. **Разрешён конфликт COMMON_RULES vs STRUCTURAL_RULES** (нашли на
+   замерах v1.0.63 ep2): COMMON_RULES в позитивных примерах содержал
+   `"one eyebrow slightly raised"`, а Validator c расширенным blacklist
+   v1.0.62 банил эту фразу как семантический эквивалент запрещённого
+   `"raised eyebrows"`. Цикл «Scriptwriter пишет по позитивному примеру
+   → Validator кидает forbidden_phrase → Editor правит» стоил ~3 мин
+   на эпизод. Также `"whites visible above the lower lid"` — анатомическая
+   дескрипция wide eyes, потенциальный аналогичный конфликт.
+
+   Правка [agents/montage_prompts.py:187-190](agents/montage_prompts.py:187):
+   - `"one eyebrow slightly raised"` → `"slight twitch at the corner of the eye"`.
+   - `"whites visible above the lower lid"` → `"left eyelid slightly
+     heavier than right"` (асимметрия — принцип из АНТИТЕАТРАЛЬНОГО_СЛОВАРЯ,
+     чистая физиология без эмоциональной привязки).
+
+2. **Добавлены ПРАВИЛА АДАПТАЦИИ СЦЕНАРИЯ** в SCRIPTWRITER_SYSTEM
+   (нашли на ep2 v1.0.63: Scriptwriter выкинул сцены 6-9 — ярость
+   Дэвида на стройке, кульминационный триггер эпизода).
+
+   Иерархия важности из 3 приоритетов (моменты узнавания, эмоциональные
+   пики, точка перед клиффхэнгером — НЕ ВЫКИДЫВАТЬ; POV/параллельный
+   монтаж/визуальные якоря — СОХРАНЯЙ ПО ВОЗМОЖНОСТИ; связки/повторы/
+   описания — МОЖНО ОБЪЕДИНЯТЬ). Размещено в [agents/montage_prompts.py](agents/montage_prompts.py)
+   между «СТРОГОЕ ПРАВИЛО» и «ФОРМАТ ВЫВОДА».
 
 ## Per-agent model routing
 
