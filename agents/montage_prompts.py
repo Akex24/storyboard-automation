@@ -643,17 +643,18 @@ def _format_show_context(show_context: Optional[dict]) -> str:
         else:
             parts.append(bible)
         parts.append("")
-    eps = show_context.get('episodes_summary') or []
-    if eps:
-        parts.append("=== КРАТКОЕ ОПИСАНИЕ ДРУГИХ ЭПИЗОДОВ СЕРИАЛА ===")
-        for ep in eps:
-            ep_id = ep.get('ep_id', '?')
-            title = ep.get('title', '')
-            excerpt = (ep.get('scenario_excerpt') or '').strip()
-            parts.append(f"[{ep_id}] {title}")
-            if excerpt:
-                parts.append(f"  {excerpt}")
-        parts.append("")
+    # 2026-05-13 (v1.0.59): episodes_summary НЕ передаётся агентам.
+    # Для монтажки одного эпизода контекст других эпизодов сериала
+    # избыточен (~8KB / ~2000 tokens, 65% user-prompt'а).
+    # Драматическая структура ep4 не зависит от ep1/ep5/ep15 — она
+    # вытекает из текущего сценария + характеров (которые в Bible).
+    # Эпизод 4 раньше падал по timeout=600s — Sonnet захлёбывалась
+    # на 25KB input'е. Убираем episodes_summary — input сжимается до
+    # ~17KB / ~4300 tokens, время Scriptwriter'а ~10мин → ~1-2мин.
+    # `_load_show_context` всё ещё собирает episodes_summary в dict
+    # (тронуть его — другой рефакторинг), но здесь его игнорируем.
+    # Если когда-то понадобится для Context Reviewer'а (проверка
+    # сюжетной целостности) — оживить через отдельную функцию-форматер.
     return "\n".join(parts)
 
 
@@ -690,9 +691,8 @@ def build_scriptwriter_user_prompt(scenario_text: str,
 должна укладываться в 60–80 включительно. КАЖДЫЙ значимый драматический
 beat = ОТДЕЛЬНЫЙ блок (см. COMMON_RULES «РАЗБИВКА НА БЛОКИ»). Целевое
 количество блоков 5-6.
-Если есть Bible сериала и описания других эпизодов — учитывай их при
-выборе тона реплик (характер персонажа из Bible) и продолжении
-сюжета.
+Если есть Bible сериала — учитывай характер персонажа при выборе
+тона реплик.
 """
 
 
