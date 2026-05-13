@@ -74,6 +74,14 @@ class MontageSummaryDialog(QDialog):
         head.setWordWrap(True)
         outer.addWidget(head)
 
+        # v1.0.63: Таблица таймингов стадий (per-stage timings).
+        # timing вложен в agent_summary['timing'] оркестратором — не меняет
+        # сигнатуру finished_ok. Если ключа нет (старая сборка) — секция
+        # просто не появится (forward-compat).
+        timing_label = self._build_timing_label()
+        if timing_label is not None:
+            outer.addWidget(timing_label)
+
         # Таблица блоков
         blocks = montage_card.get('blocks', []) or []
         total_seconds = montage_card.get('total_seconds', 0)
@@ -247,6 +255,97 @@ class MontageSummaryDialog(QDialog):
         else:
             lines.append("🎯 Финальный редактор — не запускался")
         return lines
+
+    # ──────────────────────────────────────────────────────────────────
+    # v1.0.63: per-stage timing table
+    # ──────────────────────────────────────────────────────────────────
+    # Display-имена стадий (юзер просил не переводить — это технические
+    # имена агентов).
+    _STAGE_DISPLAY = {
+        'scriptwriter':     'Scriptwriter',
+        'validator':        'Validator',
+        'editor':           'Editor',
+        'context_reviewer': 'Context Reviewer',
+    }
+    # Порядок отрисовки — в каком пайплайн запускает стадии.
+    _STAGE_ORDER = ('scriptwriter', 'validator', 'editor', 'context_reviewer')
+
+    @staticmethod
+    def _pretty_model(model_id: str) -> str:
+        """claude-opus-4-7 → Opus 4.7, claude-sonnet-4-6 → Sonnet 4.6 и т.п."""
+        if not model_id:
+            return ''
+        mapping = {
+            'claude-opus-4-7':            'Opus 4.7',
+            'claude-sonnet-4-6':          'Sonnet 4.6',
+            'claude-haiku-4-5-20251001':  'Haiku 4.5',
+        }
+        return mapping.get(model_id, model_id)
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """< 60 сек → 'X сек', >= 60 → 'X мин Y сек'. i18n через tr()."""
+        s = max(0, int(round(seconds)))
+        if s < 60:
+            return tr('timing_unit_sec').format(sec=s)
+        m, sec = divmod(s, 60)
+        return tr('timing_unit_minsec').format(min=m, sec=sec)
+
+    def _build_timing_label(self) -> Optional[QLabel]:
+        """Возвращает QLabel с моноширинной таблицей таймингов стадий, либо
+        None если timing-данных нет (старая сборка / пустой лог).
+        """
+        timing = (self._agent_summary or {}).get('timing') or {}
+        per_stage = timing.get('per_stage') or []
+        if not per_stage:
+            return None
+        # Сворачиваем в dict {stage: duration_sec_summed} — на случай
+        # если в будущем стадия повторится (сейчас editor может запуститься
+        # дважды если включён Context Reviewer и нашёл concerns).
+        durations: Dict[str, float] = {}
+        models: Dict[str, str] = {}
+        for entry in per_stage:
+            st = entry.get('stage') or ''
+            d = entry.get('duration_sec') or 0
+            if st:
+                durations[st] = durations.get(st, 0.0) + float(d)
+                # Модель берём из первого упоминания (для editor она одна).
+                models.setdefault(st, entry.get('model') or '')
+        # Собираем display-строки по фикс. порядку, только для стадий
+        # которые реально запускались (юзер: не показывать «0 сек»).
+        rows: List[tuple] = []  # (left_part, right_part)
+        for stage_key in self._STAGE_ORDER:
+            if stage_key not in durations:
+                continue
+            display_name = self._STAGE_DISPLAY.get(stage_key, stage_key)
+            model_pretty = self._pretty_model(models.get(stage_key, ''))
+            left = (f"{display_name} ({model_pretty}):" if model_pretty
+                    else f"{display_name}:")
+            right = self._format_duration(durations[stage_key])
+            rows.append((left, right))
+        if not rows:
+            return None
+        # ИТОГО
+        total = float(timing.get('total_sec') or 0)
+        total_right = self._format_duration(total)
+        total_left = f"{tr('timing_total')}:"
+        # Выравнивание колонок: подбираем ширину левой колонки по самой
+        # длинной строке (включая ИТОГО). +2 для воздуха перед правой.
+        max_left = max(len(r[0]) for r in rows + [(total_left, total_right)])
+        pad = max_left + 2
+        lines: List[str] = [tr('timing_section_title'), '']
+        for left, right in rows:
+            lines.append(f"  {left.ljust(pad)}{right}")
+        # Разделитель перед ИТОГО — длина под ширину колонок.
+        lines.append('  ' + '─' * (pad + max(len(r[1]) for r in rows + [(total_left, total_right)])))
+        lines.append(f"  {total_left.ljust(pad)}{total_right}")
+        label = QLabel("\n".join(lines))
+        # Тот же моноширинный шрифт что у head, но цвет приглушённый —
+        # таблица должна читаться, но не отвлекать от контента карты.
+        label.setStyleSheet(
+            "color: rgba(255,255,255,0.65); font-size: 12px; "
+            "font-family: 'Menlo','Consolas',monospace;")
+        return label
 
     def _build_details_text(self) -> str:
         """Формирует читабельный отчёт чекера + сами реплики из карты."""

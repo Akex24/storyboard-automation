@@ -468,6 +468,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_hide_details': '▼ Скрыть детали',
         'montage_summary_btn_edit': '✎ Поправить вручную',
         'montage_summary_btn_storyboards': 'Делать сториборды',
+        # v1.0.63: таблица таймингов в попапе сводки
+        'timing_section_title': '⏱ ТАЙМИНГ ГЕНЕРАЦИИ',
+        'timing_total': 'ИТОГО',
+        'timing_unit_sec': '{sec} сек',
+        'timing_unit_minsec': '{min} мин {sec} сек',
         # Seedance промпты — попап на блоке
         'seedance_btn': '▶ Промпт Seedance',
         'seedance_btn_pending': '🎬 Готовится…',
@@ -916,6 +921,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_hide_details': '▼ Сховати деталі',
         'montage_summary_btn_edit': '✎ Виправити вручну',
         'montage_summary_btn_storyboards': 'Робити сториборди',
+        # v1.0.63: таблиця таймінгів у попапі зведення
+        'timing_section_title': '⏱ ТАЙМІНГ ГЕНЕРАЦІЇ',
+        'timing_total': 'ВСЬОГО',
+        'timing_unit_sec': '{sec} сек',
+        'timing_unit_minsec': '{min} хв {sec} сек',
         'seedance_btn': '▶ Промпт Seedance',
         'seedance_btn_pending': '🎬 Готується…',
         'seedance_btn_failed': '🎬 Помилка',
@@ -1363,6 +1373,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_hide_details': '▼ Hide details',
         'montage_summary_btn_edit': '✎ Edit manually',
         'montage_summary_btn_storyboards': 'Make storyboards',
+        # v1.0.63: timing table in summary popup
+        'timing_section_title': '⏱ GENERATION TIMING',
+        'timing_total': 'TOTAL',
+        'timing_unit_sec': '{sec} sec',
+        'timing_unit_minsec': '{min} min {sec} sec',
         'seedance_btn': '▶ Seedance prompt',
         'seedance_btn_pending': '🎬 Preparing…',
         'seedance_btn_failed': '🎬 Failed',

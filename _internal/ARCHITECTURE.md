@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-13 (v1.0.62 — линейный пайплайн монтажки)
+**Последнее обновление:** 2026-05-13 (v1.0.63 — per-stage timings в попапе монтажки)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -424,7 +424,7 @@ Sonnet даёт заметно хуже качество. Карту и PromptWr
 Сохранённое в `QSettings` по ключу `"new_ep/model_v2"`. Если ключа нет
 у юзера — загружается Opus 4.7 как fallback.
 
-## Монтажная карта — пайплайн агентов (v1.0.62)
+## Монтажная карта — пайплайн агентов (v1.0.62+v1.0.63)
 
 С **v1.0.62 (2026-05-13)** оркестратор [threads/montage_orchestrator.py](threads/montage_orchestrator.py)
 работает ЛИНЕЙНО без раундов:
@@ -470,6 +470,28 @@ panic» и «Eyes wide and darting» — формально слов 'panic' и 
 не было в списке из 5 запретов, поэтому Scriptwriter их не считал
 нарушением. Расширенный список + категориальное правило закрывают
 лексический gap.
+
+**Per-stage timings (v1.0.63)** — каждая стадия теперь замеряется отдельно.
+В [threads/montage_orchestrator.py](threads/montage_orchestrator.py) методы
+`_call_*` оборачивают `_run_claude` через `t0 = time.time()` →
+`duration_sec = time.time() - t0` (замер ТОЛЬКО subprocess CLI, без
+парсинга/билда промпта). Поля `started_at` + `duration_sec` пишутся в
+`_agent_log[*]`, попадают в `_agent_log_ep*.json` автоматически.
+
+`_build_agent_summary` собирает агрегат `timing = {per_stage: [...],
+total_sec: ...}` и кладёт его в `agent_summary['timing']` — БЕЗ
+изменения сигнатуры `finished_ok = pyqtSignal(dict, dict, int, str, dict)`.
+Старые сборки/caller'ы не ломаются (forward-compat через
+`agent_summary.get('timing', {})`).
+
+UI: [widgets/montage_summary_dialog.py](widgets/montage_summary_dialog.py)
+рисует моноширинную таблицу таймингов сразу после head_lines (между
+отчётом по агентам и таблицей блоков). Стадии не запускавшиеся —
+не показываются (нет строк «0 сек»). Display-имена стадий
+(`Scriptwriter`/`Validator`/`Editor`/`Context Reviewer`) — на английском,
+не локализуются (технические имена агентов). Локализуются только
+`timing_section_title` и `timing_total`. Формат времени:
+`<60 сек` → `'X сек'`, `≥60 сек` → `'X мин Y сек'`.
 
 ## Per-agent model routing
 

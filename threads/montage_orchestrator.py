@@ -259,13 +259,19 @@ class MontageOrchestratorThread(QThread):
     def _call_scriptwriter(self) -> dict:
         user = build_scriptwriter_user_prompt(
             self._scenario, self._refs, show_context=self._show_context)
+        # 2026-05-13 (v1.0.63): замер времени обнимает ТОЛЬКО _run_claude
+        # (subprocess) — build_user_prompt и _parse_json копеечные.
+        t0 = time.time()
         raw = self._run_claude(SCRIPTWRITER_SYSTEM, user,
                                 model=self.MODEL_SCRIPTWRITER)
+        duration_sec = round(time.time() - t0, 2)
         montage = self._parse_json(raw)
         self._agent_log.append({
             "stage": "scriptwriter",
             "round": 1,
             "model_used": self.MODEL_SCRIPTWRITER,
+            "started_at": t0,
+            "duration_sec": duration_sec,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -277,12 +283,16 @@ class MontageOrchestratorThread(QThread):
         card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
         user = build_validator_user_prompt(
             card_json, self._refs, show_context=self._show_context)
+        t0 = time.time()
         raw = self._run_claude(VALIDATOR_SYSTEM, user,
                                 model=self.MODEL_VALIDATOR)
+        duration_sec = round(time.time() - t0, 2)
         report = self._parse_json(raw)
         self._agent_log.append({
             "stage": "validator",
             "model_used": self.MODEL_VALIDATOR,
+            "started_at": t0,
+            "duration_sec": duration_sec,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -296,12 +306,16 @@ class MontageOrchestratorThread(QThread):
             card_json, errors, self._refs,
             original_scenario=self._scenario,
             show_context=self._show_context)
+        t0 = time.time()
         raw = self._run_claude(EDITOR_SYSTEM, user,
                                 model=self.MODEL_EDITOR)
+        duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
         self._agent_log.append({
             "stage": "editor",
             "model_used": self.MODEL_EDITOR,
+            "started_at": t0,
+            "duration_sec": duration_sec,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -318,8 +332,10 @@ class MontageOrchestratorThread(QThread):
         card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
         user = build_context_reviewer_user_prompt(
             card_json, self._scenario, show_context=self._show_context)
+        t0 = time.time()
         raw = self._run_claude(CONTEXT_REVIEWER_SYSTEM, user,
                                 model=self.MODEL_CONTEXT_REVIEWER)
+        duration_sec = round(time.time() - t0, 2)
         report = self._parse_json(raw)
         # Нормализуем — на случай если AI вернул concerns под другим
         # ключом или забыл ok.
@@ -330,6 +346,8 @@ class MontageOrchestratorThread(QThread):
         self._agent_log.append({
             "stage": "context_reviewer",
             "model_used": self.MODEL_CONTEXT_REVIEWER,
+            "started_at": t0,
+            "duration_sec": duration_sec,
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
@@ -409,9 +427,23 @@ class MontageOrchestratorThread(QThread):
             "editor": {"runs": 0, "rounds": []},
             "context_reviewer": {"ran": False},
             "rounds_used": rounds_used,
+            # 2026-05-13 (v1.0.63): per-stage timings (вложено в
+            # agent_summary чтобы не менять сигнатуру finished_ok).
+            "timing": {"per_stage": [], "total_sec": 0.0},
         }
         for s in self._agent_log:
             stage = s.get('stage', '')
+            # Timing: каждая стадия с замером попадает в timing.per_stage.
+            # Если стадия завершилась ошибкой и duration не успел записаться —
+            # пропускаем (строка в UI просто не появится).
+            d = s.get('duration_sec')
+            if isinstance(d, (int, float)) and stage:
+                summary['timing']['per_stage'].append({
+                    'stage': stage,
+                    'model': s.get('model_used', ''),
+                    'duration_sec': float(d),
+                })
+                summary['timing']['total_sec'] += float(d)
             if stage == 'scriptwriter':
                 res = s.get('result', {}) or {}
                 blocks = res.get('blocks', []) or []
@@ -445,6 +477,8 @@ class MontageOrchestratorThread(QThread):
                     'checks_performed': res.get('checks_performed', []) or [],
                     'concerns': res.get('concerns', []) or [],
                 }
+        summary['timing']['total_sec'] = round(
+            summary['timing']['total_sec'], 2)
         return summary
 
     def _dump_log(self) -> Optional[str]:
