@@ -103,6 +103,90 @@ if getattr(sys, 'frozen', False):
     os.environ.setdefault('SSL_CERT_FILE', certifi.where())
     os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
 
+# ─────────────────────────────────────────────────────────────────────────
+# v1.0.65: proxy settings — централизованная установка HTTP_PROXY/HTTPS_PROXY
+# из QSettings в os.environ при старте Studio.
+#
+# Источник истины — QSettings ключи "proxy/enabled" / "proxy/host" /
+# "proxy/port" / "proxy/username" / "proxy/password" (заполняются через
+# UI в Settings → секция «🌐 ПРОКСИ-СЕРВЕР»).
+#
+# Эффект: все исходящие HTTP-запросы Studio (requests-based — Fast Gen,
+# GitHub API, GitHub Releases, threads/generate.py) автоматически идут
+# через прокси. Subprocess'ы Claude CLI наследуют env Studio'шного
+# процесса → они тоже видят HTTPS_PROXY (если CLI его уважает).
+#
+# Изменения окружения через `os.environ[...] = ...` (не setdefault) —
+# юзер хочет что прокси Studio перетёр любые системные настройки.
+# Если в системе уже стоял HTTPS_PROXY на другой адрес — Studio
+# использует свой, не системный.
+#
+# Логирование (через sys.stderr): «Proxy enabled: host=… port=… user=…»,
+# БЕЗ пароля. stderr перенаправлен в runtime.log через
+# _init_studio_file_logging — лог попадёт туда (visible через
+# Settings → «Открыть лог»).
+#
+# ВАЖНО: функция вызывается ровно ОДИН РАЗ в `def main()` ПОСЛЕ
+# _init_studio_file_logging() и _install_qt_message_handler(), ДО
+# `app = QApplication(sys.argv)`. QSettings с явным (APP_ORG, APP_NAME)
+# работает без созданного QApplication.
+# ─────────────────────────────────────────────────────────────────────────
+def apply_proxy_from_settings() -> None:
+    """Читает прокси-настройки из QSettings и применяет к os.environ.
+
+    Если proxy/enabled=False — no-op.
+    Если host или port пусты — лог-warning и no-op (некорректные настройки).
+    Если username+password пусты — формирует URL без auth-части
+    (`http://host:port`).
+    Иначе — `http://user:pwd@host:port`.
+
+    Устанавливает 4 env-vars в верхнем и нижнем регистре:
+        HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy.
+    Это нужно для совместимости — `requests` смотрит uppercase,
+    некоторые библиотеки (включая утилиты subprocess'ов) — lowercase.
+    """
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        s = _QS(APP_ORG, APP_NAME)
+        enabled = s.value("proxy/enabled", False, type=bool)
+        if not enabled:
+            return
+        host = (s.value("proxy/host", "", type=str) or "").strip()
+        port = (s.value("proxy/port", "", type=str) or "").strip()
+        user = (s.value("proxy/username", "", type=str) or "").strip()
+        pwd = s.value("proxy/password", "", type=str) or ""
+        if not (host and port):
+            try:
+                sys.stderr.write(
+                    f"[proxy] enabled=True but host/port empty — skipping\n")
+            except Exception:
+                pass
+            return
+        if user and pwd:
+            proxy_url = f"http://{user}:{pwd}@{host}:{port}"
+        else:
+            proxy_url = f"http://{host}:{port}"
+        os.environ["HTTP_PROXY"] = proxy_url
+        os.environ["HTTPS_PROXY"] = proxy_url
+        os.environ["http_proxy"] = proxy_url
+        os.environ["https_proxy"] = proxy_url
+        # Лог БЕЗ пароля. Если user пуст — пишем "user=(none)".
+        safe_user = user if user else "(none)"
+        try:
+            sys.stderr.write(
+                f"[proxy] enabled: host={host} port={port} user={safe_user}\n")
+        except Exception:
+            pass
+    except Exception:
+        # Любая ошибка чтения QSettings / set env — не блокирует старт Studio.
+        # Юзер просто пойдёт без прокси, прочитает stderr и поймёт.
+        try:
+            import traceback
+            traceback.print_exc()
+        except Exception:
+            pass
+
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QListWidget, QListWidgetItem,
@@ -5841,6 +5925,28 @@ class MainWindow(QMainWindow):
                     self.apikey_show_btn.setText(tr('apikey_show'))
             except Exception:
                 traceback.print_exc()
+        # v1.0.65: секция «🌐 ПРОКСИ-СЕРВЕР» — retranslate всех меток.
+        if hasattr(self, 'sec_proxy_lbl'):
+            try:
+                self.sec_proxy_lbl.setText(tr('sec_proxy'))
+                self.proxy_use_chk.setText(tr('proxy_use_checkbox'))
+                self.proxy_host_label.setText(tr('proxy_host_label'))
+                self.proxy_port_label.setText(tr('proxy_port_label'))
+                self.proxy_username_label.setText(tr('proxy_username_label'))
+                self.proxy_password_label.setText(tr('proxy_password_label'))
+                self.proxy_host_input.setPlaceholderText(
+                    tr('proxy_host_placeholder'))
+                self.proxy_port_input.setPlaceholderText(
+                    tr('proxy_port_placeholder'))
+                self.proxy_username_input.setPlaceholderText(
+                    tr('proxy_username_placeholder'))
+                self.proxy_test_btn.setText(tr('proxy_test_button'))
+                self.proxy_save_btn.setText(tr('proxy_save_button'))
+                self.proxy_restart_hint_lbl.setText(tr('proxy_restart_hint'))
+                # proxy_result_lbl не трогаем — там результат теста,
+                # язык применится при следующем клике «Проверить».
+            except Exception:
+                traceback.print_exc()
         # v1.0.61: секция «🎬 МОНТАЖНАЯ КАРТА» (видна всем, не админ-only).
         if hasattr(self, 'sec_montage_lbl'):
             try:
@@ -6391,6 +6497,143 @@ class MainWindow(QMainWindow):
         akf.addWidget(self.apikey_status_lbl)
 
         lay.addWidget(apikey_frame)
+
+        # ── 🌐 ПРОКСИ-СЕРВЕР — настройки прокси (видны всем, не админ-only) ─
+        # v1.0.65: настройка HTTP-прокси через QSettings + os.environ.
+        # Применяется при старте Studio через `apply_proxy_from_settings()`
+        # ДО создания QApplication и subprocess'ов Claude CLI. Юзер видит
+        # секцию даже если admin не передал API-ключи — прокси нужен
+        # ДО любых запросов. Изменения требуют перезапуска (env vars
+        # читаются только при старте requests-сессии).
+        self.sec_proxy_lbl = QLabel(tr('sec_proxy'))
+        self.sec_proxy_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_proxy_lbl)
+
+        proxy_frame = QFrame()
+        proxy_frame.setObjectName("settings-group")
+        pxf = QVBoxLayout(proxy_frame)
+        pxf.setSpacing(8)
+        pxf.setContentsMargins(20, 18, 20, 18)
+
+        # 1) Чекбокс «Использовать прокси-сервер»
+        self.proxy_use_chk = QCheckBox(tr('proxy_use_checkbox'))
+        self.proxy_use_chk.setChecked(
+            QSettings(APP_ORG, APP_NAME).value(
+                "proxy/enabled", False, type=bool))
+        self.proxy_use_chk.toggled.connect(
+            self._on_proxy_checkbox_toggled)
+        pxf.addWidget(self.proxy_use_chk)
+
+        # 2) 4 поля ввода — host, port, username, password
+        # Каждое поле в HBox: лейбл слева (фикс. ширина 110), input справа.
+        # Initial value читается из QSettings. Password — echoMode=Password.
+        qs_proxy = QSettings(APP_ORG, APP_NAME)
+        _LABEL_W = 110
+
+        host_row = QHBoxLayout()
+        host_row.setSpacing(8)
+        self.proxy_host_label = QLabel(tr('proxy_host_label'))
+        self.proxy_host_label.setFixedWidth(_LABEL_W)
+        host_row.addWidget(self.proxy_host_label)
+        self.proxy_host_input = QLineEdit()
+        self.proxy_host_input.setPlaceholderText(tr('proxy_host_placeholder'))
+        self.proxy_host_input.setText(
+            qs_proxy.value("proxy/host", "", type=str))
+        host_row.addWidget(self.proxy_host_input, stretch=1)
+        pxf.addLayout(host_row)
+
+        port_row = QHBoxLayout()
+        port_row.setSpacing(8)
+        self.proxy_port_label = QLabel(tr('proxy_port_label'))
+        self.proxy_port_label.setFixedWidth(_LABEL_W)
+        port_row.addWidget(self.proxy_port_label)
+        self.proxy_port_input = QLineEdit()
+        self.proxy_port_input.setPlaceholderText(tr('proxy_port_placeholder'))
+        self.proxy_port_input.setText(
+            qs_proxy.value("proxy/port", "", type=str))
+        port_row.addWidget(self.proxy_port_input, stretch=1)
+        pxf.addLayout(port_row)
+
+        user_row = QHBoxLayout()
+        user_row.setSpacing(8)
+        self.proxy_username_label = QLabel(tr('proxy_username_label'))
+        self.proxy_username_label.setFixedWidth(_LABEL_W)
+        user_row.addWidget(self.proxy_username_label)
+        self.proxy_username_input = QLineEdit()
+        self.proxy_username_input.setPlaceholderText(
+            tr('proxy_username_placeholder'))
+        self.proxy_username_input.setText(
+            qs_proxy.value("proxy/username", "", type=str))
+        user_row.addWidget(self.proxy_username_input, stretch=1)
+        pxf.addLayout(user_row)
+
+        # Пароль + кнопка-глазик (toggle echo mode). i18n для глазика
+        # не нужен — это чистый символ 👁 / 🙈.
+        pwd_row = QHBoxLayout()
+        pwd_row.setSpacing(8)
+        self.proxy_password_label = QLabel(tr('proxy_password_label'))
+        self.proxy_password_label.setFixedWidth(_LABEL_W)
+        pwd_row.addWidget(self.proxy_password_label)
+        self.proxy_password_input = QLineEdit()
+        self.proxy_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_password_input.setText(
+            qs_proxy.value("proxy/password", "", type=str))
+        pwd_row.addWidget(self.proxy_password_input, stretch=1)
+        # Кнопка-глазик 28×28px справа от поля пароля
+        self.proxy_password_toggle_btn = QPushButton("👁")
+        self.proxy_password_toggle_btn.setFixedSize(28, 28)
+        self.proxy_password_toggle_btn.setCursor(
+            Qt.CursorShape.PointingHandCursor)
+        self.proxy_password_toggle_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.06);"
+            " border: 1px solid rgba(255,255,255,0.12);"
+            " border-radius: 4px; font-size: 14px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.10); }")
+        self.proxy_password_toggle_btn.clicked.connect(
+            self._on_proxy_password_visibility_toggled)
+        pwd_row.addWidget(self.proxy_password_toggle_btn)
+        pxf.addLayout(pwd_row)
+
+        # Применяем начальное состояние enabled полей по чекбоксу
+        self._on_proxy_checkbox_toggled(self.proxy_use_chk.isChecked())
+
+        # 3) Кнопка «Проверить подключение» + label результата
+        # Кнопка ВСЕГДА активна (даже если чекбокс снят — даёт тест
+        # прямого подключения).
+        pxf.addSpacing(6)
+        self.proxy_test_btn = QPushButton(tr('proxy_test_button'))
+        self.proxy_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.proxy_test_btn.clicked.connect(self._on_proxy_test_clicked)
+        pxf.addWidget(self.proxy_test_btn)
+
+        self.proxy_result_lbl = QLabel("")
+        self.proxy_result_lbl.setWordWrap(True)
+        self.proxy_result_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.proxy_result_lbl.setStyleSheet(
+            "color: rgba(255,255,255,0.85); font-size: 12px;"
+            " font-family: 'Menlo','Consolas',monospace;"
+            " padding: 4px 0;")
+        pxf.addWidget(self.proxy_result_lbl)
+
+        # 4) Кнопка «Сохранить и применить» + хинт про перезапуск
+        pxf.addSpacing(6)
+        self.proxy_save_btn = QPushButton(tr('proxy_save_button'))
+        self.proxy_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.proxy_save_btn.clicked.connect(self._on_proxy_save_clicked)
+        pxf.addWidget(self.proxy_save_btn)
+
+        self.proxy_restart_hint_lbl = QLabel(tr('proxy_restart_hint'))
+        self.proxy_restart_hint_lbl.setStyleSheet(
+            "color: rgba(255,255,255,0.45); font-size: 11px;"
+            " padding-top: 2px;")
+        self.proxy_restart_hint_lbl.setWordWrap(True)
+        pxf.addWidget(self.proxy_restart_hint_lbl)
+
+        lay.addWidget(proxy_frame)
+
+        # Слот для держания живого ProxyTestThread'а (чтобы Qt GC не
+        # убил его пока он работает в фоне).
+        self._proxy_test_thread = None
 
         # ── 🎬 МОНТАЖНАЯ КАРТА — настройки оркестратора монтажки ───────────
         # 2026-05-13 (v1.0.61): toggle «Использовать Context Reviewer».
@@ -10268,6 +10511,191 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
+    # ── v1.0.65: proxy settings handlers ─────────────────────────────────
+    def _on_proxy_checkbox_toggled(self, checked: bool):
+        """Чекбокс «Использовать прокси» → enable/disable 4 поля ввода.
+        Кнопки «Проверить подключение» и «Сохранить» остаются активны
+        всегда (тест direct connection работает даже с выключенным
+        чекбоксом).
+        """
+        try:
+            for w in (self.proxy_host_input, self.proxy_port_input,
+                      self.proxy_username_input, self.proxy_password_input,
+                      self.proxy_password_toggle_btn):
+                w.setEnabled(bool(checked))
+        except Exception:
+            traceback.print_exc()
+
+    def _on_proxy_password_visibility_toggled(self):
+        """Глазик 👁/🙈 — переключает EchoMode пароля между Password и Normal."""
+        try:
+            cur = self.proxy_password_input.echoMode()
+            if cur == QLineEdit.EchoMode.Password:
+                self.proxy_password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+                self.proxy_password_toggle_btn.setText("🙈")
+            else:
+                self.proxy_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+                self.proxy_password_toggle_btn.setText("👁")
+        except Exception:
+            traceback.print_exc()
+
+    def _on_proxy_test_clicked(self):
+        """Запуск ProxyTestThread с текущими значениями из UI (НЕ из QSettings).
+        Юзер мог не сохранить — тест должен использовать введённое сейчас."""
+        try:
+            use_proxy = self.proxy_use_chk.isChecked()
+            host = self.proxy_host_input.text().strip()
+            port = self.proxy_port_input.text().strip()
+            user = self.proxy_username_input.text().strip()
+            pwd = self.proxy_password_input.text()  # без strip — пароль
+            # Валидация: при use_proxy=True все 4 поля обязательны.
+            if use_proxy and not (host and port and user and pwd):
+                QMessageBox.warning(
+                    self, tr('proxy_use_checkbox'),
+                    tr('proxy_empty_fields_warning'))
+                return
+            # Дизаблим кнопку, меняем текст на «Проверяю...».
+            self.proxy_test_btn.setEnabled(False)
+            self.proxy_test_btn.setText(tr('proxy_test_running'))
+            self.proxy_result_lbl.setText("")
+            # Lazy import — избегаем circular (threads → _sa).
+            from threads.proxy_test import ProxyTestThread
+            self._proxy_test_thread = ProxyTestThread(
+                use_proxy=use_proxy,
+                host=host, port=port,
+                username=user, password=pwd,
+                parent=self)
+            self._proxy_test_thread.result_ready.connect(
+                self._on_proxy_test_result)
+            self._proxy_test_thread.finished.connect(
+                lambda: setattr(self, '_proxy_test_thread', None))
+            self._proxy_test_thread.start()
+        except Exception:
+            traceback.print_exc()
+            self.proxy_test_btn.setEnabled(True)
+            self.proxy_test_btn.setText(tr('proxy_test_button'))
+
+    def _on_proxy_test_result(self, data: dict):
+        """ProxyTestThread.result_ready → форматирует строки + вердикт."""
+        try:
+            self.proxy_test_btn.setEnabled(True)
+            self.proxy_test_btn.setText(tr('proxy_test_button'))
+            use_proxy = data.get("use_proxy", False)
+            lines = []
+            # GitHub
+            gh = data.get("github", {})
+            if gh.get("ok"):
+                lines.append(
+                    "<span style='color:#6db86d;'>" +
+                    tr('proxy_result_github_ok').format(
+                        time_ms=gh.get('time_ms', 0)) +
+                    "</span>")
+            else:
+                lines.append(
+                    "<span style='color:#e4344a;'>" +
+                    tr('proxy_result_github_err').format(
+                        error=gh.get('error') or 'unknown') +
+                    "</span>")
+            # Fast Gen
+            fg = data.get("fastgen", {})
+            if fg.get("ok"):
+                lines.append(
+                    "<span style='color:#6db86d;'>" +
+                    tr('proxy_result_fastgen_ok').format(
+                        time_ms=fg.get('time_ms', 0)) +
+                    "</span>")
+            else:
+                lines.append(
+                    "<span style='color:#e4344a;'>" +
+                    tr('proxy_result_fastgen_err').format(
+                        error=fg.get('error') or 'unknown') +
+                    "</span>")
+            # Геолокация
+            geo = data.get("geo", {})
+            if geo.get("ok"):
+                tmpl = ('proxy_geo_label_proxy' if use_proxy
+                        else 'proxy_geo_label_direct')
+                lines.append(
+                    "<span style='color:#6db86d;'>" +
+                    tr(tmpl).format(
+                        city=geo.get('city', '?'),
+                        country=geo.get('country', '?'),
+                        country_code=geo.get('country_code', '?'),
+                        org=geo.get('org', '?'),
+                        ip=geo.get('ip', '?')) +
+                    "</span>")
+            else:
+                lines.append(
+                    "<span style='color:#e4344a;'>" +
+                    tr('proxy_geo_err').format(
+                        error=geo.get('error') or 'unknown') +
+                    "</span>")
+            # Финальный вердикт.
+            all_ok = (gh.get("ok") and fg.get("ok") and geo.get("ok"))
+            if all_ok:
+                verdict_key = ('proxy_works_ok' if use_proxy
+                               else 'proxy_direct_ok')
+                lines.append(
+                    "<span style='color:#6db86d; font-weight:600;'>" +
+                    tr(verdict_key) + "</span>")
+            else:
+                lines.append(
+                    "<span style='color:#e4344a; font-weight:600;'>" +
+                    tr('proxy_failed') + "</span>")
+            html = "<br>".join(lines).replace("\n", "<br>")
+            self.proxy_result_lbl.setText(html)
+        except Exception:
+            traceback.print_exc()
+
+    def _on_proxy_save_clicked(self):
+        """Сохранение в QSettings + диалог рестарта.
+
+        При use_proxy=True валидирует что все 4 поля непустые.
+        Сохраняет ключи proxy/enabled, /host, /port, /username, /password.
+        Показывает диалог «Перезапустить сейчас / позже» — при «сейчас»
+        зовёт QApplication.quit() (юзер открывает .app заново).
+        При «позже» — info-диалог что настройки сохранены но не активны
+        до рестарта.
+        """
+        try:
+            use_proxy = self.proxy_use_chk.isChecked()
+            host = self.proxy_host_input.text().strip()
+            port = self.proxy_port_input.text().strip()
+            user = self.proxy_username_input.text().strip()
+            pwd = self.proxy_password_input.text()
+            if use_proxy and not (host and port and user and pwd):
+                QMessageBox.warning(
+                    self, tr('sec_proxy'),
+                    tr('proxy_empty_fields_warning'))
+                return
+            qs = QSettings(APP_ORG, APP_NAME)
+            qs.setValue("proxy/enabled", bool(use_proxy))
+            qs.setValue("proxy/host", host)
+            qs.setValue("proxy/port", port)
+            qs.setValue("proxy/username", user)
+            qs.setValue("proxy/password", pwd)
+            qs.sync()
+            m = QMessageBox(self)
+            m.setIcon(QMessageBox.Icon.Information)
+            m.setWindowTitle(tr('sec_proxy'))
+            m.setText(tr('proxy_save_restart_dialog'))
+            now_btn = m.addButton(
+                tr('proxy_restart_now'),
+                QMessageBox.ButtonRole.AcceptRole)
+            later_btn = m.addButton(
+                tr('proxy_restart_later'),
+                QMessageBox.ButtonRole.RejectRole)
+            m.setDefaultButton(later_btn)
+            m.exec()
+            if m.clickedButton() is now_btn:
+                QTimer.singleShot(0, QApplication.quit)
+            else:
+                QMessageBox.information(
+                    self, tr('sec_proxy'),
+                    tr('proxy_save_no_restart_notice'))
+        except Exception:
+            traceback.print_exc()
+
     def _refresh_anim_speed_value(self):
         """Обновляет подпись «1.5× (≈420мс на табах)» рядом со слайдером.
         Вызывается при изменении слайдера и при смене языка."""
@@ -11031,6 +11459,14 @@ def main():
     # Qt-варнинги (qWarning, qCritical) — перенаправляем в наш stderr,
     # чтобы они тоже попадали в runtime.log с timestamp.
     _install_qt_message_handler()
+    # v1.0.65: применяем настройки прокси из QSettings к os.environ
+    # ДО создания QApplication и ДО запуска любого subprocess. Если
+    # юзер включил «🌐 ПРОКСИ-СЕРВЕР» в Settings — все исходящие HTTP
+    # запросы (requests-based) пойдут через прокси автоматически,
+    # subprocess'ы Claude CLI унаследуют env. См. apply_proxy_from_settings.
+    # Лог «[proxy] enabled: ...» пишется в stderr — благодаря
+    # _init_studio_file_logging выше попадёт в runtime.log.
+    apply_proxy_from_settings()
     app = QApplication(sys.argv)
     app.setApplicationName("Storyboard Studio")
     app.setOrganizationName(APP_ORG)

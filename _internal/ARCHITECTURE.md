@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-13 (v1.0.64 — eyebrow rule conflict + script adaptation priorities)
+**Последнее обновление:** 2026-05-13 (v1.0.65 — proxy settings + connection test)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -423,6 +423,77 @@ Sonnet даёт заметно хуже качество. Карту и PromptWr
 ### Default model = `claude-opus-4-7` — [views/episode_chat.py:297](views/episode_chat.py:297)
 Сохранённое в `QSettings` по ключу `"new_ep/model_v2"`. Если ключа нет
 у юзера — загружается Opus 4.7 как fallback.
+
+## Proxy settings (v1.0.65)
+
+Studio поддерживает HTTP/HTTPS-прокси для всех исходящих запросов
+через UI Settings → секция «🌐 ПРОКСИ-СЕРВЕР» (видна всем юзерам, не
+админ-only).
+
+**QSettings ключи** (хранятся вне репо — Mac plist / Win registry):
+- `proxy/enabled` (bool, default False) — мастер-флаг.
+- `proxy/host` (str) — IP или hostname.
+- `proxy/port` (str) — номер порта.
+- `proxy/username` (str) — auth login, опционально.
+- `proxy/password` (str) — auth password, **plain-text** (как `fastgen_api_key`).
+
+**Применение прокси:**
+`apply_proxy_from_settings()` ([storyboard_app.py](storyboard_app.py)) читает
+QSettings и выставляет env vars `HTTP_PROXY`/`HTTPS_PROXY` (+ lowercase
+для совместимости) в `os.environ`. Вызывается в `def main()` ПОСЛЕ
+`_init_studio_file_logging()` и `_install_qt_message_handler()`, ДО
+`app = QApplication(sys.argv)`. QSettings работает без QApplication когда
+передан явный `(APP_ORG, APP_NAME)`.
+
+**Какие потоки наследуют прокси автоматически:**
+| Поток | Библиотека | Прокси работает? |
+|---|---|---|
+| Claude CLI subprocess (montage, autogen, outfits, soften, run_episode, seedance, storyboard_pipeline) | `subprocess` без явного `env=` | ✓ наследует os.environ |
+| Fast Gen API (pipeline.py, threads/generate.py) | `requests` (Session + одиночные) | ✓ автоматически из env |
+| GitHub Releases (`threads/update.py`) | `requests` | ✓ автоматически |
+| GitHub API (`storyboard_app.py` FetchStats / SendUpdate) | `requests` | ✓ автоматически |
+
+**Исключение — `installer_app.py`** ([installer_app.py:294, 396, 421](installer_app.py:294))
+использует `urllib.request.urlopen` — **НЕ читает env vars автоматически**.
+Это отдельная программа (первая установка), не часть Studio. Юзер с
+прокси-сетью должен либо выставить системный прокси перед запуском
+Installer.exe, либо отдельная задача — добавить `ProxyHandler` в
+`installer_app.py` (см. Долг 7).
+
+**UI и handlers:**
+- Секция «🌐 ПРОКСИ-СЕРВЕР» в `_build_settings_tab` между `apikey_frame`
+  и v1.0.61 Montage-блоком.
+- 4 поля QLineEdit (host/port/username/password) + чекбокс +
+  кнопка-глазик 👁/🙈 для пароля + кнопка «Проверить подключение» +
+  результат-label (RichText, цветные ✓/✗) + кнопка «Сохранить и
+  применить» + хинт про перезапуск.
+- При выключенном чекбоксе 4 поля и глазик disabled, кнопки
+  «Проверить» и «Сохранить» остаются активны (тест direct connection
+  доступен всегда).
+
+**ProxyTestThread** ([threads/proxy_test.py](threads/proxy_test.py)):
+делает 3 независимых GET-запроса (`https://api.github.com/zen`,
+`https://googler.fast-gen.ai/`, `https://ipinfo.io/json`) с `timeout=10`,
+с параметром `proxies` или без него (по `use_proxy: bool`). Отдаёт
+результат через сигнал `result_ready(dict)`. Каждый endpoint в своём
+`try/except` — частичные ошибки не аборт всего теста. ipinfo.io
+используется для отображения геолокации прокси-IP (или реального IP в
+direct режиме). Маппинг 2-буквенных кодов стран → русские названия в
+`_parse_geo`.
+
+**Изменения требуют рестарта.** `os.environ` читается `requests` при
+создании первой сессии в процессе. Изменение env во время работы
+Studio НЕ перехватывается уже-созданными `requests.Session()`'ами. UI
+явно сообщает юзеру: после Save диалог «Перезапустить сейчас / позже».
+При «позже» — дополнительный info-диалог что настройки сохранены, но
+не активны до рестарта.
+
+**Безопасность пароля:**
+- Хранение plain-text в QSettings (как `fastgen_api_key`). Шифрование
+  через Keychain/Credential Manager — см. Долг 8.
+- В runtime.log пишется только `host=X port=Y user=Z` (БЕЗ пароля).
+- UI маскирует звёздочками по default (`EchoMode.Password`). Глазик
+  переключает на `EchoMode.Normal` только при явном клике юзера.
 
 ## Монтажная карта — пайплайн агентов (v1.0.62+v1.0.63)
 
@@ -942,3 +1013,23 @@ gated в промпте).
 **Срочность:** P1 — баг наблюдается у юзера на каждой 3-й параллельной
 генерации Opus 4.7. До решения промпт уже содержит запреты на prose
 формат, но Opus иногда нарушает при long-running tasks.
+
+### Долг 7 — installer_app.py не уважает HTTP_PROXY env vars (v1.0.65)
+
+`installer_app.py` использует `urllib.request.urlopen` ([installer_app.py:294, 396, 421](installer_app.py:294)) для скачивания project zip + GitHub release asset. urllib **НЕ читает** `HTTP_PROXY`/`HTTPS_PROXY` env vars автоматически (в отличие от `requests`). Поэтому юзер с прокси-сетью, кому нужна первая установка Studio через `Storyboard Installer.app/.exe`, **не сможет** скачать ассеты — соединение пойдёт прямое и упрётся в network policy.
+
+**Решение:** добавить `urllib.request.ProxyHandler` + `build_opener` явно. Читать прокси-настройки из системы (через `urllib.request.getproxies()`) или передавать через env. Объём — ~30 строк в `installer_app.py:_download_*` методах.
+
+**Срочность:** низкая. Installer запускается ОДНОКРАТНО при первой установке. У коллег корпоративная сеть с прокси — да. Альтернатива на сейчас: поставить системный прокси (System Preferences → Network → Advanced → Proxies) перед запуском Installer'а.
+
+### Долг 8 — пароль прокси хранится plain-text в QSettings (v1.0.65)
+
+`proxy/password` (как и `fastgen_api_key`) хранится в QSettings в plain-text формате — Mac `.plist` / Win Registry / Linux `.conf`. Любой кто получит доступ к юзерскому профилю прочитает пароль.
+
+**Решение:** интеграция с Keychain (Mac) / Credential Manager (Win) / Secret Service (Linux). Самый чистый Python-пакет — `keyring` (PyPI). Изменения:
+1. Добавить `keyring` в зависимости + PyInstaller bundle.
+2. В `apply_proxy_from_settings` и `_on_proxy_save_clicked` — пароль хранить через `keyring.set_password(service="StoryboardStudio/proxy", username=APP_NAME, password=pwd)` / `get_password(...)`.
+3. Из QSettings удалить ключ `proxy/password` (оставить только мастер-флаг enabled + host/port/username).
+4. То же сделать для `fastgen_api_key`.
+
+**Срочность:** низкая — `fastgen_api_key` живёт plain-text давно, никаких инцидентов не было. Юзер должен сам понимать что админский профиль = доверенная среда.
