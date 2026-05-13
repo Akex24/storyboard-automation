@@ -174,10 +174,20 @@ SPEECH_TYPE ОБЯЗАН СООТВЕТСТВОВАТЬ ГОЛОСОВОМУ П�
 - ЗАПРЕЩЕНО: "looking at camera", "facing camera", "staring forward".
 
 МИМИКА — ТОЛЬКО МИКРОМИМИКА:
-- ЗАПРЕЩЕНО: "shocked", "angry", "disgusted", "wide-open eyes",
-  "raised eyebrows".
+- ЗАПРЕЩЕНО (расширенный список — лексический + семантический):
+  • Эмоциональные ярлыки: "shocked", "angry", "disgusted", "panic",
+    "terrified", "horrified", "enraged", "furious", "devastated".
+  • Описания глаз: "wide-open eyes", "eyes wide", "eyes wide open",
+    "eyes darting", "eyes bulging".
+  • Брови: "raised eyebrows".
+  • Тело: "shaking with fear", "trembling with rage".
+  • Лицо: "face contorted", "face twisted", "mouth agape", "jaw dropped".
+- ЗАПРЕЩЕНО ТАКЖЕ — любой синоним или производное от слов в списке выше
+  (например "in panic" ≡ "panic", "eyes wide" ≡ "wide-open eyes").
 - ПРАВИЛЬНО: "jaw tightened", "one eyebrow slightly raised",
-  "eyes narrowed, pupils fixed", "corner of mouth slightly pulled down".
+  "eyes narrowed, pupils fixed", "corner of mouth slightly pulled down",
+  "muscle between brows tightened", "whites visible above the lower
+  lid", "Adam's apple jumped", "inhale cut short".
 
 ПЕРСОНАЖИ — ТОЛЬКО ТЕГОМ:
 - ЗАПРЕЩЕНО описывать внешность словами (борода, волосы, черты лица).
@@ -307,8 +317,15 @@ Wide-shot ≤2с со ВСЕМИ — допустим. Длинные кадры
 
 ЗАПРЕЩЁННЫЕ ФОРМУЛИРОВКИ (для проверки scene_action / dialog):
   Взгляд: "looking at camera", "facing camera", "staring forward".
-  Макро-мимика: "shocked", "angry", "disgusted", "wide-open eyes",
-    "raised eyebrows" (вместо них — микромимика).
+  Эмоциональные ярлыки: "shocked", "angry", "disgusted", "panic",
+    "terrified", "horrified", "enraged", "furious", "devastated".
+  Описания глаз: "wide-open eyes", "eyes wide", "eyes wide open",
+    "eyes darting", "eyes bulging".
+  Брови: "raised eyebrows".
+  Тело: "shaking with fear", "trembling with rage".
+  Лицо: "face contorted", "face twisted", "mouth agape", "jaw dropped".
+  ПЛЮС любой синоним / производное от слов выше (например "in panic"
+    ≡ "panic", "eyes wide" ≡ "wide-open eyes").
   Одежда персонажа словами: "robe", "dress", "shirt", "coat", "hoodie",
     "pajamas", "uniform" (одежда берётся из рефа, не из текста).
   Описание внешности словами (борода, волосы, черты лица). Только
@@ -325,6 +342,19 @@ SCRIPTWRITER_SYSTEM = f"""\
 монтажную карту в JSON.
 
 {COMMON_RULES}
+
+СТРОГОЕ ПРАВИЛО — НИКАКИХ ЭМОЦИОНАЛЬНЫХ ЯРЛЫКОВ В scene_action.
+Даже если конкретного слова нет в списке запрещённых выше — любой ярлык
+эмоции ("panic", "fear", "rage", "joy", "sadness", "shock" и любой их
+синоним) запрещён. Только наблюдаемая физиология:
+- Что именно делают мышцы лица: «мышцы переносицы сжаты», «уголки рта
+  опущены», «жевательная мышца напряжена», «брови сведены к центру».
+- Куда смотрят глаза и что с веками: «белки видны над нижним веком»,
+  «взгляд скачет между двумя точками», «верхнее веко чуть приподнято».
+- Что с дыханием, челюстью, кадыком, кожей шеи: «вдох коротко прерван»,
+  «челюсть стиснута», «кадык дёрнулся».
+Если хочешь написать какую-то эмоцию ярлыком — это нарушение. Описывай
+физиологию через которую эта эмоция читается.
 
 ФОРМАТ ВЫВОДА — СТРОГО ВАЛИДНЫЙ JSON, БЕЗ обёртки markdown:
 
@@ -430,8 +460,19 @@ VALIDATOR_SYSTEM = f"""\
 8. Поле `speaker` каждой реплики — один из characters блока. Иначе
    "block_N_shot_M_speaker_not_in_characters".
 9. Если scene_action содержит запрещённые слова про взгляд/мимику
-   ("looking at camera", "shocked", "angry", "wide-open eyes" и т.п.) —
-   ошибка "block_N_shot_M_forbidden_phrase: <слово>".
+   (см. список «ЗАПРЕЩЁННЫЕ ФОРМУЛИРОВКИ» выше — взгляд в камеру,
+   макро-мимика, эмоциональные ярлыки, описания глаз/бровей/тела/лица,
+   одежда словами) ИЛИ их семантические синонимы (например 'eyes wide'
+   ≡ 'wide-open eyes', 'in panic' ≡ 'shocked', 'face contorted' =
+   макро-эмоция) — ошибка "block_N_shot_M_forbidden_phrase: <слово>".
+   КАТЕГОРИЯЛЬНОЕ ПРАВИЛО — если scene_action содержит ЛЮБОЕ слово или
+   выражение описывающее эмоциональное состояние ярлыком (примеры
+   запрещённой категории: panic, fear, rage, anger, joy, sadness,
+   shock, disgust, terror, fury, sorrow, ecstasy, dread, anxiety, и
+   любые их синонимы и производные) — это ошибка forbidden_phrase
+   ДАЖЕ если конкретного слова нет в списке выше. Эмоция должна
+   передаваться через описание физиологии (мышцы лица, глаза,
+   дыхание, челюсть, кадык, поза), не через ярлык.
 10. Имя локации блока должно быть из списка доступных рефов локаций.
     Иначе "block_N_unknown_location".
 11. Все персонажи блока должны быть из списка доступных рефов

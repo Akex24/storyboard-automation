@@ -42,14 +42,15 @@ from agents.montage_prompts import (
 
 
 class MontageOrchestratorThread(QThread):
-    """Поток: запускает Сценарист → Чекер → Редактор → Чекер → … до 3
-    раундов. Эмитит сигналы прогресса для UI и финальный сигнал с
+    """Поток: запускает Сценарист → Чекер → (если errors > 0) Редактор →
+    опционально Финальный редактор. Линейный пайплайн без раундов
+    (v1.0.62). Эмитит сигналы прогресса для UI и финальный сигнал с
     итоговой картой + отчётом Чекера.
     """
 
     # стадии: "scriptwriter_running", "validator_running",
-    # "editor_running", "context_reviewer_running", "round_done",
-    # "context_reviewer_done"
+    # "validator_done", "editor_running",
+    # "context_reviewer_running", "context_reviewer_done"
     progress = pyqtSignal(str, dict)
     # финальный сигнал: monton_card (dict), checker_report (dict),
     # rounds_used (int), agent_log_path (str), agent_summary (dict)
@@ -58,13 +59,15 @@ class MontageOrchestratorThread(QThread):
     # ошибка, не удалось получить даже первой версии
     failed = pyqtSignal(str)
 
-    # 2026-05-13 (v1.0.61): MAX_ROUNDS снижен с 3 до 2.
-    # Анализ логов: ep1/ep2 не сошлись за 3 раунда и Context Reviewer
-    # вообще не запустился; ep3/ep4 сошлись за 2 раунда. Третий раунд —
-    # запасной случай при глюке Sonnet (редкий). Экономия 3-4 мин на
-    # затяжных эпизодах. При accept-with-warning поведение не меняется —
-    # карта с errors попадает в финал с пометкой в _agent_log.
-    MAX_ROUNDS = 2
+    # 2026-05-13 (v1.0.62): MAX_ROUNDS убран. Цикл стал линейным:
+    # Scriptwriter → Validator → (если errors > 0) Editor → ГОТОВО.
+    # Без повторной проверки. Если включён Context Reviewer toggle —
+    # после Editor (или после Validator при errors=0) запускается
+    # Reviewer, и если он нашёл concerns — ещё один Editor.
+    # Анализ ep2 v1.0.61: Validator R2 длился ~7 мин и фиксировал
+    # ошибки которые УЖЕ не правились (MAX_ROUNDS исчерпан) — пустая
+    # трата времени. ep4 v1.0.61 принят с одного раунда — R2 там не
+    # запускался. Делаем это поведение по умолчанию.
     SUBPROCESS_TIMEOUT_SEC = 600  # 10 минут на каждый вызов CLI
 
     # 2026-05-09: per-agent model routing. Юзер не выбирает модели для
@@ -122,6 +125,15 @@ class MontageOrchestratorThread(QThread):
     # ──────────────────────────────────────────────────────────────────
 
     def run(self) -> None:  # noqa: D401
+        # 2026-05-13 (v1.0.62): Линейный пайплайн без раундов.
+        #   1. Scriptwriter
+        #   2. Validator (один раз)
+        #   3. Если Validator.errors > 0 → Editor
+        #   4. Если toggle Context Reviewer ON:
+        #        Reviewer → если concerns > 0 → Editor
+        #   5. Финал
+        # Никаких повторных проверок. rounds_used = 1 всегда (для
+        # совместимости с сигналом finished_ok и caller'ом).
         try:
             # 1) Scriptwriter
             self.progress.emit("scriptwriter_running", {})
@@ -137,77 +149,72 @@ class MontageOrchestratorThread(QThread):
                 return
 
             checker_report: Dict = {"ok": False, "errors": [], "report": []}
-            rounds_used = 0
 
-            # 2-3) Validator → Editor цикл, до MAX_ROUNDS раундов
-            for round_idx in range(1, self.MAX_ROUNDS + 1):
-                rounds_used = round_idx
-                self.progress.emit("validator_running",
-                                    {"round": round_idx,
-                                     "max_rounds": self.MAX_ROUNDS})
+            # 2) Validator — один раз
+            self.progress.emit("validator_running", {})
+            try:
+                checker_report = self._call_validator(montage_card)
+            except Exception as e:
+                self._agent_log.append({
+                    "stage": "validator",
+                    "error": str(e),
+                })
+                # Не fatal — идём дальше без правок.
+                self._finalize(montage_card, checker_report)
+                return
+
+            if self._stop:
+                self.failed.emit("cancelled")
+                return
+
+            errors_count = len(checker_report.get("errors", []))
+            self.progress.emit("validator_done",
+                                {"ok": checker_report.get("ok", False),
+                                 "errors_count": errors_count})
+
+            # 3) Editor — только если Validator нашёл ошибки
+            if not checker_report.get("ok") and errors_count > 0:
+                self.progress.emit("editor_running",
+                                    {"errors_count": errors_count})
                 try:
-                    checker_report = self._call_validator(montage_card)
+                    montage_card = self._call_editor(
+                        montage_card, checker_report.get("errors", []))
                 except Exception as e:
-                    # Не fatal — оставляем последнюю карту, репорт пустой
                     self._agent_log.append({
-                        "stage": "validator",
-                        "round": round_idx,
+                        "stage": "editor",
                         "error": str(e),
                     })
-                    break
+                    # Не fatal — отдаём карту до Editor'а.
+                    self._finalize(montage_card, checker_report)
+                    return
 
                 if self._stop:
                     self.failed.emit("cancelled")
                     return
 
-                self.progress.emit("round_done",
-                                    {"round": round_idx,
-                                     "ok": checker_report.get("ok", False),
-                                     "errors_count": len(checker_report.get("errors", []))})
+            # 4) Context Reviewer — опционально (toggle в Settings)
+            if self._use_context_reviewer:
+                self.progress.emit("context_reviewer_running", {})
+                try:
+                    reviewer_report = self._call_context_reviewer(montage_card)
+                except Exception as e:
+                    self._agent_log.append({
+                        "stage": "context_reviewer",
+                        "error": str(e),
+                    })
+                    self._finalize(montage_card, checker_report)
+                    return
 
-                if checker_report.get("ok"):
-                    # 2026-05-13 (v1.0.61): Context Reviewer опциональный.
-                    # Если toggle в Settings выключен → пропускаем стадию,
-                    # карта считается финальной после Validator.ok=True.
-                    # Экономит ~2 мин на эпизод. Юзер включает для
-                    # сложных эпизодов где нужна Bible-сверка.
-                    if not self._use_context_reviewer:
-                        break  # карта чистая, финализируем без Reviewer
-                    # 4) Context Reviewer — финальный супер-редактор.
-                    #    Проверяет соответствие Bible'и и другим эпизодам.
-                    #    Если есть concerns — даём ещё один раунд Редактора
-                    #    (только если не превысили MAX_ROUNDS).
-                    self.progress.emit("context_reviewer_running",
-                                        {"round": round_idx})
-                    try:
-                        reviewer_report = self._call_context_reviewer(
-                            montage_card)
-                    except Exception as e:
-                        # Не fatal — Чекер уже подтвердил карту, идём
-                        # дальше с предупреждением в логе.
-                        self._agent_log.append({
-                            "stage": "context_reviewer",
-                            "round": round_idx,
-                            "error": str(e),
-                        })
-                        break
+                if self._stop:
+                    self.failed.emit("cancelled")
+                    return
 
-                    concerns = reviewer_report.get("concerns") or []
-                    self.progress.emit("context_reviewer_done",
-                                        {"round": round_idx,
-                                         "ok": reviewer_report.get("ok", True),
-                                         "concerns_count": len(concerns)})
+                concerns = reviewer_report.get("concerns") or []
+                self.progress.emit("context_reviewer_done",
+                                    {"ok": reviewer_report.get("ok", True),
+                                     "concerns_count": len(concerns)})
 
-                    if reviewer_report.get("ok") or not concerns:
-                        # Карта чистая по всем фронтам — выходим.
-                        break
-
-                    # Reviewer нашёл проблемы → конвертируем concerns в
-                    # формат errors[] для Редактора и идём ещё раунд.
-                    if round_idx >= self.MAX_ROUNDS:
-                        break  # лимит раундов исчерпан, оставляем
-                                # карту с пометкой в логе
-
+                if not reviewer_report.get("ok", True) and concerns:
                     converted_errors = [
                         {
                             "code": c.get("code", "context_concern"),
@@ -217,49 +224,33 @@ class MontageOrchestratorThread(QThread):
                         for c in concerns
                     ]
                     self.progress.emit("editor_running",
-                                        {"round": round_idx,
-                                         "errors_count": len(converted_errors)})
+                                        {"errors_count": len(converted_errors)})
                     try:
-                        montage_card = self._call_editor(montage_card,
-                                                           converted_errors)
+                        montage_card = self._call_editor(
+                            montage_card, converted_errors)
                     except Exception as e:
                         self._agent_log.append({
                             "stage": "editor_after_reviewer",
-                            "round": round_idx,
                             "error": str(e),
                         })
-                        break
-                    continue  # → следующий раунд Validator → Reviewer
+                        self._finalize(montage_card, checker_report)
+                        return
 
-                if round_idx >= self.MAX_ROUNDS:
-                    break  # лимит раундов
-
-                # Редактор правит ошибки от Чекера
-                self.progress.emit("editor_running",
-                                    {"round": round_idx,
-                                     "errors_count": len(checker_report.get("errors", []))})
-                try:
-                    montage_card = self._call_editor(montage_card,
-                                                       checker_report.get("errors", []))
-                except Exception as e:
-                    self._agent_log.append({
-                        "stage": "editor",
-                        "round": round_idx,
-                        "error": str(e),
-                    })
-                    break
-
-                if self._stop:
-                    self.failed.emit("cancelled")
-                    return
-
-            log_path_str = self._dump_log()
-            agent_summary = self._build_agent_summary(rounds_used)
-            self.finished_ok.emit(montage_card, checker_report, rounds_used,
-                                   log_path_str or "", agent_summary)
+            # 5) Финал
+            self._finalize(montage_card, checker_report)
         except Exception as e:
             self._dump_log()
             self.failed.emit(f"unexpected: {e}")
+
+    def _finalize(self, montage_card: dict, checker_report: dict) -> None:
+        """Общий путь финализации — dump log + emit finished_ok.
+        rounds_used = 1 всегда (раундов больше нет, поле оставлено для
+        совместимости с сигналом и caller'ом episode_chat.py).
+        """
+        log_path_str = self._dump_log()
+        agent_summary = self._build_agent_summary(1)
+        self.finished_ok.emit(montage_card, checker_report, 1,
+                               log_path_str or "", agent_summary)
 
     # ──────────────────────────────────────────────────────────────────
     # Конкретные вызовы агентов через CLI.

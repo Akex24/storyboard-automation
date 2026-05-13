@@ -599,28 +599,22 @@ class EpisodeChatView(QWidget):
                 if stage == 'scriptwriter_running':
                     self._montage_cta.show_running('montage_status_scriptwriter')
                 elif stage == 'validator_running':
-                    self._montage_cta.show_running(
-                        'montage_status_validator',
-                        round=info.get('round', 1),
-                        max_rounds=info.get('max_rounds', 3))
+                    self._montage_cta.show_running('montage_status_validator')
                 elif stage == 'editor_running':
                     self._montage_cta.show_running(
                         'montage_status_editor',
                         errors_count=info.get('errors_count', 0))
-                elif stage == 'round_done':
+                elif stage == 'validator_done':
                     if info.get('ok'):
                         self._montage_cta.show_running(
-                            'montage_status_round_done_clean',
-                            round=info.get('round', 1))
+                            'montage_status_round_done_clean')
                     else:
                         self._montage_cta.show_running(
                             'montage_status_round_done_errors',
-                            round=info.get('round', 1),
                             errors_count=info.get('errors_count', 0))
                 elif stage == 'context_reviewer_running':
                     self._montage_cta.show_running(
-                        'montage_status_context_reviewer',
-                        round=info.get('round', 1))
+                        'montage_status_context_reviewer')
                 elif stage == 'context_reviewer_done':
                     concerns_n = info.get('concerns_count', 0)
                     if info.get('ok') or concerns_n == 0:
@@ -3262,28 +3256,22 @@ class EpisodeChatView(QWidget):
             if stage == 'scriptwriter_running':
                 self._montage_cta.show_running('montage_status_scriptwriter')
             elif stage == 'validator_running':
-                self._montage_cta.show_running(
-                    'montage_status_validator',
-                    round=info.get('round', 1),
-                    max_rounds=info.get('max_rounds', 3))
+                self._montage_cta.show_running('montage_status_validator')
             elif stage == 'editor_running':
                 self._montage_cta.show_running(
                     'montage_status_editor',
                     errors_count=info.get('errors_count', 0))
-            elif stage == 'round_done':
+            elif stage == 'validator_done':
                 if info.get('ok'):
                     self._montage_cta.show_running(
-                        'montage_status_round_done_clean',
-                        round=info.get('round', 1))
+                        'montage_status_round_done_clean')
                 else:
                     self._montage_cta.show_running(
                         'montage_status_round_done_errors',
-                        round=info.get('round', 1),
                         errors_count=info.get('errors_count', 0))
             elif stage == 'context_reviewer_running':
                 self._montage_cta.show_running(
-                    'montage_status_context_reviewer',
-                    round=info.get('round', 1))
+                    'montage_status_context_reviewer')
             elif stage == 'context_reviewer_done':
                 concerns_n = info.get('concerns_count', 0)
                 if info.get('ok') or concerns_n == 0:

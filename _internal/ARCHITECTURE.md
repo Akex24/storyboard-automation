@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-11
+**Последнее обновление:** 2026-05-13 (v1.0.62 — линейный пайплайн монтажки)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -423,6 +423,53 @@ Sonnet даёт заметно хуже качество. Карту и PromptWr
 ### Default model = `claude-opus-4-7` — [views/episode_chat.py:297](views/episode_chat.py:297)
 Сохранённое в `QSettings` по ключу `"new_ep/model_v2"`. Если ключа нет
 у юзера — загружается Opus 4.7 как fallback.
+
+## Монтажная карта — пайплайн агентов (v1.0.62)
+
+С **v1.0.62 (2026-05-13)** оркестратор [threads/montage_orchestrator.py](threads/montage_orchestrator.py)
+работает ЛИНЕЙНО без раундов:
+
+```
+1. Scriptwriter (Opus 4.7)         — пишет монтажную карту с нуля
+2. Validator   (Sonnet 4.6)        — проверяет один раз
+3. Editor      (Sonnet 4.6)        — если Validator.errors > 0, применяет правки
+4. Context Reviewer (Sonnet 4.6)   — ОПЦИОНАЛЬНО (toggle в Settings, default OFF)
+   └─ если concerns > 0 → Editor ещё раз
+5. ФИНАЛ (без повторной проверки)
+```
+
+**Что изменилось:**
+- Константа `MAX_ROUNDS` УБРАНА (была =2 в v1.0.61, =3 ранее). Цикла больше нет.
+- `_agent_log` теперь содержит ровно 1 запись validator (не 2-3).
+- `rounds_used` в сигнале `finished_ok` всегда = 1 (поле оставлено для
+  совместимости с caller'ом `views/episode_chat.py:_on_montage_finished_ok`).
+- Прогресс-стадии: `validator_running` / `validator_done` / `editor_running` /
+  `context_reviewer_running` / `context_reviewer_done` — БЕЗ полей `round` /
+  `max_rounds` (i18n строки `montage_status_*` соответственно обновлены).
+- `montage_status_round_done_errors` теперь честно говорит юзеру:
+  «⚠ Чекер: N ошибок, Editor применил правки. Финальная проверка пропущена
+  для скорости.» — чтобы юзер знал что R2 убрали и при необходимости
+  может прогнать `montage-checker.jsx` вручную.
+
+**Обоснование (анализ ep2 v1.0.61):** Validator R2 длился ~7 мин и нашёл
+2 ошибки которые уже не правились (MAX_ROUNDS исчерпан) — пустая трата
+времени. ep4 v1.0.61 принят с одного раунда — R2 там не запускался.
+Делаем это поведение по умолчанию.
+
+**Blacklist макро-мимики (v1.0.62)** — расширен в трёх местах
+[agents/montage_prompts.py](agents/montage_prompts.py):
+- `COMMON_RULES` секция «МИМИКА — ТОЛЬКО МИКРОМИМИКА» (для Scriptwriter/Editor).
+- `STRUCTURAL_RULES` секция «ЗАПРЕЩЁННЫЕ ФОРМУЛИРОВКИ» (для Validator/Reviewer).
+- `VALIDATOR_SYSTEM` пункт 9 — добавлено КАТЕГОРИЯЛЬНОЕ ПРАВИЛО про любые
+  синонимы и производные эмоциональных ярлыков.
+- `SCRIPTWRITER_SYSTEM` — отдельный абзац «СТРОГОЕ ПРАВИЛО — НИКАКИХ
+  ЭМОЦИОНАЛЬНЫХ ЯРЛЫКОВ» сразу после `{COMMON_RULES}`.
+
+Причина: на ep2 v1.0.61 Scriptwriter написал «Face contorted as if in
+panic» и «Eyes wide and darting» — формально слов 'panic' и 'eyes wide'
+не было в списке из 5 запретов, поэтому Scriptwriter их не считал
+нарушением. Расширенный список + категориальное правило закрывают
+лексический gap.
 
 ## Per-agent model routing
 
