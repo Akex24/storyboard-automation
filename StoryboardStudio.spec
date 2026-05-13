@@ -21,6 +21,15 @@ a = Analysis(
         # На Mac разместится в Contents/Resources/, на Win onedir — в
         # _internal/. sys._MEIPASS указывает на корень в обоих случаях.
         ('pipeline.py', '.'),
+        # 2026-05-13 (v1.0.66): ГЛАВНАЯ_ИНСТРУКЦИЯ.md — источник правды
+        # для Scriptwriter/Validator/Editor/ContextReviewer. Загружается
+        # в runtime через agents/instruction_loader.py с селективным
+        # извлечением разделов по агенту (SW=[1,3,4,6,8] и т.д.).
+        # Хорошо отделить от pipeline.py — отдельный концепт «бандлим
+        # промпт-инструкции» (на будущее сюда добавим nano_banana /
+        # seedance инструкции). На Mac: Contents/Resources/instructions/;
+        # на Win onedir: _internal/instructions/.
+        ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md', 'instructions'),
     ],
     hiddenimports=[
         'PIL._tkinter_finder',

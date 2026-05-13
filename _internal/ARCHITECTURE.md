@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-13 (v1.0.65 — proxy settings + connection test)
+**Последнее обновление:** 2026-05-13 (v1.0.66 — ГЛАВНАЯ_ИНСТРУКЦИЯ.md в bundle + lazy load по разделам)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -423,6 +423,110 @@ Sonnet даёт заметно хуже качество. Карту и PromptWr
 ### Default model = `claude-opus-4-7` — [views/episode_chat.py:297](views/episode_chat.py:297)
 Сохранённое в `QSettings` по ключу `"new_ep/model_v2"`. Если ключа нет
 у юзера — загружается Opus 4.7 как fallback.
+
+## Bundled instructions (v1.0.66)
+
+Studio загружает `instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md` из bundle в runtime
+как источник правды для system prompt'ов агентов монтажной карты
+(Scriptwriter / Validator / Editor / Context Reviewer). Это синхронизирует
+Studio с Алексовым claude.ai-флоу — продакшен-методология LUMZ.AI лежит
+в одном .md файле, никакой ручной компиляции hard-coded prompts.
+
+**Зачем:** до v1.0.66 каждый агент получал hard-coded SCRIPTWRITER_SYSTEM
+(и т.д.) в `agents/montage_prompts.py`. Эти prompts были компиляцией
+правил «вручную», и со временем расходились с ГЛАВНАЯ_ИНСТРУКЦИЯ.md.
+Симптом — на ep2 «Финальный расчёт» Scriptwriter выкидывал
+драматические триггеры (стройка Дэвида: каска, ярость, разлетевшиеся
+карандаши) при сжатии 30 сцен в 5-6 блоков, потому что в hard-coded
+prompts не было: АЛГОРИТМА РАЗБИВКИ по 4 шагам, ПРАВИЛ 1-4 про реплики,
+ИЕРАРХИИ СЖАТИЯ (что жертвовать первым).
+
+**Bundle:** [StoryboardStudio.spec:24](StoryboardStudio.spec:24) добавлено
+`('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md', 'instructions')` в `datas`.
+На Mac .app разместится в `Contents/Resources/instructions/`, на Win
+onedir — `_internal/instructions/`. `sys._MEIPASS` указывает на корень.
+
+**Чтение:** [storyboard_app.py:1568](storyboard_app.py:1568)
+`read_bundled_text(rel_path, default="") -> str` — универсальный
+read-only текст-helper. Cross-platform через `sys._MEIPASS` (frozen) или
+`Path(__file__).parent` (dev). Silent fallback на `default` при ошибке.
+Без кэша — кэширование делает caller.
+
+**Селективная загрузка:** [agents/instruction_loader.py](agents/instruction_loader.py).
+- `load_instruction_md(filename)` — полный текст файла.
+- `extract_md_sections(text, sections)` — pure parser, выбирает разделы
+  верхнего уровня (`## N. ...`) по списку номеров, склеивает с
+  подразделами `### ...`.
+- `load_sections(sections, filename)` — combo + module-level кэш.
+- Lazy import `storyboard_app.read_bundled_text` через
+  `sys.modules['__main__']` (тот же паттерн что в
+  [views/_chat_render.py:_to_slug](views/_chat_render.py:159) для
+  `transliterate_for_filename`) — избегает circular import.
+- Empty results НЕ кэшируются (фикс v1.0.66 на циклический import при
+  ранней загрузке storyboard_app — read_bundled_text ещё недоступна,
+  reader падает в lambda fallback; не кэшируя "" даём следующей
+  попытке шанс прочитать корректно).
+
+**Карта разделов на агента:**
+
+| Агент | Разделы | Что | Почему |
+|---|---|---|---|
+| Scriptwriter | [1, 3, 4, 6, 8] | роль + ДНК + тайминг + карта + теги | пишет карту с нуля, всё нужно |
+| Validator | [4, 6, 8] | формула + лимиты + теги | проверяет по чек-листу |
+| Editor | [3, 4, 6, 8] | ДНК + формула + лимиты + теги | правит карту с учётом ИЕРАРХИИ СЖАТИЯ |
+| Context Reviewer | [1, 3] | роль + ДНК | сверяет с Bible + характерами |
+
+**Что НЕ передаётся:** разделы 2 (правила общения — для claude.ai чата,
+не для агентов), 5 (рефы среды — отдельный pipeline), 7 (режиссура
+камеры — для PromptWriter), 9-12 (выдача промптов, чеклист, передаточный
+пакет — не для Scriptwriter).
+
+**Lazy build через PEP 562 `__getattr__`:** [agents/montage_prompts.py](agents/montage_prompts.py)
+определяет `__getattr__(name)` который при первом обращении к
+`SCRIPTWRITER_SYSTEM` / `VALIDATOR_SYSTEM` / `EDITOR_SYSTEM` /
+`CONTEXT_REVIEWER_SYSTEM` строит финальный prompt:
+
+```
+SCRIPTWRITER_SYSTEM = _SCRIPTWRITER_ROLE
+                    + load_sections([1,3,4,6,8])  ← из .md
+                    + _SCRIPTWRITER_JSON_TAIL     ← Studio-specific
+                                                    (JSON schema, geometry,
+                                                    override про игнор
+                                                    plain-text формата)
+```
+
+Lazy нужен потому что `threads/montage_orchestrator.py:32` импортирует
+`SCRIPTWRITER_SYSTEM` напрямую — это force-resolve через `__getattr__`.
+Если бы build был module-level (eager) — он бы выполнялся во время
+загрузки `storyboard_app`, когда `read_bundled_text` ещё не определена
+(она на line 1568, а `from threads import ...` на line ~30). С lazy —
+build откладывается до первого ОБРАЩЕНИЯ к публичному имени из
+`MontageOrchestratorThread.run()`, что происходит уже после старта
+`app.exec()` — все модули загружены, `read_bundled_text` доступна.
+
+**JSON_TAIL override:** разделы из ГЛАВНАЯ_ИНСТРУКЦИЯ.md описывают
+plain-text формат карты (`===МОНТАЖНАЯ_КАРТА_НАЧАЛО===` + сцены).
+Studio использует JSON. `_*_JSON_TAIL` константы содержат явный override:
+«формат вывода — JSON по схеме ниже, игнорируй plain-text формат из
+раздела 6 ГЛАВНАЯ_ИНСТРУКЦИЯ». Это сохраняет ГЛАВНАЯ_ИНСТРУКЦИЯ.md
+валидной и для claude.ai-флоу Алекса, и для Studio.
+
+**Fallback:** при ошибке чтения / отсутствии файла в bundle (старый
+Installer без `instructions/`) → используется `_FALLBACK_*` константа
+(прежний hard-coded текст). Это переходный страховочный механизм для
+v1.0.66, удалится в v1.0.67+ после полного rollout.
+
+**Размеры финальных prompts (v1.0.66 real):**
+
+| Агент | Final size | Содержит |
+|---|---|---|
+| Scriptwriter | ~13 400 ch | role + 5 разделов .md + JSON_TAIL с ПРИОРИТЕТАМИ |
+| Validator | ~11 800 ch | role + 3 раздела + 14 пунктов проверки |
+| Editor | ~11 500 ch | role + 4 раздела + правила правок |
+| Context Reviewer | ~6 500 ch | role + 2 раздела + 4 проверки |
+
+Эти размеры в пределах текущих hard-coded (для Scriptwriter было ~14.7K).
+Никаких токен-всплесков — селективная загрузка отрезает лишнее.
 
 ## Proxy settings (v1.0.65)
 

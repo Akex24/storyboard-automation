@@ -1565,6 +1565,49 @@ def sync_pipeline_py_to_project(project_root: Path) -> None:
         traceback.print_exc()
 
 
+def read_bundled_text(rel_path: str, default: str = "") -> str:
+    """Читает текст из bundle (frozen) или project root (dev).
+
+    Универсальный read-only паттерн для bundled data files (instructions,
+    template-промпты, конфиги). Cross-platform — на Mac берёт из
+    `Contents/Resources/<rel_path>`, на Win onedir — из
+    `_internal/<rel_path>`. В обоих случаях `sys._MEIPASS` указывает на
+    корень bundle. В dev-режиме (запуск .py из исходников) — из папки
+    рядом с `storyboard_app.py` (project_root).
+
+    Args:
+        rel_path: путь относительно корня bundle / project root.
+                  Например: "instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md".
+        default:  что вернуть если файл не найден / ошибка чтения.
+                  По умолчанию — пустая строка (вызывающая сторона
+                  должна делать fallback на свою hard-coded версию).
+
+    Returns:
+        Содержимое файла в utf-8 или `default` при ошибке.
+
+    История: v1.0.66 — добавлено для загрузки ГЛАВНАЯ_ИНСТРУКЦИЯ.md в
+    agents/montage_prompts.py. Паттерн уже используется в проекте:
+    `sync_pipeline_py_to_project` (выше) делает copy-on-startup,
+    `get_icon` ([storyboard_app.py:760+]) — in-memory access для SVG.
+    Эта функция — обобщённый in-memory text reader. Без кэша — кэширование
+    отдаётся вызывающей стороне (agents/instruction_loader.py).
+    """
+    try:
+        if getattr(sys, 'frozen', False):
+            # PyInstaller bundle: на Mac .app/Contents/Resources,
+            # на Win onedir — _internal/. sys._MEIPASS = корень.
+            bundle_root = Path(getattr(sys, '_MEIPASS', ''))
+        else:
+            # Dev-режим: файлы лежат рядом с storyboard_app.py.
+            bundle_root = Path(__file__).resolve().parent
+        target = bundle_root / rel_path
+        if not target.exists() or not target.is_file():
+            return default
+        return target.read_text(encoding='utf-8', errors='replace')
+    except Exception:
+        return default
+
+
 def no_console_kwargs() -> dict:
     """Возвращает kwargs для subprocess.run/Popen чтобы НЕ показывать
     чёрное окно cmd на Windows. На Mac/Linux возвращает пустой dict —
