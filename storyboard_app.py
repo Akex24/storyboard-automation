@@ -109,6 +109,7 @@ from PyQt6.QtWidgets import (
     QStatusBar, QFileDialog, QMessageBox, QProgressBar, QDialog,
     QDialogButtonBox, QTabWidget, QComboBox, QPlainTextEdit, QTextEdit, QMenu,
     QStackedWidget, QGridLayout, QGraphicsOpacityEffect, QLineEdit, QSizePolicy,
+    QCheckBox,
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QFileSystemWatcher, QTimer, QSize, QSettings,
@@ -5840,6 +5841,16 @@ class MainWindow(QMainWindow):
                     self.apikey_show_btn.setText(tr('apikey_show'))
             except Exception:
                 traceback.print_exc()
+        # v1.0.61: секция «🎬 МОНТАЖНАЯ КАРТА» (видна всем, не админ-only).
+        if hasattr(self, 'sec_montage_lbl'):
+            try:
+                self.sec_montage_lbl.setText(tr('sec_montage'))
+                self.context_reviewer_chk.setText(
+                    tr('settings_context_reviewer_label'))
+                self.context_reviewer_hint_lbl.setText(
+                    tr('settings_context_reviewer_hint'))
+            except Exception:
+                traceback.print_exc()
         # Админ-разделитель + секция «АНИМАЦИИ» (только если админ)
         if hasattr(self, 'sec_admin_div_lbl'):
             try:
@@ -6380,6 +6391,42 @@ class MainWindow(QMainWindow):
         akf.addWidget(self.apikey_status_lbl)
 
         lay.addWidget(apikey_frame)
+
+        # ── 🎬 МОНТАЖНАЯ КАРТА — настройки оркестратора монтажки ───────────
+        # 2026-05-13 (v1.0.61): toggle «Использовать Context Reviewer».
+        # Context Reviewer (4-й агент монтажного оркестратора) делает
+        # Bible-сверку финальной карты. На практике редко находит проблемы
+        # (concerns=0 на тестовых эпизодах) и съедает ~2 мин на эпизод.
+        # Default OFF — для скорости. Юзер включает для сложных эпизодов.
+        self.sec_montage_lbl = QLabel(tr('sec_montage'))
+        self.sec_montage_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_montage_lbl)
+
+        montage_frame = QFrame()
+        montage_frame.setObjectName("settings-group")
+        mf = QVBoxLayout(montage_frame)
+        mf.setSpacing(8)
+        mf.setContentsMargins(20, 18, 20, 18)
+
+        self.context_reviewer_chk = QCheckBox(
+            tr('settings_context_reviewer_label'))
+        self.context_reviewer_chk.setChecked(
+            QSettings(APP_ORG, APP_NAME).value(
+                "montage/context_reviewer_enabled", False, type=bool))
+        self.context_reviewer_chk.toggled.connect(
+            lambda checked: QSettings(APP_ORG, APP_NAME).setValue(
+                "montage/context_reviewer_enabled", bool(checked)))
+        mf.addWidget(self.context_reviewer_chk)
+
+        self.context_reviewer_hint_lbl = QLabel(
+            tr('settings_context_reviewer_hint'))
+        self.context_reviewer_hint_lbl.setObjectName("settings-hint")
+        self.context_reviewer_hint_lbl.setStyleSheet(
+            "color: rgba(255,255,255,0.55); font-size: 11px;")
+        self.context_reviewer_hint_lbl.setWordWrap(True)
+        mf.addWidget(self.context_reviewer_hint_lbl)
+
+        lay.addWidget(montage_frame)
 
         # ── АДМИН-СЕКЦИИ: видны только админу (`_is_admin`) ─────────────────
         # Большая визуальная разделительная плашка чтобы юзер сразу понимал

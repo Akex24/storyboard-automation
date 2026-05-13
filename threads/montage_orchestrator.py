@@ -58,7 +58,13 @@ class MontageOrchestratorThread(QThread):
     # ошибка, не удалось получить даже первой версии
     failed = pyqtSignal(str)
 
-    MAX_ROUNDS = 3
+    # 2026-05-13 (v1.0.61): MAX_ROUNDS снижен с 3 до 2.
+    # Анализ логов: ep1/ep2 не сошлись за 3 раунда и Context Reviewer
+    # вообще не запустился; ep3/ep4 сошлись за 2 раунда. Третий раунд —
+    # запасной случай при глюке Sonnet (редкий). Экономия 3-4 мин на
+    # затяжных эпизодах. При accept-with-warning поведение не меняется —
+    # карта с errors попадает в финал с пометкой в _agent_log.
+    MAX_ROUNDS = 2
     SUBPROCESS_TIMEOUT_SEC = 600  # 10 минут на каждый вызов CLI
 
     # 2026-05-09: per-agent model routing. Юзер не выбирает модели для
@@ -88,9 +94,18 @@ class MontageOrchestratorThread(QThread):
                  refs_summary: dict,
                  show_context: Optional[dict] = None,
                  log_path: Optional[Path] = None,
+                 use_context_reviewer: bool = False,
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
+        # 2026-05-13 (v1.0.61): Context Reviewer теперь опциональный.
+        # Caller (EpisodeChatView._on_montage_start) читает QSettings
+        # ключ "montage/context_reviewer_enabled" и передаёт сюда.
+        # Default False — Reviewer пропускается, экономим ~2 мин на эпизод.
+        # Анализ логов показал что concerns на 4 тестовых эпизодах = 0
+        # (Reviewer запускался 2 раза, оба раза clean). Юзер может
+        # включить toggle в Settings для сложных эпизодов.
+        self._use_context_reviewer = bool(use_context_reviewer)
         self._scenario = scenario_text
         self._refs = refs_summary
         # 2026-05-06: контекст всего сериала (Bible + краткие описания
@@ -151,6 +166,13 @@ class MontageOrchestratorThread(QThread):
                                      "errors_count": len(checker_report.get("errors", []))})
 
                 if checker_report.get("ok"):
+                    # 2026-05-13 (v1.0.61): Context Reviewer опциональный.
+                    # Если toggle в Settings выключен → пропускаем стадию,
+                    # карта считается финальной после Validator.ok=True.
+                    # Экономит ~2 мин на эпизод. Юзер включает для
+                    # сложных эпизодов где нужна Bible-сверка.
+                    if not self._use_context_reviewer:
+                        break  # карта чистая, финализируем без Reviewer
                     # 4) Context Reviewer — финальный супер-редактор.
                     #    Проверяет соответствие Bible'и и другим эпизодам.
                     #    Если есть concerns — даём ещё один раунд Редактора

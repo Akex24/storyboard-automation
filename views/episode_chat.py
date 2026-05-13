@@ -3188,6 +3188,13 @@ class EpisodeChatView(QWidget):
         # целостности.
         show_context = self._load_show_context()
 
+        # v1.0.61: Context Reviewer стал опциональным (default OFF).
+        # Читаем toggle из QSettings («Использовать Context Reviewer»
+        # в секции «🎬 Монтажная карта» Settings) и передаём в orchestrator.
+        # Если OFF — стадия Reviewer'а пропускается, экономия ~2 мин.
+        use_reviewer = QSettings(_sa.APP_ORG, _sa.APP_NAME).value(
+            "montage/context_reviewer_enabled", False, type=bool)
+
         from threads.montage_orchestrator import MontageOrchestratorThread
         t = MontageOrchestratorThread(
             claude_cli_path=cli,
@@ -3195,6 +3202,7 @@ class EpisodeChatView(QWidget):
             refs_summary=refs_summary,
             show_context=show_context,
             log_path=log_path,
+            use_context_reviewer=use_reviewer,
             parent=self,
         )
         t.progress.connect(self._on_montage_progress)
