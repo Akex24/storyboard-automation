@@ -84,7 +84,15 @@ class MontageSummaryDialog(QDialog):
 
         # Таблица блоков
         blocks = montage_card.get('blocks', []) or []
-        total_seconds = montage_card.get('total_seconds', 0)
+        # v1.0.78 (Bug 4): total_seconds считаем по фактическим
+        # duration_sec шотов финальной карты, а не из поля карты
+        # `total_seconds` — Editor мог изменить длительности шотов
+        # без обновления поля, отсюда расхождение «63с в заголовке vs
+        # 66с в сумме блоков».
+        total_seconds = sum(
+            sum(s.get('duration_sec', 0) for s in (b.get('shots', []) or []))
+            for b in blocks
+        )
         total_shots = sum(len(b.get('shots', []) or []) for b in blocks)
 
         table = QTableWidget(len(blocks) + 1, 3, self)
@@ -434,14 +442,25 @@ class MontageSummaryDialog(QDialog):
     # ──────────────────────────────────────────────────────────────────
     # Display-имена стадий (юзер просил не переводить — это технические
     # имена агентов).
+    # v1.0.78 (Bug 3): расширено до 8 стадий — Geometry Editor (v1.0.75),
+    # Validator R2 (v1.0.76), Editor R2 + Validator R3 (v1.0.77). Раньше
+    # эти stages писались в timing.per_stage но цикл их пропускал — сумма
+    # ИТОГО (по total_sec) расходилась с видимыми строками.
     _STAGE_DISPLAY = {
         'scriptwriter':     'Scriptwriter',
-        'validator':        'Validator',
-        'editor':           'Editor',
+        'validator':        'Validator R1',
+        'geometry_editor':  'Geometry Editor',
+        'editor':           'Editor R1',
+        'validator_r2':     'Validator R2',
+        'editor_r2':        'Editor R2',
+        'validator_r3':     'Validator R3',
         'context_reviewer': 'Context Reviewer',
     }
     # Порядок отрисовки — в каком пайплайн запускает стадии.
-    _STAGE_ORDER = ('scriptwriter', 'validator', 'editor', 'context_reviewer')
+    _STAGE_ORDER = (
+        'scriptwriter', 'validator', 'geometry_editor', 'editor',
+        'validator_r2', 'editor_r2', 'validator_r3', 'context_reviewer',
+    )
 
     @staticmethod
     def _pretty_model(model_id: str) -> str:

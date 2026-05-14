@@ -600,10 +600,27 @@ class EpisodeChatView(QWidget):
                     self._montage_cta.show_running('montage_status_scriptwriter')
                 elif stage == 'validator_running':
                     self._montage_cta.show_running('montage_status_validator')
+                elif stage == 'geometry_editor_running':
+                    # v1.0.78 (Bug 5): новая стадия из v1.0.75
+                    self._montage_cta.show_running(
+                        'montage_status_geometry_editor')
                 elif stage == 'editor_running':
                     self._montage_cta.show_running(
                         'montage_status_editor',
                         errors_count=info.get('errors_count', 0))
+                elif stage == 'validator_r2_running':
+                    # v1.0.78 (Bug 5): новая стадия из v1.0.76
+                    self._montage_cta.show_running(
+                        'montage_status_validator_r2')
+                elif stage == 'editor_r2_running':
+                    # v1.0.78 (Bug 5): новая стадия из v1.0.77
+                    self._montage_cta.show_running(
+                        'montage_status_editor_r2',
+                        errors_count=info.get('errors_count', 0))
+                elif stage == 'validator_r3_running':
+                    # v1.0.78 (Bug 5): новая стадия из v1.0.77
+                    self._montage_cta.show_running(
+                        'montage_status_validator_r3')
                 elif stage == 'validator_done':
                     if info.get('ok'):
                         self._montage_cta.show_running(
@@ -3257,10 +3274,27 @@ class EpisodeChatView(QWidget):
                 self._montage_cta.show_running('montage_status_scriptwriter')
             elif stage == 'validator_running':
                 self._montage_cta.show_running('montage_status_validator')
+            elif stage == 'geometry_editor_running':
+                # v1.0.78 (Bug 5): новая стадия из v1.0.75
+                self._montage_cta.show_running(
+                    'montage_status_geometry_editor')
             elif stage == 'editor_running':
                 self._montage_cta.show_running(
                     'montage_status_editor',
                     errors_count=info.get('errors_count', 0))
+            elif stage == 'validator_r2_running':
+                # v1.0.78 (Bug 5): новая стадия из v1.0.76
+                self._montage_cta.show_running(
+                    'montage_status_validator_r2')
+            elif stage == 'editor_r2_running':
+                # v1.0.78 (Bug 5): новая стадия из v1.0.77
+                self._montage_cta.show_running(
+                    'montage_status_editor_r2',
+                    errors_count=info.get('errors_count', 0))
+            elif stage == 'validator_r3_running':
+                # v1.0.78 (Bug 5): новая стадия из v1.0.77
+                self._montage_cta.show_running(
+                    'montage_status_validator_r3')
             elif stage == 'validator_done':
                 if info.get('ok'):
                     self._montage_cta.show_running(

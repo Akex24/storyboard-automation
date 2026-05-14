@@ -128,12 +128,17 @@ class MontageCTA(QFrame):
 
         Args:
             status_key: ключ перевода (montage_status_*)
-            **fmt: подстановки в текст (например round=2, max_rounds=3)
+            **fmt: подстановки в текст (например round=2, max_rounds=3,
+                   errors_count=5)
+
+        v1.0.78 (Bug 1 fix): передаём **fmt в tr(...) чтобы сработал
+        auto-inject `errors_word` через `plural_errors()` когда в
+        kwargs есть `errors_count`. Раньше был `tr(status_key)` без
+        kwargs + manual `.replace('{errors_count}', ...)` — `errors_word`
+        оставался в UI как литерал «{errors_word}».
         """
         self._kind = KIND_RUNNING
-        text = tr(status_key)
-        for k, v in fmt.items():
-            text = text.replace('{' + k + '}', str(v))
+        text = tr(status_key, **fmt)
         self._status_text = text
         self._dot_step = 0
         self._render()

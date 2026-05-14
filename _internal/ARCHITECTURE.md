@@ -684,6 +684,23 @@ Editor R2 запускается **только** при:
 - `checker_report.errors > 0`
 - (Editor R1 успешно — следует из validator_r2_ok)
 
+**v1.0.78 (2026-05-14) — UI косметика после v1.0.75-v1.0.77 (5 багов):**
+
+1. **`{errors_word}` плейсхолдер** не подставлялся в progress-bar: [widgets/montage_cta.py:126](widgets/montage_cta.py:126) `show_running` вызывал `tr(status_key)` без kwargs, потом manual replace только `{errors_count}`. Auto-inject `errors_word` через `plural_errors()` в [i18n.py:1571-1573](i18n.py:1571) не срабатывал. Fix: `text = tr(status_key, **fmt)`.
+
+2. **Устаревший текст «Финальная проверка пропущена для скорости»** в `montage_status_round_done_errors` (i18n.py × 3 языка) — текст из v1.0.62, после v1.0.76+v1.0.77 Validator R2/R3 всегда запускаются. Укорочено до «⚠ Чекер: {errors_count} {errors_word}».
+
+3. **`_STAGE_DISPLAY` + `_STAGE_ORDER`** в [widgets/montage_summary_dialog.py:437](widgets/montage_summary_dialog.py:437) расширены с 4 до 8 стадий (scriptwriter, validator R1, geometry_editor, editor R1, validator_r2, editor_r2, validator_r3, context_reviewer). До v1.0.78 таблица «ТАЙМИНГ ГЕНЕРАЦИИ» пропускала Geometry Editor / Validator R2/R3 / Editor R2 — расхождение ИТОГО vs сумма видимых строк.
+
+4. **Пересчёт `total_seconds`** в [widgets/montage_summary_dialog.py:87](widgets/montage_summary_dialog.py:87) — раньше брали `montage_card.get('total_seconds')` от Scriptwriter, Editor правил длительности шотов но поле не пересчитывал. Теперь `total_seconds = sum(sum(s.duration_sec for s in shots) for b in blocks)` — игнорируем поле, считаем по факту. Расхождение «63с заголовок vs 66с блоки» закрыто.
+
+5. **Прогресс-handler для 4 новых stages** добавлен в `_on_montage_progress` ([views/episode_chat.py:599 + 3256](views/episode_chat.py:599)) для обоих call-sites + 4 i18n ключа × 3 языка:
+- `montage_status_geometry_editor` (для v1.0.75)
+- `montage_status_validator_r2` (для v1.0.76)
+- `montage_status_editor_r2` (для v1.0.77)
+- `montage_status_validator_r3` (для v1.0.77)
+До v1.0.78 эти stages фолбэчили на «Сценарист пишет монтажную карту» (лживый UI).
+
 **v1.0.76 split logic в `run()` для Validator R2:**
 ```python
 editor_ran = False
