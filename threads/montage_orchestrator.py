@@ -39,6 +39,8 @@ from agents.montage_prompts import (
     build_editor_user_prompt,
     build_context_reviewer_user_prompt,
     get_validator_system,
+    get_geometry_editor_system,
+    build_geometry_editor_user_prompt,
 )
 from agents.validator_prefilter import prefilter_check
 
@@ -102,6 +104,11 @@ class MontageOrchestratorThread(QThread):
     MODEL_VALIDATOR        = "claude-haiku-4-5"
     MODEL_EDITOR           = "claude-sonnet-4-6"
     MODEL_CONTEXT_REVIEWER = "claude-sonnet-4-6"
+    # v1.0.75: Geometry Editor — узкий сабагент для shot.geometry.
+    # Простая структурная правка → Haiku 4.5 хватает; разгружает
+    # главный Editor от missing_geometry-ошибок (на ep2 v1.0.74 их
+    # было 3 из 8 — половина reasoning-нагрузки на Sonnet).
+    MODEL_GEOMETRY_EDITOR  = "claude-haiku-4-5"
 
     def __init__(self, claude_cli_path: str,
                  scenario_text: str,
@@ -183,13 +190,55 @@ class MontageOrchestratorThread(QThread):
                                 {"ok": checker_report.get("ok", False),
                                  "errors_count": errors_count})
 
-            # 3) Editor — только если Validator нашёл ошибки
-            if not checker_report.get("ok") and errors_count > 0:
+            # v1.0.75: 2.5) Geometry Editor — Haiku-сабагент для
+            # `missing_geometry` ошибок. Отделяем их от остальных,
+            # обрабатываем структурной правкой (добавление shot.geometry).
+            # Основной Editor (Sonnet) дальше получает ТОЛЬКО оставшиеся
+            # ошибки — меньше reasoning-нагрузка.
+            # Если Geometry Editor упал (TimeoutExpired / exception) —
+            # missing_geometry-ошибки передаются обратно Editor'у как
+            # fallback (Q1=B по плану v1.0.75).
+            all_errors = list(checker_report.get("errors", []) or [])
+            geometry_errors = [
+                e for e in all_errors
+                if (e.get("code") or "").endswith("_missing_geometry")
+            ]
+            other_errors = [
+                e for e in all_errors
+                if not (e.get("code") or "").endswith("_missing_geometry")
+            ]
+            editor_input_errors = list(all_errors)  # fallback default
+
+            if geometry_errors:
+                self.progress.emit("geometry_editor_running",
+                                    {"errors_count": len(geometry_errors)})
+                try:
+                    montage_card = self._call_geometry_editor(
+                        montage_card, geometry_errors)
+                    # Успех — Editor получит только other_errors
+                    editor_input_errors = list(other_errors)
+                except Exception as e:
+                    self._agent_log.append({
+                        "stage": "geometry_editor",
+                        "error": str(e),
+                    })
+                    # Fallback (Q1=B): Editor получит ВСЕ ошибки, попробует
+                    # сам исправить и missing_geometry. Карта остаётся
+                    # такой, какой её отдал Scriptwriter (Geometry Editor
+                    # не успел применить правки). UI покажет «⚠ Geometry
+                    # Editor УПАЛ» через _build_agent_summary.
+
+                if self._stop:
+                    self.failed.emit("cancelled")
+                    return
+
+            # 3) Editor — только если есть оставшиеся ошибки
+            if not checker_report.get("ok") and len(editor_input_errors) > 0:
                 self.progress.emit("editor_running",
-                                    {"errors_count": errors_count})
+                                    {"errors_count": len(editor_input_errors)})
                 try:
                     montage_card = self._call_editor(
-                        montage_card, checker_report.get("errors", []))
+                        montage_card, editor_input_errors)
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "editor",
@@ -355,6 +404,42 @@ class MontageOrchestratorThread(QThread):
         })
         return new_card
 
+    def _call_geometry_editor(self, montage_card: dict,
+                                geometry_errors: list) -> dict:
+        """v1.0.75: Geometry Editor — Haiku-сабагент. Узкая задача:
+        добавить поле `geometry` к шотам, на которые Validator выдал
+        ошибку `block_N_shot_M_missing_geometry`.
+
+        Args:
+            montage_card:    текущая карта (после Scriptwriter, или
+                             уже после предыдущих стадий).
+            geometry_errors: подмножество errors[] Validator'а с кодами
+                             вида '*_missing_geometry'.
+        Returns:
+            Новая карта (тот же dict-формат) с добавленными geometry.
+        """
+        card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
+        user = build_geometry_editor_user_prompt(card_json, geometry_errors)
+        system = get_geometry_editor_system()
+        t0 = time.time()
+        raw = self._run_claude(system, user,
+                                model=self.MODEL_GEOMETRY_EDITOR)
+        duration_sec = round(time.time() - t0, 2)
+        new_card = self._parse_json(raw)
+        self._agent_log.append({
+            "stage": "geometry_editor",
+            "model_used": self.MODEL_GEOMETRY_EDITOR,
+            "started_at": t0,
+            "duration_sec": duration_sec,
+            "user_prompt_chars": len(user),
+            "raw_response_chars": len(raw),
+            "parsed_ok": True,
+            "errors_in": len(geometry_errors),
+            "geometry_editor_system_chars": len(system),
+            "result": new_card,
+        })
+        return new_card
+
     def _call_context_reviewer(self, montage_card: dict) -> dict:
         """Финальный супер-редактор. Проверяет соответствие карты
         Bible'и сериала и другим эпизодам. Возвращает dict с полями
@@ -455,6 +540,7 @@ class MontageOrchestratorThread(QThread):
         summary = {
             "scriptwriter": {"ran": False},
             "validator": {"runs": 0, "rounds_passed": []},
+            "geometry_editor": {"ran": False},
             "editor": {"runs": 0, "rounds": []},
             "context_reviewer": {"ran": False},
             "rounds_used": rounds_used,
@@ -510,6 +596,24 @@ class MontageOrchestratorThread(QThread):
                             for e in (res.get('errors', []) or [])
                         ][:6],
                     })
+            elif stage == 'geometry_editor':
+                res = s.get('result', {}) or {}
+                error_msg = s.get('error')
+                if error_msg and not res:
+                    # v1.0.75: honest UI на exception (та же паттерн что
+                    # v1.0.71/v1.0.74 для других стадий).
+                    summary['geometry_editor'] = {
+                        'ran': True,
+                        'errors_in': 0,
+                        'failed': True,
+                        'error': str(error_msg),
+                    }
+                else:
+                    summary['geometry_editor'] = {
+                        'ran': True,
+                        'errors_in': s.get('errors_in', 0),
+                        'failed': False,
+                    }
             elif stage == 'editor':
                 res = s.get('result', {}) or {}
                 error_msg = s.get('error')

@@ -614,16 +614,57 @@ Studio НЕ перехватывается уже-созданными `requests
 ## Монтажная карта — пайплайн агентов (v1.0.62+v1.0.63)
 
 С **v1.0.62 (2026-05-13)** оркестратор [threads/montage_orchestrator.py](threads/montage_orchestrator.py)
-работает ЛИНЕЙНО без раундов:
+работает ЛИНЕЙНО без раундов. С **v1.0.75 (2026-05-14)** добавлена
+стадия 2.5 — Geometry Editor:
 
 ```
 1. Scriptwriter (Opus 4.7)         — пишет монтажную карту с нуля
-2. Validator   (Sonnet 4.6)        — проверяет один раз
-3. Editor      (Sonnet 4.6)        — если Validator.errors > 0, применяет правки
+2. Validator   (Haiku 4.5)         — проверяет один раз  (v1.0.72)
+2.5. Geometry Editor (Haiku 4.5)   — ТОЛЬКО если есть missing_geometry-ошибки;
+                                     добавляет shot.geometry к указанным шотам.
+                                     Failed → fallback в Editor.  (v1.0.75)
+3. Editor      (Sonnet 4.6)        — если остались ошибки кроме geometry,
+                                     применяет правки
 4. Context Reviewer (Sonnet 4.6)   — ОПЦИОНАЛЬНО (toggle в Settings, default OFF)
    └─ если concerns > 0 → Editor ещё раз
 5. ФИНАЛ (без повторной проверки)
 ```
+
+**v1.0.75 split logic в `run()`:**
+```python
+geometry_errors = [e for e in errors if e['code'].endswith('_missing_geometry')]
+other_errors    = [e for e in errors if not ...]
+
+if geometry_errors:
+    try:
+        montage_card = _call_geometry_editor(montage_card, geometry_errors)
+        editor_input_errors = other_errors           # успех — Editor легче
+    except Exception:
+        log({'stage':'geometry_editor','error':...})
+        editor_input_errors = all_errors             # fallback Q1=B
+        # UI покажет «⚠ Geometry Editor УПАЛ»
+
+if other_errors / fallback_all:
+    _call_editor(montage_card, editor_input_errors)
+```
+
+**Обоснование (анализ ep2 v1.0.74):** Editor получил 8 ошибок (3×
+missing_geometry + 5 других), упёрся в timeout 600s. Каждая
+missing_geometry требует от Sonnet генерации ~300 ch строки ГЕОМЕТРИЯ
+из ничего — это не правка, а создание. Haiku 4.5 на такой структурной
+задаче в 4× быстрее Sonnet + достаточно качественен (composition не
+требует Bible / характеров — только координаты от scene_action).
+
+**Размер `get_geometry_editor_system()`:** ~3.4 KB (vs EDITOR_SYSTEM 12.9 KB,
+в 3.8× меньше). Состав:
+- `_GEOMETRY_EDITOR_ROLE` (~250 ch)
+- `load_subsection(6, "ПРОСТРАНСТВЕННАЯ ГЕОМЕТРИЯ СЦЕНЫ")` — текст
+  подсекции из ГИ напрямую (~1800 ch). НОВЫЙ механизм извлечения
+  подзаголовков `### ` внутри раздела `## N` — `extract_md_subsection`
+  + `load_subsection` в `instruction_loader.py`.
+- `_GEOMETRY_EDITOR_JSON_TAIL` (~1300 ch) — пошаговая инструкция
+  «найди шот по where → возьми characters + scene_action → сгенерируй
+  geometry → запиши в shot.geometry. НЕ меняй другие поля.»
 
 **Что изменилось:**
 - Константа `MAX_ROUNDS` УБРАНА (была =2 в v1.0.61, =3 ранее). Цикла больше нет.
@@ -866,10 +907,11 @@ UI юзер не знал, что валидация не прошла. Тепе
 
 В [threads/montage_orchestrator.py](threads/montage_orchestrator.py) каждая стадия монтажа имеет жёстко зашитую модель (юзерский дропдаун эти hardcode НЕ переопределяет — модель выбирается под задачу):
 
-| Стадия | Модель (v1.0.72) | Где | Почему |
+| Стадия | Модель (v1.0.75) | Где | Почему |
 |---|---|---|---|
 | Scriptwriter | claude-opus-4-7 | [montage_orchestrator.py:92](threads/montage_orchestrator.py:92) | творческая генерация карты с нуля, нужен Opus |
-| **Validator** | **claude-haiku-4-5** | [montage_orchestrator.py:93](threads/montage_orchestrator.py:93) | проверка по чек-листу после Python pre-filter — механики хватит Haiku, в 4× быстрее Sonnet |
+| Validator | claude-haiku-4-5 | [montage_orchestrator.py:93](threads/montage_orchestrator.py:93) | проверка по чек-листу после Python pre-filter — механики хватит Haiku, в 4× быстрее Sonnet (v1.0.72) |
+| **Geometry Editor** | **claude-haiku-4-5** | [montage_orchestrator.py:107](threads/montage_orchestrator.py:107) | узкая структурная правка — добавление `shot.geometry` к missing_geometry-ошибкам, Haiku справляется (v1.0.75) |
 | Editor | claude-sonnet-4-6 | [montage_orchestrator.py:94](threads/montage_orchestrator.py:94) | creative-правка реплик с учётом характера + иерархии сжатия |
 | Context Reviewer | claude-sonnet-4-6 | [montage_orchestrator.py:95](threads/montage_orchestrator.py:95) | сверка с Bible + продакшен-разделами 5/7/8/9/10/11/12 (v1.0.70) |
 

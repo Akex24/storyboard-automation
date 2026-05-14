@@ -244,6 +244,25 @@ class MontageSummaryDialog(QDialog):
                 lines.append(
                     f"🔍 Чекер — нашёл {errs} ошибок (после {v_runs} раунда)"
                 )
+        # v1.0.75: Geometry Editor (Haiku-сабагент для shot.geometry)
+        ge = s.get('geometry_editor', {}) or {}
+        if ge.get('ran'):
+            if ge.get('failed'):
+                err = (ge.get('error') or '').strip()
+                low = err.lower()
+                if 'timed out' in low or 'timeout' in low:
+                    reason = "превысил лимит времени (10 минут)"
+                else:
+                    reason = (err.split('\n', 1)[0] or 'unknown')[:120]
+                lines.append(
+                    f"⚠ Geometry Editor УПАЛ — {reason}. "
+                    f"Missing_geometry-ошибки переданы основному Editor'у."
+                )
+            else:
+                n = ge.get('errors_in', 0)
+                lines.append(
+                    f"📐 Geometry Editor — поправил {n} ошибок геометрии"
+                )
         # Редактор
         ed = s.get('editor', {}) or {}
         ed_runs = ed.get('runs', 0)

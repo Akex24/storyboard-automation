@@ -19,6 +19,9 @@ from agents.montage_prompts import (
     build_validator_user_prompt,
     build_editor_user_prompt,
     build_context_reviewer_user_prompt,
+    # v1.0.75: Geometry Editor — Haiku-сабагент для shot.geometry
+    get_geometry_editor_system,
+    build_geometry_editor_user_prompt,
 )
 from agents.storyboard_writer_prompts import (
     SYSTEM as STORYBOARD_WRITER_SYSTEM,
@@ -36,4 +39,6 @@ __all__ = [
     'build_editor_user_prompt',
     'build_context_reviewer_user_prompt',
     'build_storyboard_writer_user_prompt',
+    'get_geometry_editor_system',
+    'build_geometry_editor_user_prompt',
 ]

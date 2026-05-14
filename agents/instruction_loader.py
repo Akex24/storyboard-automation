@@ -169,3 +169,83 @@ def clear_cache() -> None:
     """Очистка кэша. Используется в тестах / dev hot-reload (в продакшене
     не вызывается — кэш живёт пока живёт процесс Studio)."""
     _CACHE.clear()
+
+
+# v1.0.75: regex для парсинга подзаголовков `### Текст` внутри раздела.
+_SUBSECTION_HEADER_RE = re.compile(r'^###\s+(.+?)\s*$', re.MULTILINE)
+
+
+def extract_md_subsection(text: str, section_num: int, anchor: str) -> str:
+    """Извлекает подсекцию `### <anchor>` из раздела N верхнего уровня.
+
+    Сначала находит раздел `## {section_num}. ...` и его границы (до
+    следующего `## ` или EOF). Внутри ищет `### <anchor>` (substring
+    match, regex-escape) и возвращает текст от этого `### ` до
+    следующего `### ` ИЛИ `## ` (исключительно), включая сам заголовок.
+
+    Args:
+        text:        полный текст ГЛАВНАЯ_ИНСТРУКЦИЯ.md.
+        section_num: номер раздела верхнего уровня (например 6).
+        anchor:      подстрока заголовка `###` для поиска (например
+                     "ПРОСТРАНСТВЕННАЯ ГЕОМЕТРИЯ СЦЕНЫ"). Поиск регистро-
+                     чувствительный, начало строки заголовка должно
+                     содержать эту подстроку.
+    Returns:
+        Текст подсекции (с её заголовком `### ...`) или "" если не
+        найдено.
+    """
+    if not text or not anchor:
+        return ""
+    section_matches = list(_SECTION_HEADER_RE.finditer(text))
+    sect_start = sect_end = None
+    for i, m in enumerate(section_matches):
+        try:
+            num = int(m.group(1))
+        except ValueError:
+            continue
+        if num == section_num:
+            sect_start = m.start()
+            sect_end = (section_matches[i + 1].start()
+                        if i + 1 < len(section_matches) else len(text))
+            break
+    if sect_start is None:
+        return ""
+    section_body = text[sect_start:sect_end]
+    sub_matches = list(_SUBSECTION_HEADER_RE.finditer(section_body))
+    for j, sm in enumerate(sub_matches):
+        title = sm.group(1)
+        if anchor in title:
+            sub_start = sm.start()
+            sub_end = (sub_matches[j + 1].start()
+                       if j + 1 < len(sub_matches) else len(section_body))
+            return section_body[sub_start:sub_end].rstrip()
+    return ""
+
+
+def load_subsection(
+    section_num: int,
+    anchor: str,
+    filename: str = DEFAULT_INSTRUCTION_FILE,
+) -> str:
+    """Combo: load_instruction_md + extract_md_subsection + cache.
+
+    Кэширует по ключу `(filename, 'sub', section_num, anchor)`. Empty
+    результат НЕ кэшируется (та же логика что у `load_sections` —
+    защита от циклического import на ранней стадии).
+
+    Args:
+        section_num: номер раздела верхнего уровня.
+        anchor:      подстрока заголовка `### ...` для поиска.
+        filename:    имя файла-инструкции (default ГЛАВНАЯ_ИНСТРУКЦИЯ.md).
+    Returns:
+        Текст подсекции или "" если не найдено / файл пуст.
+    """
+    key = (filename, 'sub', section_num, anchor)
+    if key in _CACHE:
+        return _CACHE[key]
+    full_text = load_instruction_md(filename)
+    extracted = extract_md_subsection(full_text, section_num, anchor)
+    if not extracted:
+        return ""
+    _CACHE[key] = extracted
+    return extracted

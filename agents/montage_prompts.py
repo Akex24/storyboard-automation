@@ -1516,6 +1516,104 @@ def get_validator_system(skip_rules: Optional[Set[str]] = None) -> str:
     return _strip_rules(base, skip_rules or set())
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# v1.0.75: Geometry Editor — узкий сабагент на Haiku 4.5.
+# Цель: разгрузить главный Editor (Sonnet) от ошибок missing_geometry —
+# структурная правка «добавь поле shot.geometry». На ep2 v1.0.74 Editor
+# упёрся в timeout 600s при 8 ошибках (включая 3× missing_geometry).
+# Минимальный system promp (~2.5 KB) — только подсекция ГЕОМЕТРИЯ из ГИ.
+# ─────────────────────────────────────────────────────────────────────────
+_GEOMETRY_EDITOR_ROLE = """\
+Ты — Geometry Editor. Узкая роль: получаешь монтажную карту (JSON) и
+список ошибок типа "block_N_shot_M_missing_geometry" от Чекера. Твоя
+задача — ТОЛЬКО добавить поле `geometry` к указанным шотам по
+правилам ПРОСТРАНСТВЕННОЙ ГЕОМЕТРИИ (см. ниже). Других правок НЕ
+делаешь.
+"""
+
+
+_GEOMETRY_EDITOR_JSON_TAIL = """\
+ЧТО ДЕЛАЕШЬ — ПОШАГОВО:
+
+1. Для каждой ошибки в errors[] разбери поле `where` (формат
+   "blocks[i].shots[j]") — это адрес шота где нужна geometry.
+
+2. Открой этот шот в карте. Прочитай:
+   • `block.characters` — список slugs персонажей в кадре
+   • `shot.scene_action` — действие в кадре (откуда тянуть позы)
+   • `shot.description_ru` — общее описание шота
+
+3. Сгенерируй строку `geometry` на русском (одна сплошная строка, не
+   многострочная). Формат:
+   "<Персонаж1> — <якорь+тело+часть кадра>. <Персонаж2> — ..."
+   Каждый персонаж: к чему привязан / куда повёрнут / где в кадре.
+
+4. Запиши строку в `shot.geometry` указанного шота.
+
+ОГРАНИЧЕНИЯ — ОБЯЗАТЕЛЬНО:
+- НЕ меняй другие поля шотов (description_ru, scene_action, dialog,
+  duration_sec — НЕ ТРОГАТЬ).
+- НЕ трогай другие шоты, НЕ указанные в errors[].
+- НЕ добавляй и НЕ удаляй блоки или шоты — структура карты та же.
+- НЕ меняй total_seconds, language.
+- НЕ исправляй другие типы ошибок (timing, forbidden_phrase,
+  too_many_blocks) — оставь их для главного Editor'а.
+
+ФОРМАТ ВЫВОДА — ЗАМЕНА ВСЕЙ КАРТЫ. Возвращай тот же JSON-формат что
+Сценарист (поля `blocks`, `total_seconds`, `language`). Все шоты,
+поля и блоки сохрани as is — изменена должна быть только geometry
+в указанных в errors[] шотах. Без markdown, голый JSON, начинай с `{`.
+"""
+
+
+def get_geometry_editor_system() -> str:
+    """Собирает system prompt для Geometry Editor'а из ROLE + подсекции
+    «ПРОСТРАНСТВЕННАЯ ГЕОМЕТРИЯ СЦЕНЫ» раздела 6 ГИ + JSON_TAIL.
+
+    Подсекция загружается через `load_subsection(6, "ПРОСТРАНСТВЕННАЯ
+    ГЕОМЕТРИЯ СЦЕНЫ")` — фрагмент ГИ без дублирования. Кэширование
+    делается в instruction_loader на уровне `(filename, sub, 6, anchor)`.
+
+    Returns:
+        Финальная строка system prompt для передачи в `claude -p`.
+        Если подсекция не найдена (bundle без ГИ) — возвращает
+        ROLE + TAIL без середины (минимально работоспособный fallback).
+    """
+    try:
+        from agents.instruction_loader import load_subsection as _load_sub
+        sub = _load_sub(6, "ПРОСТРАНСТВЕННАЯ ГЕОМЕТРИЯ СЦЕНЫ")
+    except Exception:
+        sub = ""
+    role = _GEOMETRY_EDITOR_ROLE.rstrip()
+    tail = _GEOMETRY_EDITOR_JSON_TAIL.rstrip()
+    if sub:
+        return f"{role}\n\n{sub}\n\n{tail}"
+    return f"{role}\n\n{tail}"
+
+
+def build_geometry_editor_user_prompt(
+    montage_card_json: str,
+    geometry_errors: list,
+) -> str:
+    """User-prompt для Geometry Editor'а.
+
+    Args:
+        montage_card_json: текущая карта (после Scriptwriter), JSON-строка.
+        geometry_errors:   подмножество errors[] из Validator с кодами
+                           вида 'block_N_shot_M_missing_geometry'.
+    """
+    errors_json = json.dumps(geometry_errors, ensure_ascii=False, indent=2)
+    return f"""Монтажная карта (JSON):
+{montage_card_json}
+
+Ошибки типа missing_geometry от Чекера (нужно добавить shot.geometry):
+{errors_json}
+
+Добавь `geometry` к указанным шотам по правилам выше. Верни полную
+карту в JSON.
+"""
+
+
 def _format_show_context(show_context: Optional[dict]) -> str:
     """Форматирует контекст сериала для подмешивания в user-prompt
     каждого агента.
