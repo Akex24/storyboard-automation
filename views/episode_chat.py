@@ -3809,33 +3809,57 @@ class EpisodeChatView(QWidget):
         return (None, None, None, 1)
 
     def _delete_full_montage_card(self, ep_id: str):
-        """Удаляет монтажную карту эпизода: снимает поля montage_card,
-        montage_checker_report, montage_agent_summary, montage_rounds_used,
-        а также blocks (production-формат для StoryboardPipeline).
+        """v1.0.83: удаляет ВСЁ относящееся к монтажной карте эпизода:
 
-        НЕ трогает: _agent_log_epN.json, output/seedance/*, output/storyboards/*
-        — это диагностика и артефакты сторибордов, остаются.
+        В episodes.json[ep_id] — снимает поля:
+          • montage_card (полная карта v1.0.82)
+          • montage_checker_report
+          • montage_agent_summary
+          • montage_rounds_used
+          • blocks (production-формат для StoryboardPipeline)
+
+        На диске — удаляет ФИЗИЧЕСКИ:
+          • shows/<slug>/output/_agent_log_<ep>.json
+
+        НЕ трогает (по требованию юзера):
+          • output/seedance/* — промпты Seedance остаются
+          • output/storyboards/* — сториборды остаются
+
+        Cross-platform: pathlib.Path.unlink(missing_ok=True) — Mac/Win OK.
+
+        Это необходимо потому что `_has_saved_montage_card` имеет
+        fallback на _agent_log: после удаления только полей в
+        episodes.json fallback бы заново возвращал True и CTA
+        «📂 Открыть» возвращался. Физическое удаление лога делает
+        удаление окончательным.
         """
         if not ep_id:
             return
+        # 1. Поля в episodes.json
         path = self._ep_meta_path()
-        if path is None or not path.exists():
-            return
-        try:
-            import json as _json
-            data = _json.loads(path.read_text(encoding='utf-8')) or {}
-            ep = data.get(ep_id) or {}
-            for k in ('montage_card', 'montage_checker_report',
-                       'montage_agent_summary', 'montage_rounds_used',
-                       'blocks'):
-                ep.pop(k, None)
-            data[ep_id] = ep
-            path.write_text(
-                _json.dumps(data, ensure_ascii=False, indent=2),
-                encoding='utf-8'
-            )
-        except Exception:
-            traceback.print_exc()
+        if path is not None and path.exists():
+            try:
+                import json as _json
+                data = _json.loads(path.read_text(encoding='utf-8')) or {}
+                ep = data.get(ep_id) or {}
+                for k in ('montage_card', 'montage_checker_report',
+                           'montage_agent_summary', 'montage_rounds_used',
+                           'blocks'):
+                    ep.pop(k, None)
+                data[ep_id] = ep
+                path.write_text(
+                    _json.dumps(data, ensure_ascii=False, indent=2),
+                    encoding='utf-8'
+                )
+            except Exception:
+                traceback.print_exc()
+        # 2. Физическое удаление _agent_log_epN.json
+        log_path = self._agent_log_path_for_ep(ep_id)
+        if log_path is not None:
+            try:
+                log_path.unlink(missing_ok=True)
+            except Exception:
+                traceback.print_exc()
 
     def _is_storyboard_or_seedance_running(self) -> bool:
         """v1.0.82: блокировка кнопки «🗑 Удалить» если активен
