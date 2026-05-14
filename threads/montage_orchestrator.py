@@ -269,11 +269,13 @@ class MontageOrchestratorThread(QThread):
             # При exception в R2 — checker_report остаётся от R1, UI
             # покажет «⚠ Не удалось проверить результат Editor» через
             # honest-UI ветку summary['validator_r2'].failed.
+            validator_r2_ok = False  # True если R2 успешно отдал валидный report
             if editor_ran:
                 self.progress.emit("validator_r2_running", {})
                 try:
                     r2_report = self._call_validator(montage_card, round_num=2)
                     checker_report = r2_report
+                    validator_r2_ok = True
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "validator_r2",
@@ -281,6 +283,58 @@ class MontageOrchestratorThread(QThread):
                     })
                     # Не fatal — checker_report остаётся от R1, UI пометит
                     # validator_r2 как failed=True.
+
+                if self._stop:
+                    self.failed.emit("cancelled")
+                    return
+
+            # v1.0.77: 3.6) Editor R2 — ТОЛЬКО если:
+            #   - Validator R2 отработал успешно (validator_r2_ok)
+            #   - И остались ошибки (checker_report.errors > 0)
+            # Тот же EDITOR_SYSTEM и MODEL_EDITOR (Opus 4.7). Без
+            # geometry-split — Opus справится со всеми остаточными.
+            # При exception в Editor R2 — honest UI «⚠ Редактор R2 УПАЛ»,
+            # pipeline идёт дальше (на Context Reviewer если включён),
+            # checker_report остаётся от Validator R2.
+            editor_r2_ran = False
+            r2_errors_remaining = list(checker_report.get("errors", []) or [])
+            if (validator_r2_ok
+                    and not checker_report.get("ok")
+                    and len(r2_errors_remaining) > 0):
+                self.progress.emit("editor_r2_running",
+                                    {"errors_count": len(r2_errors_remaining)})
+                try:
+                    montage_card = self._call_editor(
+                        montage_card, r2_errors_remaining, round_num=2)
+                    editor_r2_ran = True
+                except Exception as e:
+                    self._agent_log.append({
+                        "stage": "editor_r2",
+                        "error": str(e),
+                    })
+                    # Не fatal — checker_report остаётся от R2.
+
+                if self._stop:
+                    self.failed.emit("cancelled")
+                    return
+
+            # v1.0.77: 3.7) Validator R3 — ТОЛЬКО если Editor R2 реально
+            # отработал. Цель — финальная честная цифра остатка.
+            # Editor R3 НЕ запускаем (по плану — стоп после R3, юзер
+            # сам решает что делать с остатком).
+            # При exception в R3 — checker_report остаётся от R2, UI
+            # покажет «⚠ Не удалось проверить результат Editor R2».
+            if editor_r2_ran:
+                self.progress.emit("validator_r3_running", {})
+                try:
+                    r3_report = self._call_validator(montage_card, round_num=3)
+                    checker_report = r3_report
+                except Exception as e:
+                    self._agent_log.append({
+                        "stage": "validator_r3",
+                        "error": str(e),
+                    })
+                    # Не fatal — checker_report остаётся от R2.
 
                 if self._stop:
                     self.failed.emit("cancelled")
@@ -420,7 +474,13 @@ class MontageOrchestratorThread(QThread):
         })
         return report
 
-    def _call_editor(self, montage_card: dict, errors: list) -> dict:
+    def _call_editor(self, montage_card: dict, errors: list,
+                      round_num: int = 1) -> dict:
+        # v1.0.77: round_num=1 (после Validator R1, обычно с geometry-split) —
+        # stage='editor'; round_num=2 (после Validator R2 если остались
+        # ошибки) — stage='editor_r2'. Тот же EDITOR_SYSTEM и MODEL_EDITOR.
+        # After-reviewer случай (Context Reviewer concerns > 0 → ещё Editor)
+        # пока остаётся под stage='editor' — Bug 6 в очереди, не сейчас.
         card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
         user = build_editor_user_prompt(
             card_json, errors, self._refs,
@@ -431,8 +491,9 @@ class MontageOrchestratorThread(QThread):
                                 model=self.MODEL_EDITOR)
         duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
+        stage_name = "editor" if round_num == 1 else f"editor_r{round_num}"
         self._agent_log.append({
-            "stage": "editor",
+            "stage": stage_name,
             "model_used": self.MODEL_EDITOR,
             "started_at": t0,
             "duration_sec": duration_sec,
@@ -583,6 +644,8 @@ class MontageOrchestratorThread(QThread):
             "geometry_editor": {"ran": False},
             "editor": {"runs": 0, "rounds": []},
             "validator_r2": {"ran": False},
+            "editor_r2": {"ran": False},
+            "validator_r3": {"ran": False},
             "context_reviewer": {"ran": False},
             "rounds_used": rounds_used,
             # 2026-05-13 (v1.0.63): per-stage timings (вложено в
@@ -661,6 +724,46 @@ class MontageOrchestratorThread(QThread):
                         'failed': False,
                         'ok': res.get('ok', False),
                         'errors': errs,  # полный список — UI считает sets
+                    }
+            elif stage == 'editor_r2':
+                # v1.0.77: второй раунд Editor — если Validator R2
+                # нашёл остаточные. Симметрично к editor R1 + honest UI
+                # на exception (как v1.0.74 для R1).
+                res = s.get('result', {}) or {}
+                error_msg = s.get('error')
+                if error_msg and not res:
+                    summary['editor_r2'] = {
+                        'ran': True,
+                        'failed': True,
+                        'error': str(error_msg),
+                        'errors_in': 0,
+                    }
+                else:
+                    summary['editor_r2'] = {
+                        'ran': True,
+                        'failed': False,
+                        'errors_in': s.get('errors_in', 0),
+                    }
+            elif stage == 'validator_r3':
+                # v1.0.77: третья валидация после Editor R2. Финальная
+                # честная цифра остатка. UI рендерит set-сравнение R2 vs R3.
+                res = s.get('result', {}) or {}
+                error_msg = s.get('error')
+                if error_msg and not res:
+                    summary['validator_r3'] = {
+                        'ran': True,
+                        'failed': True,
+                        'error': str(error_msg),
+                        'ok': False,
+                        'errors': [],
+                    }
+                else:
+                    errs = res.get('errors', []) or []
+                    summary['validator_r3'] = {
+                        'ran': True,
+                        'failed': False,
+                        'ok': res.get('ok', False),
+                        'errors': errs,
                     }
             elif stage == 'geometry_editor':
                 res = s.get('result', {}) or {}

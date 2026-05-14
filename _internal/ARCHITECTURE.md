@@ -615,23 +615,74 @@ Studio НЕ перехватывается уже-созданными `requests
 
 С **v1.0.62 (2026-05-13)** оркестратор [threads/montage_orchestrator.py](threads/montage_orchestrator.py)
 работает ЛИНЕЙНО. С **v1.0.75 (2026-05-14)** добавлена стадия 2.5 —
-Geometry Editor. С **v1.0.76 (2026-05-14)** добавлена стадия 3.5 —
-Validator R2:
+Geometry Editor. С **v1.0.76** — стадия 3.5 Validator R2.
+С **v1.0.77 (2026-05-14)** — стадии 3.6 Editor R2 + 3.7 Validator R3
+для второго раунда правок:
 
 ```
 1. Scriptwriter (Opus 4.7)         — пишет монтажную карту с нуля
 2. Validator R1 (Haiku 4.5)        — проверяет один раз  (v1.0.72)
 2.5. Geometry Editor (Haiku 4.5)   — ТОЛЬКО если есть missing_geometry-ошибки;
                                      добавляет shot.geometry. Failed → fallback в Editor.  (v1.0.75)
-3. Editor      (Opus 4.7)          — если остались ошибки кроме geometry,
+3. Editor R1   (Opus 4.7)          — если остались ошибки кроме geometry,
                                      применяет правки  (v1.0.76: переход с Sonnet)
-3.5. Validator R2 (Haiku 4.5)      — ТОЛЬКО если Editor реально отработал;
+3.5. Validator R2 (Haiku 4.5)      — ТОЛЬКО если Editor R1 реально отработал;
                                      проверяет результат, считает реальное
                                      остаточное количество ошибок.  (v1.0.76)
+3.6. Editor R2 (Opus 4.7)          — ТОЛЬКО если Validator R2 успешен И
+                                     остались errors > 0. Без geometry-split.  (v1.0.77)
+3.7. Validator R3 (Haiku 4.5)      — ТОЛЬКО если Editor R2 реально отработал;
+                                     финальная цифра остатка.  (v1.0.77)
+                                     Editor R3 НЕ запускаем (стоп после R3).
 4. Context Reviewer (Sonnet 4.6)   — ОПЦИОНАЛЬНО (toggle в Settings, default OFF)
-   └─ если concerns > 0 → Editor ещё раз (без Validator R3)
-5. ФИНАЛ — checker_report = R2 result (если R2 успешен) / R1 (если R2 упал)
+   └─ если concerns > 0 → Editor ещё раз (без Validator R4)
+5. ФИНАЛ — checker_report = R3/R2/R1 (последний успешный по убыванию)
 ```
+
+**v1.0.77 split logic для Editor R2 + Validator R3 в `run()`:**
+```python
+validator_r2_ok = False
+if editor_ran:
+    try:
+        r2_report = _call_validator(montage_card, round_num=2)
+        checker_report = r2_report
+        validator_r2_ok = True
+    except Exception:
+        log({'stage':'validator_r2','error':...})
+
+editor_r2_ran = False
+if validator_r2_ok and not checker_report.ok and checker_report.errors > 0:
+    try:
+        montage_card = _call_editor(montage_card, r2_errors, round_num=2)
+        editor_r2_ran = True
+    except Exception:
+        log({'stage':'editor_r2','error':...})
+
+if editor_r2_ran:
+    try:
+        r3_report = _call_validator(montage_card, round_num=3)
+        checker_report = r3_report
+    except Exception:
+        log({'stage':'validator_r3','error':...})
+```
+
+**v1.0.77 UI: симметричное set-сравнение R2 vs R3** (по той же логике
+что R1 vs R2 в v1.0.76):
+- `resolved = R2 \ R3` — реально исправлено Editor R2
+- `unresolved = R2 ∩ R3` — Editor R2 не справился
+- `new = R3 \ R2` — Editor R2 создал при правке
+
+Дополнительные UI строки (после Editor R1 строк):
+- `✏ Редактор R2 — исправил все {Y2} оставшихся ошибок ✓`
+- `✏ Редактор R2 — исправил {res2} из {Y2} оставшихся ошибок`
+- `⚠ Editor R2 создал {new2} новых ошибок при правке`
+- `⚠ Редактор R2 УПАЛ — ...` (editor_r2.failed)
+- `⚠ Не удалось проверить результат Editor R2 — Чекер R3 ...` (validator_r3.failed)
+
+Editor R2 запускается **только** при:
+- `validator_r2.ran == True AND not validator_r2.failed`
+- `checker_report.errors > 0`
+- (Editor R1 успешно — следует из validator_r2_ok)
 
 **v1.0.76 split logic в `run()` для Validator R2:**
 ```python

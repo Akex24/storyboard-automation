@@ -316,6 +316,58 @@ class MontageSummaryDialog(QDialog):
                     lines.append(
                         f"⚠ Editor создал {new_count} новых ошибок при правке"
                     )
+
+            # v1.0.77: Editor R2 — если запускался после Validator R2.
+            # Set-сравнение R2 vs R3 (или R2 vs итог если R3 упал).
+            ed_r2 = s.get('editor_r2', {}) or {}
+            v_r3 = s.get('validator_r3', {}) or {}
+            if ed_r2.get('ran'):
+                if ed_r2.get('failed'):
+                    err = (ed_r2.get('error') or '').strip()
+                    low = err.lower()
+                    if 'timed out' in low or 'timeout' in low:
+                        reason2 = "превысил лимит времени (10 минут)"
+                    else:
+                        reason2 = (err.split('\n', 1)[0] or 'unknown')[:120]
+                    lines.append(
+                        f"⚠ Редактор R2 УПАЛ — {reason2}. Остаток от "
+                        f"Чекера R2 в силе."
+                    )
+                elif v_r3.get('ran') and not v_r3.get('failed'):
+                    r2_keys_in = {_err_key(e) for e in r2_errs}
+                    r3_errs = list(v_r3.get('errors') or [])
+                    r3_keys = {_err_key(e) for e in r3_errs}
+                    unr2_keys = r2_keys_in & r3_keys
+                    resolved2 = len(r2_keys_in - unr2_keys)
+                    new2 = len(r3_keys - unr2_keys)
+                    y2 = len(r2_keys_in)
+                    if resolved2 == y2 and new2 == 0:
+                        lines.append(
+                            f"✏ Редактор R2 — исправил все {y2} "
+                            f"оставшихся ошибок ✓"
+                        )
+                    else:
+                        lines.append(
+                            f"✏ Редактор R2 — исправил {resolved2} из "
+                            f"{y2} оставшихся ошибок"
+                        )
+                        if new2 > 0:
+                            lines.append(
+                                f"⚠ Editor R2 создал {new2} новых ошибок "
+                                f"при правке"
+                            )
+                elif v_r3.get('failed'):
+                    r3_err = (v_r3.get('error') or '').strip()
+                    low = r3_err.lower()
+                    if 'timed out' in low or 'timeout' in low:
+                        reason3 = "Чекер R3 превысил лимит времени (10 минут)"
+                    else:
+                        reason3 = (r3_err.split('\n', 1)[0] or 'unknown')[:120]
+                    lines.append(
+                        f"⚠ Не удалось проверить результат Editor R2 — "
+                        f"{reason3}. Реальное количество исправлений "
+                        f"R2 неизвестно."
+                    )
         elif ed_runs > 0 and v_r2.get('failed'):
             # v1.0.76: Editor отработал, но Validator R2 упал.
             r2_err = (v_r2.get('error') or '').strip()
