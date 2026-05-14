@@ -1357,10 +1357,19 @@ def _build_lazy(key: str) -> str:
     if key in _PUBLIC_CACHE:
         return _PUBLIC_CACHE[key]
     sections_map = {
-        'SCRIPTWRITER_SYSTEM':     [1, 3, 4, 6, 8],
-        'VALIDATOR_SYSTEM':        [4, 6, 8],
-        'EDITOR_SYSTEM':           [3, 4, 6, 8],
-        'CONTEXT_REVIEWER_SYSTEM': [1, 3],
+        # v1.0.70 (2026-05-14): добавлен раздел 9 «ВИЗУАЛЬНЫЙ ПРИОРИТЕТ»
+        # ко всем агентам монтажа — закрывает gap «Scriptwriter пишет
+        # 'белая футболка' → Validator ловит как forbidden_phrase →
+        # Editor правит» (стоил ~3 мин на эпизод).
+        # Context Reviewer расширен с [1,3] до полного состава {1,3,5,7,
+        # 8,9,10,11,12} — теперь видит референсы, режиссуру камеры,
+        # синтаксис тегов, структуру выдачи, чеклист и передаточный
+        # пакет (он отвечает за финальные Seedance/Storyboard промпты,
+        # без этих разделов работал «по интуиции Opus»).
+        'SCRIPTWRITER_SYSTEM':     [1, 3, 4, 6, 8, 9],
+        'VALIDATOR_SYSTEM':        [4, 6, 8, 9],
+        'EDITOR_SYSTEM':           [3, 4, 6, 8, 9],
+        'CONTEXT_REVIEWER_SYSTEM': [1, 3, 5, 7, 8, 9, 10, 11, 12],
     }
     role_map = {
         'SCRIPTWRITER_SYSTEM':     _SCRIPTWRITER_ROLE,
