@@ -269,10 +269,20 @@ class MontageSummaryDialog(QDialog):
         ed_rounds = ed.get('rounds') or []
         ed_failed_round = next(
             (r for r in ed_rounds if r.get('failed')), None)
+        # v1.0.76: Validator R2 — повторная проверка после Editor.
+        # Если есть — UI делает set-сравнение R1 vs R2 чтобы показать
+        # «исправил X из Y / создал N новых». Если нет (Editor не
+        # запускался / упал) — старая логика по errors_in.
+        v_r2 = s.get('validator_r2', {}) or {}
+        v_r1_rounds = v.get('rounds_passed') or []
+        v_r1_last = v_r1_rounds[-1] if v_r1_rounds else {}
+
+        def _err_key(e: dict) -> tuple:
+            """Уникальный ключ ошибки для set-сравнения R1 vs R2."""
+            return (e.get('code', ''), e.get('where', ''))
+
         if ed_failed_round:
             # v1.0.74: Editor упал (TimeoutExpired или exception).
-            # Раньше попадало в позитивную ветку как «поправил 0 ошибок
-            # за 1 раунд» и юзер думал что Editor отработал.
             err = (ed_failed_round.get('error') or '').strip()
             low = err.lower()
             if 'timed out' in low or 'timeout' in low:
@@ -283,10 +293,49 @@ class MontageSummaryDialog(QDialog):
                 f"⚠ Редактор УПАЛ — {reason}. Часть ошибок осталась без "
                 f"правок — карта отдана в состоянии до Editor'а."
             )
+        elif ed_runs > 0 and v_r2.get('ran') and not v_r2.get('failed'):
+            # v1.0.76 happy path: Editor отработал И Validator R2 успешно
+            # пересчитал результат. Считаем set-difference по (code, where).
+            r1_errs = list(v_r1_last.get('errors') or [])
+            r2_errs = list(v_r2.get('errors') or [])
+            r1_keys = {_err_key(e) for e in r1_errs}
+            r2_keys = {_err_key(e) for e in r2_errs}
+            unresolved_keys = r1_keys & r2_keys
+            resolved_count = len(r1_keys - unresolved_keys)
+            new_count = len(r2_keys - unresolved_keys)
+            y = len(r1_keys)
+            if resolved_count == y and new_count == 0:
+                lines.append(
+                    f"✏ Редактор — исправил все {y} ошибок ✓"
+                )
+            else:
+                lines.append(
+                    f"✏ Редактор — исправил {resolved_count} из {y} ошибок"
+                )
+                if new_count > 0:
+                    lines.append(
+                        f"⚠ Editor создал {new_count} новых ошибок при правке"
+                    )
+        elif ed_runs > 0 and v_r2.get('failed'):
+            # v1.0.76: Editor отработал, но Validator R2 упал.
+            r2_err = (v_r2.get('error') or '').strip()
+            low = r2_err.lower()
+            if 'timed out' in low or 'timeout' in low:
+                reason = "Чекер R2 превысил лимит времени (10 минут)"
+            else:
+                reason = (r2_err.split('\n', 1)[0] or 'unknown')[:120]
+            lines.append(
+                f"⚠ Не удалось проверить результат Editor — {reason}. "
+                f"Реальное количество исправлений неизвестно."
+            )
         elif ed_runs > 0:
+            # Editor отработал, R2 не запускался (старый код v1.0.75-).
+            # Сохраняем fallback на errors_in для обратной совместимости
+            # старых логов без validator_r2 stage.
             errs_total = sum(r.get('errors_in', 0) for r in ed_rounds)
             lines.append(
-                f"✏ Редактор — поправил {errs_total} ошибок за {ed_runs} раунд(ов)"
+                f"✏ Редактор — получил {errs_total} ошибок на вход за "
+                f"{ed_runs} раунд(ов) (результат не проверен)"
             )
         elif validator_failed:
             lines.append(

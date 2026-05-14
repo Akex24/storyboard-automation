@@ -614,21 +614,57 @@ Studio НЕ перехватывается уже-созданными `requests
 ## Монтажная карта — пайплайн агентов (v1.0.62+v1.0.63)
 
 С **v1.0.62 (2026-05-13)** оркестратор [threads/montage_orchestrator.py](threads/montage_orchestrator.py)
-работает ЛИНЕЙНО без раундов. С **v1.0.75 (2026-05-14)** добавлена
-стадия 2.5 — Geometry Editor:
+работает ЛИНЕЙНО. С **v1.0.75 (2026-05-14)** добавлена стадия 2.5 —
+Geometry Editor. С **v1.0.76 (2026-05-14)** добавлена стадия 3.5 —
+Validator R2:
 
 ```
 1. Scriptwriter (Opus 4.7)         — пишет монтажную карту с нуля
-2. Validator   (Haiku 4.5)         — проверяет один раз  (v1.0.72)
+2. Validator R1 (Haiku 4.5)        — проверяет один раз  (v1.0.72)
 2.5. Geometry Editor (Haiku 4.5)   — ТОЛЬКО если есть missing_geometry-ошибки;
-                                     добавляет shot.geometry к указанным шотам.
-                                     Failed → fallback в Editor.  (v1.0.75)
-3. Editor      (Sonnet 4.6)        — если остались ошибки кроме geometry,
-                                     применяет правки
+                                     добавляет shot.geometry. Failed → fallback в Editor.  (v1.0.75)
+3. Editor      (Opus 4.7)          — если остались ошибки кроме geometry,
+                                     применяет правки  (v1.0.76: переход с Sonnet)
+3.5. Validator R2 (Haiku 4.5)      — ТОЛЬКО если Editor реально отработал;
+                                     проверяет результат, считает реальное
+                                     остаточное количество ошибок.  (v1.0.76)
 4. Context Reviewer (Sonnet 4.6)   — ОПЦИОНАЛЬНО (toggle в Settings, default OFF)
-   └─ если concerns > 0 → Editor ещё раз
-5. ФИНАЛ (без повторной проверки)
+   └─ если concerns > 0 → Editor ещё раз (без Validator R3)
+5. ФИНАЛ — checker_report = R2 result (если R2 успешен) / R1 (если R2 упал)
 ```
+
+**v1.0.76 split logic в `run()` для Validator R2:**
+```python
+editor_ran = False
+if editor try-block succeeded:
+    editor_ran = True
+
+if editor_ran:
+    try:
+        r2_report = _call_validator(montage_card, round_num=2)
+        checker_report = r2_report      # ← Studio видит реальное состояние
+    except Exception:
+        log({'stage':'validator_r2','error':...})
+        # checker_report остаётся от R1, UI пометит validator_r2.failed=True
+```
+
+**v1.0.76 UI: set-сравнение R1 vs R2** по ключу `(code, where)`:
+- `resolved = R1 \ R2` — реально исправлено Editor'ом
+- `unresolved = R1 ∩ R2` — Editor не справился
+- `new = R2 \ R1` — Editor создал при правке
+
+UI строки (в `_build_agent_lines`):
+- `✏ Редактор — исправил все {Y} ошибок ✓` (resolved == Y, new == 0)
+- `✏ Редактор — исправил {resolved_count} из {Y} ошибок` (partial)
+- `⚠ Editor создал {new_count} новых ошибок при правке` (вторая строка если new > 0)
+- `⚠ Не удалось проверить результат Editor — Чекер R2 ...` (validator_r2.failed)
+
+**Почему Editor → Opus 4.7 (v1.0.76):** на ep2 v1.0.75 Sonnet 4.6
+«отрапортовал» что исправил 5 ошибок (`errors_in=5`), но Validator R2
+(добавленный в v1.0.76 для диагностики) показал что все 5 фактически
+остались в карте. Симптом: Sonnet пропускает при многозадачной правке
+(timing math + forbidden_phrase одновременно). Opus умнее → реже
+промахивается. Цена +1 мин (~3-4 мин Editor вместо 2:49).
 
 **v1.0.75 split logic в `run()`:**
 ```python
@@ -907,12 +943,12 @@ UI юзер не знал, что валидация не прошла. Тепе
 
 В [threads/montage_orchestrator.py](threads/montage_orchestrator.py) каждая стадия монтажа имеет жёстко зашитую модель (юзерский дропдаун эти hardcode НЕ переопределяет — модель выбирается под задачу):
 
-| Стадия | Модель (v1.0.75) | Где | Почему |
+| Стадия | Модель (v1.0.76) | Где | Почему |
 |---|---|---|---|
 | Scriptwriter | claude-opus-4-7 | [montage_orchestrator.py:92](threads/montage_orchestrator.py:92) | творческая генерация карты с нуля, нужен Opus |
-| Validator | claude-haiku-4-5 | [montage_orchestrator.py:93](threads/montage_orchestrator.py:93) | проверка по чек-листу после Python pre-filter — механики хватит Haiku, в 4× быстрее Sonnet (v1.0.72) |
-| **Geometry Editor** | **claude-haiku-4-5** | [montage_orchestrator.py:107](threads/montage_orchestrator.py:107) | узкая структурная правка — добавление `shot.geometry` к missing_geometry-ошибкам, Haiku справляется (v1.0.75) |
-| Editor | claude-sonnet-4-6 | [montage_orchestrator.py:94](threads/montage_orchestrator.py:94) | creative-правка реплик с учётом характера + иерархии сжатия |
+| Validator R1 / R2 | claude-haiku-4-5 | [montage_orchestrator.py:93](threads/montage_orchestrator.py:93) | проверка по чек-листу после Python pre-filter — механики хватит Haiku, в 4× быстрее Sonnet (v1.0.72). R2 (v1.0.76) запускается после Editor если editor_ran=True для проверки реального результата |
+| Geometry Editor | claude-haiku-4-5 | [montage_orchestrator.py:107](threads/montage_orchestrator.py:107) | узкая структурная правка — добавление `shot.geometry` к missing_geometry-ошибкам, Haiku справляется (v1.0.75) |
+| **Editor** | **claude-opus-4-7** | [montage_orchestrator.py:94](threads/montage_orchestrator.py:94) | **v1.0.76: переход с Sonnet 4.6 на Opus 4.7** — Sonnet «отрапортовал» что исправил 5 ошибок на ep2 v1.0.75, но Validator R2 показал что фактически остались все 5. Opus умнее при многозадачной правке |
 | Context Reviewer | claude-sonnet-4-6 | [montage_orchestrator.py:95](threads/montage_orchestrator.py:95) | сверка с Bible + продакшен-разделами 5/7/8/9/10/11/12 (v1.0.70) |
 
 **v1.0.72 (2026-05-14) — диагностика Sonnet vs Haiku на Validator:**

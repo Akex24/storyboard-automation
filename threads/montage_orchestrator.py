@@ -99,10 +99,18 @@ class MontageOrchestratorThread(QThread):
     # prefilter'а семантический объём задачи Haiku достаточен.
     # Editor оставлен на Sonnet 4.6 — он делает creative-правку
     # реплик с учётом характера + иерархии сжатия, тут Sonnet нужен.
+    # v1.0.76 (2026-05-14): Editor переведён на Opus 4.7. На ep2
+    # v1.0.75 Sonnet 4.6 «отрапортовал» что исправил 5 ошибок, но в
+    # карте все 5 фактически остались (подтверждено Validator R2):
+    # одна модель пропускает ошибки при многозадачности (timing math +
+    # forbidden_phrase одновременно). Opus умнее → реже промахивается.
+    # Цена: ~3-4 мин на Editor вместо 2:49. Бонус: Validator R2 теперь
+    # запускается после Editor → Studio видит реальное оставшееся
+    # количество ошибок (вместо лживой «поправил 5 ошибок»).
     # Откат при регрессии качества — git revert этого коммита.
     MODEL_SCRIPTWRITER     = "claude-opus-4-7"
     MODEL_VALIDATOR        = "claude-haiku-4-5"
-    MODEL_EDITOR           = "claude-sonnet-4-6"
+    MODEL_EDITOR           = "claude-opus-4-7"
     MODEL_CONTEXT_REVIEWER = "claude-sonnet-4-6"
     # v1.0.75: Geometry Editor — узкий сабагент для shot.geometry.
     # Простая структурная правка → Haiku 4.5 хватает; разгружает
@@ -233,12 +241,14 @@ class MontageOrchestratorThread(QThread):
                     return
 
             # 3) Editor — только если есть оставшиеся ошибки
+            editor_ran = False
             if not checker_report.get("ok") and len(editor_input_errors) > 0:
                 self.progress.emit("editor_running",
                                     {"errors_count": len(editor_input_errors)})
                 try:
                     montage_card = self._call_editor(
                         montage_card, editor_input_errors)
+                    editor_ran = True
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "editor",
@@ -247,6 +257,30 @@ class MontageOrchestratorThread(QThread):
                     # Не fatal — отдаём карту до Editor'а.
                     self._finalize(montage_card, checker_report)
                     return
+
+                if self._stop:
+                    self.failed.emit("cancelled")
+                    return
+
+            # v1.0.76: 3.5) Validator R2 — ТОЛЬКО если Editor реально
+            # отработал. Цель — оценить сколько ошибок Editor реально
+            # устранил (set-сравнение R1 vs R2 в UI), и не показывает
+            # ли он новые ошибки которых не было в R1.
+            # При exception в R2 — checker_report остаётся от R1, UI
+            # покажет «⚠ Не удалось проверить результат Editor» через
+            # honest-UI ветку summary['validator_r2'].failed.
+            if editor_ran:
+                self.progress.emit("validator_r2_running", {})
+                try:
+                    r2_report = self._call_validator(montage_card, round_num=2)
+                    checker_report = r2_report
+                except Exception as e:
+                    self._agent_log.append({
+                        "stage": "validator_r2",
+                        "error": str(e),
+                    })
+                    # Не fatal — checker_report остаётся от R1, UI пометит
+                    # validator_r2 как failed=True.
 
                 if self._stop:
                     self.failed.emit("cancelled")
@@ -339,12 +373,17 @@ class MontageOrchestratorThread(QThread):
         })
         return montage
 
-    def _call_validator(self, montage_card: dict) -> dict:
+    def _call_validator(self, montage_card: dict,
+                         round_num: int = 1) -> dict:
         # v1.0.69: Python pre-filter перед AI. 10 механических правил
         # (#1-#5, #7, #8, #10, #11, #13) проверяются в Python без LLM —
         # см. agents/validator_prefilter.py. AI получает урезанный
         # system_prompt только с правилами #6, #7а, #9, #12, #14
         # (семантика, требует reasoning).
+        # v1.0.76: round_num=1 (после Scriptwriter) пишется в _agent_log
+        # как stage='validator'; round_num=2 (после Editor) — как
+        # stage='validator_r2'. UI рендерит обе стадии раздельно для
+        # отчёта «Editor исправил X из Y / создал N новых».
         py_errors, rules_done = prefilter_check(montage_card, self._refs)
         validator_system = get_validator_system(skip_rules=rules_done)
 
@@ -365,8 +404,9 @@ class MontageOrchestratorThread(QThread):
             "errors": merged_errors,
             "report": ai_report.get("report") or [],
         }
+        stage_name = "validator" if round_num == 1 else f"validator_r{round_num}"
         self._agent_log.append({
-            "stage": "validator",
+            "stage": stage_name,
             "model_used": self.MODEL_VALIDATOR,
             "started_at": t0,
             "duration_sec": duration_sec,
@@ -542,6 +582,7 @@ class MontageOrchestratorThread(QThread):
             "validator": {"runs": 0, "rounds_passed": []},
             "geometry_editor": {"ran": False},
             "editor": {"runs": 0, "rounds": []},
+            "validator_r2": {"ran": False},
             "context_reviewer": {"ran": False},
             "rounds_used": rounds_used,
             # 2026-05-13 (v1.0.63): per-stage timings (вложено в
@@ -595,7 +636,32 @@ class MontageOrchestratorThread(QThread):
                             e.get('code', '?')
                             for e in (res.get('errors', []) or [])
                         ][:6],
+                        # v1.0.76: полный список ошибок R1 — нужен UI
+                        # для set-сравнения с validator_r2.errors.
+                        'errors': list(res.get('errors', []) or []),
                     })
+            elif stage == 'validator_r2':
+                # v1.0.76: повторная валидация после Editor. Хранит errors
+                # отдельно от R1 — UI рендерит set-сравнение R1\R2 / R1∩R2 /
+                # R2\R1 для отчёта «исправил X из Y / создал N новых».
+                res = s.get('result', {}) or {}
+                error_msg = s.get('error')
+                if error_msg and not res:
+                    summary['validator_r2'] = {
+                        'ran': True,
+                        'failed': True,
+                        'error': str(error_msg),
+                        'ok': False,
+                        'errors': [],
+                    }
+                else:
+                    errs = res.get('errors', []) or []
+                    summary['validator_r2'] = {
+                        'ran': True,
+                        'failed': False,
+                        'ok': res.get('ok', False),
+                        'errors': errs,  # полный список — UI считает sets
+                    }
             elif stage == 'geometry_editor':
                 res = s.get('result', {}) or {}
                 error_msg = s.get('error')
