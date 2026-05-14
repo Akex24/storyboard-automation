@@ -477,15 +477,30 @@ class MontageOrchestratorThread(QThread):
                 }
             elif stage == 'validator':
                 res = s.get('result', {}) or {}
+                error_msg = s.get('error')
                 summary['validator']['runs'] += 1
-                summary['validator']['rounds_passed'].append({
-                    'ok': res.get('ok'),
-                    'errors_count': len(res.get('errors', []) or []),
-                    'errors_codes': [
-                        e.get('code', '?')
-                        for e in (res.get('errors', []) or [])
-                    ][:6],
-                })
+                if error_msg and not res:
+                    # v1.0.71: stage упал до записи result (TimeoutExpired
+                    # или любой другой exception в _run_claude/CLI).
+                    # Раньше попадало в else-ветку UI как «0 ошибок» — это
+                    # вводило юзера в заблуждение. Помечаем failed=True
+                    # чтобы UI отрисовал честную причину.
+                    summary['validator']['rounds_passed'].append({
+                        'ok': False,
+                        'errors_count': 0,
+                        'errors_codes': [],
+                        'failed': True,
+                        'error': str(error_msg),
+                    })
+                else:
+                    summary['validator']['rounds_passed'].append({
+                        'ok': res.get('ok'),
+                        'errors_count': len(res.get('errors', []) or []),
+                        'errors_codes': [
+                            e.get('code', '?')
+                            for e in (res.get('errors', []) or [])
+                        ][:6],
+                    })
             elif stage == 'editor':
                 summary['editor']['runs'] += 1
                 summary['editor']['rounds'].append({

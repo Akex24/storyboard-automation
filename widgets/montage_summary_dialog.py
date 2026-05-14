@@ -210,10 +210,27 @@ class MontageSummaryDialog(QDialog):
         # Чекер
         v = s.get('validator', {}) or {}
         v_runs = v.get('runs', 0)
+        validator_failed = False
         if v_runs > 0:
             rps = v.get('rounds_passed') or []
             last = rps[-1] if rps else {}
-            if last.get('ok'):
+            if last.get('failed'):
+                # v1.0.71: Чекер упал (TimeoutExpired или exception).
+                # Показываем честно — раньше попадало в else-ветку
+                # как «0 ошибок» и юзер думал что валидация прошла.
+                validator_failed = True
+                err = (last.get('error') or '').strip()
+                low = err.lower()
+                if 'timed out' in low or 'timeout' in low:
+                    reason = "превысил лимит времени (10 минут)"
+                else:
+                    reason = (err.split('\n', 1)[0] or 'unknown')[:120]
+                lines.append(
+                    f"⚠ Чекер УПАЛ — {reason}. Карта НЕ ПРОВЕРЕНА — "
+                    f"возможны нарушения правил, которые остались "
+                    f"незамеченными."
+                )
+            elif last.get('ok'):
                 if v_runs == 1:
                     lines.append(
                         "🔍 Чекер — прошёл 11 правил с первого раза, ошибок 0"
@@ -234,6 +251,10 @@ class MontageSummaryDialog(QDialog):
             errs_total = sum(r.get('errors_in', 0) for r in (ed.get('rounds') or []))
             lines.append(
                 f"✏ Редактор — поправил {errs_total} ошибок за {ed_runs} раунд(ов)"
+            )
+        elif validator_failed:
+            lines.append(
+                "✏ Редактор — не запускался (Чекер упал, входа нет)"
             )
         else:
             lines.append("✏ Редактор — не запускался (нечего было править)")

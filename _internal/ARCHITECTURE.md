@@ -759,6 +759,32 @@ Editor читает merged_errors без отличий (формат `{code, wh
 идентичен AI Validator'у). В `_agent_log[validator]` добавлены поля
 `prefilter_errors`, `prefilter_rules_done`, `validator_system_chars`.
 
+**v1.0.71 (2026-05-14) — honest UI при exception в Validator (Bug 1 fix):**
+
+Обнаружено на ep2: Validator упал по `subprocess.TimeoutExpired` через
+600s, но попап показал «🔍 Чекер: 0 ошибок» — silent failure.
+
+Корень: в `run()` при exception в `_call_validator` orchestrator пишет
+`{stage: 'validator', error: ...}` в `_agent_log` (без `result`/
+`duration_sec`), делает `_finalize` с инициализированным пустым
+`checker_report = {"ok": False, "errors": [], "report": []}` и `return`.
+`_build_agent_summary` на error-stage делал `res = {}` → `errors_count
+= 0`, `runs = 1` → UI попадал в else-ветку «нашёл 0 ошибок».
+
+**Минимальный фикс (поведение оркестратора НЕ менялось):**
+- `_build_agent_summary` ([threads/montage_orchestrator.py](threads/montage_orchestrator.py)): при `s.get('error') and not s.get('result')` в `rounds_passed[-1]` пишет дополнительные поля `failed: True`, `error: str(error_msg)`.
+- `_build_agent_lines` ([widgets/montage_summary_dialog.py](widgets/montage_summary_dialog.py)): в ветке Чекера ДО проверки `last.get('ok')` стоит `if last.get('failed'):` — выводит «⚠ Чекер УПАЛ — <причина>. Карта НЕ ПРОВЕРЕНА — возможны нарушения правил, которые остались незамеченными.». TimeoutExpired распознаётся подстрокой `timed out / timeout` → «превысил лимит времени (10 минут)». Для прочих exception — первая строка `str(error)` до 120 ch.
+- Локальный флаг `validator_failed` в `_build_agent_lines` — при `ed_runs=0` И `validator_failed` Editor-строка пишет «не запускался (Чекер упал, входа нет)» вместо ложного «нечего было править».
+
+**Поведение оркестратора при exception в Validator (СОХРАНЕНО из v1.0.62):**
+Карта Scriptwriter всё равно отдаётся в `_finalize` (не fatal). Это
+было сделано, чтобы не блокировать юзера при сбое AI — но без честного
+UI юзер не знал, что валидация не прошла. Теперь знает.
+
+**Открытые баги (отдельные задачи):**
+- Bug 2: при exception в `_call_validator` `prefilter_check` уже отработал, но его `py_errors` теряются — exception летит из `_run_claude` до merge. Если Python pre-filter найдёт реальные ошибки — они не дойдут до Editor.
+- Bug 3: Validator снова медленный после v1.0.69+v1.0.70. v1.0.69 (-14% system) теоретически должен был ускорить. Гипотеза из разведки: время съедает невидимый reasoning Sonnet 4.6 на семантические правила #6/#7а/#9/#12/#14, не на размер prompt'а.
+
 ## Per-agent model routing
 
 | Агент | Слушает дропдаун? | Где |
