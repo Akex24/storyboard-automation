@@ -38,7 +38,9 @@ from agents.montage_prompts import (
     build_validator_user_prompt,
     build_editor_user_prompt,
     build_context_reviewer_user_prompt,
+    get_validator_system,
 )
+from agents.validator_prefilter import prefilter_check
 
 
 class MontageOrchestratorThread(QThread):
@@ -280,14 +282,31 @@ class MontageOrchestratorThread(QThread):
         return montage
 
     def _call_validator(self, montage_card: dict) -> dict:
+        # v1.0.69: Python pre-filter перед AI. 10 механических правил
+        # (#1-#5, #7, #8, #10, #11, #13) проверяются в Python без LLM —
+        # см. agents/validator_prefilter.py. AI получает урезанный
+        # system_prompt только с правилами #6, #7а, #9, #12, #14
+        # (семантика, требует reasoning).
+        py_errors, rules_done = prefilter_check(montage_card, self._refs)
+        validator_system = get_validator_system(skip_rules=rules_done)
+
         card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
         user = build_validator_user_prompt(
             card_json, self._refs, show_context=self._show_context)
         t0 = time.time()
-        raw = self._run_claude(VALIDATOR_SYSTEM, user,
+        raw = self._run_claude(validator_system, user,
                                 model=self.MODEL_VALIDATOR)
         duration_sec = round(time.time() - t0, 2)
-        report = self._parse_json(raw)
+        ai_report = self._parse_json(raw)
+
+        # Объединяем ошибки: Python + AI. ok=False если есть хоть что-то.
+        ai_errors = list(ai_report.get("errors") or [])
+        merged_errors = list(py_errors) + ai_errors
+        report = {
+            "ok": (len(merged_errors) == 0),
+            "errors": merged_errors,
+            "report": ai_report.get("report") or [],
+        }
         self._agent_log.append({
             "stage": "validator",
             "model_used": self.MODEL_VALIDATOR,
@@ -296,6 +315,9 @@ class MontageOrchestratorThread(QThread):
             "user_prompt_chars": len(user),
             "raw_response_chars": len(raw),
             "parsed_ok": True,
+            "prefilter_errors": len(py_errors),
+            "prefilter_rules_done": sorted(rules_done),
+            "validator_system_chars": len(validator_system),
             "result": report,
         })
         return report

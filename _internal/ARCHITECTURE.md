@@ -695,6 +695,58 @@ UI: [widgets/montage_summary_dialog.py](widgets/montage_summary_dialog.py)
    описания — МОЖНО ОБЪЕДИНЯТЬ). Размещено в [agents/montage_prompts.py](agents/montage_prompts.py)
    между «СТРОГОЕ ПРАВИЛО» и «ФОРМАТ ВЫВОДА».
 
+**v1.0.69 (2026-05-14) — Python pre-filter Validator'а:**
+
+10 из 14 правил Validator'а вынесены из AI в Python — детерминированные
+проверки, на которых Sonnet 4.6 тратил chain-of-thought reasoning впустую
+(ep2 v1.0.68: Validator 7:40 при output всего 4 KB = 9 ch/sec на той же
+модели, где Editor выдаёт 137 ch/sec).
+
+Python проверяет (`agents/validator_prefilter.py`):
+- #1 too_many_shots (≤4)
+- #2 over_15s (сумма duration блока)
+- #3 total_out_of_range (60–80с — пересчитывается через
+  `sum(shots.duration_sec)`; поле `card['total_seconds']` не доверяем)
+- #4 shot_numbering (1..N подряд)
+- #5 dialog_missing_lang (ru + en оба непустые)
+- #7 invalid_speech_type (enum)
+- #8 speaker_not_in_characters (slug ∈ block.characters)
+- #10 unknown_location (slug ∈ refs.locations)
+- #11 unknown_character (slug ∈ refs.characters)
+- #13 too_many_blocks (>7)
+
+AI остаётся:
+- #6 timing math (слова × скорость + запас)
+- #7а speech_type vs voice profile
+- #9 forbidden_phrase (семантика + синонимы)
+- #12 artificially_long (растяжка >5с при простом действии)
+- #14 visually_duplicate_shots (попарная семантика)
+
+**Защита от рассинхрона:** каждая `_check_*` функция в
+`validator_prefilter.py` содержит цитату соответствующего пункта из
+`_VALIDATOR_JSON_TAIL` в docstring. При правке текста правила в
+.md/промпте — синхронно править docstring.
+
+**Skip-механика для AI Validator'а:** все 14 правил в
+`_VALIDATOR_JSON_TAIL` и `_FALLBACK_VALIDATOR_SYSTEM` обёрнуты парными
+маркерами `<!-- BEGIN rule_N --> ... <!-- END rule_N -->`. Новая
+функция `get_validator_system(skip_rules: Set[str])` режет блоки между
+маркерами по regex с backreference. После prefilter передаём
+`rules_done` в `get_validator_system` → AI получает system на 14%
+меньше (14025 → 12025 ch) и не видит уже проверенных правил.
+
+**Объединение ошибок:** в `_call_validator`
+[threads/montage_orchestrator.py](threads/montage_orchestrator.py):
+```python
+py_errors, rules_done = prefilter_check(card, refs)
+validator_system = get_validator_system(skip_rules=rules_done)
+ai_report = self._run_claude(validator_system, user, ...)
+merged_errors = py_errors + ai_report.get('errors', [])
+```
+Editor читает merged_errors без отличий (формат `{code, where, details}`
+идентичен AI Validator'у). В `_agent_log[validator]` добавлены поля
+`prefilter_errors`, `prefilter_rules_done`, `validator_system_chars`.
+
 ## Per-agent model routing
 
 | Агент | Слушает дропдаун? | Где |
