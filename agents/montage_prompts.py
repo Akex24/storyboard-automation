@@ -524,20 +524,44 @@ _FALLBACK_VALIDATOR_SYSTEM = f"""\
    "block_N_shot_M_speaker_not_in_characters".
 <!-- END rule_8 -->
 <!-- BEGIN rule_9 -->
-9. Если scene_action содержит запрещённые слова про взгляд/мимику
-   (см. список «ЗАПРЕЩЁННЫЕ ФОРМУЛИРОВКИ» выше — взгляд в камеру,
-   макро-мимика, эмоциональные ярлыки, описания глаз/бровей/тела/лица,
-   одежда словами) ИЛИ их семантические синонимы (например 'eyes wide'
-   ≡ 'wide-open eyes', 'in panic' ≡ 'shocked', 'face contorted' =
-   макро-эмоция) — ошибка "block_N_shot_M_forbidden_phrase: <слово>".
-   КАТЕГОРИЯЛЬНОЕ ПРАВИЛО — если scene_action содержит ЛЮБОЕ слово или
-   выражение описывающее эмоциональное состояние ярлыком (примеры
-   запрещённой категории: panic, fear, rage, anger, joy, sadness,
-   shock, disgust, terror, fury, sorrow, ecstasy, dread, anxiety, и
-   любые их синонимы и производные) — это ошибка forbidden_phrase
-   ДАЖЕ если конкретного слова нет в списке выше. Эмоция должна
-   передаваться через описание физиологии (мышцы лица, глаза,
-   дыхание, челюсть, кадык, поза), не через ярлык.
+9. forbidden_phrase в scene_action — НАРУШЕНИЯ четырёх категорий,
+   ошибка "block_N_shot_M_forbidden_phrase: <слово>":
+
+   А) ВЗГЛЯД В КАМЕРУ: "looks at camera"/"into lens" — breaking 4th wall.
+
+   Б) МАКРО-МИМИКА (ярлык эмоции на всё лицо разом):
+      "eyes wide" ≡ "wide-open eyes", "face contorted" ≡ "twisted face",
+      "jaw drops", "grinning ear to ear", "in panic" ≡ "shocked"
+      и семантические синонимы — это театральный ярлык, эмоция-табличка.
+
+   В) ЭМОЦИОНАЛЬНЫЕ ЯРЛЫКИ (категория слов про эмоцию):
+      panic, fear, rage, anger, joy, sadness, shock, disgust, terror,
+      fury, sorrow, ecstasy, dread, anxiety и любые их синонимы и
+      производные — ошибка ДАЖЕ если конкретного слова нет в списке.
+
+   Г) ОДЕЖДА / ИНТЕРЬЕР / МАТЕРИАЛЫ СЛОВАМИ — приходят из реф-изображений:
+      • Одежда: "white t-shirt", "leather jacket", "denim jeans",
+        "black heels", "red dress", "blue scarf"
+      • Интерьер / мебель: "wooden table", "marble floor", "leather sofa",
+        "antique lamp", "stone fireplace"
+      • Материалы и ткани: "silk", "cotton", "velvet", "wool",
+        "leather" (как материал), "satin"
+
+   РАЗРЕШЕНО — микромимика и физиология (раздел 3 ГИ — антитеатральная):
+   эмоция передаётся через ФИЗИОЛОГИЮ, а не через ярлык. Допустимы:
+   • Глаза / зрачки / веки / ресницы: "pupils constricted",
+     "eyes flick left and right", "eyelids half-lowered",
+     "tears at the lower lash line"
+   • Брови / лоб / щёки / скулы: "brows pull inward and up at the center",
+     "muscles around her eyes contract", "cheekbones tense"
+   • Губы / рот / челюсть / подбородок / кадык: "jaw clenched",
+     "Adam's apple twitches", "lips pressed thin"
+   • Дыхание: "held breath", "shallow rapid breathing", "even breathing"
+   • Любые мышцы лица, шея, плечи, поза, руки (без указания одежды)
+
+   Эти описания НЕ forbidden_phrase — это и есть антитеатральная
+   манера, требуемая стилевой ДНК. Не путать с (Б) макро-мимикой:
+   "muscles around eyes contract" = ОК (микро), "eyes wide" = НЕ ОК (ярлык).
 <!-- END rule_9 -->
 <!-- BEGIN rule_10 -->
 10. Имя локации блока должно быть из списка доступных рефов локаций.
@@ -1046,20 +1070,44 @@ _VALIDATOR_JSON_TAIL = """\
    "block_N_shot_M_speaker_not_in_characters".
 <!-- END rule_8 -->
 <!-- BEGIN rule_9 -->
-9. Если scene_action содержит запрещённые слова про взгляд/мимику
-   (см. список «ЗАПРЕЩЁННЫЕ ФОРМУЛИРОВКИ» выше — взгляд в камеру,
-   макро-мимика, эмоциональные ярлыки, описания глаз/бровей/тела/лица,
-   одежда словами) ИЛИ их семантические синонимы (например 'eyes wide'
-   ≡ 'wide-open eyes', 'in panic' ≡ 'shocked', 'face contorted' =
-   макро-эмоция) — ошибка "block_N_shot_M_forbidden_phrase: <слово>".
-   КАТЕГОРИЯЛЬНОЕ ПРАВИЛО — если scene_action содержит ЛЮБОЕ слово или
-   выражение описывающее эмоциональное состояние ярлыком (примеры
-   запрещённой категории: panic, fear, rage, anger, joy, sadness,
-   shock, disgust, terror, fury, sorrow, ecstasy, dread, anxiety, и
-   любые их синонимы и производные) — это ошибка forbidden_phrase
-   ДАЖЕ если конкретного слова нет в списке выше. Эмоция должна
-   передаваться через описание физиологии (мышцы лица, глаза,
-   дыхание, челюсть, кадык, поза), не через ярлык.
+9. forbidden_phrase в scene_action — НАРУШЕНИЯ четырёх категорий,
+   ошибка "block_N_shot_M_forbidden_phrase: <слово>":
+
+   А) ВЗГЛЯД В КАМЕРУ: "looks at camera"/"into lens" — breaking 4th wall.
+
+   Б) МАКРО-МИМИКА (ярлык эмоции на всё лицо разом):
+      "eyes wide" ≡ "wide-open eyes", "face contorted" ≡ "twisted face",
+      "jaw drops", "grinning ear to ear", "in panic" ≡ "shocked"
+      и семантические синонимы — это театральный ярлык, эмоция-табличка.
+
+   В) ЭМОЦИОНАЛЬНЫЕ ЯРЛЫКИ (категория слов про эмоцию):
+      panic, fear, rage, anger, joy, sadness, shock, disgust, terror,
+      fury, sorrow, ecstasy, dread, anxiety и любые их синонимы и
+      производные — ошибка ДАЖЕ если конкретного слова нет в списке.
+
+   Г) ОДЕЖДА / ИНТЕРЬЕР / МАТЕРИАЛЫ СЛОВАМИ — приходят из реф-изображений:
+      • Одежда: "white t-shirt", "leather jacket", "denim jeans",
+        "black heels", "red dress", "blue scarf"
+      • Интерьер / мебель: "wooden table", "marble floor", "leather sofa",
+        "antique lamp", "stone fireplace"
+      • Материалы и ткани: "silk", "cotton", "velvet", "wool",
+        "leather" (как материал), "satin"
+
+   РАЗРЕШЕНО — микромимика и физиология (раздел 3 ГИ — антитеатральная):
+   эмоция передаётся через ФИЗИОЛОГИЮ, а не через ярлык. Допустимы:
+   • Глаза / зрачки / веки / ресницы: "pupils constricted",
+     "eyes flick left and right", "eyelids half-lowered",
+     "tears at the lower lash line"
+   • Брови / лоб / щёки / скулы: "brows pull inward and up at the center",
+     "muscles around her eyes contract", "cheekbones tense"
+   • Губы / рот / челюсть / подбородок / кадык: "jaw clenched",
+     "Adam's apple twitches", "lips pressed thin"
+   • Дыхание: "held breath", "shallow rapid breathing", "even breathing"
+   • Любые мышцы лица, шея, плечи, поза, руки (без указания одежды)
+
+   Эти описания НЕ forbidden_phrase — это и есть антитеатральная
+   манера, требуемая стилевой ДНК. Не путать с (Б) макро-мимикой:
+   "muscles around eyes contract" = ОК (микро), "eyes wide" = НЕ ОК (ярлык).
 <!-- END rule_9 -->
 <!-- BEGIN rule_10 -->
 10. Имя локации блока должно быть из списка доступных рефов локаций.
