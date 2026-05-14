@@ -88,9 +88,18 @@ class MontageOrchestratorThread(QThread):
     # крутится 3 раунда. Возврат на Opus экономит 10-15 мин на эпизод.
     # Validator/Editor/Reviewer — структурные/проверочные, остаются
     # на Sonnet 4.6.
+    # v1.0.72 (2026-05-14): Validator переведён на Haiku 4.5. Sonnet
+    # 4.6 на семантической проверке (5 правил после Python pre-filter
+    # v1.0.69) упирался в reasoning-токены и тратил 8+ минут на 4 KB
+    # output (9 ch/sec). Прямой ручной тест того же prompt'а на Haiku
+    # 4.5 — 2:04 / 6.4 KB output / 51 ch/sec, реально нашёл timing-
+    # math ошибку (dialog_too_short_for_words). На механике после
+    # prefilter'а семантический объём задачи Haiku достаточен.
+    # Editor оставлен на Sonnet 4.6 — он делает creative-правку
+    # реплик с учётом характера + иерархии сжатия, тут Sonnet нужен.
     # Откат при регрессии качества — git revert этого коммита.
     MODEL_SCRIPTWRITER     = "claude-opus-4-7"
-    MODEL_VALIDATOR        = "claude-sonnet-4-6"
+    MODEL_VALIDATOR        = "claude-haiku-4-5"
     MODEL_EDITOR           = "claude-sonnet-4-6"
     MODEL_CONTEXT_REVIEWER = "claude-sonnet-4-6"
 

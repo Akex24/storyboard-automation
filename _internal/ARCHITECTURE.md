@@ -796,6 +796,31 @@ UI юзер не знал, что валидация не прошла. Тепе
 Дропдаун в шапке: Sonnet 4.6 / Opus 4.7 / Haiku 4.5
 ([views/episode_chat.py:289-292](views/episode_chat.py:289)).
 
+### Per-stage модели монтажного пайплайна (hardcoded в MontageOrchestratorThread)
+
+В [threads/montage_orchestrator.py](threads/montage_orchestrator.py) каждая стадия монтажа имеет жёстко зашитую модель (юзерский дропдаун эти hardcode НЕ переопределяет — модель выбирается под задачу):
+
+| Стадия | Модель (v1.0.72) | Где | Почему |
+|---|---|---|---|
+| Scriptwriter | claude-opus-4-7 | [montage_orchestrator.py:92](threads/montage_orchestrator.py:92) | творческая генерация карты с нуля, нужен Opus |
+| **Validator** | **claude-haiku-4-5** | [montage_orchestrator.py:93](threads/montage_orchestrator.py:93) | проверка по чек-листу после Python pre-filter — механики хватит Haiku, в 4× быстрее Sonnet |
+| Editor | claude-sonnet-4-6 | [montage_orchestrator.py:94](threads/montage_orchestrator.py:94) | creative-правка реплик с учётом характера + иерархии сжатия |
+| Context Reviewer | claude-sonnet-4-6 | [montage_orchestrator.py:95](threads/montage_orchestrator.py:95) | сверка с Bible + продакшен-разделами 5/7/8/9/10/11/12 (v1.0.70) |
+
+**v1.0.72 (2026-05-14) — диагностика Sonnet vs Haiku на Validator:**
+
+| Тест | Время | Output | Speed | Ошибок |
+|---|---:|---:|---:|---:|
+| Studio (последний прогон ep2) | timeout 600s | — | — | — |
+| Ручной Sonnet 4.6 (тот же prompt) | 4:39.7 (279.7s) | 3 393 ch | 12.1 ch/sec | 2 |
+| **Ручной Haiku 4.5 (тот же prompt)** | **2:04.5** (124.5s) | 6 404 ch | **51.4 ch/sec** | 1 |
+
+Оба нашли главную математическую ошибку (`block_1_shot_2_dialog_too_short_for_words` — slow speech_type, 16 слов EN, реальный минимум 9.5–10.6с против 8с в карте). Haiku в 2.25× быстрее Sonnet на ручном тесте + 5× запас до 600s потолка в Studio.
+
+**Не объяснённое расхождение:** Sonnet ручной 4:40 vs Sonnet в Studio >8:00. Возможные источники — прокси/network jitter (юзер выключал прокси), cold-start subprocess, retry внутри claude CLI. Не критично — переключение на Haiku убирает обе нестабильности (медленность + расхождение).
+
+**Откат при регрессии качества:** `git revert <commit-v1.0.72>` — вернёт `MODEL_VALIDATOR = "claude-sonnet-4-6"`.
+
 ## Module boundaries
 
 ```
