@@ -476,6 +476,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_button_start': 'Сделать монтажную карту',
         'montage_cta_button_retry': '↻ Попробовать ещё раз',
         'montage_cta_button_cancel': '✗ Прервать',
+        # v1.0.82: state «карта готова на диске»
+        'montage_cta_title_open_map': '✓ Монтажная карта готова',
+        'montage_cta_subtitle_open_map': 'Карта сохранена. Откройте чтобы посмотреть, изменить или удалить.',
+        'montage_cta_button_open_map': '📂 Открыть монтажную карту',
         # Стадии оркестратора (показываются на CTA как бегущая строка)
         'montage_status_scriptwriter': 'Сценарист пишет монтажную карту',
         'montage_status_validator': '🔍 Чекер проверяет тайминги',
@@ -503,6 +507,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_hide_details': '▼ Скрыть детали',
         'montage_summary_btn_edit': '✎ Поправить вручную',
         'montage_summary_btn_storyboards': 'Делать сториборды',
+        # v1.0.82: кнопка удаления карты внутри попапа + подтверждение
+        'montage_summary_btn_delete': '🗑 Удалить монтажную карту',
+        'montage_delete_confirm_title': 'Удалить монтажную карту?',
+        'montage_delete_confirm_text': 'Будет удалена сама монтажная карта эпизода (поля montage_card и blocks в episodes.json).\n\nОстанутся: промпты Seedance, готовые сториборды, диагностический лог агентов.\n\nДействительно удалить?',
+        'montage_delete_confirm_yes': '🗑 Удалить',
+        'montage_delete_confirm_no': 'Оставить',
+        'montage_delete_blocked_pipeline': 'Идёт пайплайн сторибордов или Seedance — нельзя удалить карту сейчас. Дождитесь завершения.',
         # v1.0.63: таблица таймингов в попапе сводки
         'timing_section_title': '⏱ ТАЙМИНГ ГЕНЕРАЦИИ',
         'timing_total': 'ИТОГО',
@@ -964,6 +975,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_title_failed': '✗ Не вдалося зробити монтаж',
         'montage_cta_subtitle_failed': 'Щось пішло не так. Спробуй ще раз.',
         'montage_cta_button_start': 'Зробити монтажну карту',
+        # v1.0.82: state «карта готова на диске»
+        'montage_cta_title_open_map': '✓ Монтажна карта готова',
+        'montage_cta_subtitle_open_map': 'Карта збережена. Відкрийте щоб подивитись, змінити чи видалити.',
+        'montage_cta_button_open_map': '📂 Відкрити монтажну карту',
         'montage_cta_button_retry': '↻ Спробувати ще раз',
         'montage_cta_button_cancel': '✗ Перервати',
         'montage_status_scriptwriter': 'Сценарист пише монтажну карту',
@@ -990,6 +1005,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_hide_details': '▼ Сховати деталі',
         'montage_summary_btn_edit': '✎ Виправити вручну',
         'montage_summary_btn_storyboards': 'Робити сториборди',
+        # v1.0.82: кнопка видалення карти
+        'montage_summary_btn_delete': '🗑 Видалити монтажну карту',
+        'montage_delete_confirm_title': 'Видалити монтажну карту?',
+        'montage_delete_confirm_text': 'Буде видалено саму монтажну карту епізоду (поля montage_card і blocks у episodes.json).\n\nЗалишаться: промпти Seedance, готові сториборди, діагностичний лог агентів.\n\nДійсно видалити?',
+        'montage_delete_confirm_yes': '🗑 Видалити',
+        'montage_delete_confirm_no': 'Залишити',
+        'montage_delete_blocked_pipeline': 'Йде пайплайн сториборів або Seedance — не можна видалити карту зараз. Дочекайтесь завершення.',
         # v1.0.63: таблиця таймінгів у попапі зведення
         'timing_section_title': '⏱ ТАЙМІНГ ГЕНЕРАЦІЇ',
         'timing_total': 'ВСЬОГО',
@@ -1450,6 +1472,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_title_failed': '✗ Could not build montage',
         'montage_cta_subtitle_failed': 'Something went wrong. Try again.',
         'montage_cta_button_start': 'Make montage map',
+        # v1.0.82: state «map ready on disk»
+        'montage_cta_title_open_map': '✓ Montage map is ready',
+        'montage_cta_subtitle_open_map': 'Card saved. Open to view, modify or delete.',
+        'montage_cta_button_open_map': '📂 Open montage map',
         'montage_cta_button_retry': '↻ Try again',
         'montage_cta_button_cancel': '✗ Cancel',
         'montage_status_scriptwriter': 'Scriptwriter is drafting the montage card',
@@ -1476,6 +1502,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_hide_details': '▼ Hide details',
         'montage_summary_btn_edit': '✎ Edit manually',
         'montage_summary_btn_storyboards': 'Make storyboards',
+        # v1.0.82: delete card button + confirmation
+        'montage_summary_btn_delete': '🗑 Delete montage card',
+        'montage_delete_confirm_title': 'Delete the montage card?',
+        'montage_delete_confirm_text': 'The montage card of the episode will be deleted (montage_card and blocks fields in episodes.json).\n\nWill remain: Seedance prompts, existing storyboards, agent diagnostic log.\n\nReally delete?',
+        'montage_delete_confirm_yes': '🗑 Delete',
+        'montage_delete_confirm_no': 'Keep',
+        'montage_delete_blocked_pipeline': 'Storyboard or Seedance pipeline is running — cannot delete the card right now. Wait for it to finish.',
         # v1.0.63: timing table in summary popup
         'timing_section_title': '⏱ GENERATION TIMING',
         'timing_total': 'TOTAL',

@@ -27,7 +27,7 @@ from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QPlainTextEdit, QTextEdit, QComboBox,
-    QVBoxLayout, QHBoxLayout,
+    QVBoxLayout, QHBoxLayout, QMessageBox,
 )
 
 from i18n import tr
@@ -256,6 +256,8 @@ class EpisodeChatView(QWidget):
         self._montage_cta.start_requested.connect(self._on_montage_start)
         self._montage_cta.retry_requested.connect(self._on_montage_start)
         self._montage_cta.cancel_requested.connect(self._on_montage_cancel)
+        # v1.0.82: новая кнопка «📂 Открыть монтажную карту»
+        self._montage_cta.open_map_requested.connect(self._on_open_map_clicked)
         self._montage_cta.hide()
         lay.addWidget(self._montage_cta)
         # 2026-05-07: per-episode оркестратор монтажной карты.
@@ -563,32 +565,19 @@ class EpisodeChatView(QWidget):
     def _restore_montage_cta_for_current_ep(self):
         """Перерисовывает CTA при переключении на эпизод. Сценарии:
           • Оркестратор бежит для этого ep_id → running с последним stage.
-          • Есть pending-результат (закончил пока юзер был не тут) →
-            показываем idle и сразу открываем MontageSummaryDialog.
+          • Карта уже сохранена на диске (episodes.json[ep].montage_card
+            или fallback _agent_log_epN.json) → show_open_map.
           • Иначе — даём `_check_montage_ready` решить (idle / hidden).
+
+        v1.0.82: убрана ветка автооткрытия попапа через
+        `_pending_montage_results.pop()`. Карта теперь всегда на диске,
+        попап открывается только по клику на CTA «📂 Открыть монтажную
+        карту».
         """
         ep_id = self._ep_id
         if not ep_id:
             return
-        # 1) Pending-результат — показать попап и idle.
-        pending = self._pending_montage_results.pop(ep_id, None)
-        if pending:
-            try:
-                self._montage_cta.show_idle()
-                dlg = MontageSummaryDialog(
-                    montage_card=pending['montage_card'],
-                    checker_report=pending['checker_report'],
-                    rounds_used=pending['rounds_used'],
-                    agent_summary=pending['agent_summary'],
-                    parent=self)
-                montage_card = pending['montage_card']
-                dlg.confirm_storyboards.connect(
-                    lambda: self._on_montage_confirm_storyboards(montage_card))
-                dlg.exec()
-            except Exception:
-                traceback.print_exc()
-            return
-        # 2) Оркестратор бежит для этого эпизода — восстанавливаем running.
+        # 1) Оркестратор бежит для этого эпизода — восстанавливаем running.
         state = self._montage_states.get(ep_id)
         thread = self._montage_threads.get(ep_id)
         if (state and state.get('kind') == 'running'
@@ -653,7 +642,14 @@ class EpisodeChatView(QWidget):
             except Exception:
                 traceback.print_exc()
             return
-        # 4) Иначе — пусть `_check_montage_ready` (тикает раз в 2с) решит.
+        # v1.0.82: 4) Карта уже сохранена на диске → CTA «📂 Открыть».
+        try:
+            if self._has_saved_montage_card(ep_id):
+                self._montage_cta.show_open_map()
+                return
+        except Exception:
+            traceback.print_exc()
+        # 5) Иначе — пусть `_check_montage_ready` (тикает раз в 2с) решит.
         # Скрываем сейчас, чтобы старое состояние от прошлого ep_id не
         # «протекало» в новый.
         try:
@@ -2611,12 +2607,20 @@ class EpisodeChatView(QWidget):
             self._montage_cta.hide()
             return
 
-        # 2026-05-06: Если монтажная карта уже сохранена в episodes.json
-        # (юзер кликнул «🎨 Делать сториборды» и pipeline в работе) —
-        # CTA скрыта навсегда для этого эпизода. Иначе QTimer тикает
-        # каждые 2с и снова показывает её, перекрывая мой hide() из
-        # `_on_montage_confirm_storyboards`.
-        # Карта = blocks с шотами в `episodes.json[<ep>].blocks`.
+        # v1.0.82: Если на диске уже есть полная монтажная карта (через
+        # episodes.json[ep].montage_card или fallback _agent_log_epN.json)
+        # — CTA показывает «📂 Открыть монтажную карту». Юзер сам решает
+        # когда открывать попап.
+        try:
+            if self._has_saved_montage_card(self._ep_id):
+                self._montage_cta.show_open_map()
+                return
+        except Exception:
+            traceback.print_exc()
+
+        # 2026-05-06 fallback (legacy): эпизоды до v1.0.82 могли иметь
+        # только урезанный blocks-формат после клика «Делать сториборды»
+        # — без полной montage_card. Тогда CTA скрыта (как раньше).
         try:
             if self._episode_has_montage_card():
                 self._montage_cta.hide()
@@ -3323,41 +3327,41 @@ class EpisodeChatView(QWidget):
                                   rounds_used: int,
                                   agent_log_path: str,
                                   agent_summary: dict):
-        """Оркестратор завершил работу. Открываем popup-сводку.
+        """Оркестратор завершил работу.
 
-        2026-05-06: новый параметр `agent_summary` — компактный отчёт по
-        работе всех 4 агентов (Сценарист / Чекер / Редактор / Финальный
-        редактор). Используется для понятной шапки попапа и раскрывашки
-        с деталями Bible-сверки.
+        v1.0.82: попап БОЛЬШЕ НЕ выскакивает автоматически.
+        Карта сохраняется в episodes.json[ep]['montage_card'] полным
+        форматом, в чате эпизода CTA переключается на «📂 Открыть
+        монтажную карту». Юзер сам кликает когда хочет посмотреть.
 
-        2026-05-07: per-episode. State сбрасывается для ep_id треда. Попап
-        открывается ТОЛЬКО если юзер сейчас на этом эпизоде (иначе — он
-        увидит его при возврате; данные сохранены в `_pending_montage_results`).
+        2026-05-06: `agent_summary` — компактный отчёт по работе агентов.
+        2026-05-07: per-episode. State сбрасывается для ep_id треда.
         """
         ep_id = self._montage_ep_for_sender()
-        # Snapshot — карта готова, можно показать idle.
+        # Snapshot — карта готова, снимаем running state.
         if ep_id is not None:
             self._montage_states.pop(ep_id, None)
-        if ep_id is not None and ep_id != self._ep_id:
-            # Юзер не на этом эпизоде — сохраним результат «к выдаче»
-            # при возврате.
-            self._pending_montage_results[ep_id] = {
-                'montage_card': montage_card,
-                'checker_report': checker_report,
-                'rounds_used': rounds_used,
-                'agent_summary': agent_summary,
-            }
+
+        # v1.0.82: сохраняем полную карту + checker_report + agent_summary
+        # на диск независимо от того где юзер сейчас находится. Карта
+        # переживёт перезапуск Studio и будет доступна через «📂 Открыть».
+        if ep_id is not None:
+            try:
+                self._save_full_montage_card(
+                    ep_id, montage_card,
+                    checker_report=checker_report,
+                    agent_summary=agent_summary,
+                    rounds_used=rounds_used)
+            except Exception:
+                traceback.print_exc()
+
+        # Если юзер на этом эпизоде — переключаем CTA на «Открыть».
+        # Если на другом — там CTA обновится при возврате через
+        # _restore_montage_cta_for_current_ep (которая прочитает с диска).
+        if ep_id is None or ep_id != self._ep_id:
             return
         try:
-            self._montage_cta.show_idle()
-            dlg = MontageSummaryDialog(montage_card=montage_card,
-                                        checker_report=checker_report,
-                                        rounds_used=rounds_used,
-                                        agent_summary=agent_summary,
-                                        parent=self)
-            dlg.confirm_storyboards.connect(
-                lambda: self._on_montage_confirm_storyboards(montage_card))
-            dlg.exec()
+            self._montage_cta.show_open_map()
         except Exception:
             traceback.print_exc()
 
@@ -3677,5 +3681,252 @@ class EpisodeChatView(QWidget):
                 _json.dumps(data, ensure_ascii=False, indent=2),
                 encoding='utf-8'
             )
+        except Exception:
+            traceback.print_exc()
+
+    # ── v1.0.82: персистентность полной монтажной карты ──────────────
+
+    def _save_full_montage_card(self, ep_id: str, montage_card: dict,
+                                  checker_report: dict = None,
+                                  agent_summary: dict = None,
+                                  rounds_used: int = 1):
+        """Пишет полную карту + сопутствующие отчёты в episodes.json
+        для повторного открытия через CTA «📂 Открыть». Структура:
+
+            episodes.json[ep_id] = {
+                ...
+                'montage_card': {<полная карта со всеми полями>},
+                'montage_checker_report': {...},
+                'montage_agent_summary': {...},
+                'montage_rounds_used': int,
+            }
+        """
+        path = self._ep_meta_path()
+        if path is None or not ep_id:
+            return
+        try:
+            import json as _json
+            data = {}
+            if path.exists():
+                try:
+                    data = _json.loads(path.read_text(encoding='utf-8')) or {}
+                except Exception:
+                    data = {}
+            ep = data.setdefault(ep_id, {})
+            ep['montage_card'] = montage_card
+            if checker_report is not None:
+                ep['montage_checker_report'] = checker_report
+            if agent_summary is not None:
+                ep['montage_agent_summary'] = agent_summary
+            ep['montage_rounds_used'] = int(rounds_used or 1)
+            path.write_text(
+                _json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception:
+            traceback.print_exc()
+
+    def _has_saved_montage_card(self, ep_id: str) -> bool:
+        """True если на диске есть карта для эпизода (production-формат
+        в episodes.json или диагностический fallback _agent_log_epN.json)."""
+        if not ep_id:
+            return False
+        # 1. Production-формат
+        path = self._ep_meta_path()
+        if path is not None and path.exists():
+            try:
+                import json as _json
+                data = _json.loads(path.read_text(encoding='utf-8')) or {}
+                card = (data.get(ep_id) or {}).get('montage_card') or {}
+                if card.get('blocks'):
+                    return True
+            except Exception:
+                traceback.print_exc()
+        # 2. Fallback: _agent_log_epN.json (для эпизодов сгенерированных
+        # до v1.0.82).
+        log_path = self._agent_log_path_for_ep(ep_id)
+        if log_path is not None and log_path.exists():
+            return True
+        return False
+
+    def _agent_log_path_for_ep(self, ep_id: str):
+        """Путь к диагностическому логу агентов конкретного эпизода
+        (`shows/<slug>/output/_agent_log_<ep>.json`), либо None."""
+        try:
+            cur_show = getattr(self._mw, '_current_show', None)
+            if not cur_show or not ep_id:
+                return None
+            from pathlib import Path as _P
+            return (self._mw._project_root / "shows" / cur_show
+                    / "output" / f"_agent_log_{ep_id}.json")
+        except Exception:
+            return None
+
+    def _load_full_montage_card(self, ep_id: str):
+        """Читает полную карту с fallback'ом.
+        Returns: (montage_card, checker_report, agent_summary, rounds_used)
+                 либо (None, None, None, 1) если ничего не найдено.
+        """
+        if not ep_id:
+            return (None, None, None, 1)
+        import json as _json
+        # 1. Production-формат в episodes.json
+        path = self._ep_meta_path()
+        if path is not None and path.exists():
+            try:
+                data = _json.loads(path.read_text(encoding='utf-8')) or {}
+                ep = data.get(ep_id) or {}
+                card = ep.get('montage_card') or {}
+                if card.get('blocks'):
+                    return (
+                        card,
+                        ep.get('montage_checker_report') or {
+                            "ok": True, "errors": [], "report": []},
+                        ep.get('montage_agent_summary') or {},
+                        int(ep.get('montage_rounds_used') or 1),
+                    )
+            except Exception:
+                traceback.print_exc()
+        # 2. Fallback: _agent_log_epN.json — reverse-search последней
+        # stage с result.blocks.
+        log_path = self._agent_log_path_for_ep(ep_id)
+        if log_path is None or not log_path.exists():
+            return (None, None, None, 1)
+        try:
+            log = _json.loads(log_path.read_text(encoding='utf-8'))
+            for s in reversed(log.get('stages', []) or []):
+                res = s.get('result') or {}
+                if isinstance(res, dict) and res.get('blocks'):
+                    # Pseudo-summary из последней validator stage
+                    return (
+                        res,
+                        {"ok": True, "errors": [], "report": []},
+                        {},  # agent_summary недоступен в fallback'е
+                        int(log.get('rounds_used') or 1),
+                    )
+        except Exception:
+            traceback.print_exc()
+        return (None, None, None, 1)
+
+    def _delete_full_montage_card(self, ep_id: str):
+        """Удаляет монтажную карту эпизода: снимает поля montage_card,
+        montage_checker_report, montage_agent_summary, montage_rounds_used,
+        а также blocks (production-формат для StoryboardPipeline).
+
+        НЕ трогает: _agent_log_epN.json, output/seedance/*, output/storyboards/*
+        — это диагностика и артефакты сторибордов, остаются.
+        """
+        if not ep_id:
+            return
+        path = self._ep_meta_path()
+        if path is None or not path.exists():
+            return
+        try:
+            import json as _json
+            data = _json.loads(path.read_text(encoding='utf-8')) or {}
+            ep = data.get(ep_id) or {}
+            for k in ('montage_card', 'montage_checker_report',
+                       'montage_agent_summary', 'montage_rounds_used',
+                       'blocks'):
+                ep.pop(k, None)
+            data[ep_id] = ep
+            path.write_text(
+                _json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception:
+            traceback.print_exc()
+
+    def _is_storyboard_or_seedance_running(self) -> bool:
+        """v1.0.82: блокировка кнопки «🗑 Удалить» если активен
+        пайплайн сторибордов или Seedance — иначе можно поломать
+        текущую генерацию."""
+        for attr in ('_storyboard_pipeline_thread',
+                      '_seedance_pipeline_thread'):
+            t = getattr(self, attr, None)
+            try:
+                if t is not None and t.isRunning():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _open_montage_summary_dialog(self, ep_id: str):
+        """v1.0.82: открыть попап с картой из диска. Подключает 2 сигнала
+        диалога: confirm_storyboards (как раньше) и delete_card."""
+        try:
+            card, checker_report, agent_summary, rounds_used = \
+                self._load_full_montage_card(ep_id)
+            if not card or not card.get('blocks'):
+                return
+            dlg = MontageSummaryDialog(
+                montage_card=card,
+                checker_report=checker_report,
+                rounds_used=rounds_used,
+                agent_summary=agent_summary,
+                parent=self)
+            # Блокируем «Удалить» если идёт пайплайн
+            if self._is_storyboard_or_seedance_running():
+                dlg.set_delete_enabled(
+                    False, tr('montage_delete_blocked_pipeline'))
+            dlg.confirm_storyboards.connect(
+                lambda c=card: self._on_montage_confirm_storyboards(c))
+            dlg.delete_card.connect(
+                lambda d=dlg, e=ep_id: self._on_montage_delete_card(d, e))
+            dlg.exec()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_open_map_clicked(self):
+        """Юзер кликнул «📂 Открыть монтажную карту» в CTA."""
+        ep_id = self._ep_id
+        if not ep_id:
+            return
+        self._open_montage_summary_dialog(ep_id)
+
+    def _on_montage_delete_card(self, dlg, ep_id: str):
+        """Юзер кликнул «🗑 Удалить» в попапе. Подтверждение + проверка
+        активных пайплайнов + cleanup + закрытие попапа."""
+        # Защита от race: если успели запустить пайплайн пока попап открыт
+        if self._is_storyboard_or_seedance_running():
+            try:
+                QMessageBox.warning(
+                    dlg,
+                    tr('montage_delete_confirm_title'),
+                    tr('montage_delete_blocked_pipeline'))
+            except Exception:
+                traceback.print_exc()
+            return
+        # Подтверждение
+        try:
+            m = QMessageBox(dlg)
+            m.setIcon(QMessageBox.Icon.Warning)
+            m.setWindowTitle(tr('montage_delete_confirm_title'))
+            m.setText(tr('montage_delete_confirm_text'))
+            yes = m.addButton(tr('montage_delete_confirm_yes'),
+                               QMessageBox.ButtonRole.DestructiveRole)
+            no = m.addButton(tr('montage_delete_confirm_no'),
+                              QMessageBox.ButtonRole.RejectRole)
+            m.setDefaultButton(no)
+            m.exec()
+            if m.clickedButton() is not yes:
+                return
+        except Exception:
+            traceback.print_exc()
+            return
+        # Удаление
+        try:
+            self._delete_full_montage_card(ep_id)
+        except Exception:
+            traceback.print_exc()
+        # Закрыть попап и обновить CTA
+        try:
+            dlg.close()
+        except Exception:
+            traceback.print_exc()
+        try:
+            # После удаления карты — возврат к стандартной логике CTA.
+            self._montage_cta.hide()
+            self._check_montage_ready()
         except Exception:
             traceback.print_exc()

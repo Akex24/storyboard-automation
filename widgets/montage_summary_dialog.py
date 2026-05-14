@@ -33,6 +33,8 @@ class MontageSummaryDialog(QDialog):
     # Эмитим signals чтобы не зависеть от .exec() (но можно и QDialog.Accepted)
     confirm_storyboards = pyqtSignal()
     edit_requested = pyqtSignal()
+    # v1.0.82: новые сигналы для кнопок «Удалить монтажную карту»
+    delete_card = pyqtSignal()
 
     def __init__(self, montage_card: dict, checker_report: dict,
                  rounds_used: int, agent_summary: Optional[dict] = None,
@@ -176,12 +178,29 @@ class MontageSummaryDialog(QDialog):
 
         # Кнопки внизу
         btn_row = QHBoxLayout()
+
+        # v1.0.82: «🗑 Удалить монтажную карту» — слева, secondary стиль.
+        # Снимает montage_card + blocks из episodes.json. Файлы Seedance
+        # и сторибордов остаются. Подтверждение делается в episode_chat
+        # обработчиком сигнала delete_card.
+        self.delete_btn = QPushButton(tr('montage_summary_btn_delete'))
+        self.delete_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #cccccc;"
+            " border: 1px solid rgba(255,255,255,0.15);"
+            " padding: 8px 14px; font-size: 13px;"
+            " border-radius: 6px; }"
+            "QPushButton:hover { background: rgba(228,52,74,0.10);"
+            " color: #e4344a; border-color: rgba(228,52,74,0.35); }"
+            "QPushButton:pressed { background: rgba(228,52,74,0.18); }"
+            "QPushButton:disabled { color: #666666; border-color:"
+            " rgba(255,255,255,0.06); }")
+        self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_btn.clicked.connect(self._on_delete)
+        btn_row.addWidget(self.delete_btn)
         btn_row.addStretch(1)
 
         # 2026-05-06: «Поправить вручную» убрал — кнопка путала юзеров
-        # (один клик и работа потеряна без видимой пользы). Если карта
-        # не нравится — закрыть попап крестиком и заново нажать
-        # «🎬 Сделать сториборды» в чате (оркестратор пройдёт ещё раз).
+        # (один клик и работа потеряна без видимой пользы).
         self.confirm_btn = QPushButton(tr('montage_summary_btn_storyboards'))
         # 2026-05-08: LUMZ red primary CTA. Раньше был фиолетовый #4a5fcc.
         self.confirm_btn.setStyleSheet(
@@ -640,47 +659,35 @@ class MontageSummaryDialog(QDialog):
             self._details_btn.setText(tr('montage_summary_hide_details'))
 
     def _on_confirm(self):
-        # Юзер кликнул «🎨 Делать сториборды» — это явный путь дальше,
-        # подтверждение не нужно. Помечаем флаг чтобы override reject
-        # не показал предупреждение.
-        self._user_confirmed = True
+        # Юзер кликнул «🎨 Делать сториборды» — явный путь дальше.
         self.confirm_storyboards.emit()
         self.accept()
 
     def _on_edit(self):
-        self._user_confirmed = True
         self.edit_requested.emit()
         self.reject()
 
-    def reject(self):
-        """2026-05-06: при попытке закрытия без клика «Делать сториборды»
-        (крестик / Esc / закрытие окна) — запрашиваем подтверждение,
-        потому что вся работа агентов потеряется и придётся запускать
-        оркестратор заново (1-3 минуты)."""
-        if getattr(self, '_user_confirmed', False):
-            super().reject()
-            return
-        m = QMessageBox(self)
-        m.setIcon(QMessageBox.Icon.Warning)
-        m.setWindowTitle(tr('montage_discard_title'))
-        m.setText(tr('montage_discard_text'))
-        yes = m.addButton(tr('montage_discard_yes'),
-                           QMessageBox.ButtonRole.DestructiveRole)
-        no = m.addButton(tr('montage_discard_no'),
-                          QMessageBox.ButtonRole.RejectRole)
-        m.setDefaultButton(no)
-        m.exec()
-        if m.clickedButton() is yes:
-            self._user_confirmed = True
-            super().reject()
-        # Иначе остаёмся в диалоге.
+    def _on_delete(self):
+        # v1.0.82: эмитим сигнал — episode_chat обработчик покажет
+        # QMessageBox подтверждения, проверит активные пайплайны и
+        # выполнит удаление. После подтверждения попап закроется через
+        # close() из обработчика (или останется открытым если юзер
+        # отменил).
+        self.delete_card.emit()
 
-    def closeEvent(self, event):
-        """Перехватываем системное закрытие окна (X в углу) — направляем
-        в наш reject() с подтверждением."""
-        if getattr(self, '_user_confirmed', False):
-            event.accept()
-            return
-        # reject() сам спросит подтверждение и закроет диалог если ОК.
-        event.ignore()
-        self.reject()
+    def set_delete_enabled(self, enabled: bool, tooltip: str = "") -> None:
+        """v1.0.82: блокировка «Удалить» при активном
+        StoryboardPipeline / SeedancePipeline. Вызывается извне из
+        episode_chat при создании диалога — там известно состояние
+        пайплайнов конкретного эпизода."""
+        self.delete_btn.setEnabled(enabled)
+        if tooltip:
+            self.delete_btn.setToolTip(tooltip)
+        else:
+            self.delete_btn.setToolTip("")
+
+    # v1.0.82: reject/closeEvent — простое закрытие БЕЗ предупреждения.
+    # Карта теперь сохраняется на диск автоматически в
+    # episodes.json[ep]['montage_card'] из _on_montage_finished_ok,
+    # крестик попапа ничего не теряет — данные остаются доступны через
+    # CTA «📂 Открыть монтажную карту».

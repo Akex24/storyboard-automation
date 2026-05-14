@@ -774,6 +774,32 @@ Post-check НЕ обрабатывает Editor-after-Reviewer (CR concerns > 0 
 
 Cross-platform: чистый Python + math.ceil + dict-логика. Никаких subprocess/Path/open.
 
+**v1.0.82 (2026-05-14) — персистентность монтажной карты + CTA «📂 Открыть монтажную карту»:**
+
+Раньше попап монтажки выскакивал автоматически после `_on_montage_finished_ok`, при крестике карта терялась из памяти (через `_pending_montage_results.pop()` + удаление локального dlg-объекта). На диске оставался диагностический `_agent_log_epN.json`, но Studio его не читала. При параллельной работе с 4-5 эпизодами попапы лезли отовсюду — путаница.
+
+**Новое поведение:**
+- Карта сохраняется на диск автоматически в `episodes.json[ep]['montage_card']` (полная карта со всеми полями: blocks с duration_sec, dialog, scene_action, geometry, total_seconds).
+- Также сохраняются `montage_checker_report`, `montage_agent_summary`, `montage_rounds_used` — для восстановления попапа в точности как был.
+- Попап **НЕ выскакивает** автоматически. Вместо этого в чате эпизода CTA переключается в state `KIND_OPEN_MAP` — кнопка «📂 Открыть монтажную карту» (зелёный tint).
+- Юзер кликает по «Открыть» → читает карту с диска → попап открывается. Крестик просто закрывает окно без warnings.
+- Карта переживает перезапуск Studio: при возврате на эпизод `_check_montage_ready` детектит карту на диске → CTA сразу show_open_map.
+
+**Хранение (episodes.json[ep_id]):**
+- `montage_card` — НОВОЕ поле, полная карта. Source of truth для повторного открытия.
+- `montage_checker_report`, `montage_agent_summary`, `montage_rounds_used` — НОВЫЕ поля, восстанавливают full popup state.
+- `blocks` — старое поле (урезанный формат `{n, name, shots[n]=description_ru}`), пишется ТОЛЬКО при клике «🎨 Делать сториборды» — для StoryboardPipeline.
+
+**Fallback на `_agent_log_epN.json`:** для эпизодов сгенерированных до v1.0.82 (когда `montage_card` ещё не записывался) — `_load_full_montage_card` делает reverse-search последней stage с `result.blocks` в логе. Без миграции, прозрачно.
+
+**Удаление карты:** кнопка «🗑 Удалить монтажную карту» в попапе (новый сигнал `delete_card` из MontageSummaryDialog). При клике — QMessageBox подтверждение + проверка `_is_storyboard_or_seedance_running()` (защита от race). После подтверждения — `_delete_full_montage_card` снимает 5 полей (`montage_card`, `montage_checker_report`, `montage_agent_summary`, `montage_rounds_used`, `blocks`) из `episodes.json[ep]`. НЕ трогает `_agent_log_epN.json`, `output/seedance/*`, `output/storyboards/*`. CTA возвращается к «Сделать монтажную карту».
+
+**Блокировка «🗑 Удалить» при активном пайплайне:** `dlg.set_delete_enabled(False, tr('montage_delete_blocked_pipeline'))` если `_storyboard_pipeline_thread.isRunning()` или `_seedance_pipeline_thread.isRunning()`. Tooltip объясняет почему.
+
+**Файлы:** `views/episode_chat.py` (~200 строк новых методов + правки 3 handler'ов), `widgets/montage_summary_dialog.py` (новая кнопка + сигнал, удалена reject-warning логика), `widgets/montage_cta.py` (KIND_OPEN_MAP + show_open_map), `i18n.py` (9 новых ключей × 3 языка).
+
+**Cross-platform:** все file-IO через `pathlib.Path.read_text() / write_text() / exists()`. Никаких `subprocess` / `shell`.
+
 **v1.0.76 split logic в `run()` для Validator R2:**
 ```python
 editor_ran = False

@@ -30,6 +30,9 @@ from i18n import tr
 KIND_IDLE = 'idle'
 KIND_RUNNING = 'running'
 KIND_FAILED = 'failed'
+# v1.0.82: новое состояние — на эпизоде есть готовая монтажная карта на диске.
+# CTA показывает кнопку «📂 Открыть монтажную карту» вместо «Сделать».
+KIND_OPEN_MAP = 'open_map'
 
 
 class MontageCTA(QFrame):
@@ -38,6 +41,7 @@ class MontageCTA(QFrame):
     start_requested = pyqtSignal()
     retry_requested = pyqtSignal()
     cancel_requested = pyqtSignal()  # 2026-05-06: «✗ Прервать» в running-state
+    open_map_requested = pyqtSignal()  # v1.0.82: «📂 Открыть монтажную карту»
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,6 +111,14 @@ class MontageCTA(QFrame):
         self.cancel_btn.hide()
         btn_row.addWidget(self.cancel_btn)
 
+        # v1.0.82: «📂 Открыть монтажную карту»
+        self.open_map_btn = QPushButton(tr('montage_cta_button_open_map'))
+        self.open_map_btn.setObjectName("montage-cta-btn-primary")
+        self.open_map_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_map_btn.clicked.connect(self.open_map_requested.emit)
+        self.open_map_btn.hide()
+        btn_row.addWidget(self.open_map_btn)
+
         outer.addLayout(btn_row)
 
         # Анимация "точек" в running
@@ -156,6 +168,17 @@ class MontageCTA(QFrame):
         self._dot_timer.stop()
         self.show()  # 2026-05-07: гарантируем видимость
 
+    def show_open_map(self):
+        """v1.0.82: показывает CTA «📂 Открыть монтажную карту».
+        Используется когда на эпизоде есть готовая монтажная карта
+        (episodes.json[ep]['montage_card'] или _agent_log_epN.json).
+        Клик → сигнал open_map_requested → episode_chat читает карту
+        с диска и открывает MontageSummaryDialog."""
+        self._kind = KIND_OPEN_MAP
+        self._render()
+        self._dot_timer.stop()
+        self.show()
+
     # ── внутреннее ──
 
     def _render(self):
@@ -169,6 +192,7 @@ class MontageCTA(QFrame):
             self.start_btn.show()
             self.retry_btn.hide()
             self.cancel_btn.hide()
+            self.open_map_btn.hide()
         elif self._kind == KIND_RUNNING:
             self.title_lbl.setText(tr('montage_cta_title_running'))
             self.subtitle_lbl.setText(tr('montage_cta_subtitle_running'))
@@ -180,6 +204,18 @@ class MontageCTA(QFrame):
             self.retry_btn.hide()
             self.cancel_btn.setText(tr('montage_cta_button_cancel'))
             self.cancel_btn.show()
+            self.open_map_btn.hide()
+        elif self._kind == KIND_OPEN_MAP:
+            # v1.0.82: монтажка готова, лежит на диске.
+            self.title_lbl.setText(tr('montage_cta_title_open_map'))
+            self.subtitle_lbl.setText(tr('montage_cta_subtitle_open_map'))
+            self.warning_lbl.hide()
+            self.status_lbl.hide()
+            self.start_btn.hide()
+            self.retry_btn.hide()
+            self.cancel_btn.hide()
+            self.open_map_btn.setText(tr('montage_cta_button_open_map'))
+            self.open_map_btn.show()
         else:  # KIND_FAILED
             self.title_lbl.setText(tr('montage_cta_title_failed'))
             self.subtitle_lbl.setText(self._status_text or tr('montage_cta_subtitle_failed'))
@@ -189,6 +225,7 @@ class MontageCTA(QFrame):
             self.retry_btn.setText(tr('montage_cta_button_retry'))
             self.retry_btn.show()
             self.cancel_btn.hide()
+            self.open_map_btn.hide()
         self._apply_style()
 
     def _tick_dots(self):
@@ -212,6 +249,12 @@ class MontageCTA(QFrame):
             bg = "rgba(212,162,86,0.10)"
             border = "rgba(212,162,86,0.40)"
             title_color = "#d4a256"
+            subtitle_color = "rgba(255,255,255,0.70)"
+        elif self._kind == KIND_OPEN_MAP:
+            # v1.0.82: green tint — карта готова, ничего не сломано.
+            bg = "rgba(80,200,120,0.10)"
+            border = "rgba(80,200,120,0.40)"
+            title_color = "#50c878"
             subtitle_color = "rgba(255,255,255,0.70)"
         else:  # FAILED
             bg = "rgba(228,52,74,0.10)"
