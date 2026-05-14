@@ -736,6 +736,44 @@ VALIDATOR_SYSTEM full: 15 484 → **14 618 ch** (-866). Stripped (после Pyt
 
 Метрика успеха v1.0.80: на ep2 показатели `missing_geometry`, `invalid_location_mixing`, `missing_voice_profiles` в Validator R2/R3 должны быть = 0. Общий `new_count` (Editor создал новых) — упасть с 4 до 0-1.
 
+**v1.0.81 (2026-05-14) — Python post-check таймингов после Editor (вторая линия защиты):**
+
+Несмотря на «КРИТИЧЕСКИЙ ИНВАРИАНТ — ТАЙМИНГ РЕПЛИК» из v1.0.79, Editor R1/R2 продолжали создавать `dialog_too_short_for_words` ошибки на ep2. Промпт-фикс работал частично — Opus иногда забывал правило. Решение: гарантированный Python post-check в коде, не уговариваем AI.
+
+Новый модуль [agents/timing_post_check.py](agents/timing_post_check.py):
+- `SPEED_MAP`: fast=3.0, normal=2.75, emotional=2.25, slow=1.75 (слова/сек)
+- `min_duration_sec(words, speech_type)` → `math.ceil(words/speed + reserve)`
+- `apply_timing_post_check(card)` — in-place поправка `duration_sec` шотов с репликой если меньше минимума + пересчёт `card['total_seconds']`. Возвращает (card, summary).
+
+Врезка в [threads/montage_orchestrator.py:251 + 316](threads/montage_orchestrator.py:251): новый метод `_apply_post_check_timings(card, round_num)` вызывается сразу ПОСЛЕ успешного `_call_editor` R1 и R2, ДО Validator R2/R3 соответственно. Логируется в `_agent_log` как stage `post_check_timings_r{round_num}` со всеми метаданными (shots_checked, shots_fixed, fixes[], delta_total_seconds).
+
+Pipeline (полный после v1.0.81):
+```
+1. Scriptwriter (Opus 4.7)
+2. Validator R1 (Haiku 4.5)
+2.5. Geometry Editor (Haiku 4.5)
+3. Editor R1 (Opus 4.7)
+3.1. Post-check таймингов R1 (Python, ~10мс)     ← v1.0.81
+3.5. Validator R2 (Haiku 4.5)
+3.6. Editor R2 (Opus 4.7)
+3.6.1. Post-check таймингов R2 (Python, ~10мс)   ← v1.0.81
+3.7. Validator R3 (Haiku 4.5)
+4. Context Reviewer (Sonnet 4.6, опц.)
+5. ФИНАЛ
+```
+
+Две линии защиты:
+1. EDITOR_SYSTEM КРИТИЧЕСКИЙ ИНВАРИАНТ (v1.0.79) — Opus сам пересчитывает duration при правке реплик
+2. Python post-check (v1.0.81) — гарантированно поднимает duration до min если AI пропустил
+
+UI ([widgets/montage_summary_dialog.py](widgets/montage_summary_dialog.py)):
+- `_STAGE_DISPLAY` + `_STAGE_ORDER` расширены 2 стадиями (R1, R2). Таблица таймингов показывает «Post-check timings R1/R2: < 1 сек».
+- `_build_agent_lines` — 2 новые строки в попапе после Editor R1/R2: «🔧 Post-check таймингов R1 — поправил X шотов (+Y сек)». Показывается только если shots_fixed > 0.
+
+Post-check НЕ обрабатывает Editor-after-Reviewer (CR concerns > 0 → ещё Editor) — Bug 6 в очереди. Post-check не fix'ит блок-overflow (>15с) или total-overflow (>80с) — Validator R2/R3 поймает через Python pre-filter.
+
+Cross-platform: чистый Python + math.ceil + dict-логика. Никаких subprocess/Path/open.
+
 **v1.0.76 split logic в `run()` для Validator R2:**
 ```python
 editor_ran = False

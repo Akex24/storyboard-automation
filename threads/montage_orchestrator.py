@@ -43,6 +43,7 @@ from agents.montage_prompts import (
     build_geometry_editor_user_prompt,
 )
 from agents.validator_prefilter import prefilter_check
+from agents.timing_post_check import apply_timing_post_check
 
 
 class MontageOrchestratorThread(QThread):
@@ -249,6 +250,12 @@ class MontageOrchestratorThread(QThread):
                     montage_card = self._call_editor(
                         montage_card, editor_input_errors)
                     editor_ran = True
+                    # v1.0.81: Python post-check таймингов — гарантирует
+                    # duration_sec >= min_duration для всех шотов с
+                    # репликой. Закрывает класс багов где Editor расширил
+                    # реплику без пересчёта duration.
+                    montage_card = self._apply_post_check_timings(
+                        montage_card, round_num=1)
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "editor",
@@ -307,6 +314,9 @@ class MontageOrchestratorThread(QThread):
                     montage_card = self._call_editor(
                         montage_card, r2_errors_remaining, round_num=2)
                     editor_r2_ran = True
+                    # v1.0.81: Python post-check таймингов после Editor R2
+                    montage_card = self._apply_post_check_timings(
+                        montage_card, round_num=2)
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "editor_r2",
@@ -541,6 +551,40 @@ class MontageOrchestratorThread(QThread):
         })
         return new_card
 
+    def _apply_post_check_timings(self, montage_card: dict,
+                                    round_num: int) -> dict:
+        """v1.0.81: гарантированный Python post-check таймингов после
+        Editor R1/R2. Поднимает duration_sec шотов с репликой до
+        min_duration_sec (ceil(words_en / speed + reserve)).
+
+        Не уговариваем Opus промптами — правим в коде. Закрывает класс
+        ошибок где Editor расширил реплику или сменил speech_type без
+        пересчёта duration.
+
+        Args:
+            montage_card: текущая карта (после _call_editor).
+            round_num:    1 (после Editor R1) или 2 (после Editor R2).
+                          Используется только для stage_name в логе.
+        Returns:
+            Обновлённая карта (in-place в apply_timing_post_check).
+        """
+        t0 = time.time()
+        montage_card, summary = apply_timing_post_check(montage_card)
+        duration_sec = round(time.time() - t0, 4)
+        stage_name = f"post_check_timings_r{round_num}"
+        self._agent_log.append({
+            "stage": stage_name,
+            "started_at": t0,
+            "duration_sec": duration_sec,
+            "shots_checked": summary["shots_checked"],
+            "shots_fixed": summary["shots_fixed"],
+            "fixes": summary["fixes"],
+            "old_total_seconds": summary["old_total_seconds"],
+            "new_total_seconds": summary["new_total_seconds"],
+            "delta_total_seconds": summary["delta_total_seconds"],
+        })
+        return montage_card
+
     def _call_context_reviewer(self, montage_card: dict) -> dict:
         """Финальный супер-редактор. Проверяет соответствие карты
         Bible'и сериала и другим эпизодам. Возвращает dict с полями
@@ -647,6 +691,8 @@ class MontageOrchestratorThread(QThread):
             "editor_r2": {"ran": False},
             "validator_r3": {"ran": False},
             "context_reviewer": {"ran": False},
+            # v1.0.81: список post-check проходов (R1, R2)
+            "post_check_timings": [],
             "rounds_used": rounds_used,
             # 2026-05-13 (v1.0.63): per-stage timings (вложено в
             # agent_summary чтобы не менять сигнатуру finished_ok).
@@ -765,6 +811,18 @@ class MontageOrchestratorThread(QThread):
                         'ok': res.get('ok', False),
                         'errors': errs,
                     }
+            elif stage in ('post_check_timings_r1',
+                            'post_check_timings_r2'):
+                # v1.0.81: post-check таймингов после Editor.
+                round_num = 1 if stage.endswith('_r1') else 2
+                summary['post_check_timings'].append({
+                    'round': round_num,
+                    'shots_checked': s.get('shots_checked', 0),
+                    'shots_fixed': s.get('shots_fixed', 0),
+                    'delta_total_seconds': s.get('delta_total_seconds', 0),
+                    'old_total_seconds': s.get('old_total_seconds', 0),
+                    'new_total_seconds': s.get('new_total_seconds', 0),
+                })
             elif stage == 'geometry_editor':
                 res = s.get('result', {}) or {}
                 error_msg = s.get('error')

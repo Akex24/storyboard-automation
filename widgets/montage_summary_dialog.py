@@ -325,6 +325,18 @@ class MontageSummaryDialog(QDialog):
                         f"⚠ Editor создал {new_count} новых ошибок при правке"
                     )
 
+            # v1.0.81: Post-check таймингов после Editor R1.
+            # Показываем строку только если что-то поправлено.
+            pc_list = s.get('post_check_timings') or []
+            pc_r1 = next((p for p in pc_list if p.get('round') == 1), None)
+            if pc_r1 and pc_r1.get('shots_fixed', 0) > 0:
+                delta = pc_r1.get('delta_total_seconds', 0)
+                sign = '+' if delta >= 0 else ''
+                lines.append(
+                    f"🔧 Post-check таймингов R1 — поправил "
+                    f"{pc_r1['shots_fixed']} шотов ({sign}{delta} сек)"
+                )
+
             # v1.0.77: Editor R2 — если запускался после Validator R2.
             # Set-сравнение R2 vs R3 (или R2 vs итог если R3 упал).
             ed_r2 = s.get('editor_r2', {}) or {}
@@ -375,6 +387,19 @@ class MontageSummaryDialog(QDialog):
                         f"⚠ Не удалось проверить результат Editor R2 — "
                         f"{reason3}. Реальное количество исправлений "
                         f"R2 неизвестно."
+                    )
+
+                # v1.0.81: Post-check таймингов после Editor R2.
+                pc_list2 = s.get('post_check_timings') or []
+                pc_r2 = next(
+                    (p for p in pc_list2 if p.get('round') == 2), None)
+                if pc_r2 and pc_r2.get('shots_fixed', 0) > 0:
+                    delta2 = pc_r2.get('delta_total_seconds', 0)
+                    sign2 = '+' if delta2 >= 0 else ''
+                    lines.append(
+                        f"🔧 Post-check таймингов R2 — поправил "
+                        f"{pc_r2['shots_fixed']} шотов "
+                        f"({sign2}{delta2} сек)"
                     )
         elif ed_runs > 0 and v_r2.get('failed'):
             # v1.0.76: Editor отработал, но Validator R2 упал.
@@ -447,19 +472,24 @@ class MontageSummaryDialog(QDialog):
     # эти stages писались в timing.per_stage но цикл их пропускал — сумма
     # ИТОГО (по total_sec) расходилась с видимыми строками.
     _STAGE_DISPLAY = {
-        'scriptwriter':     'Scriptwriter',
-        'validator':        'Validator R1',
-        'geometry_editor':  'Geometry Editor',
-        'editor':           'Editor R1',
-        'validator_r2':     'Validator R2',
-        'editor_r2':        'Editor R2',
-        'validator_r3':     'Validator R3',
-        'context_reviewer': 'Context Reviewer',
+        'scriptwriter':            'Scriptwriter',
+        'validator':               'Validator R1',
+        'geometry_editor':         'Geometry Editor',
+        'editor':                  'Editor R1',
+        'post_check_timings_r1':   'Post-check timings R1',
+        'validator_r2':            'Validator R2',
+        'editor_r2':               'Editor R2',
+        'post_check_timings_r2':   'Post-check timings R2',
+        'validator_r3':            'Validator R3',
+        'context_reviewer':        'Context Reviewer',
     }
     # Порядок отрисовки — в каком пайплайн запускает стадии.
     _STAGE_ORDER = (
         'scriptwriter', 'validator', 'geometry_editor', 'editor',
-        'validator_r2', 'editor_r2', 'validator_r3', 'context_reviewer',
+        'post_check_timings_r1',
+        'validator_r2', 'editor_r2',
+        'post_check_timings_r2',
+        'validator_r3', 'context_reviewer',
     )
 
     @staticmethod

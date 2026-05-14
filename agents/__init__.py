@@ -27,6 +27,11 @@ from agents.storyboard_writer_prompts import (
     SYSTEM as STORYBOARD_WRITER_SYSTEM,
     build_user_prompt as build_storyboard_writer_user_prompt,
 )
+# v1.0.81: Python post-check таймингов после Editor
+from agents.timing_post_check import (
+    apply_timing_post_check,
+    min_duration_sec,
+)
 
 __all__ = [
     'SCRIPTWRITER_SYSTEM',
@@ -41,4 +46,6 @@ __all__ = [
     'build_storyboard_writer_user_prompt',
     'get_geometry_editor_system',
     'build_geometry_editor_user_prompt',
+    'apply_timing_post_check',
+    'min_duration_sec',
 ]
