@@ -247,8 +247,25 @@ class MontageSummaryDialog(QDialog):
         # Редактор
         ed = s.get('editor', {}) or {}
         ed_runs = ed.get('runs', 0)
-        if ed_runs > 0:
-            errs_total = sum(r.get('errors_in', 0) for r in (ed.get('rounds') or []))
+        ed_rounds = ed.get('rounds') or []
+        ed_failed_round = next(
+            (r for r in ed_rounds if r.get('failed')), None)
+        if ed_failed_round:
+            # v1.0.74: Editor упал (TimeoutExpired или exception).
+            # Раньше попадало в позитивную ветку как «поправил 0 ошибок
+            # за 1 раунд» и юзер думал что Editor отработал.
+            err = (ed_failed_round.get('error') or '').strip()
+            low = err.lower()
+            if 'timed out' in low or 'timeout' in low:
+                reason = "превысил лимит времени (10 минут)"
+            else:
+                reason = (err.split('\n', 1)[0] or 'unknown')[:120]
+            lines.append(
+                f"⚠ Редактор УПАЛ — {reason}. Часть ошибок осталась без "
+                f"правок — карта отдана в состоянии до Editor'а."
+            )
+        elif ed_runs > 0:
+            errs_total = sum(r.get('errors_in', 0) for r in ed_rounds)
             lines.append(
                 f"✏ Редактор — поправил {errs_total} ошибок за {ed_runs} раунд(ов)"
             )
@@ -261,18 +278,33 @@ class MontageSummaryDialog(QDialog):
         # Финальный редактор
         cr = s.get('context_reviewer', {}) or {}
         if cr.get('ran'):
-            checks = cr.get('checks_performed') or []
-            concerns = cr.get('concerns') or []
-            if cr.get('ok') and not concerns:
+            if cr.get('failed'):
+                # v1.0.74: Context Reviewer упал. Раньше попадало в
+                # позитивную ветку («прошёл 0 проверок, противоречий
+                # нет») из-за default'ов ok=True/ran=True.
+                err = (cr.get('error') or '').strip()
+                low = err.lower()
+                if 'timed out' in low or 'timeout' in low:
+                    reason = "превысил лимит времени (10 минут)"
+                else:
+                    reason = (err.split('\n', 1)[0] or 'unknown')[:120]
                 lines.append(
-                    f"🎯 Финальный редактор — прошёл {len(checks)} проверок"
-                    f" по Bible'и, противоречий нет"
+                    f"⚠ Финальный редактор УПАЛ — {reason}. "
+                    f"Bible-сверка не выполнена."
                 )
             else:
-                lines.append(
-                    f"🎯 Финальный редактор — нашёл {len(concerns)} замечаний"
-                    f" (поправлено в раунде Редактора)"
-                )
+                checks = cr.get('checks_performed') or []
+                concerns = cr.get('concerns') or []
+                if cr.get('ok') and not concerns:
+                    lines.append(
+                        f"🎯 Финальный редактор — прошёл {len(checks)} проверок"
+                        f" по Bible'и, противоречий нет"
+                    )
+                else:
+                    lines.append(
+                        f"🎯 Финальный редактор — нашёл {len(concerns)} замечаний"
+                        f" (поправлено в раунде Редактора)"
+                    )
         else:
             lines.append("🎯 Финальный редактор — не запускался")
         return lines

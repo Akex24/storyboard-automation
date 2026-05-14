@@ -813,9 +813,43 @@ Editor читает merged_errors без отличий (формат `{code, wh
 было сделано, чтобы не блокировать юзера при сбое AI — но без честного
 UI юзер не знал, что валидация не прошла. Теперь знает.
 
+**v1.0.74 (2026-05-14) — honest UI распространён на Editor и Context Reviewer (Bug 4 fix):**
+
+На прогоне ep2 v1.0.73 Validator (Haiku) отработал 1:50, но Editor
+(Sonnet 4.6) упёрся в timeout 600s. UI показал «✏ Редактор — поправил
+0 ошибок за 1 раунд(ов)» — клон Bug 1 для Editor. v1.0.71 fix
+покрывал только validator-ветку, editor + context_reviewer ветки
+остались с прежним багом.
+
+**Симметричный fix по тому же паттерну ([threads/montage_orchestrator.py](threads/montage_orchestrator.py) `_build_agent_summary`):**
+- editor branch: при `s.get('error') and not s.get('result')` в
+  `rounds[-1]` пишет `failed: True` + `error: str(error_msg)`.
+- context_reviewer branch: при exception ставит `ran: True`, `ok:
+  False` (а не `True` по default'у), `failed: True`, `error`.
+  Без этого UI показывал «🎯 Финальный редактор — прошёл 0 проверок,
+  противоречий нет» при реальном таймауте.
+
+**UI ([widgets/montage_summary_dialog.py](widgets/montage_summary_dialog.py)):**
+- Editor: новый `ed_failed_round` ловит failed-round ПЕРЕД позитивной
+  веткой. Сообщение «⚠ Редактор УПАЛ — <причина>. Часть ошибок осталась
+  без правок — карта отдана в состоянии до Editor'а».
+- Context Reviewer: новая ветка `if cr.get('failed'):` ПЕРЕД старой
+  `if cr.get('ok') and not concerns:`. Сообщение «⚠ Финальный редактор
+  УПАЛ — <причина>. Bible-сверка не выполнена».
+- TimeoutExpired распознаётся подстрокой `timed out / timeout` → текст
+  «превысил лимит времени (10 минут)». Для прочих exception — первая
+  строка `str(error)` до 120 ch.
+
+**Поведение оркестратора при exception в Editor/Reviewer (СОХРАНЕНО):**
+- Editor exception → `_finalize(montage_card, checker_report)` (карта
+  до Editor'а, не fatal).
+- Reviewer exception → то же.
+- Editor-after-Reviewer exception → то же.
+
 **Открытые баги (отдельные задачи):**
 - Bug 2: при exception в `_call_validator` `prefilter_check` уже отработал, но его `py_errors` теряются — exception летит из `_run_claude` до merge. Если Python pre-filter найдёт реальные ошибки — они не дойдут до Editor.
-- Bug 3: Validator снова медленный после v1.0.69+v1.0.70. v1.0.69 (-14% system) теоретически должен был ускорить. Гипотеза из разведки: время съедает невидимый reasoning Sonnet 4.6 на семантические правила #6/#7а/#9/#12/#14, не на размер prompt'а.
+- Bug 5: root cause скорости Editor (клон Bug 3 для Editor). На ep2 v1.0.73 Editor получил 8 ошибок (vs прошлые 5) и не успел уложиться в 600s. Варианты: увеличить timeout / переключить Editor на Haiku 4.5 (риск creative качества) / разбить Editor на 2-3 раунда по 3-4 ошибки / специализированный сабагент на missing_geometry.
+- Bug 6: `editor_after_reviewer` stage не имеет ветки в `_build_agent_summary` — его статистика теряется при успешном выполнении, при exception не показывается в UI.
 
 ## Per-agent model routing
 

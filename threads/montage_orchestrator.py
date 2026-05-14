@@ -511,18 +511,47 @@ class MontageOrchestratorThread(QThread):
                         ][:6],
                     })
             elif stage == 'editor':
+                res = s.get('result', {}) or {}
+                error_msg = s.get('error')
                 summary['editor']['runs'] += 1
-                summary['editor']['rounds'].append({
-                    'errors_in': s.get('errors_in', 0),
-                })
+                if error_msg and not res:
+                    # v1.0.74: editor упал до записи result (TimeoutExpired
+                    # или другой exception в _run_claude). По аналогии с
+                    # v1.0.71 fix для validator. Без этого UI выводил
+                    # «Редактор — поправил 0 ошибок за 1 раунд(ов)» при
+                    # реальном таймауте.
+                    summary['editor']['rounds'].append({
+                        'errors_in': 0,
+                        'failed': True,
+                        'error': str(error_msg),
+                    })
+                else:
+                    summary['editor']['rounds'].append({
+                        'errors_in': s.get('errors_in', 0),
+                    })
             elif stage == 'context_reviewer':
                 res = s.get('result', {}) or {}
-                summary['context_reviewer'] = {
-                    'ran': True,
-                    'ok': res.get('ok', True),
-                    'checks_performed': res.get('checks_performed', []) or [],
-                    'concerns': res.get('concerns', []) or [],
-                }
+                error_msg = s.get('error')
+                if error_msg and not res:
+                    # v1.0.74: context_reviewer упал до записи result. Без
+                    # этого UI выводил «Финальный редактор — прошёл 0
+                    # проверок по Bible'и, противоречий нет» при реальном
+                    # таймауте (ran=True+ok=True по default'у).
+                    summary['context_reviewer'] = {
+                        'ran': True,
+                        'ok': False,
+                        'checks_performed': [],
+                        'concerns': [],
+                        'failed': True,
+                        'error': str(error_msg),
+                    }
+                else:
+                    summary['context_reviewer'] = {
+                        'ran': True,
+                        'ok': res.get('ok', True),
+                        'checks_performed': res.get('checks_performed', []) or [],
+                        'concerns': res.get('concerns', []) or [],
+                    }
         summary['timing']['total_sec'] = round(
             summary['timing']['total_sec'], 2)
         return summary
