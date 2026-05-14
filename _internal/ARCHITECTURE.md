@@ -718,6 +718,24 @@ EDITOR_SYSTEM 12 861 → **14 737 ch** (+14.6%). Сравнимо с SCRIPTWRITE
 
 Метрика успеха: на следующих прогонах ep2 показатель `new_count` (Editor R1 создал новых ошибок при правке, виден в UI Editor-строке после v1.0.76 set-сравнения) должен упасть с 4 (на ep2 v1.0.78) до 0-1. Если не упадёт — переход к Python post-check автоматическому подъёму duration_sec до минимума.
 
+**v1.0.80 (2026-05-14) — два ещё КРИТИЧЕСКИХ ИНВАРИАНТА в Editor + отключение rule_7a в Validator:**
+
+На ep2 v1.0.79 инвариант про duration (v1.0.79) сработал — 0 новых `dialog_too_short_for_words`. Но Editor R2 создал 4 ошибки **других** категорий: 2× missing_geometry (удалил поле geometry), 1× invalid_location_mixing (объединил шоты разных локаций), 1× missing_voice_profiles (косяк Validator R2 — AI-галлюцинация). Подход с КРИТИЧЕСКИМ ИНВАРИАНТОМ работает — расширяется.
+
+Добавлено в `_EDITOR_JSON_TAIL` ([agents/montage_prompts.py:1191](agents/montage_prompts.py:1191)):
+- **КРИТИЧЕСКИЙ ИНВАРИАНТ — ГЕОМЕТРИЯ ПЕРСОНАЖЕЙ** (~700 ch): запрет удалять/искажать `geometry` при правке других ошибок. Анти-пример с missing_geometry на ep2.
+- **КРИТИЧЕСКИЙ ИНВАРИАНТ — ЛОКАЦИИ БЛОКОВ** (~750 ch): правило «один блок = одна локация». Запрет объединять шоты разных локаций при сжатии. Анти-пример с Блоком 4 на ep2 (улица + дорожка + лестница + коридор).
+
+Обновлено `_EDITOR_ROLE` напоминание: теперь упоминает все 3 инварианта (тайминг + геометрия + локации).
+
+EDITOR_SYSTEM 14 737 → **16 381 ch** (+1 644, +11.2%).
+
+**rule_7a в VALIDATOR_SYSTEM ОТКЛЮЧЕНО** (обе константы `_VALIDATOR_JSON_TAIL` + `_FALLBACK_VALIDATOR_SYSTEM` симметрично): содержимое между маркерами `<!-- BEGIN rule_7a -->` / `<!-- END rule_7a -->` заменено на 4-строчный placeholder. Причина: voice profiles файл (`instructions/ГОЛОСОВЫЕ_ПРОФИЛИ_ПЕРСОНАЖЕЙ.txt`) **не передаётся в Validator в текущем оркестраторе** — он используется только в Seedance pipeline ([threads/seedance_pipeline.py:86](threads/seedance_pipeline.py:86)). Без профилей AI Validator стабильно галлюцинировал собственный код `missing_voice_profiles`, который не описан ни в rule_7a, ни в Python pre-filter, ни в Editor. Маркеры BEGIN/END сохранены — skip-механика v1.0.69 продолжает работать, правило вернём когда профили подключим к montage_orchestrator.
+
+VALIDATOR_SYSTEM full: 15 484 → **14 618 ch** (-866). Stripped (после Python pre-filter): 13 484 → **12 618 ch** (-866).
+
+Метрика успеха v1.0.80: на ep2 показатели `missing_geometry`, `invalid_location_mixing`, `missing_voice_profiles` в Validator R2/R3 должны быть = 0. Общий `new_count` (Editor создал новых) — упасть с 4 до 0-1.
+
 **v1.0.76 split logic в `run()` для Validator R2:**
 ```python
 editor_ran = False
