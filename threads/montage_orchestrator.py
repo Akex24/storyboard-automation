@@ -74,6 +74,14 @@ class MontageOrchestratorThread(QThread):
     # трата времени. ep4 v1.0.61 принят с одного раунда — R2 там не
     # запускался. Делаем это поведение по умолчанию.
     SUBPROCESS_TIMEOUT_SEC = 600  # 10 минут на каждый вызов CLI
+    # v1.0.86 (этап 1 стриминга): таймаут МЕЖДУ JSONL-чанками в
+    # stream-json режиме. На слабом интернете 600с общего timeout'а
+    # не помогает — TCP-соединение может «дышать» keep-alive байтами
+    # и subprocess.run сбрасывает timer. Каждый JSONL-чанк от CLI =
+    # активность; если 60с тишины — считаем что соединение мертво,
+    # terminate'им CLI и поднимаем ошибку. Юзер видит понятный fail
+    # быстрее, не висит 10 минут.
+    STREAM_CHUNK_TIMEOUT_SEC = 60
 
     # 2026-05-09: per-agent model routing. Юзер не выбирает модели для
     # пайплайнов — каждый агент прибит к задаче.
@@ -145,9 +153,24 @@ class MontageOrchestratorThread(QThread):
         self._log_path = log_path
         self._stop = False
         self._agent_log: List[dict] = []  # для финального дампа
+        # v1.0.86: handle активного claude-Popen — для terminate() при
+        # внешнем stop() или chunk-timeout. Используется только в
+        # _run_claude_stream (новый метод). Старый _run_claude через
+        # subprocess.run этим не пользуется.
+        self._proc: Optional[subprocess.Popen] = None
 
     def stop(self):
         self._stop = True
+        # v1.0.86: жёсткий kill активного CLI subprocess'а если стрим
+        # ещё идёт. Раньше флаг _stop проверялся только между этапами
+        # (между _call_*), а внутри subprocess.run был блок на 600с.
+        # Теперь — мгновенная остановка стрима.
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     # ──────────────────────────────────────────────────────────────────
 
@@ -651,6 +674,173 @@ class MontageOrchestratorThread(QThread):
             stderr = (r.stderr or "")[:500]
             raise RuntimeError(f"claude exit={r.returncode}: {stderr}")
         return (r.stdout or "").strip()
+
+    def _run_claude_stream(self, system_prompt: str, user_prompt: str,
+                            model: str) -> str:
+        """v1.0.86: стриминг-вариант _run_claude через --output-format stream-json.
+
+        Сигнатура та же что у `_run_claude` (для замены callsite'ов на
+        этапе 2). Возвращает финальную строку — `.result` из JSONL-чанка
+        `{"type":"result"}`. Валидация показала что эта строка побайтно
+        идентична stdout старого `--output-format text` режима.
+
+        Зачем нужен: на слабом интернете старый `subprocess.run(timeout=
+        600)` зависает на 10 минут без признаков жизни, потом таймаутит.
+        Стриминг даёт JSONL-чанки от CLI каждые ~0.5-3 секунды (system
+        init, status, rate_limit_event, message_start, content_block_delta,
+        result). Каждый чанк сбрасывает chunk-timer. Если 60с тишины —
+        terminate'им CLI и валим с понятной ошибкой.
+
+        Cross-platform: используем threading.Thread для чтения stdout
+        (select на pipes под Windows не работает). На win32 —
+        creationflags=CREATE_NO_WINDOW.
+
+        Этап 1 фичи: метод существует, но никто его пока не зовёт.
+        Старый `_run_claude` остаётся как fallback.
+        """
+        if not self._cli:
+            raise RuntimeError("claude CLI not found")
+        cmd = [self._cli, "-p",
+               "--system-prompt", system_prompt,
+               "--output-format", "stream-json",
+               "--verbose",
+               "--include-partial-messages",
+               "--model", model]
+        popen_kwargs: dict = {
+            'stdin': subprocess.PIPE,
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+            'text': True,
+            'encoding': 'utf-8',
+            'errors': 'replace',
+            'bufsize': 1,  # line-buffered — важно для своевременных JSONL чанков
+        }
+        if sys.platform == 'win32':
+            CREATE_NO_WINDOW = 0x08000000
+            popen_kwargs['creationflags'] = CREATE_NO_WINDOW
+
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+        self._proc = proc
+        try:
+            # Пишем prompt в stdin и закрываем — claude ждёт EOF.
+            try:
+                assert proc.stdin is not None
+                proc.stdin.write(user_prompt)
+                proc.stdin.close()
+            except Exception as e:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                raise RuntimeError(f"failed to write stdin: {e}")
+
+            # Reader-поток складывает строки stdout в очередь. Главный
+            # поток дёргает queue.get(timeout=) — это и есть chunk-timeout.
+            # select на pipes под Windows не работает, threading +
+            # queue — кросс-платформенный паттерн.
+            import threading
+            import queue
+            q: "queue.Queue[Optional[str]]" = queue.Queue()
+
+            def _reader(stream, q):
+                try:
+                    for line in stream:
+                        q.put(line)
+                except Exception:
+                    pass
+                finally:
+                    q.put(None)  # EOF marker
+
+            t = threading.Thread(
+                target=_reader, args=(proc.stdout, q), daemon=True)
+            t.start()
+
+            final_result: Optional[str] = None
+            recv_bytes = 0
+            total_started = time.monotonic()
+            while True:
+                # v1.0.86: ранний выход если внешний stop() пришёл.
+                if self._stop:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    raise RuntimeError("cancelled")
+                # Общий cap на всякий случай (бесконечно медленный поток).
+                if time.monotonic() - total_started > self.SUBPROCESS_TIMEOUT_SEC:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"stream total timeout ({self.SUBPROCESS_TIMEOUT_SEC}s)")
+                try:
+                    line = q.get(timeout=self.STREAM_CHUNK_TIMEOUT_SEC)
+                except queue.Empty:
+                    # 60с тишины — TCP/HTTP стрим мёртв.
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"stream chunk timeout "
+                        f"({self.STREAM_CHUNK_TIMEOUT_SEC}s no activity)")
+                if line is None:
+                    break  # EOF reader-потока
+                recv_bytes += len(line.encode('utf-8', errors='replace'))
+                # Парсим JSONL. Невалидные строки игнорируем — CLI иногда
+                # пишет служебный текст в stdout (ANSI, прогресс-точки).
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    chunk = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                # Финальный результат — единственный type=result чанк.
+                if chunk.get('type') == 'result':
+                    if chunk.get('is_error'):
+                        # CLI зафиксировал ошибку — извлечь сообщение и
+                        # поднять — caller обработает (как и для старого).
+                        err = (chunk.get('api_error_status')
+                               or chunk.get('result')
+                               or 'unknown stream error')
+                        raise RuntimeError(f"claude stream error: {err}")
+                    final_result = chunk.get('result') or ""
+                    # НЕ break: дочитываем хвост до EOF чтобы proc
+                    # корректно завершился без SIGPIPE.
+
+            # Ждём корректного завершения процесса (короткий wait — все
+            # данные уже прочитаны).
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                proc.wait(timeout=2)
+
+            if proc.returncode != 0 and final_result is None:
+                # stderr достать (Popen.stderr — текстовый pipe, читаем
+                # синхронно после EOF stdout — он уже не должен блокировать).
+                stderr_text = ""
+                try:
+                    if proc.stderr is not None:
+                        stderr_text = (proc.stderr.read() or "")[:500]
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"claude exit={proc.returncode}: {stderr_text}")
+            if final_result is None:
+                raise RuntimeError(
+                    "stream ended without type=result chunk "
+                    f"(recv={recv_bytes}B)")
+            return final_result.strip()
+        finally:
+            # Очищаем handle — даже при exception, чтобы внешний stop()
+            # не дёргал terminate на уже-мёртвом процессе.
+            self._proc = None
 
     @staticmethod
     def _parse_json(raw: str) -> dict:
