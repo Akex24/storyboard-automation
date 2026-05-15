@@ -268,6 +268,57 @@ class GenerateThread(QThread):
             endpoint = ("/api/v4/openai/image/generate"
                         if provider == _sa.IMAGE_PROVIDER_OPENAI
                         else "/api/v4/flow/image/generate")
+
+            # ── 2026-05-15 DIAG DUMP (временно, для расследования) ────
+            # Дамп ровно того payload что улетел в Fast Gen. Контекст:
+            # юзер видит подмену персонажа в shot'е (ep23/block3/shot3
+            # — нарисовало David вместо Mark). Нужно сравнить реально
+            # отправленный prompt + порядок ref_hashes с ожидаемым.
+            # Если данные верные — баг внутри модели Fast Gen.
+            try:
+                import datetime
+                dump_path = (_sa.STORYBOARDS_DIR
+                             / f"_payload_dump_{self.block_name}"
+                               f"_shot{self.panel_idx + 1}.txt")
+                # filtered_refs и sorted_tags могут отсутствовать в
+                # edit-режиме (там только один реф = текущий шот).
+                pairs = []
+                try:
+                    for tag in sorted_tags:  # type: ignore[name-defined]
+                        pairs.append((tag, filtered_refs.get(tag)))  # type: ignore[name-defined]
+                except NameError:
+                    pairs = [(f"<edit-mode-ref-{i}>", None)
+                             for i in range(len(ref_hashes))]
+                lines = [
+                    f"=== PAYLOAD DUMP {datetime.datetime.now().isoformat()} ===",
+                    f"Block: {self.block_name}",
+                    f"Shot:  {self.panel_idx + 1} (panel_idx={self.panel_idx})",
+                    f"Mode:  {'edit' if self.edit_instruction else 'regen'}",
+                    f"Provider: {provider}",
+                    f"Endpoint: {_sa.API_BASE}{endpoint}",
+                    f"Aspect ratio: {payload.get('aspect_ratio')}",
+                    "",
+                    "=== payload['reference_images'] (порядок!) ===",
+                ]
+                for i, (tag, src_path) in enumerate(pairs):
+                    fh = ref_hashes[i] if i < len(ref_hashes) else "<missing>"
+                    size = (src_path.stat().st_size
+                            if src_path and src_path.exists() else -1)
+                    lines.append(
+                        f"  [{i}] tag={tag:<12} hash={fh}  "
+                        f"size={size}  path={src_path}")
+                lines += [
+                    "",
+                    "=== payload['prompt'] (полный текст что улетел) ===",
+                    clean,
+                    "",
+                    "=== /DUMP ===",
+                ]
+                dump_path.write_text("\n".join(lines), encoding="utf-8")
+                self.progress.emit(f"[DIAG] dump → {dump_path.name}")
+            except Exception:
+                traceback.print_exc()
+
             r = session.post(f"{_sa.API_BASE}{endpoint}",
                              json=payload, timeout=60)
             r.raise_for_status()

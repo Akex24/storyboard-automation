@@ -22,7 +22,8 @@
     "roles": {
       "nazvanie_seriyala_1": "viktor",
       "finalnyy_raschet": "viktor",
-      "testovyy_serial": "peter"
+      "testovyy_serial": "peter",
+      "finalnyy_raschet_2": "viktor"
     }
   },
   "vova": {
@@ -39,7 +40,8 @@
       "finalnyy_raschet_9": "mark",
       "nazvanie_seriyala_1": "mark",
       "nazvanie_seriala_2": "mark",
-      "finalnyy_raschet": "mark"
+      "finalnyy_raschet": "mark",
+      "finalnyy_raschet_2": "mark"
     }
   },
   "akter_4": {
@@ -73,18 +75,28 @@
     }
   },
   "vremennyi_akter_1": {
-    "display_name": "Временный актер 1"
+    "display_name": "Временный актер 1",
+    "roles": {
+      "finalnyy_raschet_2": "worker"
+    }
   },
   "vremennyi_akter_2": {
-    "display_name": "Временный актер 2"
+    "display_name": "Временный актер 2",
+    "roles": {
+      "finalnyy_raschet_2": "judge"
+    }
   },
   "akter_7": {
     "display_name": "Настя",
     "roles": {
-      "testovyy_serial": "emma"
+      "testovyy_serial": "emma",
+      "finalnyy_raschet_2": "khloe"
     }
   },
   "vremennyi_akter_3": {
-    "display_name": "Временный актер 3"
+    "display_name": "Временный актер 3",
+    "roles": {
+      "finalnyy_raschet_2": "worker"
+    }
   }
 }

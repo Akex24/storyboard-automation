@@ -21,6 +21,7 @@ import tempfile
 import datetime
 import subprocess
 import traceback
+import unicodedata
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
@@ -3292,12 +3293,39 @@ def sync_image_provider_to_project(project_root: Path, value: str) -> None:
 
 
 def find_ref_image(filename: str) -> Optional[Path]:
+    """Резолвит имя файла рефа в физический путь на диске.
+
+    2026-05-15: сравнение через NFC-нормализацию обеих сторон.
+    Причина: на macOS APFS имена с кириллицей + диакритикой
+    хранятся в NFD (декомпозированной форме: «Е»+◌̈ вместо «Ё»),
+    а refs_decisions / .txt промпты пишутся в NFC. Без normalize
+    «Ё» (NFC `\\xd0\\xa1\\xd1\\x91`) ≠ «Е+◌̈» (NFD `\\xd0\\xb5\\xcc\\x88`)
+    → возвращали None → реф молча выпадал из payload → модель
+    видела `[@]imgN` в тексте без файла → рисовала случайное лицо.
+    Кейс: ep24/block_1/shot3 «Адвокат_Victor…Тёмно-серый…» —
+    Viktor подменился на случайного персонажа.
+
+    На Windows NTFS подобной проблемы нет (там форма что записал
+    создатель), но normalize не мешает — если оба NFC, оба NFD,
+    или один NFC а другой NFD, всё равно сматчится.
+    """
+    target = unicodedata.normalize("NFC", filename)
+    target_stem = unicodedata.normalize(
+        "NFC", filename.rsplit(".", 1)[0]) if "." in filename else target
     for directory in [LOCATIONS_DIR, OBJECTS_DIR]:
         for f in directory.glob("*"):
-            if f.is_file() and (f.name == filename or f.stem == filename):
+            if not f.is_file():
+                continue
+            f_name = unicodedata.normalize("NFC", f.name)
+            f_stem = unicodedata.normalize("NFC", f.stem)
+            if f_name == target or f_stem == target or f_stem == target_stem:
                 return f
     for f in CHARACTERS_DIR.rglob("*"):
-        if f.is_file() and (f.name == filename or f.stem == filename):
+        if not f.is_file():
+            continue
+        f_name = unicodedata.normalize("NFC", f.name)
+        f_stem = unicodedata.normalize("NFC", f.stem)
+        if f_name == target or f_stem == target or f_stem == target_stem:
             return f
     return None
 
