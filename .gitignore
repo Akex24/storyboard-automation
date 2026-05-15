@@ -1,6 +1,12 @@
 # API ключи и секреты
 .env
 .env.local
+# Bridge-файл от Studio к pipeline.py (выбор провайдера картинок —
+# narwhal / openai). У каждой машины свой выбор: админский выбор не
+# должен перетирать выбор коллеги при `git pull`. Studio пересоздаёт
+# файл при старте из локальной QSettings — поэтому отсутствие в репо
+# безопасно. См. `sync_image_provider_to_project` в storyboard_app.py.
+image_provider.txt
 
 # Контент пользователя (у каждого свой)
 output/

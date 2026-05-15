@@ -1311,6 +1311,30 @@ datas=[
 Studio при старте копирует его в `project_root` через
 `sync_pipeline_py_to_project` ([storyboard_app.py](storyboard_app.py)).
 
+### Bridge `image_provider.txt` (2026-05-15)
+
+`pipeline.py` запускается AI-агентом в subprocess'е `claude -p` через
+Bash tool — у него нет доступа к QSettings. Чтобы GUI-переключатель
+«Nano Banana 2 / OpenAI» в Настройках влиял и на рефы локаций/объектов
+(а не только на шоты `GenerateThread`), Studio пишет выбранного
+провайдера в `<project_root>/image_provider.txt` (содержимое — одна
+строка `narwhal` или `openai`).
+
+Пишут оба места в `storyboard_app.py`:
+1. `set_image_provider(value)` — при изменении в Настройках.
+2. Старт MW рядом с `sync_pipeline_py_to_project` — гарантирует что
+   файл существует даже если юзер ни разу не открывал Settings.
+
+Читает `pipeline.load_provider()` — default `openai` (обратная
+совместимость со старыми сборками без файла, которые ставились до
+2026-05-15 — `Phase 2 hotfix #20` хардкодил OpenAI flow).
+
+При `narwhal` endpoint = `/api/v4/flow/image/generate` (cost=4, мягче
+content-фильтр, отдельный pool от OpenAI). При `openai` =
+`/api/v4/openai/image/generate` (cost=1). Поле `model` НЕ передаётся
+ни в одном случае (иначе NARWHAL flow маршрутизирует обратно в
+OpenAI — см. коммент в [threads/generate.py:242](threads/generate.py:242)).
+
 ## Cross-platform (Mac / Win 10-11)
 
 Коллеги на Win получают `.exe` (onedir mode с 2026-05-08). Каждое касание

@@ -21,6 +21,23 @@ import requests
 
 ROOT     = Path(__file__).parent
 ENV_FILE = ROOT / ".env"
+# 2026-05-15: bridge от Studio (см. pipeline.py.PROVIDER_FILE и
+# storyboard_app.sync_image_provider_to_project). Один файл — три
+# скрипта читают: GenerateThread (Python), pipeline.py (subprocess),
+# этот standalone CLI. Default `openai` для обратной совместимости.
+PROVIDER_FILE = ROOT / "image_provider.txt"
+
+
+def load_provider() -> str:
+    """Возвращает 'narwhal' или 'openai'. Default — 'openai'.
+    См. pipeline.load_provider — поведение симметрично."""
+    try:
+        if not PROVIDER_FILE.exists():
+            return "openai"
+        v = PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
+        return v if v in ("narwhal", "openai") else "openai"
+    except Exception:
+        return "openai"
 
 
 def get_show_root() -> Path:
@@ -180,17 +197,30 @@ def main():
             print(f"  Uploading {len(refs)} reference images...")
             ref_hashes = build_ordered_ref_hashes(refs, session)
 
-        # Phase 2 hotfix #20: OpenAI flow (cost=1 vs 4 у NARWHAL).
-        # `model`/`resolution` удалены (не принимаются OpenAI endpoint'ом).
+        # 2026-05-15: endpoint выбирается из image_provider.txt (Studio
+        # пишет туда выбор юзера). Раньше захардкожен был на OpenAI flow
+        # (`Phase 2 hotfix #20`, cost=1). Теперь — единый переключатель
+        # на всё приложение: при NARWHAL даже batch CLI идёт в Nano
+        # Banana 2. Поле `model` НЕ передаётся в обоих случаях (NARWHAL
+        # flow без него работает как Nano Banana 2; с ним маршрутизирует
+        # обратно в OpenAI с pydantic-ошибкой).
+        provider = load_provider()
         payload = {
             "prompt": clean_prompt,
             "aspect_ratio": "16:9",
         }
         if ref_hashes:
+            if provider == "openai" and len(ref_hashes) > 2:
+                print(f"  OpenAI режет рефы до 2 (было {len(ref_hashes)})")
+                ref_hashes = ref_hashes[:2]
             payload["reference_images"] = ref_hashes
 
-        print(f"  Prompt length: {len(clean_prompt)} chars | Refs: {len(ref_hashes)}")
-        r = session.post(f"{API_BASE}/api/v4/openai/image/generate",
+        endpoint = ("/api/v4/flow/image/generate"
+                    if provider == "narwhal"
+                    else "/api/v4/openai/image/generate")
+        print(f"  Prompt length: {len(clean_prompt)} chars | "
+              f"Refs: {len(ref_hashes)} | Provider: {provider}")
+        r = session.post(f"{API_BASE}{endpoint}",
                          json=payload, timeout=60)
         r.raise_for_status()
         data = r.json()

@@ -13,14 +13,16 @@
       "finalnyy_raschet_9": "david",
       "nazvanie_seriyala_1": "david",
       "nazvanie_seriala_2": "david",
-      "finalnyy_raschet": "david"
+      "finalnyy_raschet": "david",
+      "finalnyy_raschet_2": "david"
     }
   },
   "zhenya": {
     "display_name": "Женя",
     "roles": {
       "nazvanie_seriyala_1": "viktor",
-      "finalnyy_raschet": "viktor"
+      "finalnyy_raschet": "viktor",
+      "testovyy_serial": "peter"
     }
   },
   "vova": {
@@ -53,16 +55,21 @@
       "finalnyy_raschet_9": "lora",
       "nazvanie_seriyala_1": "lora",
       "nazvanie_seriala_2": "laura",
-      "finalnyy_raschet": "laura"
+      "finalnyy_raschet": "laura",
+      "testovyy_serial": "eve"
     }
   },
   "akter_5": {
-    "display_name": "Тарас"
+    "display_name": "Тарас",
+    "roles": {
+      "testovyy_serial": "alex"
+    }
   },
   "akter_6": {
     "display_name": "Артем",
     "roles": {
-      "nazvanie_seriala_2": "policeman"
+      "nazvanie_seriala_2": "policeman",
+      "testovyy_serial": "mark"
     }
   },
   "vremennyi_akter_1": {
@@ -72,6 +79,12 @@
     "display_name": "Временный актер 2"
   },
   "akter_7": {
-    "display_name": "Настя"
+    "display_name": "Настя",
+    "roles": {
+      "testovyy_serial": "emma"
+    }
+  },
+  "vremennyi_akter_3": {
+    "display_name": "Временный актер 3"
   }
 }

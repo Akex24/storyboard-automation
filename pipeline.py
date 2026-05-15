@@ -21,6 +21,13 @@ import requests
 
 ROOT     = Path(__file__).parent
 ENV_FILE = ROOT / ".env"
+# 2026-05-15: bridge-файл от Studio. Содержит «narwhal» или «openai» —
+# выбор юзера в Настройках → провайдер картинок. Pipeline.py запускается
+# AI-агентом в subprocess'е `claude -p` и не имеет доступа к QSettings,
+# поэтому Studio пишет настройку сюда (см. `sync_pipeline_py_to_project`
+# и `set_image_provider` в storyboard_app.py). Default при отсутствии
+# файла — `openai` (обратная совместимость со старыми сборками).
+PROVIDER_FILE = ROOT / "image_provider.txt"
 
 
 def get_show_root() -> Path:
@@ -55,6 +62,23 @@ def load_key() -> str:
     return lines[0]
 
 
+def load_provider() -> str:
+    """Возвращает 'narwhal' или 'openai'. Default — 'openai'.
+
+    Studio пишет это значение в `image_provider.txt` рядом с .env при
+    каждом изменении настройки и при старте. Если файла нет (старая
+    сборка / dev-режим без Studio) — fallback на 'openai' (текущее
+    историческое поведение pipeline.py до 2026-05-15).
+    """
+    try:
+        if not PROVIDER_FILE.exists():
+            return "openai"
+        v = PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
+        return v if v in ("narwhal", "openai") else "openai"
+    except Exception:
+        return "openai"
+
+
 def _fastgen_poll(op_id: str, headers: dict) -> dict:
     while True:
         time.sleep(4)
@@ -87,12 +111,29 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     target_dir.mkdir(parents=True, exist_ok=True)
     headers = {"X-API-Key": fastgen_key, "Content-Type": "application/json"}
 
-    # Phase 2 hotfix #20: переключение с NARWHAL (Nano Banana) на OpenAI
-    # ChatGPT image flow. Endpoint /api/v4/openai/image/generate. У него
-    # НЕТ полей `model`, `resolution`. Размер выхода фиксированный
-    # (~1254×1254 для 1:1, аналогично для других ratio). cost_charged=1.
+    # 2026-05-15: провайдер берётся из image_provider.txt (Studio пишет
+    # туда выбор юзера из Настроек). До этой правки endpoint был
+    # захардкожен на OpenAI flow (`Phase 2 hotfix #20` cost=1). Теперь
+    # GUI-переключатель «Nano Banana 2 / OpenAI» влияет и на pipeline.py
+    # тоже — раньше он применялся только к шотам (`GenerateThread`).
+    #
+    # NARWHAL `/api/v4/flow/image/generate`:
+    #   • cost_charged=4. Мягче content-фильтр. Pool аккаунтов отдельный
+    #     от OpenAI — спасает когда «No accounts available for OpenAI
+    #     operations» (исторический трюк fallback'а).
+    #   • НЕ передавать поле `model` — иначе flow маршрутизирует обратно
+    #     в OpenAI с теми же policy и pydantic-ошибкой (см.
+    #     threads/generate.py:242).
+    # OpenAI `/api/v4/openai/image/generate`:
+    #   • cost_charged=1. Без полей `model`/`resolution`.
+    #   • Content-policy блокирует огнестрел/узнаваемых людей.
+    provider = load_provider()
+    endpoint = ("/api/v4/flow/image/generate"
+                if provider == "narwhal"
+                else "/api/v4/openai/image/generate")
+    print(f"  provider: {provider} ({endpoint})")
     r = requests.post(
-        f"{FASTGEN_BASE}/api/v4/openai/image/generate",
+        f"{FASTGEN_BASE}{endpoint}",
         headers=headers,
         params={"result_format": "ref"},
         json={"prompt": prompt, "aspect_ratio": "16:9"},

@@ -3227,11 +3227,66 @@ def image_provider() -> str:
 
 
 def set_image_provider(value: str) -> None:
-    """Сохраняет провайдер в QSettings. Принимает только known values."""
+    """Сохраняет провайдер в QSettings. Принимает только known values.
+
+    Дополнительно пишет `image_provider.txt` в project_root — это
+    bridge-файл для `pipeline.py` (который запускается AI-агентом в
+    subprocess'е и не имеет доступа к QSettings). См. `load_provider`
+    в pipeline.py и `sync_image_provider_to_project` ниже.
+    """
     try:
         if value not in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI):
             value = IMAGE_PROVIDER_NARWHAL
         QSettings(APP_ORG, APP_NAME).setValue("image_provider", value)
+        try:
+            project_root = _project_root_for_provider_sync()
+            if project_root is not None:
+                sync_image_provider_to_project(project_root, value)
+        except Exception:
+            traceback.print_exc()
+    except Exception:
+        traceback.print_exc()
+
+
+def _project_root_for_provider_sync() -> Optional[Path]:
+    """Получить project_root для записи bridge-файла. Возвращает None
+    если корень не настроен (юзер ещё не прошёл онбординг)."""
+    try:
+        s = QSettings(APP_ORG, APP_NAME)
+        raw = s.value("project_root", "", type=str)
+        if not raw:
+            return None
+        p = Path(raw)
+        return p if p.exists() else None
+    except Exception:
+        return None
+
+
+def sync_image_provider_to_project(project_root: Path, value: str) -> None:
+    """Пишет текущего провайдера в `<project_root>/image_provider.txt`.
+
+    Это bridge для pipeline.py — он запускается AI-агентом в отдельном
+    subprocess'е и не имеет доступа к QSettings. Вызывается:
+    (1) из `set_image_provider` при изменении настройки юзером;
+    (2) при старте Studio рядом с `sync_pipeline_py_to_project`, чтобы
+        файл существовал даже если юзер ни разу не открывал Settings
+        после установки.
+
+    Все ошибки молча проглатываются — Studio не должна падать из-за
+    проблем с этой синхронизацией.
+    """
+    try:
+        if value not in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI):
+            value = IMAGE_PROVIDER_NARWHAL
+        dst = Path(project_root) / "image_provider.txt"
+        try:
+            if dst.exists():
+                old = dst.read_text(encoding="utf-8").strip()
+                if old == value:
+                    return  # не трогаем mtime если значение не менялось
+        except Exception:
+            pass
+        dst.write_text(value, encoding="utf-8")
     except Exception:
         traceback.print_exc()
 
@@ -4393,6 +4448,16 @@ class MainWindow(QMainWindow):
         # bundle обновился но project pipeline.py остался старым.
         try:
             sync_pipeline_py_to_project(project_root)
+        except Exception:
+            traceback.print_exc()
+        # 2026-05-15: bridge-файл `image_provider.txt` для pipeline.py.
+        # Pipeline запускается AI-агентом в subprocess'е и не имеет
+        # доступа к QSettings — Studio пишет туда текущий выбор юзера.
+        # Без этого настройка «Nano Banana 2 / OpenAI» в GUI влияла
+        # только на шоты (`GenerateThread`), а локации/объекты
+        # (pipeline.py) всегда шли через OpenAI flow.
+        try:
+            sync_image_provider_to_project(project_root, image_provider())
         except Exception:
             traceback.print_exc()
         # Активный сериал и эпизод

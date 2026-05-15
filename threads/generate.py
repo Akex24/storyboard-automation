@@ -808,17 +808,35 @@ class GenerateActorRefThread(QThread):
                 target = target_dir / f"{self.output_filename}_{i}.jpg"
 
             self.progress.emit(tr('create_ref_generating'))
-            # Phase 2 hotfix #20: переключение на OpenAI flow (cost=1 vs 4).
-            # Identity reference sheet с 14 анатомическими деталями. OpenAI
-            # выдаёт ~1254 на 1:1 или ~1456×819 на 16:9 — для 14 панелей
-            # каждая ~360×220px, чуть лучше чем NARWHAL. Параметра 2K
-            # в API нет — endpoint всегда возвращает фиксированный размер.
+            # Provider выбирается админом в Settings (default: NARWHAL).
+            # Раньше (`Phase 2 hotfix #20`) endpoint был захардкожен на
+            # OpenAI flow ради cost=1 (vs 4 у NARWHAL). 2026-05-15: actor
+            # refs тоже подключены к GUI-переключателю — иначе при
+            # «No accounts available for OpenAI operations» от Fast Gen
+            # юзер вообще не мог создать референс актёра, хотя у него в
+            # настройках стоит NARWHAL и шоты успешно генерятся.
+            #
+            # Endpoints — те же что в GenerateThread:
+            #   NARWHAL `/api/v4/flow/image/generate` — multi-ref (3-10
+            #     фото актёра подаются как identity refs), мягче content,
+            #     cost=4. НЕ передавать `model`.
+            #   OpenAI `/api/v4/openai/image/generate` — ломается на 3+
+            #     refs (pydantic), режется до 2; cost=1.
+            provider = _sa.image_provider()
             payload = {
                 "prompt": self.prompt_text,
                 "aspect_ratio": "16:9",
-                "reference_images": ref_hashes,
             }
-            r = session.post(f"{_sa.API_BASE}/api/v4/openai/image/generate",
+            if ref_hashes:
+                if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > 2:
+                    self.progress.emit(
+                        f"OpenAI режет рефы до 2 (было {len(ref_hashes)})")
+                    ref_hashes = ref_hashes[:2]
+                payload["reference_images"] = ref_hashes
+            endpoint = ("/api/v4/openai/image/generate"
+                        if provider == _sa.IMAGE_PROVIDER_OPENAI
+                        else "/api/v4/flow/image/generate")
+            r = session.post(f"{_sa.API_BASE}{endpoint}",
                              json=payload, timeout=60)
             r.raise_for_status()
             data = r.json()
