@@ -3581,6 +3581,95 @@ class EpisodeChatView(QWidget):
         self._seedance_pipeline_thread = thread
         thread.start()
 
+    def _on_seedance_restart(self, ep_id: str):
+        """v1.0.85: «🔄 Перезапустить» при зависшем Seedance pipeline.
+
+        Юзер кликнул на seedance_btn когда тот был в restart-режиме
+        (elapsed > 5 мин + файл не появился). Делаем:
+          1. stop() текущего треда — терминирует живой claude-Popen
+             (через Этап 1 уже умеет).
+          2. pkill claude (Mac/Linux) / PowerShell Stop-Process (Win) —
+             страховка от зомби если CLI после terminate не умер.
+          3. Перечитываем монтажную карту с диска (она утверждена) +
+             собираем те же параметры (refs_summary, characters_dict,
+             cli, project_root, cur_show, storyboard_prompts_dir).
+          4. Запускаем SeedancePipelineThread заново — idempotent skip
+             из Этапа 1 пропустит уже-готовые блоки, догенерится только
+             хвост (тот что подвис).
+        """
+        try:
+            # 1. Стоп текущего треда (если ещё жив).
+            old = getattr(self, '_seedance_pipeline_thread', None)
+            if old is not None:
+                try:
+                    if hasattr(old, 'stop'):
+                        old.stop()
+                except Exception:
+                    traceback.print_exc()
+
+            # 2. Страховочное убийство зависших claude-subprocess'ов.
+            #    Тот же паттерн что в `_on_montage_cancel` (cross-platform).
+            try:
+                import subprocess as _sp
+                import sys as _sys
+                if _sys.platform == 'win32':
+                    ps_cmd = (
+                        "Get-CimInstance Win32_Process "
+                        "-Filter \"Name='claude.exe'\" "
+                        "| Where-Object { $_.CommandLine -like '*--system-prompt*' } "
+                        "| ForEach-Object { "
+                        "  try { Stop-Process -Id $_.ProcessId -Force "
+                        "-ErrorAction SilentlyContinue } catch {} }"
+                    )
+                    CREATE_NO_WINDOW = 0x08000000
+                    _sp.run(['powershell', '-NoProfile', '-Command', ps_cmd],
+                            capture_output=True, timeout=10,
+                            creationflags=CREATE_NO_WINDOW)
+                else:
+                    _sp.run(['pkill', '-TERM', '-f', 'claude -p '],
+                            capture_output=True, timeout=5)
+            except Exception:
+                traceback.print_exc()
+
+            # 3. Восстанавливаем параметры запуска.
+            card, _checker, _summary, _rounds = \
+                self._load_full_montage_card(ep_id)
+            if not card or not card.get('blocks'):
+                self._render_message(
+                    "\n⚠ Не нашёл монтажную карту для перезапуска "
+                    "Seedance.\n", kind='err')
+                return
+            cli = _sa.find_claude_cli()
+            if not cli:
+                self._render_message(
+                    "\n⚠ Claude CLI не найден — нечем перезапускать.\n",
+                    kind='err')
+                return
+            mw = getattr(self, '_mw', None)
+            cur_show = getattr(mw, '_current_show', None) if mw else None
+            project_root = getattr(mw, '_project_root', None) if mw else None
+            if not cur_show or project_root is None:
+                self._render_message(
+                    "\n⚠ Не нашёл текущий сериал — restart не стартовал.\n",
+                    kind='err')
+                return
+            prompts_dir = (project_root / "shows" / cur_show
+                           / "output" / "prompts")
+            refs_summary = self._build_refs_summary_for_orchestrator()
+            characters_dict = self._build_characters_dict(card)
+
+            # 4. Запускаем заново. Этап 1 skip-existing подхватит уже
+            #    сгенерированные блоки и не будет дёргать Opus впустую.
+            self._start_seedance_pipeline(card, cli, refs_summary,
+                                          characters_dict, project_root,
+                                          cur_show, prompts_dir)
+            line = (f"\n🔄 Перезапускаю Seedance pipeline для {ep_id} — "
+                    f"уже-готовые блоки пропустятся.\n")
+            _sa.append_chat_message(ep_id, "system", line, kind='ok')
+            self._render_message(line, kind='ok')
+        except Exception:
+            traceback.print_exc()
+
     def _build_geometry_context(self, montage_card: dict,
                                   locations_root) -> Dict[str, str]:
         """Собирает {location_slug: geometry_text} для всех локаций

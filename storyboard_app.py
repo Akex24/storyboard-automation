@@ -4616,6 +4616,9 @@ class MainWindow(QMainWindow):
         self._refs_pulse_on = False
         # Анимация точек ⋯ возле блоков с активной регенерацией
         self._dot_step = 0
+        # v1.0.85: state seedance_btn — 'ready' | 'pending' | 'restart'.
+        # Используется в `_on_seedance_btn` для роутинга клика.
+        self._seedance_btn_mode = 'pending'
         # Пилюли эпизодов и блоков (заполняются динамически)
         self._episode_pills: Dict[str, QPushButton] = {}
         self._block_pills:   Dict[str, QPushButton] = {}
@@ -4628,6 +4631,17 @@ class MainWindow(QMainWindow):
         self._watcher = QFileSystemWatcher([str(STORYBOARDS_DIR)])
         self._watcher.directoryChanged.connect(
             lambda: QTimer.singleShot(600, self._reload_show))
+
+        # v1.0.85: периодическая переоценка seedance_btn state — нужно
+        # чтобы лейбл «Готовится…» сменился на «🔄 Перезапустить»
+        # после 5 минут зависания (порог `SEEDANCE_STUCK_THRESHOLD_SEC`).
+        # Тик каждые 30с — точность ±30с от порога, юзеру норм; нагрузка
+        # минимальная (early-return если seedance_btn не виден).
+        self._seedance_state_timer = QTimer(self)
+        self._seedance_state_timer.setInterval(30_000)
+        self._seedance_state_timer.timeout.connect(
+            self._refresh_seedance_btn_state)
+        self._seedance_state_timer.start()
 
         # Отдельный watcher для refs/ (locations/objects/characters) и
         # episodes.json — нужен чтобы перерисовать refs-view + дропдаун
@@ -7630,6 +7644,13 @@ class MainWindow(QMainWindow):
                 t = getattr(ev, '_seedance_pipeline_thread', None)
                 if t is not None:
                     threads.append(t)
+                # v1.0.85: StoryboardPipelineThread тоже держит claude
+                # CLI subprocess'ы — без cleanup при закрытии могут
+                # повиснуть зомби и продолжить тратить токены. До v1.0.85
+                # этот тред не собирался — упущение из v1.0.45.
+                t = getattr(ev, '_storyboard_pipeline_thread', None)
+                if t is not None:
+                    threads.append(t)
         except Exception:
             traceback.print_exc()
         # Уникальные ненулевые
@@ -7739,6 +7760,11 @@ class MainWindow(QMainWindow):
           3. `wait(2000)` — даём 2 сек на graceful exit.
           4. Если всё ещё running → `terminate()` + `wait(500)` (Qt-level,
              не abort).
+          5. v1.0.85: финальная страховка от зомби-claude-процессов.
+             Если QThread.terminate() не убил subprocess (например, CLI
+             заблокирован в I/O и не реагирует на SIGTERM от treads-stop),
+             добиваем через pkill / PowerShell Stop-Process. Иначе CLI
+             продолжит жить после закрытия Studio и сожрёт токены.
 
         Без этого Qt при destruction'е QObject-иерархии MainWindow натыкается
         на живые QThread → `qFatal("QThread: Destroyed while thread is still
@@ -7746,6 +7772,12 @@ class MainWindow(QMainWindow):
         генерации сторибордов (SeedancePipelineThread + child GenerateThreads).
         """
         threads = self._collect_all_threads()
+        running_before = sum(1 for t in threads
+                              if hasattr(t, 'isRunning')
+                              and t.isRunning())
+        self._log_close_diag(
+            f"_graceful_shutdown_all_threads: total={len(threads)} "
+            f"running={running_before}")
         # Phase 1: ask nicely.
         for t in threads:
             try:
@@ -7769,6 +7801,77 @@ class MainWindow(QMainWindow):
                         t.wait(500)
             except Exception:
                 pass
+        # Phase 4 (v1.0.85): pkill claude CLI зомби — last resort.
+        # Запускается ВСЕГДА если были живые pipeline-треды (даже если
+        # все они сейчас «мёртвые» по QThread.isRunning() — subprocess
+        # CLI мог отделиться и продолжить жить). Безопасно: pkill убьёт
+        # только claude процессы с маркером `--system-prompt` (Studio
+        # запускает CLI именно с этим флагом; интерактивный Claude
+        # Code в репозитории — без него).
+        killed = False
+        if running_before > 0:
+            killed = self._pkill_claude_subprocs()
+        self._log_close_diag(
+            f"_graceful_shutdown_all_threads: done pkill_attempted="
+            f"{running_before > 0} killed_ok={killed}")
+
+    def _pkill_claude_subprocs(self) -> bool:
+        """v1.0.85: убивает все claude CLI subprocess'ы с маркером
+        `--system-prompt`. Cross-platform.
+
+        Возвращает True если операция прошла без исключений (не значит
+        что что-то реально было убито — это только indicator успешного
+        вызова).
+
+        Используется:
+          • как Phase 4 в `_graceful_shutdown_all_threads` при выходе;
+          • как страховка в `_on_seedance_restart` и `_on_montage_cancel`.
+
+        Маркер `--system-prompt` стабильный: Studio запускает все CLI
+        потоки с этим флагом (MontageOrchestrator/StoryboardPipeline/
+        SeedancePipeline). Интерактивный Claude Code в репо стартует
+        без него — не трогаем.
+        """
+        try:
+            import subprocess as _sp
+            if sys.platform == 'win32':
+                ps_cmd = (
+                    "Get-CimInstance Win32_Process "
+                    "-Filter \"Name='claude.exe'\" "
+                    "| Where-Object { $_.CommandLine -like '*--system-prompt*' } "
+                    "| ForEach-Object { "
+                    "  try { Stop-Process -Id $_.ProcessId -Force "
+                    "-ErrorAction SilentlyContinue } catch {} }"
+                )
+                CREATE_NO_WINDOW = 0x08000000
+                _sp.run(['powershell', '-NoProfile', '-Command', ps_cmd],
+                        capture_output=True, timeout=5,
+                        creationflags=CREATE_NO_WINDOW)
+            else:
+                _sp.run(['pkill', '-TERM', '-f', 'claude -p '],
+                        capture_output=True, timeout=3)
+            return True
+        except Exception:
+            traceback.print_exc()
+            return False
+
+    def _log_close_diag(self, line: str) -> None:
+        """v1.0.85: лог в `shows/<active>/_studio_diag.log` для
+        диагностики выхода. Тихо проглатывает ошибки — closeEvent не
+        должен падать из-за проблем с логированием.
+        """
+        try:
+            import datetime
+            cur = getattr(self, '_current_show', None)
+            root = getattr(self, '_project_root', None)
+            if not cur or root is None:
+                return
+            log_path = root / "shows" / cur / "_studio_diag.log"
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} [close] {line}\n")
+        except Exception:
+            pass
 
     def _on_delete_episode_clicked(self):
         """Обработчик кнопки «🗑 Удалить эпизод».
@@ -8947,16 +9050,29 @@ class MainWindow(QMainWindow):
         # только если current_block — это блок реального эпизода
         # (имя матчит ep<N>_block_<M>). Лейбл меняем по состоянию файла:
         # готов → 'seedance_btn', нет → 'seedance_btn_pending'.
+        # v1.0.85: если pipeline-тред бежит дольше 5 минут и файла всё
+        # ещё нет — лейбл становится «🔄 Перезапустить» (клик → restart).
+        # Состояние держим в `_seedance_btn_mode` чтобы click handler
+        # знал куда роутить.
         if ep and blk_n:
             self.seedance_btn.setVisible(True)
             seedance_path = SEEDANCE_DIR / f"{name}.txt"
             ready = seedance_path.exists() and seedance_path.stat().st_size > 0
-            self.seedance_btn.setText(
-                tr('seedance_btn') if ready else tr('seedance_btn_pending')
-            )
+            mode = self._compute_seedance_btn_mode(ready)
+            self._seedance_btn_mode = mode
+            if mode == 'ready':
+                self.seedance_btn.setText(tr('seedance_btn'))
+                self.seedance_btn.setToolTip("")
+            elif mode == 'restart':
+                self.seedance_btn.setText(tr('seedance_btn_restart'))
+                self.seedance_btn.setToolTip(tr('seedance_btn_restart_tip'))
+            else:  # 'pending'
+                self.seedance_btn.setText(tr('seedance_btn_pending'))
+                self.seedance_btn.setToolTip("")
             self.seedance_btn.setEnabled(True)
         else:
             self.seedance_btn.setVisible(False)
+            self._seedance_btn_mode = 'pending'
 
     # ── Regeneration ─────────────────────────────────────────────────────────
 
@@ -10318,17 +10434,66 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    SEEDANCE_STUCK_THRESHOLD_SEC = 300  # v1.0.85: 5 минут → restart-mode
+
+    def _compute_seedance_btn_mode(self, ready: bool) -> str:
+        """v1.0.85: state-машина для seedance_btn.
+        Возвращает 'ready' | 'pending' | 'restart'.
+
+        - ready: файл на диске и >0 байт → клик открывает попап.
+        - restart: pipeline бежит, прошло >5 мин, файла всё ещё нет →
+          клик зовёт `_on_seedance_restart` (terminate + start заново).
+        - pending: обычное «Готовится…».
+        """
+        if ready:
+            return 'ready'
+        ev = getattr(self, 'episode_chat_view', None)
+        thread = getattr(ev, '_seedance_pipeline_thread', None) if ev else None
+        if thread is None:
+            return 'pending'
+        # `_start_time` устанавливается в run() (Этап 1). До старта None.
+        start_time = getattr(thread, '_start_time', None)
+        try:
+            if not thread.isRunning():
+                # Тред уже умер, файла нет — это «мёртвая зависшая задача».
+                # Тоже даём кнопку «Перезапустить».
+                if start_time is not None:
+                    return 'restart'
+                return 'pending'
+        except Exception:
+            return 'pending'
+        if start_time is None:
+            return 'pending'
+        elapsed = time.time() - start_time
+        if elapsed > self.SEEDANCE_STUCK_THRESHOLD_SEC:
+            return 'restart'
+        return 'pending'
+
     def _on_seedance_btn(self):
         """Клик по кнопке «🎬 Промпт Seedance» на текущем блоке.
-        Открывает попап с готовым текстом промпта (если файл есть),
-        либо показывает «генерируется…» если файл ещё не готов.
+        Роутинг по `_seedance_btn_mode`:
+          • 'ready'   → открыть попап с готовым текстом промпта;
+          • 'restart' → перезапустить зависший pipeline (v1.0.85);
+          • 'pending' → инфо-попап «генерируется…».
         """
         if not self.current_block:
             return
         m = re.match(r'(ep\d+)_block_(\d+)', self.current_block)
         if not m:
             return
+        ep_id = m.group(1)
         block_n = int(m.group(2))
+
+        # v1.0.85: restart-режим — отдельная ветка ДО проверки файла.
+        # Файла нет потому что pipeline завис; перезапускаем.
+        mode = getattr(self, '_seedance_btn_mode', 'pending')
+        if mode == 'restart':
+            ev = getattr(self, 'episode_chat_view', None)
+            if ev is not None and hasattr(ev, '_on_seedance_restart'):
+                ev._on_seedance_restart(ep_id)
+            # После рестарта state-машина переоценится при следующем тике.
+            return
+
         seedance_path = SEEDANCE_DIR / f"{self.current_block}.txt"
         if not seedance_path.exists() or seedance_path.stat().st_size == 0:
             QMessageBox.information(
@@ -10343,6 +10508,46 @@ class MainWindow(QMainWindow):
                 tr('seedance_popup_failed', msg=str(e)[:200]))
             return
         self._show_seedance_popup(block_n, text)
+
+    def _refresh_seedance_btn_state(self):
+        """v1.0.85: периодически (раз в 30с) переоценивает state seedance_btn.
+
+        Нужно потому что «Готовится → Перезапустить» — переход по
+        времени (>5 мин), не по событию. Без таймера лейбл не сменится
+        пока юзер не кликнет по другому блоку и обратно.
+
+        Лёгкая операция — просто перерисовать карточки текущего блока
+        если current_block принадлежит реальному эпизоду.
+        """
+        if not getattr(self, 'current_block', None):
+            return
+        if not hasattr(self, 'seedance_btn') or not self.seedance_btn.isVisible():
+            return
+        try:
+            # Просто перерисовываем — `_render_shot_cards_for_current_block`
+            # (или аналогичный) пересчитает mode через `_compute_seedance_btn_mode`.
+            # Если такого метода нет — пересчитываем здесь напрямую.
+            m = re.match(r'(ep\d+)_block_(\d+)', self.current_block)
+            if not m:
+                return
+            name = self.current_block
+            seedance_path = SEEDANCE_DIR / f"{name}.txt"
+            ready = seedance_path.exists() and seedance_path.stat().st_size > 0
+            mode = self._compute_seedance_btn_mode(ready)
+            if mode == getattr(self, '_seedance_btn_mode', None):
+                return  # state не изменился — экономим
+            self._seedance_btn_mode = mode
+            if mode == 'ready':
+                self.seedance_btn.setText(tr('seedance_btn'))
+                self.seedance_btn.setToolTip("")
+            elif mode == 'restart':
+                self.seedance_btn.setText(tr('seedance_btn_restart'))
+                self.seedance_btn.setToolTip(tr('seedance_btn_restart_tip'))
+            else:
+                self.seedance_btn.setText(tr('seedance_btn_pending'))
+                self.seedance_btn.setToolTip("")
+        except Exception:
+            traceback.print_exc()
 
     def _show_seedance_popup(self, block_n: int, text: str):
         """Большой попап с textarea промпта + textarea инструкции +

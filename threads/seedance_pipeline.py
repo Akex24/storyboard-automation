@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -101,13 +102,36 @@ class SeedancePipelineThread(QThread):
         )
         self._model = model
         self._stop = False
+        # v1.0.85: timestamp старта run() — UI читает чтобы решить
+        # показывать ли «🔄 Перезапустить» (если elapsed > 5 мин и
+        # файл всё ещё не появился — значит подвисло).
+        self._start_time: Optional[float] = None
+        # v1.0.85: handle активного claude-subprocess'а — для terminate
+        # при stop(). Без этого subprocess.run блокировал тред до
+        # SUBPROCESS_TIMEOUT_SEC (600с), флаг _stop не помогал.
+        self._proc: Optional[subprocess.Popen] = None
 
     def stop(self):
+        """Грейсфул стоп + жёсткий kill активного claude-subprocess'а.
+
+        v1.0.85: до этого `stop()` только выставлял флаг `_stop`,
+        который проверялся ТОЛЬКО между блоками. Если CLI завис на
+        текущем блоке — тред блокировался 600с timeout'ом, а claude
+        CLI продолжал кушать токены. Теперь terminate() → kill через
+        2с если CLI не отдал управление.
+        """
         self._stop = True
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     # ──────────────────────────────────────────────────────────────────
 
     def run(self) -> None:  # noqa: D401
+        self._start_time = time.time()
         try:
             self._seedance_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -118,6 +142,7 @@ class SeedancePipelineThread(QThread):
         blocks = list(self._card.get('blocks') or [])
         success = 0
         fail = 0
+        skipped = 0
         for b in blocks:
             if self._stop:
                 self.aborted.emit()
@@ -125,12 +150,27 @@ class SeedancePipelineThread(QThread):
             n = int(b.get('n') or 0)
             if n <= 0:
                 continue
+            filename = f"{self._ep_id}_block_{n}.txt"
+            out_path = self._seedance_dir / filename
+            # v1.0.85: idempotent skip — если файл уже на диске и
+            # содержательный (>100 байт защищает от пустых файлов
+            # от прошлых крэшей), не перезапускаем Opus впустую.
+            # Нужно для restart-сценария: юзер кликает «🔄 Перезапустить»
+            # после зависания → SeedancePipelineThread стартует заново,
+            # уже-сгенерированные блоки пропускаются, догенерится только
+            # хвост.
+            try:
+                if out_path.exists() and out_path.stat().st_size > 100:
+                    skipped += 1
+                    # UI ловит как «готово» — ту же button сигналим.
+                    self.block_seedance_ready.emit(n, out_path.stem)
+                    continue
+            except Exception:
+                pass
             self.block_started.emit(n)
             try:
                 txt = self._call_seedance_writer(b)
                 txt = self._sanitize(txt)
-                filename = f"{self._ep_id}_block_{n}.txt"
-                out_path = self._seedance_dir / filename
                 out_path.write_text(txt, encoding='utf-8')
                 block_basename = out_path.stem
                 self.block_seedance_ready.emit(n, block_basename)
@@ -141,6 +181,13 @@ class SeedancePipelineThread(QThread):
                 # Не прерываем — пробуем следующий блок.
                 continue
 
+        # `success` в API сигнала — сколько РЕАЛЬНО сгенерировано.
+        # Пропущенные не считаем за success (UI знает что они и так
+        # на диске). Если интересно — лог в stderr.
+        if skipped:
+            sys.stderr.write(
+                f"[seedance] skipped {skipped} already-done block(s) "
+                f"for {self._ep_id}\n")
         self.all_done.emit(success, fail)
 
     # ──────────────────────────────────────────────────────────────────
@@ -170,6 +217,19 @@ class SeedancePipelineThread(QThread):
         return self._run_claude(SEEDANCE_WRITER_SYSTEM, user)
 
     def _run_claude(self, system_prompt: str, user_prompt: str) -> str:
+        """Вызов claude CLI через Popen — позволяет извне убить subprocess
+        при `stop()`.
+
+        v1.0.85: до этого был subprocess.run с timeout=600s — `stop()`
+        не мог прервать зависший CLI. Юзер на ep25 столкнулся: pipeline
+        умер на блоке 5, кнопка «Готовится...» висела 20+ минут, CLI в
+        фоне продолжал кушать токены. Теперь:
+        - Popen стартует CLI, handle сохраняется в `self._proc`.
+        - Ждём через `communicate(timeout=...)` — точно так же как run().
+        - При `stop()` (внешний вызов из MainWindow / UI) → terminate()
+          разбудит communicate() с TimeoutExpired-like состоянием → мы
+          поймаем и прокинем 'cancelled' дальше.
+        """
         if not self._cli:
             raise RuntimeError("claude CLI not found")
         cmd = [self._cli, "-p",
@@ -177,24 +237,53 @@ class SeedancePipelineThread(QThread):
                "--output-format", "text"]
         if self._model:
             cmd.extend(["--model", self._model])
-        kwargs: dict = {
-            'input': user_prompt,
-            'capture_output': True,
+        popen_kwargs: dict = {
+            'stdin': subprocess.PIPE,
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
             'text': True,
-            'timeout': self.SUBPROCESS_TIMEOUT_SEC,
             'encoding': 'utf-8',
+            'errors': 'replace',
         }
         if sys.platform == 'win32':
             CREATE_NO_WINDOW = 0x08000000
-            kwargs['creationflags'] = CREATE_NO_WINDOW
-        r = subprocess.run(cmd, **kwargs)
-        if r.returncode != 0:
-            stderr = (r.stderr or "")[:500]
-            raise RuntimeError(f"claude exit={r.returncode}: {stderr}")
-        out = (r.stdout or "").strip()
-        if not out:
-            raise RuntimeError("empty response from Seedance Writer")
-        return out
+            popen_kwargs['creationflags'] = CREATE_NO_WINDOW
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+        self._proc = proc
+        try:
+            try:
+                stdout, stderr = proc.communicate(
+                    input=user_prompt,
+                    timeout=self.SUBPROCESS_TIMEOUT_SEC,
+                )
+            except subprocess.TimeoutExpired:
+                # Жёсткий kill — CLI завис, не пускаем зомби.
+                try:
+                    proc.terminate()
+                    try:
+                        proc.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.communicate(timeout=2)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"claude CLI timeout ({self.SUBPROCESS_TIMEOUT_SEC}s)")
+            # Если внешний stop() уже сработал и terminate'нул procces —
+            # rc будет ненулевой (или сигналом).
+            if self._stop:
+                raise RuntimeError("cancelled by stop()")
+            if proc.returncode != 0:
+                err = (stderr or "")[:500]
+                raise RuntimeError(f"claude exit={proc.returncode}: {err}")
+            out = (stdout or "").strip()
+            if not out:
+                raise RuntimeError("empty response from Seedance Writer")
+            return out
+        finally:
+            # Очистка handle — даже при exception'е чтобы stop() не
+            # пытался terminate'нуть уже умерший процесс.
+            self._proc = None
 
     @staticmethod
     def _sanitize(raw: str) -> str:
