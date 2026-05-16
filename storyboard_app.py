@@ -6173,6 +6173,13 @@ class MainWindow(QMainWindow):
                 self.delete_ep_btn.setToolTip(tr('delete_ep_btn_tooltip'))
             except Exception:
                 pass
+        # v1.0.88 (Stage 17): block_refs_btn — перерисовка при смене языка
+        # через UI. _display_block тоже зовёт setText, но если юзер на
+        # refs/chat-view и переключает язык — block_refs_btn скрыта, и
+        # без этого вызова текст обновится только при следующем кликe на
+        # пилюлю блока.
+        if hasattr(self, 'block_refs_btn'):
+            self.block_refs_btn.setText(tr('block_refs_btn'))
         # Перерисовать пилюли эпизодов и блоков (префикс «ЭП/ЕП/EP», «Блок/Block»)
         if hasattr(self, '_meta') and self._current_show:
             self._meta = read_episodes_meta(SHOW_ROOT)
@@ -9430,6 +9437,10 @@ class MainWindow(QMainWindow):
             # v1.0.88 (Stage 16): Block refs button visible вместе с seedance —
             # обе показывают только когда current_block — реальный блок карты.
             if hasattr(self, 'block_refs_btn'):
+                # v1.0.88 (Stage 17): setText на каждом _display_block —
+                # симметрично seedance_btn. Без этого текст застывает в
+                # языке инициализации MainWindow (часто en до QSettings load).
+                self.block_refs_btn.setText(tr('block_refs_btn'))
                 self.block_refs_btn.setVisible(True)
             seedance_path = SEEDANCE_DIR / f"{name}.txt"
             ready = seedance_path.exists() and seedance_path.stat().st_size > 0
