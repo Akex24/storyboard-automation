@@ -545,10 +545,21 @@ class MontageOrchestratorThread(QThread):
             # pipeline идёт дальше (на Context Reviewer если включён),
             # checker_report остаётся от Validator R2.
             r2_errors_remaining = list(checker_report.get("errors", []) or [])
+            # v1.0.88 (Stage 15): порог 2+ ошибок — пропускаем editor если 0-1.
+            # Цель: остановить бесполезные циклы где editor правит 1 ошибку и
+            # создаёт 2 новых. Editor R1 НЕ под порогом — нужен для post_check_timings.
+            import sys as _sys_log
+            try:
+                _sys_log.stderr.write(
+                    f"[editor_r2_threshold] r2_errors_remaining={len(r2_errors_remaining)} "
+                    f"threshold=2 will_run={len(r2_errors_remaining) >= 2}\n")
+                _sys_log.stderr.flush()
+            except Exception:
+                pass
             if (not _already_done("editor_r2")
                     and validator_r2_ok
                     and not checker_report.get("ok")
-                    and len(r2_errors_remaining) > 0):
+                    and len(r2_errors_remaining) >= 2):
                 self.progress.emit("editor_r2_running",
                                     {"errors_count": len(r2_errors_remaining)})
                 try:
@@ -647,9 +658,19 @@ class MontageOrchestratorThread(QThread):
                                         {"ok": reviewer_report.get("ok", True),
                                          "concerns_count": len(concerns)})
 
+                    # v1.0.88 (Stage 15): порог 2+ ошибок — пропускаем editor если 0-1.
+                    # Цель: остановить бесполезные циклы где editor правит 1 ошибку и
+                    # создаёт 2 новых. Editor R1 НЕ под порогом — нужен для post_check_timings.
+                    try:
+                        _sys_log.stderr.write(
+                            f"[editor_after_reviewer_threshold] concerns={len(concerns)} "
+                            f"threshold=2 will_run={len(concerns) >= 2}\n")
+                        _sys_log.stderr.flush()
+                    except Exception:
+                        pass
                     if (not _already_done("editor_after_reviewer")
                             and not reviewer_report.get("ok", True)
-                            and concerns):
+                            and len(concerns) >= 2):
                         converted_errors = [
                             {
                                 "code": c.get("code", "context_concern"),
