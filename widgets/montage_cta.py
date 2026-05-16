@@ -33,6 +33,10 @@ KIND_FAILED = 'failed'
 # v1.0.82: новое состояние — на эпизоде есть готовая монтажная карта на диске.
 # CTA показывает кнопку «📂 Открыть монтажную карту» вместо «Сделать».
 KIND_OPEN_MAP = 'open_map'
+# v1.0.87 (этап 7Б resume-фичи): незавершённая монтажка — pipeline
+# упал на этапе X, есть _agent_log с pipeline_state.status=failed/running.
+# CTA показывает 2 кнопки: «🔄 Продолжить» и «🆕 Начать заново».
+KIND_RESUMABLE = 'resumable'
 
 
 class MontageCTA(QFrame):
@@ -42,6 +46,9 @@ class MontageCTA(QFrame):
     retry_requested = pyqtSignal()
     cancel_requested = pyqtSignal()  # 2026-05-06: «✗ Прервать» в running-state
     open_map_requested = pyqtSignal()  # v1.0.82: «📂 Открыть монтажную карту»
+    # v1.0.87 (этап 7Б): сигналы для KIND_RESUMABLE.
+    resume_requested = pyqtSignal()       # «🔄 Продолжить»
+    start_fresh_requested = pyqtSignal()  # «🆕 Начать заново»
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,6 +58,11 @@ class MontageCTA(QFrame):
         self._kind: str = KIND_IDLE
         self._status_text: str = ""
         self._dot_step = 0
+        # v1.0.87 (этап 7Б): для KIND_RESUMABLE — какой этап последний
+        # успешный и какой будет следующим при resume. Используется в
+        # _render для подстановки человечного имени в subtitle/кнопку.
+        self._resume_last_stage: Optional[str] = None
+        self._resume_next_stage: Optional[str] = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 14, 16, 14)
@@ -119,6 +131,23 @@ class MontageCTA(QFrame):
         self.open_map_btn.hide()
         btn_row.addWidget(self.open_map_btn)
 
+        # v1.0.87 (этап 7Б): «🔄 Продолжить» — resume с упавшего этапа.
+        self.resume_btn = QPushButton(tr('montage_cta_button_resume'))
+        self.resume_btn.setObjectName("montage-cta-btn-primary")
+        self.resume_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.resume_btn.clicked.connect(self.resume_requested.emit)
+        self.resume_btn.hide()
+        btn_row.addWidget(self.resume_btn)
+
+        # v1.0.87 (этап 7Б): «🆕 Начать заново» — стереть лог и стартовать.
+        self.start_fresh_btn = QPushButton(
+            tr('montage_cta_button_start_fresh'))
+        self.start_fresh_btn.setObjectName("montage-cta-btn-cancel")
+        self.start_fresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.start_fresh_btn.clicked.connect(self.start_fresh_requested.emit)
+        self.start_fresh_btn.hide()
+        btn_row.addWidget(self.start_fresh_btn)
+
         outer.addLayout(btn_row)
 
         # Анимация "точек" в running
@@ -179,9 +208,27 @@ class MontageCTA(QFrame):
         self._dot_timer.stop()
         self.show()
 
+    def show_resumable(self, last_completed_stage: str,
+                        next_stage: Optional[str] = None):
+        """v1.0.87 (этап 7Б): незавершённая монтажка — pipeline упал
+        на этапе `last_completed_stage`. Показываем 2 кнопки —
+        «🔄 Продолжить» (resume_requested) и «🆕 Начать заново»
+        (start_fresh_requested). Stage-имена локализуются через
+        i18n ключи `montage_stage_name_<key>`.
+        """
+        self._kind = KIND_RESUMABLE
+        self._resume_last_stage = last_completed_stage
+        self._resume_next_stage = next_stage
+        self._render()
+        self._dot_timer.stop()
+        self.show()
+
     # ── внутреннее ──
 
     def _render(self):
+        # v1.0.87 (этап 7Б): все ветки теперь должны явно прятать
+        # resume_btn / start_fresh_btn (иначе они «прорастают» из
+        # KIND_RESUMABLE state в другие при смене kind).
         if self._kind == KIND_IDLE:
             self.title_lbl.setText(tr('montage_cta_title_idle'))
             self.subtitle_lbl.setText(tr('montage_cta_subtitle_idle'))
@@ -193,6 +240,8 @@ class MontageCTA(QFrame):
             self.retry_btn.hide()
             self.cancel_btn.hide()
             self.open_map_btn.hide()
+            self.resume_btn.hide()
+            self.start_fresh_btn.hide()
         elif self._kind == KIND_RUNNING:
             self.title_lbl.setText(tr('montage_cta_title_running'))
             self.subtitle_lbl.setText(tr('montage_cta_subtitle_running'))
@@ -205,6 +254,8 @@ class MontageCTA(QFrame):
             self.cancel_btn.setText(tr('montage_cta_button_cancel'))
             self.cancel_btn.show()
             self.open_map_btn.hide()
+            self.resume_btn.hide()
+            self.start_fresh_btn.hide()
         elif self._kind == KIND_OPEN_MAP:
             # v1.0.82: монтажка готова, лежит на диске.
             self.title_lbl.setText(tr('montage_cta_title_open_map'))
@@ -216,6 +267,33 @@ class MontageCTA(QFrame):
             self.cancel_btn.hide()
             self.open_map_btn.setText(tr('montage_cta_button_open_map'))
             self.open_map_btn.show()
+            self.resume_btn.hide()
+            self.start_fresh_btn.hide()
+        elif self._kind == KIND_RESUMABLE:
+            # v1.0.87 (этап 7Б): незавершённая монтажка — pipeline упал
+            # на last_completed_stage. Title + subtitle подставляют
+            # человечное имя этапа через i18n ключ
+            # montage_stage_name_<stage_id>.
+            self.title_lbl.setText(tr('montage_cta_title_resumable'))
+            stage_id = self._resume_last_stage or "<unknown>"
+            try:
+                stage_human = tr(f'montage_stage_name_{stage_id}')
+            except Exception:
+                stage_human = stage_id
+            self.subtitle_lbl.setText(
+                tr('montage_cta_subtitle_resumable', stage=stage_human))
+            self.warning_lbl.setText(tr('montage_cta_warning_os_popups'))
+            self.warning_lbl.show()
+            self.status_lbl.hide()
+            self.start_btn.hide()
+            self.retry_btn.hide()
+            self.cancel_btn.hide()
+            self.open_map_btn.hide()
+            self.resume_btn.setText(tr('montage_cta_button_resume'))
+            self.resume_btn.show()
+            self.start_fresh_btn.setText(
+                tr('montage_cta_button_start_fresh'))
+            self.start_fresh_btn.show()
         else:  # KIND_FAILED
             self.title_lbl.setText(tr('montage_cta_title_failed'))
             self.subtitle_lbl.setText(self._status_text or tr('montage_cta_subtitle_failed'))
@@ -226,6 +304,8 @@ class MontageCTA(QFrame):
             self.retry_btn.show()
             self.cancel_btn.hide()
             self.open_map_btn.hide()
+            self.resume_btn.hide()
+            self.start_fresh_btn.hide()
         self._apply_style()
 
     def _tick_dots(self):
