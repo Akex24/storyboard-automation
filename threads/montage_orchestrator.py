@@ -82,6 +82,17 @@ class MontageOrchestratorThread(QThread):
     # terminate'им CLI и поднимаем ошибку. Юзер видит понятный fail
     # быстрее, не висит 10 минут.
     STREAM_CHUNK_TIMEOUT_SEC = 60
+    # v1.0.86 (этап 4): отдельный таймаут для Opus 4.7 этапов
+    # (Scriptwriter, Editor). Diagnostic probe-скрипт показал что Opus
+    # с extended thinking в стрим-режиме МОЛЧИТ ~80 секунд между
+    # `content_block_start` (начало thinking-блока) и `signature_delta`
+    # (его конец) — никаких `thinking_delta` чанков для Opus 4.7 CLI
+    # не присылает (в отличие от Haiku где плотный поток thinking_delta).
+    # 60с chunk-timeout убивал живой запрос посреди thinking. 150с =
+    # измеренные 81.7с + запас на медленный TTFT и большой scenario.
+    # Применяется только для Opus callsite через параметр
+    # `chunk_timeout_sec=`. Sonnet/Haiku остаются на default 60с.
+    STREAM_CHUNK_TIMEOUT_OPUS_SEC = 150
 
     # 2026-05-09: per-agent model routing. Юзер не выбирает модели для
     # пайплайнов — каждый агент прибит к задаче.
@@ -443,15 +454,17 @@ class MontageOrchestratorThread(QThread):
         # 2026-05-13 (v1.0.63): замер времени обнимает ТОЛЬКО _run_claude
         # (subprocess) — build_user_prompt и _parse_json копеечные.
         # v1.0.86 (этап 3/4): Scriptwriter переключён на _run_claude_stream
-        # (stream-json + chunk-timeout 60с). Это FATAL-этап: если упадёт —
-        # `run()` ловит exception, `_dump_log + failed.emit` и pipeline
-        # стопорится целиком. Стриминг здесь критичнее всего — Scriptwriter
-        # на Opus 4.7, ответ длинный (вся монтажная карта), 600с старого
-        # timeout'а на слабой сети не хватало. Сигнатура и финальная
-        # строка идентичны (валидация SHA-256 на этапе 1).
+        # (stream-json). FATAL-этап: при exception `run()` ловит,
+        # `_dump_log + failed.emit` стопорит pipeline целиком.
+        # v1.0.86 (этап 4/4): chunk-timeout 150с (вместо default 60с).
+        # Opus 4.7 extended thinking молчит ~80с между chunks
+        # (probe-скрипт на ep21 показал 81.7с тишины). 60с убивал
+        # живой запрос посреди thinking.
         t0 = time.time()
-        raw = self._run_claude_stream(SCRIPTWRITER_SYSTEM, user,
-                                       model=self.MODEL_SCRIPTWRITER)
+        raw = self._run_claude_stream(
+            SCRIPTWRITER_SYSTEM, user,
+            model=self.MODEL_SCRIPTWRITER,
+            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC)
         duration_sec = round(time.time() - t0, 2)
         montage = self._parse_json(raw)
         self._agent_log.append({
@@ -540,8 +553,12 @@ class MontageOrchestratorThread(QThread):
         # editor_after_reviewer) — это одна функция вызывается с разным
         # round_num. Не fatal: при exception pipeline ловит в run(),
         # помечает stage failed и продолжает с картой до Editor'а.
-        raw = self._run_claude_stream(EDITOR_SYSTEM, user,
-                                       model=self.MODEL_EDITOR)
+        # v1.0.86 (этап 4/4): chunk-timeout 150с — Editor тоже Opus 4.7
+        # с extended thinking, та же тишина 80+ сек что у Scriptwriter.
+        raw = self._run_claude_stream(
+            EDITOR_SYSTEM, user,
+            model=self.MODEL_EDITOR,
+            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC)
         duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
         stage_name = "editor" if round_num == 1 else f"editor_r{round_num}"
@@ -704,7 +721,8 @@ class MontageOrchestratorThread(QThread):
         return (r.stdout or "").strip()
 
     def _run_claude_stream(self, system_prompt: str, user_prompt: str,
-                            model: str) -> str:
+                            model: str,
+                            chunk_timeout_sec: Optional[int] = None) -> str:
         """v1.0.86: стриминг-вариант _run_claude через --output-format stream-json.
 
         Сигнатура та же что у `_run_claude` (для замены callsite'ов на
@@ -725,9 +743,19 @@ class MontageOrchestratorThread(QThread):
 
         Этап 1 фичи: метод существует, но никто его пока не зовёт.
         Старый `_run_claude` остаётся как fallback.
+
+        v1.0.86 (этап 4): добавлен `chunk_timeout_sec` параметр для
+        per-stage таймаута. Opus с extended thinking молчит до 80с
+        между chunks (диагностика: probe-скрипт на ep21 показал 81.7с
+        тишины между `content_block_start` и `signature_delta`). Для
+        Scriptwriter/Editor (Opus 4.7) передаётся
+        `STREAM_CHUNK_TIMEOUT_OPUS_SEC=150`. Sonnet/Haiku — default 60с.
         """
         if not self._cli:
             raise RuntimeError("claude CLI not found")
+        # v1.0.86 (этап 4): резолвим эффективный chunk-timeout.
+        # Параметр None → default 60с (Sonnet/Haiku); Opus передаёт 150с.
+        timeout = chunk_timeout_sec or self.STREAM_CHUNK_TIMEOUT_SEC
         cmd = [self._cli, "-p",
                "--system-prompt", system_prompt,
                "--output-format", "stream-json",
@@ -803,16 +831,19 @@ class MontageOrchestratorThread(QThread):
                     raise RuntimeError(
                         f"stream total timeout ({self.SUBPROCESS_TIMEOUT_SEC}s)")
                 try:
-                    line = q.get(timeout=self.STREAM_CHUNK_TIMEOUT_SEC)
+                    line = q.get(timeout=timeout)
                 except queue.Empty:
-                    # 60с тишины — TCP/HTTP стрим мёртв.
+                    # Тишина больше chunk-timeout — TCP/HTTP стрим мёртв
+                    # ИЛИ Opus thinking-блок не присылал deltas (для
+                    # Opus callsite даём 150с — этого хватает на 81с
+                    # тишины замеренные в probe + запас).
                     try:
                         proc.terminate()
                     except Exception:
                         pass
                     raise RuntimeError(
                         f"stream chunk timeout "
-                        f"({self.STREAM_CHUNK_TIMEOUT_SEC}s no activity)")
+                        f"({timeout}s no activity)")
                 if line is None:
                     break  # EOF reader-потока
                 recv_bytes += len(line.encode('utf-8', errors='replace'))
