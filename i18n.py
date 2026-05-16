@@ -568,6 +568,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'timing_unit_minsec': '{min} мин {sec} сек',
         # Seedance промпты — попап на блоке
         'seedance_btn': '▶ Промпт Seedance',
+        # v1.0.88 (Stage 16): кнопка «🗂 Рефы блока» — собирает все рефы
+        # конкретного блока (location + objects + characters) в одну
+        # временную папку .cache/_block_view/<ep>_block<N>/ и открывает её
+        # в Finder. Удобство при создании сториборда — все нужные картинки
+        # под рукой.
+        'block_refs_btn': '🗂 Рефы блока',
+        'block_refs_btn_error': 'Ошибка при открытии папки рефов',
         'seedance_btn_pending': '🎬 Готовится…',
         'seedance_btn_failed': '🎬 Ошибка',
         'seedance_btn_restart': '🔄 Перезапустить',
@@ -1106,6 +1113,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'timing_unit_sec': '{sec} сек',
         'timing_unit_minsec': '{min} хв {sec} сек',
         'seedance_btn': '▶ Промпт Seedance',
+        'block_refs_btn': '🗂 Рефи блоку',
+        'block_refs_btn_error': 'Помилка при відкритті папки референсів',
         'seedance_btn_pending': '🎬 Готується…',
         'seedance_btn_failed': '🎬 Помилка',
         'seedance_btn_restart': '🔄 Перезапустити',
@@ -1644,6 +1653,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'timing_unit_sec': '{sec} sec',
         'timing_unit_minsec': '{min} min {sec} sec',
         'seedance_btn': '▶ Seedance prompt',
+        'block_refs_btn': '🗂 Block refs',
+        'block_refs_btn_error': 'Failed to open block refs folder',
         'seedance_btn_pending': '🎬 Preparing…',
         'seedance_btn_failed': '🎬 Failed',
         'seedance_btn_restart': '🔄 Restart',

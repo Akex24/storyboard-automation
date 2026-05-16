@@ -6366,6 +6366,33 @@ class MainWindow(QMainWindow):
         self.block_title = QLabel("")
         self.block_title.setObjectName("block-title")
         title_row.addWidget(self.block_title, stretch=1)
+        # v1.0.88 (Stage 16): кнопка «🗂 Рефы блока» СЛЕВА от Seedance.
+        # Собирает все рефы текущего блока (location + objects + characters)
+        # в .cache/_block_view/<ep>_block<N>/ и открывает папку в Finder.
+        # Стиль — outline subtle red (как «+ Добавить» в refs-секциях,
+        # ниже на line ~8951): secondary action, не конкурирует с primary
+        # залитым красным Seedance-кнопкой.
+        self.block_refs_btn = QPushButton(tr('block_refs_btn'))
+        self.block_refs_btn.setObjectName("block-refs-btn")
+        self.block_refs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.block_refs_btn.setStyleSheet(
+            "QPushButton#block-refs-btn {"
+            " background: rgba(228, 52, 74, 0.10);"
+            " border: 1px solid rgba(228, 52, 74, 0.25);"
+            " border-radius: 8px;"
+            " color: #e4344a;"
+            " padding: 8px 14px;"
+            " font-size: 12px; font-weight: 500;"
+            "}"
+            "QPushButton#block-refs-btn:hover {"
+            " background: rgba(228, 52, 74, 0.18);"
+            " border-color: rgba(228, 52, 74, 0.40); }"
+            "QPushButton#block-refs-btn:pressed {"
+            " background: rgba(228, 52, 74, 0.25); }"
+        )
+        self.block_refs_btn.clicked.connect(self._on_block_refs_btn)
+        self.block_refs_btn.setVisible(False)
+        title_row.addWidget(self.block_refs_btn)
         # 2026-05-06: Этап 3 — кнопка открытия попапа с Seedance промптом.
         # Видна только когда current_block указывает на блок утверждённой
         # карты эпизода. State обновляется в _display_block.
@@ -8396,6 +8423,8 @@ class MainWindow(QMainWindow):
             self.block_title.setText("")
             if hasattr(self, 'seedance_btn'):
                 self.seedance_btn.setVisible(False)
+            if hasattr(self, 'block_refs_btn'):
+                self.block_refs_btn.setVisible(False)
             for card in self.shot_cards:
                 card.set_shot_info(dict(shot_num=1, duration="", description="", is_blank=True))
                 card.set_image(None)
@@ -8769,6 +8798,8 @@ class MainWindow(QMainWindow):
         self.block_title.setText(tr('refs').upper())
         if hasattr(self, 'seedance_btn'):
             self.seedance_btn.setVisible(False)
+        if hasattr(self, 'block_refs_btn'):
+            self.block_refs_btn.setVisible(False)
 
         self._build_refs_view(ep)
         # 2026-05-07: запоминаем для какого ep последний раз строили —
@@ -8836,6 +8867,8 @@ class MainWindow(QMainWindow):
         self.block_title.setText(tr('chat_pill').upper())
         if hasattr(self, 'seedance_btn'):
             self.seedance_btn.setVisible(False)
+        if hasattr(self, 'block_refs_btn'):
+            self.block_refs_btn.setVisible(False)
         try:
             self.episode_chat_view.set_episode(self._current_episode)
         except Exception:
@@ -8887,6 +8920,8 @@ class MainWindow(QMainWindow):
         self.block_title.setText(tr('pill_new_episode_title'))
         if hasattr(self, 'seedance_btn'):
             self.seedance_btn.setVisible(False)
+        if hasattr(self, 'block_refs_btn'):
+            self.block_refs_btn.setVisible(False)
         self.ep_title_label.setText(tr('new_ep_title'))
         self.ep_dur_label.setText("")
         # Кнопка удаления неактивна для виртуального «нового» эпизода
@@ -9392,6 +9427,10 @@ class MainWindow(QMainWindow):
         # знал куда роутить.
         if ep and blk_n:
             self.seedance_btn.setVisible(True)
+            # v1.0.88 (Stage 16): Block refs button visible вместе с seedance —
+            # обе показывают только когда current_block — реальный блок карты.
+            if hasattr(self, 'block_refs_btn'):
+                self.block_refs_btn.setVisible(True)
             seedance_path = SEEDANCE_DIR / f"{name}.txt"
             ready = seedance_path.exists() and seedance_path.stat().st_size > 0
             mode = self._compute_seedance_btn_mode(ready)
@@ -9409,6 +9448,8 @@ class MainWindow(QMainWindow):
         else:
             self.seedance_btn.setVisible(False)
             self._seedance_btn_mode = 'pending'
+            if hasattr(self, 'block_refs_btn'):
+                self.block_refs_btn.setVisible(False)
 
     # ── Regeneration ─────────────────────────────────────────────────────────
 
@@ -10804,6 +10845,174 @@ class MainWindow(QMainWindow):
         if elapsed > self.SEEDANCE_STUCK_THRESHOLD_SEC:
             return 'restart'
         return 'pending'
+
+    def _on_block_refs_btn(self):
+        """v1.0.88 (Stage 16): клик «🗂 Рефы блока».
+
+        Собирает все рефы текущего блока (location + objects + characters)
+        в одну временную папку и открывает её в файловом менеджере:
+          shows/<show>/.cache/_block_view/<ep_id>_block<N>/
+
+        Каждый клик: rmtree папки → mkdir → копия всех найденных файлов
+        → open in Finder/Explorer. Папка — рабочий кэш, не source of
+        truth (.cache gitignore-friendly, не попадает в list_episode_refs).
+
+        Cross-platform: subprocess.run с **no_console_kwargs() для тихого
+        запуска под Win, shutil.copy2 + Path.mkdir — stdlib.
+
+        Источники данных:
+          • montage_card.blocks[i] — slugs (location/objects/characters)
+          • refs_decisions[<category>][<slug>] — filename → реальный путь
+            на диске (shows/<show>/refs/<plural>/<filename>).
+
+        На пропавшие файлы / отсутствующие decisions — stderr с префиксом
+        [block_refs], копируем что есть, открываем папку. Юзер увидит
+        в Finder неполный набор и сам решит.
+        """
+        import shutil
+        import sys as _sys_log
+        if not self.current_block:
+            return
+        try:
+            m = re.match(r'(ep\d+)_block_(\d+)', self.current_block)
+            if not m:
+                return
+            ep_id = m.group(1)
+            block_n = int(m.group(2))
+
+            if not self._current_show:
+                return
+            show_root = self._project_root / "shows" / self._current_show
+
+            # 1. Свежий episodes.json — `refs_decisions` могли только что
+            #    обновиться (после нового linking рефа в чате).
+            meta_all = read_episodes_meta(show_root)
+            ep_meta = (meta_all or {}).get(ep_id) or {}
+            montage_card = ep_meta.get('montage_card') or {}
+            blocks = montage_card.get('blocks') or []
+            block = next((b for b in blocks if b.get('n') == block_n), None)
+            if block is None:
+                _sys_log.stderr.write(
+                    f"[block_refs] ep={ep_id} block={block_n}: "
+                    f"block not found in montage_card.blocks\n")
+                _sys_log.stderr.flush()
+                QMessageBox.warning(
+                    self, tr('block_refs_btn'),
+                    tr('block_refs_btn_error'))
+                return
+
+            decisions = ep_meta.get('refs_decisions') or {}
+
+            # 2. Собрать список slugs нужных категорий.
+            #    Singular keys в refs_decisions: location / object / character.
+            #    Plural folders на диске: locations/ objects/ characters/.
+            targets: list = []  # list of (category_singular, slug)
+            loc = block.get('location')
+            if isinstance(loc, str) and loc:
+                targets.append(('location', loc))
+            for obj_slug in (block.get('objects') or []):
+                if isinstance(obj_slug, str) and obj_slug:
+                    targets.append(('object', obj_slug))
+            for char_slug in (block.get('characters') or []):
+                if isinstance(char_slug, str) and char_slug:
+                    targets.append(('character', char_slug))
+
+            # 3. Резолвить slug → путь на диске.
+            cat_to_plural = {'location': 'locations',
+                             'object': 'objects',
+                             'character': 'characters'}
+            refs_root = show_root / "refs"
+            resolved: list = []  # list of (category, src_path, basename_for_dest)
+            missing_count = 0
+            for cat, slug in targets:
+                bucket = decisions.get(cat) if isinstance(decisions, dict) else None
+                entry = (bucket or {}).get(slug) if isinstance(bucket, dict) else None
+                filename = (entry or {}).get('filename') if isinstance(entry, dict) else None
+                if not filename:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"no filename in refs_decisions for {cat}/{slug}\n")
+                    missing_count += 1
+                    continue
+                src = refs_root / cat_to_plural[cat] / filename
+                if not src.exists():
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"file not on disk: {src}\n")
+                    missing_count += 1
+                    continue
+                # Для characters filename часто содержит slug-префикс
+                # (например "david/david_belaya_khlopkovaya_rubashka.jpg").
+                # В dest-папке используем только basename — без поддиректории.
+                basename = src.name
+                resolved.append((cat, src, basename))
+
+            # 4. Создать .cache/_block_view/<ep>_block<N>/ — очистить если был.
+            dest_dir = (show_root / ".cache" / "_block_view"
+                        / f"{ep_id}_block{block_n}")
+            try:
+                if dest_dir.exists():
+                    shutil.rmtree(dest_dir)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                _sys_log.stderr.write(
+                    f"[block_refs] ep={ep_id} block={block_n}: "
+                    f"failed to prepare dest_dir {dest_dir}: "
+                    f"{type(e).__name__}: {e}\n")
+                _sys_log.stderr.flush()
+                QMessageBox.warning(
+                    self, tr('block_refs_btn'),
+                    tr('block_refs_btn_error'))
+                return
+
+            # 5. Копировать. На коллизию имён — добавить префикс категории.
+            seen_basenames: set = set()
+            copied_count = 0
+            for cat, src, basename in resolved:
+                final_name = basename
+                if final_name in seen_basenames:
+                    final_name = f"{cat}__{basename}"
+                seen_basenames.add(final_name)
+                try:
+                    shutil.copy2(src, dest_dir / final_name)
+                    copied_count += 1
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"copy failed for {src}: "
+                        f"{type(e).__name__}: {e}\n")
+
+            _sys_log.stderr.write(
+                f"[block_refs] ep={ep_id} block={block_n} "
+                f"found={copied_count} missing={missing_count} "
+                f"dest={dest_dir}\n")
+            _sys_log.stderr.flush()
+
+            # 6. Открыть папку в файловом менеджере.
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(dest_dir)],
+                               **no_console_kwargs())
+            elif sys.platform == "win32":
+                subprocess.run(["explorer", str(dest_dir)],
+                               **no_console_kwargs())
+            else:
+                subprocess.run(["xdg-open", str(dest_dir)],
+                               **no_console_kwargs())
+        except Exception as e:
+            try:
+                _sys_log.stderr.write(
+                    f"[block_refs] unexpected error: "
+                    f"{type(e).__name__}: {e}\n")
+                _sys_log.stderr.flush()
+            except Exception:
+                pass
+            traceback.print_exc()
+            try:
+                QMessageBox.warning(
+                    self, tr('block_refs_btn'),
+                    tr('block_refs_btn_error'))
+            except Exception:
+                pass
 
     def _on_seedance_btn(self):
         """Клик по кнопке «🎬 Промпт Seedance» на текущем блоке.
