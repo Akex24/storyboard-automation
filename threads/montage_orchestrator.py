@@ -460,11 +460,17 @@ class MontageOrchestratorThread(QThread):
         # Opus 4.7 extended thinking молчит ~80с между chunks
         # (probe-скрипт на ep21 показал 81.7с тишины). 60с убивал
         # живой запрос посреди thinking.
+        # v1.0.86 (этап 5): effort="low" — короткий thinking. Probe
+        # показал что на default effort silence 120-160с (≥150с
+        # лимита), а с low total всего 49с, max_silence 2.6с. Качество
+        # карты на low проверяется юзером — если ухудшилось, переводим
+        # на "medium".
         t0 = time.time()
         raw = self._run_claude_stream(
             SCRIPTWRITER_SYSTEM, user,
             model=self.MODEL_SCRIPTWRITER,
-            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC)
+            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC,
+            effort="low")
         duration_sec = round(time.time() - t0, 2)
         montage = self._parse_json(raw)
         self._agent_log.append({
@@ -555,10 +561,14 @@ class MontageOrchestratorThread(QThread):
         # помечает stage failed и продолжает с картой до Editor'а.
         # v1.0.86 (этап 4/4): chunk-timeout 150с — Editor тоже Opus 4.7
         # с extended thinking, та же тишина 80+ сек что у Scriptwriter.
+        # v1.0.86 (этап 5): effort="low" — та же мотивация что у
+        # Scriptwriter. Editor применяет N исправлений к JSON-карте
+        # — менее открытая задача, low effort должен справиться.
         raw = self._run_claude_stream(
             EDITOR_SYSTEM, user,
             model=self.MODEL_EDITOR,
-            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC)
+            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC,
+            effort="low")
         duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
         stage_name = "editor" if round_num == 1 else f"editor_r{round_num}"
@@ -722,7 +732,8 @@ class MontageOrchestratorThread(QThread):
 
     def _run_claude_stream(self, system_prompt: str, user_prompt: str,
                             model: str,
-                            chunk_timeout_sec: Optional[int] = None) -> str:
+                            chunk_timeout_sec: Optional[int] = None,
+                            effort: Optional[str] = None) -> str:
         """v1.0.86: стриминг-вариант _run_claude через --output-format stream-json.
 
         Сигнатура та же что у `_run_claude` (для замены callsite'ов на
@@ -750,6 +761,16 @@ class MontageOrchestratorThread(QThread):
         тишины между `content_block_start` и `signature_delta`). Для
         Scriptwriter/Editor (Opus 4.7) передаётся
         `STREAM_CHUNK_TIMEOUT_OPUS_SEC=150`. Sonnet/Haiku — default 60с.
+
+        v1.0.86 (этап 5): добавлен `effort` параметр (low | medium |
+        high | xhigh | max) — управляет thinking budget claude CLI.
+        Diagnostic probe-скрипт показал что default effort (видимо
+        high/xhigh) даёт 120-160с silence во время Opus thinking,
+        а `--effort low` сокращает thinking почти до нуля (max silence
+        2.6с, total 49с vs 200с). Для Scriptwriter/Editor (Opus 4.7)
+        передаётся `effort="low"`. Качество карты на low проверяется
+        пользователем — если ухудшилось, перевести на "medium" или
+        отказаться от флага вообще.
         """
         if not self._cli:
             raise RuntimeError("claude CLI not found")
@@ -762,6 +783,10 @@ class MontageOrchestratorThread(QThread):
                "--verbose",
                "--include-partial-messages",
                "--model", model]
+        # v1.0.86 (этап 5): если задан thinking effort — пробрасываем
+        # в CLI. Опциональный, чтобы не ломать существующие callsite.
+        if effort:
+            cmd.extend(["--effort", effort])
         popen_kwargs: dict = {
             'stdin': subprocess.PIPE,
             'stdout': subprocess.PIPE,
