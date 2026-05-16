@@ -442,9 +442,16 @@ class MontageOrchestratorThread(QThread):
             self._scenario, self._refs, show_context=self._show_context)
         # 2026-05-13 (v1.0.63): замер времени обнимает ТОЛЬКО _run_claude
         # (subprocess) — build_user_prompt и _parse_json копеечные.
+        # v1.0.86 (этап 3/4): Scriptwriter переключён на _run_claude_stream
+        # (stream-json + chunk-timeout 60с). Это FATAL-этап: если упадёт —
+        # `run()` ловит exception, `_dump_log + failed.emit` и pipeline
+        # стопорится целиком. Стриминг здесь критичнее всего — Scriptwriter
+        # на Opus 4.7, ответ длинный (вся монтажная карта), 600с старого
+        # timeout'а на слабой сети не хватало. Сигнатура и финальная
+        # строка идентичны (валидация SHA-256 на этапе 1).
         t0 = time.time()
-        raw = self._run_claude(SCRIPTWRITER_SYSTEM, user,
-                                model=self.MODEL_SCRIPTWRITER)
+        raw = self._run_claude_stream(SCRIPTWRITER_SYSTEM, user,
+                                       model=self.MODEL_SCRIPTWRITER)
         duration_sec = round(time.time() - t0, 2)
         montage = self._parse_json(raw)
         self._agent_log.append({
@@ -528,8 +535,13 @@ class MontageOrchestratorThread(QThread):
             original_scenario=self._scenario,
             show_context=self._show_context)
         t0 = time.time()
-        raw = self._run_claude(EDITOR_SYSTEM, user,
-                                model=self.MODEL_EDITOR)
+        # v1.0.86 (этап 3/4): Editor переключён на стриминг. Покрывает
+        # все три callsite (R1 после Validator R1, R2 после Validator R2,
+        # editor_after_reviewer) — это одна функция вызывается с разным
+        # round_num. Не fatal: при exception pipeline ловит в run(),
+        # помечает stage failed и продолжает с картой до Editor'а.
+        raw = self._run_claude_stream(EDITOR_SYSTEM, user,
+                                       model=self.MODEL_EDITOR)
         duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
         stage_name = "editor" if round_num == 1 else f"editor_r{round_num}"
@@ -564,8 +576,12 @@ class MontageOrchestratorThread(QThread):
         user = build_geometry_editor_user_prompt(card_json, geometry_errors)
         system = get_geometry_editor_system()
         t0 = time.time()
-        raw = self._run_claude(system, user,
-                                model=self.MODEL_GEOMETRY_EDITOR)
+        # v1.0.86 (этап 3/4): Geometry Editor (Haiku) переключён на
+        # стриминг. Запускается только при `*_missing_geometry` ошибках.
+        # Не fatal: при exception падает в fallback (Editor получит ВСЕ
+        # ошибки включая missing_geometry).
+        raw = self._run_claude_stream(system, user,
+                                       model=self.MODEL_GEOMETRY_EDITOR)
         duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
         self._agent_log.append({
@@ -625,8 +641,12 @@ class MontageOrchestratorThread(QThread):
         user = build_context_reviewer_user_prompt(
             card_json, self._scenario, show_context=self._show_context)
         t0 = time.time()
-        raw = self._run_claude(CONTEXT_REVIEWER_SYSTEM, user,
-                                model=self.MODEL_CONTEXT_REVIEWER)
+        # v1.0.86 (этап 3/4): Context Reviewer переключён на стриминг.
+        # Опциональный (toggle в Settings), default OFF — для большинства
+        # пользователей этот код не запускается. Не fatal: при exception
+        # pipeline catch'ит и идёт к _finalize.
+        raw = self._run_claude_stream(CONTEXT_REVIEWER_SYSTEM, user,
+                                       model=self.MODEL_CONTEXT_REVIEWER)
         duration_sec = round(time.time() - t0, 2)
         report = self._parse_json(raw)
         # Нормализуем — на случай если AI вернул concerns под другим
