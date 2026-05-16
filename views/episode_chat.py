@@ -3297,6 +3297,7 @@ class EpisodeChatView(QWidget):
             opus_effort=opus_effort,
             chunk_timeout_opus=chunk_timeout_opus,
             chunk_timeout_default=chunk_timeout_default,
+            ep_id=ep_id,
             parent=self,
         )
         t.progress.connect(self._on_montage_progress)
@@ -3428,6 +3429,7 @@ class EpisodeChatView(QWidget):
             chunk_timeout_opus=chunk_timeout_opus,
             chunk_timeout_default=chunk_timeout_default,
             resume_from=log_data,
+            ep_id=ep_id,
             parent=self,
         )
         t.progress.connect(self._on_montage_progress)
@@ -3512,21 +3514,43 @@ class EpisodeChatView(QWidget):
             mw = getattr(self, '_mw', None)
             if mw is not None and hasattr(mw, '_refresh_episode_pill_indicators'):
                 mw._refresh_episode_pill_indicators()
-        except Exception:
+        except Exception as e:
+            # v1.0.88 (Stage 11 diag): не просто traceback — явный stderr-маркер,
+            # чтобы при следующем repro видно было что refresh упал на главном
+            # экране (а не где-то в глубине pipeline).
+            try:
+                import sys as _sys_log
+                _sys_log.stderr.write(
+                    f"[pill] _refresh_pill_indicators_safe FAILED: "
+                    f"{type(e).__name__}: {e}\n")
+                _sys_log.stderr.flush()
+            except Exception:
+                pass
             traceback.print_exc()
 
     def _montage_ep_for_sender(self) -> Optional[str]:
-        """2026-05-07: ищет ep_id в `_montage_threads` по `self.sender()`.
-        Используется в слотах прогресса/финиша — чтобы знать какому
-        эпизоду принадлежит обновление, и обновлять CTA только если юзер
-        сейчас на нём (иначе — только snapshot state)."""
+        """Возвращает ep_id orchestrator-треда отправившего сигнал.
+
+        2026-05-07: изначально искал в `_montage_threads` по `t is sender`.
+
+        v1.0.88 (Stage 11 Bug 2 fix): берём ep_id напрямую из
+        `sender()._ep_id` (поле устанавливается в orchestrator.__init__).
+        Старая логика была race-уязвима: `finished.connect lambda` удаляет
+        thread из `_montage_threads` ДО того как `finished_ok` сигнал
+        доходит до handler'а → sender есть, но в dict его уже нет → return
+        None → карта НЕ сохранялась → зелёная точка не появлялась на
+        async-завершённом эпизоде.
+
+        Поле `_ep_id` на orchestrator живёт всю его жизнь, не зависит от
+        внешнего dict membership. Если orchestrator каким-то образом
+        создан без ep_id (cross-version) — getattr default None,
+        backward-compatible.
+        """
         try:
             sender = self.sender()
             if sender is None:
                 return None
-            for k, t in self._montage_threads.items():
-                if t is sender:
-                    return k
+            return getattr(sender, '_ep_id', None)
         except Exception:
             traceback.print_exc()
         return None
@@ -3611,6 +3635,19 @@ class EpisodeChatView(QWidget):
         2026-05-07: per-episode. State сбрасывается для ep_id треда.
         """
         ep_id = self._montage_ep_for_sender()
+        # v1.0.88 (Stage 11 diag): лог в Console.app — видно дошёл ли
+        # сигнал и правильный ли ep_id (False-negative для green dot
+        # bug = ep_id=None из старого _montage_ep_for_sender; после
+        # Stage 11 Bug 2 fix должен быть валидный ep_id).
+        try:
+            import sys as _sys_log
+            _sys_log.stderr.write(
+                f"[montage] finished_ok received: ep_id={ep_id}, "
+                f"blocks={len(montage_card.get('blocks') or [])}, "
+                f"self._ep_id={self._ep_id}\n")
+            _sys_log.stderr.flush()
+        except Exception:
+            pass
         # Snapshot — карта готова, снимаем running state.
         if ep_id is not None:
             self._montage_states.pop(ep_id, None)
@@ -3625,12 +3662,27 @@ class EpisodeChatView(QWidget):
                     checker_report=checker_report,
                     agent_summary=agent_summary,
                     rounds_used=rounds_used)
+                try:
+                    import sys as _sys_log
+                    _sys_log.stderr.write(
+                        f"[montage] saved card for ep={ep_id} to episodes.json\n")
+                    _sys_log.stderr.flush()
+                except Exception:
+                    pass
             except Exception:
                 traceback.print_exc()
 
         # v1.0.88 (индикатор failed эпизодов): карта готова → точка на
         # пилюле эпизода должна пропасть (status=completed теперь).
         self._refresh_pill_indicators_safe()
+        try:
+            import sys as _sys_log
+            _sys_log.stderr.write(
+                f"[montage] _refresh_pill_indicators_safe called after save "
+                f"(ep={ep_id})\n")
+            _sys_log.stderr.flush()
+        except Exception:
+            pass
 
         # Если юзер на этом эпизоде — переключаем CTA на «Открыть».
         # Если на другом — там CTA обновится при возврате через

@@ -168,6 +168,7 @@ class MontageOrchestratorThread(QThread):
                  chunk_timeout_opus: Optional[int] = None,
                  chunk_timeout_default: Optional[int] = None,
                  resume_from: Optional[dict] = None,
+                 ep_id: Optional[str] = None,
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
@@ -208,6 +209,17 @@ class MontageOrchestratorThread(QThread):
         # _run_claude_stream (новый метод). Старый _run_claude через
         # subprocess.run этим не пользуется.
         self._proc: Optional[subprocess.Popen] = None
+        # v1.0.88 (Stage 11 Bug 2 fix): ep_id запоминается прямо на
+        # orchestrator. Используется `EpisodeChatView._montage_ep_for_sender`
+        # для определения эпизода-владельца через `sender()._ep_id`,
+        # т.к. поиск в `_montage_threads` race-уязвим: `finished.connect
+        # lambda` удаляет thread из dict ДО доставки `finished_ok` к
+        # handler'у → ep_id=None → карта не сохраняется → зелёная точка
+        # не появляется на async-завершённом эпизоде. Это поле живёт
+        # всю жизнь orchestrator'а, независимо от dict membership.
+        # Naming: не путать с `self._ep_id` на EpisodeChatView — это
+        # разные классы, разные namespace.
+        self._ep_id: Optional[str] = ep_id
         # v1.0.87 (этап 7C resume-фичи): распарсенный лог предыдущего
         # упавшего pipeline. Передаётся из episode_chat при клике
         # «Продолжить» в MontageCTA (KIND_RESUMABLE). Если None — свежий
@@ -321,6 +333,27 @@ class MontageOrchestratorThread(QThread):
                 return False
             return (self.STAGE_ORDER.index(stage_name)
                     <= self.STAGE_ORDER.index(skip_until_after))
+
+        # v1.0.88 (Stage 11 Bug 1 fix): СРАЗУ перезаписать
+        # pipeline_state="running" в логе, ДО запуска любого этапа.
+        # Без этого после клика «🔄 Продолжить» юзер видит красную
+        # мигающую точку 1-3 минуты (пока первый этап не завершится и
+        # не сделает свой _dump_running). Теперь точка пропадает в
+        # течение ~10ms (тред старт → этот dump → 3с polling таймер
+        # на главном экране подхватит, либо явный _refresh из
+        # _on_montage_resume сразу прочитает свежий status="running").
+        if skip_until_after is None:
+            _initial_next = "scriptwriter"
+        else:
+            _idx = self.STAGE_ORDER.index(skip_until_after)
+            if _idx + 1 < len(self.STAGE_ORDER):
+                _initial_next = self.STAGE_ORDER[_idx + 1]
+            else:
+                # skip_until_after == "editor_after_reviewer" (последний
+                # в STAGE_ORDER) — known limitation из Stage 7C: resume
+                # сразу пойдёт в _finalize, ничего не запустит.
+                _initial_next = "finalize"
+        self._dump_running(last_completed, _initial_next)
 
         try:
             # 1) Scriptwriter

@@ -7601,7 +7601,12 @@ class MainWindow(QMainWindow):
             return ("failed", last)
 
         # ── 3. status="running" → проверить живой ли тред
-        if status == "running" and last and last != "finalize":
+        # v1.0.88 (Stage 11 Bug 1 fix): relax guard — `last` может быть
+        # None если orchestrator был убит ДО первого dump'а этапа
+        # (early force-quit Studio в первые секунды после клика).
+        # Точка должна гореть, но tooltip без stage placeholder'а
+        # (см. _refresh_episode_pill_indicators failed-no-stage branch).
+        if status == "running" and last != "finalize":
             ev = getattr(self, 'episode_chat_view', None)
             threads = (getattr(ev, '_montage_threads', None) or {}) if ev else {}
             t = threads.get(ep_id)
@@ -7610,7 +7615,8 @@ class MainWindow(QMainWindow):
                 # Pipeline нормально работает — точки нет.
                 return ("running_alive", None)
             # Тред мёртв (force-quit, краш Studio, или ev=None на
-            # cold-start) — это де-факто failed.
+            # cold-start) — это де-факто failed. `last` может быть
+            # None (early force-quit до scriptwriter dump'а).
             return ("failed", last)
 
         # ── 4. status="completed" / legacy лог / нет лога → проверить
@@ -7661,9 +7667,15 @@ class MainWindow(QMainWindow):
         pills = getattr(self, '_episode_pills', None)
         if not pills:
             return
+        # v1.0.88 (Stage 11 diag): собираем краткий summary всех state'ов
+        # для одного stderr-лога в конце тика — иначе при 25 эпизодах
+        # spam'илось бы 25 строк. По этому summary видно: «pill refresh:
+        # 5 eps → {ep21: completed_unseen, ep22: running_alive, ...}».
+        state_summary: dict = {}
         for ep_id, btn in pills.items():
             try:
                 state, stage_id = self._episode_pipeline_state(ep_id)
+                state_summary[ep_id] = state
                 if state == "failed" and stage_id:
                     stage_human = tr(f'montage_stage_name_{stage_id}')
                     if stage_human.startswith('montage_stage_name_'):
@@ -7673,6 +7685,16 @@ class MainWindow(QMainWindow):
                         tooltip_template = 'Монтажка прервана на этапе {stage}'
                     btn.set_state("failed",
                                    stage=stage_human,
+                                   tooltip_template=tooltip_template)
+                elif state == "failed":
+                    # v1.0.88 (Stage 11 Bug 1 fix): stage_id=None case —
+                    # orchestrator упал ДО первого этапа dump'а (early
+                    # force-quit). Точка нужна, но stage human-name не
+                    # существует → tooltip без {stage} placeholder'а.
+                    tooltip_template = tr('montage_pill_failed_tooltip_no_stage')
+                    if tooltip_template == 'montage_pill_failed_tooltip_no_stage':
+                        tooltip_template = 'Монтажка прервана'
+                    btn.set_state("failed",
                                    tooltip_template=tooltip_template)
                 elif state == "completed_unseen":
                     tooltip_template = tr('montage_pill_completed_tooltip')
@@ -7684,10 +7706,21 @@ class MainWindow(QMainWindow):
                 else:
                     # "running_alive" или "none" — точки нет.
                     btn.set_state(state)
-            except Exception:
+            except Exception as e:
                 # Сломалась одна пилюля — не валим остальные.
+                state_summary[ep_id] = f"ERROR:{type(e).__name__}"
                 traceback.print_exc()
                 continue
+        # v1.0.88 (Stage 11 diag): один сводный лог на тик. Активный
+        # юзер в Console.app увидит изменение state'ов когда зелёная
+        # должна была появиться, но не появилась — точная диагностика.
+        try:
+            import sys as _sys_log
+            _sys_log.stderr.write(
+                f"[pill] refresh: {len(pills)} eps → {state_summary}\n")
+            _sys_log.stderr.flush()
+        except Exception:
+            pass
 
     def _select_episode(self, ep: str):
         # 2026-05-07: уход с refs view — очистить unseen для prev ep.
