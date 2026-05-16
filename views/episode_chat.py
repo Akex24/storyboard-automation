@@ -4136,6 +4136,10 @@ class EpisodeChatView(QWidget):
                 except Exception:
                     data = {}
             ep = data.setdefault(ep_id, {})
+            # v1.0.88 (Stage 12): новая карта = unseen для юзера, даже если
+            # предыдущую он открывал. Универсальный сброс, чтобы не зависеть
+            # от того откуда пришло сохранение (Start, Resume, async-complete).
+            ep.pop('montage_card_seen', None)
             ep['montage_card'] = montage_card
             if checker_report is not None:
                 ep['montage_checker_report'] = checker_report
