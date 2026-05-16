@@ -352,9 +352,17 @@ class MontageOrchestratorThread(QThread):
                         "stage": "validator",
                         "error": str(e),
                     })
-                    # Не fatal — идём дальше без правок.
-                    self._finalize(montage_card, checker_report,
-                                   last_completed_stage=last_completed)
+                    # v1.0.88 (Stage 9 — fix недоделанной карты в episodes.json):
+                    # Раньше тут был `_finalize` который эмиттил
+                    # `finished_ok` с сырой картой от Scriptwriter — она
+                    # уходила в episodes.json как «готовая», CTA показывал
+                    # «📂 Открыть» вместо «🔄 Продолжить», а красная точка
+                    # на пилюле горела навсегда. Теперь — pipeline неполный,
+                    # отдаём юзеру Resume. orchestrator при resume_from с
+                    # last_completed_stage="scriptwriter" пропустит
+                    # scriptwriter и запустит validator заново.
+                    self._dump_aborted(last_completed, "validator")
+                    self.failed.emit(f"validator_failed: {e}")
                     return
 
                 if self._stop:
@@ -449,9 +457,12 @@ class MontageOrchestratorThread(QThread):
                         "stage": "editor",
                         "error": str(e),
                     })
-                    # Не fatal — отдаём карту до Editor'а.
-                    self._finalize(montage_card, checker_report,
-                                   last_completed_stage=last_completed)
+                    # v1.0.88 (Stage 9): pipeline неполный — карта без
+                    # правок Editor'а уходить в episodes.json как готовая
+                    # не должна. Юзер получит Resume CTA → orchestrator
+                    # перезапустит Editor с тем же editor_input_errors.
+                    self._dump_aborted(last_completed, "editor")
+                    self.failed.emit(f"editor_failed: {e}")
                     return
 
                 if self._stop:
@@ -587,8 +598,9 @@ class MontageOrchestratorThread(QThread):
                             "stage": "context_reviewer",
                             "error": str(e),
                         })
-                        self._finalize(montage_card, checker_report,
-                                       last_completed_stage=last_completed)
+                        # v1.0.88 (Stage 9): pipeline неполный → Resume.
+                        self._dump_aborted(last_completed, "context_reviewer")
+                        self.failed.emit(f"context_reviewer_failed: {e}")
                         return
 
                     if self._stop:
@@ -625,8 +637,18 @@ class MontageOrchestratorThread(QThread):
                                 "stage": "editor_after_reviewer",
                                 "error": str(e),
                             })
-                            self._finalize(montage_card, checker_report,
-                                           last_completed_stage=last_completed)
+                            # v1.0.88 (Stage 9): pipeline неполный → Resume.
+                            # Note: orchestrator при resume с last_completed=
+                            # "context_reviewer" НЕ запустит editor_after_reviewer
+                            # повторно (concerns в state не сохранены, см.
+                            # коммент в run() на context_reviewer ветке).
+                            # Resume сразу финализирует с картой до этого
+                            # Editor'а. Это known-limitation — но лучше
+                            # чем эмиттить готовую недоредактированную карту.
+                            self._dump_aborted(last_completed,
+                                                "editor_after_reviewer")
+                            self.failed.emit(
+                                f"editor_after_reviewer_failed: {e}")
                             return
 
             # 5) Финал
@@ -638,16 +660,30 @@ class MontageOrchestratorThread(QThread):
 
     def _finalize(self, montage_card: dict, checker_report: dict,
                    last_completed_stage: Optional[str] = None) -> None:
-        """Общий путь финализации — dump log + emit finished_ok.
-        rounds_used = 1 всегда (раундов больше нет, поле оставлено для
-        совместимости с сигналом и caller'ом episode_chat.py).
+        """Общий путь финализации.
 
         v1.0.87 (этап А resume-фичи): pipeline_state.status определяется
-        честно по наличию error-stage'ей в _agent_log. Если pipeline
-        прошёл fail-открыто (Editor упал, продолжили с Scriptwriter
-        картой) — status=failed с указанием первого упавшего stage.
-        Это убирает старое UI-мигание (UI больше не врёт «карта готова»
-        для эпизодов где middle-stage упал).
+        честно по наличию error-stage'ей в _agent_log.
+
+        v1.0.88 (Stage 9 — fix недоделанной карты в episodes.json):
+        раньше при had_failures=True эмиттился `finished_ok` (просто с
+        пометкой status="failed" в логе) → episode_chat сохранял сырую
+        карту в episodes.json как готовую → CTA «📂 Открыть», красная
+        точка горела вечно. Теперь — при had_failures эмиттится `failed`
+        с указанием первого упавшего stage, episode_chat показывает
+        Resume CTA → юзер либо доделывает через Resume, либо удаляет
+        через Start Fresh.
+
+        Покрывает 4 silent fall-through кейса: geometry_editor /
+        validator_r2 / editor_r2 / validator_r3 (там exception НЕ
+        прерывает pipeline сразу, валится сюда в _finalize в конце run()).
+        4 явных fail-сайта в except'ах теперь сразу зовут failed.emit
+        (не доходят до _finalize). Сюда попадают только: (а) полный
+        success без error-stages → finished_ok; (б) silent fall-through
+        partial-failure → failed.
+
+        rounds_used=1 всегда (раундов больше нет, поле оставлено для
+        совместимости с сигналом и caller'ом episode_chat.py).
         """
         had_failures = any(
             isinstance(s, dict) and "error" in s
@@ -659,15 +695,21 @@ class MontageOrchestratorThread(QThread):
                 if isinstance(s, dict) and "error" in s:
                     failed_stage = s.get("stage")
                     break
-            log_path_str = self._dump_log(
+            self._dump_log(
                 status="failed",
                 last_completed_stage=last_completed_stage,
                 next_stage=failed_stage)
-        else:
-            log_path_str = self._dump_log(
-                status="completed",
-                last_completed_stage="finalize",
-                next_stage=None)
+            # v1.0.88 (Stage 9): partial failure → НЕ эмиттим finished_ok
+            # с сырой картой. Эмиттим failed → episode_chat покажет
+            # resumable CTA (через _restore_montage_cta_for_current_ep
+            # читает _agent_log_<ep>.json и видит status="failed").
+            self.failed.emit(
+                f"partial_pipeline_failure: {failed_stage or 'unknown'}")
+            return
+        log_path_str = self._dump_log(
+            status="completed",
+            last_completed_stage="finalize",
+            next_stage=None)
         agent_summary = self._build_agent_summary(1)
         self.finished_ok.emit(montage_card, checker_report, 1,
                                log_path_str or "", agent_summary)
