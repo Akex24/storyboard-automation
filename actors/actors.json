@@ -58,7 +58,8 @@
       "nazvanie_seriyala_1": "lora",
       "nazvanie_seriala_2": "laura",
       "finalnyy_raschet": "laura",
-      "testovyy_serial": "eve"
+      "testovyy_serial": "eve",
+      "finalnyy_raschet_2": "laura"
     }
   },
   "akter_5": {
@@ -71,7 +72,8 @@
     "display_name": "Артем",
     "roles": {
       "nazvanie_seriala_2": "policeman",
-      "testovyy_serial": "mark"
+      "testovyy_serial": "mark",
+      "finalnyy_raschet_2": "policeman"
     }
   },
   "vremennyi_akter_1": {
