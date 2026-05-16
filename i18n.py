@@ -506,6 +506,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_button_resume': '🔄 Продолжить',
         'montage_cta_button_start_fresh': '🆕 Начать заново',
         'montage_resume_starting': 'Возобновляю pipeline с этапа «{stage}»…',
+        # v1.0.88 (индикатор failed эпизодов): tooltip на красной точке
+        # пилюли эпизода в шапке Studio. Показывается при наведении.
+        'montage_pill_failed_tooltip': 'Монтажка прервана на этапе «{stage}»',
         # v1.0.87: человечные имена этапов для подстановки в {stage}.
         'montage_stage_name_scriptwriter': 'Сценарист',
         'montage_stage_name_validator': 'Валидатор R1',
@@ -1045,6 +1048,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_button_resume': '🔄 Продовжити',
         'montage_cta_button_start_fresh': '🆕 Почати заново',
         'montage_resume_starting': 'Відновлюю pipeline з етапу «{stage}»…',
+        'montage_pill_failed_tooltip': 'Монтажку перервано на етапі «{stage}»',
         # v1.0.87: человечные имена этапов
         'montage_stage_name_scriptwriter': 'Сценарист',
         'montage_stage_name_validator': 'Валідатор R1',
@@ -1580,6 +1584,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_cta_button_resume': '🔄 Resume',
         'montage_cta_button_start_fresh': '🆕 Start fresh',
         'montage_resume_starting': 'Resuming pipeline from stage "{stage}"…',
+        'montage_pill_failed_tooltip': 'Montage interrupted at stage "{stage}"',
         # v1.0.87: human-readable stage names
         'montage_stage_name_scriptwriter': 'Scriptwriter',
         'montage_stage_name_validator': 'Validator R1',

@@ -4683,6 +4683,21 @@ class MainWindow(QMainWindow):
         self._refs_pulse_timer.timeout.connect(self._tick_refs_pulse)
         self._refs_pulse_timer.start(600)
 
+        # v1.0.88 (индикатор failed эпизодов): polling-таймер для красных
+        # точек на пилюлях. 3с интервал — orchestrator пишет dump в
+        # `_agent_log_<ep>.json` асинхронно из QThread; main-thread получает
+        # сигналы progress, но также есть параллельные эпизоды для которых
+        # сигнал не достигнет EpisodeChatView (юзер не на этом эпизоде).
+        # Polling 3с — дешёвая операция (file exists + json head per ep,
+        # <1ms), даёт near-real-time индикацию failed/running состояний
+        # для всех эпизодов сразу. Setter сам сравнивает со старым
+        # значением и вызывает update() только при изменении — без лишних
+        # repaint'ов.
+        self._pill_indicator_timer = QTimer(self)
+        self._pill_indicator_timer.timeout.connect(
+            self._refresh_episode_pill_indicators)
+        self._pill_indicator_timer.start(3000)
+
     def _tick_dots(self):
         """Перебирает шаги анимации точек и обновляет индикаторы у блоков
         с активной регенерацией шотов + у пилюли «Референсы» если там идёт
@@ -7454,6 +7469,13 @@ class MainWindow(QMainWindow):
             row.setAlignment(Qt.AlignmentFlag.AlignLeft)
             return row
 
+        # v1.0.88 (индикатор failed эпизодов): EpisodePillButton — QPushButton
+        # с paintEvent override, рисующий красную точку в правом верхнем
+        # углу когда `_agent_log_<ep>.json` содержит pipeline_state.status
+        # ∈ {"failed","running"} с непустым last_completed_stage. См.
+        # `_episode_has_failed_pipeline` + `_refresh_episode_pill_indicators`.
+        from widgets.episode_pill_button import EpisodePillButton
+
         current_row = _make_row()
         self.ep_pills_layout.addLayout(current_row)
         items_in_row = 0
@@ -7467,7 +7489,7 @@ class MainWindow(QMainWindow):
                 n_label = f"{int(m.group(1)):02d}"
             else:
                 n_label = ep
-            btn = QPushButton(n_label)
+            btn = EpisodePillButton(n_label)
             btn.setObjectName("pill")
             btn.setFixedHeight(PILL_H)
             btn.setFixedWidth(PILL_W)
@@ -7518,6 +7540,96 @@ class MainWindow(QMainWindow):
                 self.delete_ep_btn.setEnabled(False)
                 self.delete_ep_btn.setVisible(False)
             self._populate_blocks()
+
+        # v1.0.88 (индикатор failed эпизодов): после пересоздания пилюль —
+        # сразу нарисовать точки для упавших монтажек. Иначе на cold-start
+        # юзер увидит точки только после первого тика _pill_indicator_timer
+        # (3с задержка).
+        try:
+            self._refresh_episode_pill_indicators()
+        except Exception:
+            traceback.print_exc()
+
+    def _episode_has_failed_pipeline(self, ep_id: str):
+        """v1.0.88 (индикатор failed эпизодов): возвращает
+        (bool, last_completed_stage|None).
+
+        True если для эпизода в `_agent_log_<ep>.json` есть upresumable
+        pipeline_state (status ∈ {"failed","running"}, last_completed_stage
+        не None и не "finalize"). Те же 4 условия что в
+        `EpisodeChatView._resumable_from_log` — дублируем тонкий helper
+        здесь, потому что нам нужен только bool + stage name (без всего
+        log_data dict для resume entry).
+
+        Возвращаемый stage используется в tooltip пилюли.
+        """
+        if not ep_id or not self._current_show:
+            return (False, None)
+        try:
+            log_path = (self._project_root / "shows" / self._current_show
+                        / "output" / f"_agent_log_{ep_id}.json")
+        except Exception:
+            return (False, None)
+        if not log_path.exists():
+            return (False, None)
+        try:
+            import json as _json
+            data = _json.loads(log_path.read_text(encoding='utf-8')) or {}
+        except Exception:
+            # Битый JSON / race с atomic write — считаем не-failed
+            # (избежать ложного срабатывания на временном corrupted state).
+            return (False, None)
+        ps = data.get("pipeline_state")
+        if not isinstance(ps, dict):
+            # Legacy лог (до v1.0.87) — нет pipeline_state, считаем
+            # completed-by-default → точку НЕ рисуем.
+            return (False, None)
+        status = ps.get("status")
+        if status not in ("failed", "running"):
+            return (False, None)
+        last = ps.get("last_completed_stage")
+        if not last or last == "finalize":
+            return (False, None)
+        return (True, last)
+
+    def _refresh_episode_pill_indicators(self):
+        """v1.0.88 (индикатор failed эпизодов): пробегает по всем
+        `_episode_pills` и обновляет красную точку через
+        `set_failed_indicator(bool, stage, tooltip_template)`.
+
+        Стейдж human-имя берётся через i18n ключ
+        `montage_stage_name_<stage>` (есть из этапа 7B, 3 локали);
+        tooltip template — `montage_pill_failed_tooltip` с placeholder
+        {stage}. Если ключа нет — fallback на raw id и базовый текст.
+
+        Setter в EpisodePillButton сам сравнивает со старым значением и
+        делает update() только при изменении → дёшево вызывать каждые 3с.
+        """
+        pills = getattr(self, '_episode_pills', None)
+        if not pills:
+            return
+        for ep_id, btn in pills.items():
+            try:
+                has_failed, stage_id = self._episode_has_failed_pipeline(ep_id)
+                if has_failed and stage_id:
+                    stage_human = tr(f'montage_stage_name_{stage_id}')
+                    # tr() при отсутствии ключа возвращает сам ключ.
+                    if stage_human.startswith('montage_stage_name_'):
+                        stage_human = stage_id
+                    tooltip_template = tr('montage_pill_failed_tooltip')
+                    if tooltip_template == 'montage_pill_failed_tooltip':
+                        # Ключа нет в i18n — fallback на дефолтную фразу
+                        # (русская, кросс-локально приемлемо для админа).
+                        tooltip_template = 'Монтажка прервана на этапе {stage}'
+                    btn.set_failed_indicator(
+                        True, stage=stage_human,
+                        tooltip_template=tooltip_template)
+                else:
+                    btn.set_failed_indicator(False)
+            except Exception:
+                # Сломалась одна пилюля — не валим остальные.
+                traceback.print_exc()
+                continue
 
     def _select_episode(self, ep: str):
         # 2026-05-07: уход с refs view — очистить unseen для prev ep.

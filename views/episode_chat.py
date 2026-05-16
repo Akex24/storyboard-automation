@@ -3456,6 +3456,11 @@ class EpisodeChatView(QWidget):
         if ep_id == self._ep_id:
             self._montage_cta.show_running('montage_status_scriptwriter')
         t.start()
+        # v1.0.88 (индикатор failed эпизодов): resume стартовал → состояние
+        # на диске остаётся «running» (orchestrator перепишет dump'ом
+        # вскоре), точка временно остаётся видимой. Явно refresh-аем чтобы
+        # tooltip обновился со свежим stage если он успел сдвинуться.
+        self._refresh_pill_indicators_safe()
 
     def _on_montage_start_fresh(self):
         """v1.0.87 (этап 7D resume-фичи): клик «🆕 Начать заново» в
@@ -3483,7 +3488,28 @@ class EpisodeChatView(QWidget):
         # In-memory failed-state тоже сбрасываем — иначе после удаления
         # лога CTA через restore покажет failed snapshot.
         self._montage_states.pop(ep_id, None)
+        # v1.0.88 (индикатор failed эпизодов): лог удалён → точка убирается
+        # СРАЗУ (до того как фоновый таймер тикнет через 3с).
+        self._refresh_pill_indicators_safe()
         self._on_montage_start()
+
+    def _refresh_pill_indicators_safe(self) -> None:
+        """v1.0.88 (индикатор failed эпизодов): мгновенный refresh красных
+        точек на пилюлях эпизодов через MainWindow. Вызывается из
+        montage-handler'ов после изменения disk-state лога (finished_ok /
+        failed / start_fresh / resume) — иначе юзер ждал бы до 3с пока
+        фоновый `_pill_indicator_timer` тикнет.
+
+        Безопасный (try/except) — MainWindow может быть в полузакрытом
+        состоянии при shutdown, или метод ещё не добавлен в старой версии
+        (cross-version).
+        """
+        try:
+            mw = getattr(self, '_mw', None)
+            if mw is not None and hasattr(mw, '_refresh_episode_pill_indicators'):
+                mw._refresh_episode_pill_indicators()
+        except Exception:
+            traceback.print_exc()
 
     def _montage_ep_for_sender(self) -> Optional[str]:
         """2026-05-07: ищет ep_id в `_montage_threads` по `self.sender()`.
@@ -3598,6 +3624,10 @@ class EpisodeChatView(QWidget):
             except Exception:
                 traceback.print_exc()
 
+        # v1.0.88 (индикатор failed эпизодов): карта готова → точка на
+        # пилюле эпизода должна пропасть (status=completed теперь).
+        self._refresh_pill_indicators_safe()
+
         # Если юзер на этом эпизоде — переключаем CTA на «Открыть».
         # Если на другом — там CTA обновится при возврате через
         # _restore_montage_cta_for_current_ep (которая прочитает с диска).
@@ -3618,6 +3648,11 @@ class EpisodeChatView(QWidget):
                 'kind': 'failed',
                 'reason': reason or "",
             }
+        # v1.0.88 (индикатор failed эпизодов): pipeline упал → если
+        # orchestrator успел dump'нуть pipeline_state="failed", точка
+        # появится на пилюле этого эпизода (и любого другого если
+        # параллельно тоже падают).
+        self._refresh_pill_indicators_safe()
         if ep_id is not None and ep_id != self._ep_id:
             return
         self._montage_cta.show_failed(reason)
