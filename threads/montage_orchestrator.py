@@ -478,8 +478,16 @@ class MontageOrchestratorThread(QThread):
         user = build_validator_user_prompt(
             card_json, self._refs, show_context=self._show_context)
         t0 = time.time()
-        raw = self._run_claude(validator_system, user,
-                                model=self.MODEL_VALIDATOR)
+        # v1.0.86 (этап 2/4): Validator переключён на стриминг через
+        # _run_claude_stream (--output-format stream-json + JSONL чанки +
+        # chunk-timeout 60с). Сигнатура и финальная строка идентичны
+        # старому _run_claude (валидация на этапе 1 показала SHA-256
+        # match). Остальные 4 callsite (scriptwriter/editor/geometry/
+        # context_reviewer) пока на старом методе — этап 3.
+        # Покрывает все три раунда (R1, R2, R3) — это одна функция
+        # вызывается с разным round_num.
+        raw = self._run_claude_stream(validator_system, user,
+                                       model=self.MODEL_VALIDATOR)
         duration_sec = round(time.time() - t0, 2)
         ai_report = self._parse_json(raw)
 
