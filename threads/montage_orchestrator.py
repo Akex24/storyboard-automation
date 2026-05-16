@@ -139,6 +139,25 @@ class MontageOrchestratorThread(QThread):
     # было 3 из 8 — половина reasoning-нагрузки на Sonnet).
     MODEL_GEOMETRY_EDITOR  = "claude-haiku-4-5"
 
+    # v1.0.87 (этап 7C resume-фичи): порядок этапов pipeline для resume.
+    # Используется в `_already_done(stage)` для сравнения с
+    # `skip_until_after` (последний успешно завершённый этап из лога).
+    # Stages с условным гейтингом (geometry_editor / editor / validator_r2
+    # / editor_r2 / validator_r3 / context_reviewer / editor_after_reviewer)
+    # всё равно сохраняют внутренние условия — STAGE_ORDER только говорит
+    # «можно ли пропустить эту попытку на resume».
+    STAGE_ORDER = [
+        "scriptwriter",
+        "validator",
+        "geometry_editor",
+        "editor",
+        "validator_r2",
+        "editor_r2",
+        "validator_r3",
+        "context_reviewer",
+        "editor_after_reviewer",
+    ]
+
     def __init__(self, claude_cli_path: str,
                  scenario_text: str,
                  refs_summary: dict,
@@ -148,6 +167,7 @@ class MontageOrchestratorThread(QThread):
                  opus_effort: Optional[str] = None,
                  chunk_timeout_opus: Optional[int] = None,
                  chunk_timeout_default: Optional[int] = None,
+                 resume_from: Optional[dict] = None,
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
@@ -188,6 +208,12 @@ class MontageOrchestratorThread(QThread):
         # _run_claude_stream (новый метод). Старый _run_claude через
         # subprocess.run этим не пользуется.
         self._proc: Optional[subprocess.Popen] = None
+        # v1.0.87 (этап 7C resume-фичи): распарсенный лог предыдущего
+        # упавшего pipeline. Передаётся из episode_chat при клике
+        # «Продолжить» в MontageCTA (KIND_RESUMABLE). Если None — свежий
+        # старт. Структура — то что писал `_dump_log` (stages[],
+        # pipeline_state{}, refs_summary, models...).
+        self._resume_from: Optional[dict] = resume_from
 
     def stop(self):
         self._stop = True
@@ -217,83 +243,162 @@ class MontageOrchestratorThread(QThread):
         # v1.0.87 (этап А resume-фичи): локально отслеживаем последний
         # успешно завершённый этап — используется в _dump_log
         # (pipeline_state.last_completed_stage) и в top-level except.
+        # v1.0.87 (этап 7C resume-фичи): инициализируем все переменные
+        # которые могут понадобиться при resume, заранее. При свежем
+        # старте они перезаписываются по ходу pipeline; при resume —
+        # пре-заполняются из _extract_state_from_log.
         last_completed: Optional[str] = None
+        montage_card: Optional[dict] = None
+        checker_report: Dict = {"ok": False, "errors": [], "report": []}
+        all_errors: list = []
+        geometry_errors: list = []
+        other_errors: list = []
+        editor_input_errors: list = []
+        editor_ran = False
+        validator_r2_ok = False
+        editor_r2_ran = False
+        skip_until_after: Optional[str] = None
+
+        # v1.0.87 (этап 7C): если caller передал лог упавшего pipeline —
+        # пытаемся восстановить state. На любую sanity-ошибку
+        # `_extract_state_from_log` логирует причину в stderr и
+        # возвращает None → fallback к свежему старту.
+        if self._resume_from is not None:
+            state = self._extract_state_from_log()
+            if state is not None:
+                montage_card = state["montage_card"]
+                checker_report = state["checker_report"]
+                last_completed = state["last_completed_stage"]
+                skip_until_after = last_completed
+                # Восстанавливаем флаги-гейты по позиции в STAGE_ORDER.
+                _pos = self.STAGE_ORDER.index(last_completed)
+                if _pos >= self.STAGE_ORDER.index("editor"):
+                    editor_ran = True
+                if _pos >= self.STAGE_ORDER.index("validator_r2"):
+                    validator_r2_ok = True
+                if _pos >= self.STAGE_ORDER.index("editor_r2"):
+                    editor_r2_ran = True
+                # Пересчитываем партицию ошибок из restored checker_report
+                # (post-validator-блок будет skip-нут обёрткой, а вычисления
+                # нужны geometry/editor блокам).
+                all_errors = list(checker_report.get("errors", []) or [])
+                geometry_errors = [
+                    e for e in all_errors
+                    if (e.get("code") or "").endswith("_missing_geometry")
+                ]
+                other_errors = [
+                    e for e in all_errors
+                    if not (e.get("code") or "").endswith("_missing_geometry")
+                ]
+                # editor_input_errors: если geometry_editor УЖЕ отработал
+                # (last_completed == "geometry_editor") — editor должен
+                # получить только non-geometry. Иначе fallback default
+                # (geometry-блок если ещё впереди — сам перевычислит).
+                if last_completed == "geometry_editor":
+                    editor_input_errors = list(other_errors)
+                else:
+                    editor_input_errors = list(all_errors)
+                try:
+                    sys.stderr.write(
+                        f"[montage] resume: will skip until after {last_completed}\n"
+                        f"[montage] resume: editor_ran={editor_ran}, "
+                        f"validator_r2_ok={validator_r2_ok}, "
+                        f"editor_r2_ran={editor_r2_ran}\n"
+                        f"[montage] resume: editor_input_errors "
+                        f"count={len(editor_input_errors)}\n")
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+            # state is None → fallback handled: skip_until_after остаётся
+            # None, все vars в дефолте, pipeline стартует с нуля.
+            # _extract_state_from_log сам пишет stderr-причину отказа.
+
+        def _already_done(stage_name: str) -> bool:
+            """v1.0.87: True если этап уже отработал в предыдущем запуске
+            (т.е. resume-точка делает его лишним). Сравнение по позиции
+            в STAGE_ORDER: всё <= skip_until_after считается сделанным."""
+            if skip_until_after is None:
+                return False
+            return (self.STAGE_ORDER.index(stage_name)
+                    <= self.STAGE_ORDER.index(skip_until_after))
+
         try:
             # 1) Scriptwriter
-            self.progress.emit("scriptwriter_running", {})
-            try:
-                montage_card = self._call_scriptwriter()
-            except Exception as e:
-                self._dump_aborted(last_completed, "scriptwriter")
-                self.failed.emit(f"scriptwriter_failed: {e}")
-                return
+            if not _already_done("scriptwriter"):
+                self.progress.emit("scriptwriter_running", {})
+                try:
+                    montage_card = self._call_scriptwriter()
+                except Exception as e:
+                    self._dump_aborted(last_completed, "scriptwriter")
+                    self.failed.emit(f"scriptwriter_failed: {e}")
+                    return
 
-            if self._stop:
-                self._dump_aborted(last_completed, "scriptwriter")
-                self.failed.emit("cancelled")
-                return
+                if self._stop:
+                    self._dump_aborted(last_completed, "scriptwriter")
+                    self.failed.emit("cancelled")
+                    return
 
-            # Scriptwriter завершён успешно — incremental dump.
-            last_completed = "scriptwriter"
-            self._dump_running(last_completed, "validator")
-
-            checker_report: Dict = {"ok": False, "errors": [], "report": []}
+                # Scriptwriter завершён успешно — incremental dump.
+                last_completed = "scriptwriter"
+                self._dump_running(last_completed, "validator")
 
             # 2) Validator — один раз
-            self.progress.emit("validator_running", {})
-            try:
-                checker_report = self._call_validator(montage_card)
-            except Exception as e:
-                self._agent_log.append({
-                    "stage": "validator",
-                    "error": str(e),
-                })
-                # Не fatal — идём дальше без правок.
-                self._finalize(montage_card, checker_report,
-                               last_completed_stage=last_completed)
-                return
+            if not _already_done("validator"):
+                self.progress.emit("validator_running", {})
+                try:
+                    checker_report = self._call_validator(montage_card)
+                except Exception as e:
+                    self._agent_log.append({
+                        "stage": "validator",
+                        "error": str(e),
+                    })
+                    # Не fatal — идём дальше без правок.
+                    self._finalize(montage_card, checker_report,
+                                   last_completed_stage=last_completed)
+                    return
 
-            if self._stop:
-                self._dump_aborted(last_completed, "validator")
-                self.failed.emit("cancelled")
-                return
+                if self._stop:
+                    self._dump_aborted(last_completed, "validator")
+                    self.failed.emit("cancelled")
+                    return
 
-            errors_count = len(checker_report.get("errors", []))
-            self.progress.emit("validator_done",
-                                {"ok": checker_report.get("ok", False),
-                                 "errors_count": errors_count})
+                errors_count = len(checker_report.get("errors", []))
+                self.progress.emit("validator_done",
+                                    {"ok": checker_report.get("ok", False),
+                                     "errors_count": errors_count})
 
-            # v1.0.75: 2.5) Geometry Editor — Haiku-сабагент для
-            # `missing_geometry` ошибок. Отделяем их от остальных,
-            # обрабатываем структурной правкой (добавление shot.geometry).
-            # Основной Editor (Sonnet) дальше получает ТОЛЬКО оставшиеся
-            # ошибки — меньше reasoning-нагрузка.
-            # Если Geometry Editor упал (TimeoutExpired / exception) —
-            # missing_geometry-ошибки передаются обратно Editor'у как
-            # fallback (Q1=B по плану v1.0.75).
-            # Validator R1 завершён успешно — incremental dump.
-            last_completed = "validator"
-            # next: geometry_editor если есть geometry-ошибки;
-            # editor если есть other_errors; иначе finalize.
-            all_errors = list(checker_report.get("errors", []) or [])
-            geometry_errors = [
-                e for e in all_errors
-                if (e.get("code") or "").endswith("_missing_geometry")
-            ]
-            other_errors = [
-                e for e in all_errors
-                if not (e.get("code") or "").endswith("_missing_geometry")
-            ]
-            editor_input_errors = list(all_errors)  # fallback default
-            if geometry_errors:
-                _next_after_v1 = "geometry_editor"
-            elif other_errors:
-                _next_after_v1 = "editor"
-            else:
-                _next_after_v1 = "finalize"
-            self._dump_running(last_completed, _next_after_v1)
+                # v1.0.75: 2.5) Geometry Editor — Haiku-сабагент для
+                # `missing_geometry` ошибок. Отделяем их от остальных,
+                # обрабатываем структурной правкой (добавление shot.geometry).
+                # Основной Editor (Sonnet) дальше получает ТОЛЬКО оставшиеся
+                # ошибки — меньше reasoning-нагрузка.
+                # Если Geometry Editor упал (TimeoutExpired / exception) —
+                # missing_geometry-ошибки передаются обратно Editor'у как
+                # fallback (Q1=B по плану v1.0.75).
+                # Validator R1 завершён успешно — incremental dump.
+                last_completed = "validator"
+                # next: geometry_editor если есть geometry-ошибки;
+                # editor если есть other_errors; иначе finalize.
+                all_errors = list(checker_report.get("errors", []) or [])
+                geometry_errors = [
+                    e for e in all_errors
+                    if (e.get("code") or "").endswith("_missing_geometry")
+                ]
+                other_errors = [
+                    e for e in all_errors
+                    if not (e.get("code") or "").endswith("_missing_geometry")
+                ]
+                editor_input_errors = list(all_errors)  # fallback default
+                if geometry_errors:
+                    _next_after_v1 = "geometry_editor"
+                elif other_errors:
+                    _next_after_v1 = "editor"
+                else:
+                    _next_after_v1 = "finalize"
+                self._dump_running(last_completed, _next_after_v1)
 
-            if geometry_errors:
+            # 2.5) Geometry Editor
+            if not _already_done("geometry_editor") and geometry_errors:
                 self.progress.emit("geometry_editor_running",
                                     {"errors_count": len(geometry_errors)})
                 try:
@@ -322,8 +427,9 @@ class MontageOrchestratorThread(QThread):
                     return
 
             # 3) Editor — только если есть оставшиеся ошибки
-            editor_ran = False
-            if not checker_report.get("ok") and len(editor_input_errors) > 0:
+            if (not _already_done("editor")
+                    and not checker_report.get("ok")
+                    and len(editor_input_errors) > 0):
                 self.progress.emit("editor_running",
                                     {"errors_count": len(editor_input_errors)})
                 try:
@@ -360,8 +466,7 @@ class MontageOrchestratorThread(QThread):
             # При exception в R2 — checker_report остаётся от R1, UI
             # покажет «⚠ Не удалось проверить результат Editor» через
             # honest-UI ветку summary['validator_r2'].failed.
-            validator_r2_ok = False  # True если R2 успешно отдал валидный report
-            if editor_ran:
+            if not _already_done("validator_r2") and editor_ran:
                 self.progress.emit("validator_r2_running", {})
                 try:
                     r2_report = self._call_validator(montage_card, round_num=2)
@@ -395,9 +500,9 @@ class MontageOrchestratorThread(QThread):
             # При exception в Editor R2 — honest UI «⚠ Редактор R2 УПАЛ»,
             # pipeline идёт дальше (на Context Reviewer если включён),
             # checker_report остаётся от Validator R2.
-            editor_r2_ran = False
             r2_errors_remaining = list(checker_report.get("errors", []) or [])
-            if (validator_r2_ok
+            if (not _already_done("editor_r2")
+                    and validator_r2_ok
                     and not checker_report.get("ok")
                     and len(r2_errors_remaining) > 0):
                 self.progress.emit("editor_r2_running",
@@ -429,7 +534,7 @@ class MontageOrchestratorThread(QThread):
             # сам решает что делать с остатком).
             # При exception в R3 — checker_report остаётся от R2, UI
             # покажет «⚠ Не удалось проверить результат Editor R2».
-            if editor_r2_ran:
+            if not _already_done("validator_r3") and editor_r2_ran:
                 self.progress.emit("validator_r3_running", {})
                 try:
                     r3_report = self._call_validator(montage_card, round_num=3)
@@ -455,64 +560,74 @@ class MontageOrchestratorThread(QThread):
                     return
 
             # 4) Context Reviewer — опционально (toggle в Settings)
+            # v1.0.87 (этап 7C): если resume-точка == "context_reviewer",
+            # вложенный editor_after_reviewer мы НЕ запускаем (concerns в
+            # state не сохранены — лог хранит только сам reviewer-result,
+            # но reviewer_report переменной у нас в scope нет). Practical
+            # loss минимален — это редкая точка fail (Reviewer завершился
+            # успешно, упал только последний Editor → resume сразу
+            # финализирует с картой до editor_after_reviewer).
             if self._use_context_reviewer:
-                self.progress.emit("context_reviewer_running", {})
-                try:
-                    reviewer_report = self._call_context_reviewer(montage_card)
-                    last_completed = "context_reviewer"
-                    # next зависит от concerns — посчитаем заранее
-                    _concerns_count = len(reviewer_report.get("concerns") or [])
-                    _has_concerns = (
-                        not reviewer_report.get("ok", True)
-                        and _concerns_count > 0)
-                    self._dump_running(
-                        last_completed,
-                        "editor_after_reviewer" if _has_concerns
-                        else "finalize")
-                except Exception as e:
-                    self._agent_log.append({
-                        "stage": "context_reviewer",
-                        "error": str(e),
-                    })
-                    self._finalize(montage_card, checker_report,
-                                   last_completed_stage=last_completed)
-                    return
-
-                if self._stop:
-                    self._dump_aborted(last_completed,
-                                       "editor_after_reviewer")
-                    self.failed.emit("cancelled")
-                    return
-
-                concerns = reviewer_report.get("concerns") or []
-                self.progress.emit("context_reviewer_done",
-                                    {"ok": reviewer_report.get("ok", True),
-                                     "concerns_count": len(concerns)})
-
-                if not reviewer_report.get("ok", True) and concerns:
-                    converted_errors = [
-                        {
-                            "code": c.get("code", "context_concern"),
-                            "where": c.get("where", ""),
-                            "details": c.get("details", ""),
-                        }
-                        for c in concerns
-                    ]
-                    self.progress.emit("editor_running",
-                                        {"errors_count": len(converted_errors)})
+                if not _already_done("context_reviewer"):
+                    self.progress.emit("context_reviewer_running", {})
                     try:
-                        montage_card = self._call_editor(
-                            montage_card, converted_errors)
-                        last_completed = "editor_after_reviewer"
-                        self._dump_running(last_completed, "finalize")
+                        reviewer_report = self._call_context_reviewer(montage_card)
+                        last_completed = "context_reviewer"
+                        # next зависит от concerns — посчитаем заранее
+                        _concerns_count = len(reviewer_report.get("concerns") or [])
+                        _has_concerns = (
+                            not reviewer_report.get("ok", True)
+                            and _concerns_count > 0)
+                        self._dump_running(
+                            last_completed,
+                            "editor_after_reviewer" if _has_concerns
+                            else "finalize")
                     except Exception as e:
                         self._agent_log.append({
-                            "stage": "editor_after_reviewer",
+                            "stage": "context_reviewer",
                             "error": str(e),
                         })
                         self._finalize(montage_card, checker_report,
                                        last_completed_stage=last_completed)
                         return
+
+                    if self._stop:
+                        self._dump_aborted(last_completed,
+                                           "editor_after_reviewer")
+                        self.failed.emit("cancelled")
+                        return
+
+                    concerns = reviewer_report.get("concerns") or []
+                    self.progress.emit("context_reviewer_done",
+                                        {"ok": reviewer_report.get("ok", True),
+                                         "concerns_count": len(concerns)})
+
+                    if (not _already_done("editor_after_reviewer")
+                            and not reviewer_report.get("ok", True)
+                            and concerns):
+                        converted_errors = [
+                            {
+                                "code": c.get("code", "context_concern"),
+                                "where": c.get("where", ""),
+                                "details": c.get("details", ""),
+                            }
+                            for c in concerns
+                        ]
+                        self.progress.emit("editor_running",
+                                            {"errors_count": len(converted_errors)})
+                        try:
+                            montage_card = self._call_editor(
+                                montage_card, converted_errors)
+                            last_completed = "editor_after_reviewer"
+                            self._dump_running(last_completed, "finalize")
+                        except Exception as e:
+                            self._agent_log.append({
+                                "stage": "editor_after_reviewer",
+                                "error": str(e),
+                            })
+                            self._finalize(montage_card, checker_report,
+                                           last_completed_stage=last_completed)
+                            return
 
             # 5) Финал
             self._finalize(montage_card, checker_report,
@@ -1283,6 +1398,140 @@ class MontageOrchestratorThread(QThread):
         summary['timing']['total_sec'] = round(
             summary['timing']['total_sec'], 2)
         return summary
+
+    def _extract_state_from_log(self) -> Optional[dict]:
+        """v1.0.87 (этап 7C resume-фичи): парсит self._resume_from
+        (распарсенный лог упавшего pipeline) и возвращает state для
+        восстановления — либо None при любом сбое sanity-проверок.
+
+        Структура возвращаемого dict:
+            {
+                "montage_card": dict (карта от последнего successful
+                                       card-stage: scriptwriter / editor /
+                                       editor_r2 / geometry_editor /
+                                       editor_after_reviewer),
+                "checker_report": dict (от последнего successful validator),
+                "last_completed_stage": str (из pipeline_state.last_completed_stage),
+            }
+
+        На любую ошибку → stderr-лог "[montage] resume failed: <reason>"
+        и return None. Caller (run()) делает fallback на свежий старт.
+
+        Sanity-проверки (любая false → None):
+          1. montage_card not None и имеет ключ `blocks` (список).
+          2. last_completed_stage ∈ STAGE_ORDER.
+          3. pipeline_state.status ∈ {"failed", "running"} (completed не
+             ресюмим — там pipeline уже отработал до конца).
+          4. refs_summary в логе совпадает с self._refs (через
+             json.dumps sort_keys — refs могли измениться между fail и
+             resume, тогда карта говорит о других объектах).
+        """
+        log = self._resume_from
+        if not isinstance(log, dict):
+            self._log_resume_fail("resume_from is not dict")
+            return None
+        try:
+            stages = log.get("stages") or []
+            pstate = log.get("pipeline_state") or {}
+            status = pstate.get("status")
+            last_completed = pstate.get("last_completed_stage")
+
+            # Sanity #3: pipeline_state.status пригоден для resume.
+            if status not in ("failed", "running"):
+                self._log_resume_fail(
+                    f"pipeline_state.status={status!r} (need failed/running)")
+                return None
+
+            # Sanity #2: last_completed_stage ∈ STAGE_ORDER.
+            if last_completed not in self.STAGE_ORDER:
+                self._log_resume_fail(
+                    f"last_completed_stage={last_completed!r} not in STAGE_ORDER")
+                return None
+
+            # Sanity #4: refs_summary не разошлись.
+            old_refs = log.get("refs_summary") or {}
+            try:
+                old_json = json.dumps(old_refs, sort_keys=True,
+                                       ensure_ascii=False)
+                new_json = json.dumps(self._refs, sort_keys=True,
+                                       ensure_ascii=False)
+            except Exception as e:
+                self._log_resume_fail(
+                    f"refs_summary serialize failed: {e}")
+                return None
+            if old_json != new_json:
+                self._log_resume_fail(
+                    "refs_summary mismatch (refs changed between fail and resume)")
+                return None
+
+            # Идём снизу вверх: последний successful card-stage с blocks.
+            CARD_STAGES = {"scriptwriter", "editor", "editor_r2",
+                            "geometry_editor", "editor_after_reviewer"}
+            VALIDATOR_STAGES = {"validator", "validator_r2", "validator_r3"}
+            montage_card: Optional[dict] = None
+            checker_report: Optional[dict] = None
+            for s in reversed(stages):
+                if not isinstance(s, dict):
+                    continue
+                if "error" in s:
+                    continue
+                stage_name = s.get("stage")
+                result = s.get("result")
+                if not isinstance(result, dict):
+                    continue
+                if (montage_card is None
+                        and stage_name in CARD_STAGES
+                        and isinstance(result.get("blocks"), list)):
+                    montage_card = result
+                if (checker_report is None
+                        and stage_name in VALIDATOR_STAGES):
+                    checker_report = result
+                if montage_card is not None and checker_report is not None:
+                    break
+
+            # Sanity #1: montage_card обязателен.
+            if montage_card is None or not isinstance(
+                    montage_card.get("blocks"), list):
+                self._log_resume_fail(
+                    "no successful card-stage with blocks in log")
+                return None
+
+            # checker_report опционален: если упало ДО validator R1
+            # (last_completed == "scriptwriter"), validator-блок отработает
+            # заново и заполнит сам. Default — пустой.
+            if checker_report is None:
+                checker_report = {"ok": False, "errors": [], "report": []}
+
+            try:
+                sys.stderr.write(
+                    f"[montage] resume: extracted montage_card with "
+                    f"{len(montage_card.get('blocks') or [])} blocks, "
+                    f"checker_report with "
+                    f"{len(checker_report.get('errors') or [])} errors, "
+                    f"last={last_completed}\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
+            return {
+                "montage_card": montage_card,
+                "checker_report": checker_report,
+                "last_completed_stage": last_completed,
+            }
+        except Exception as e:
+            self._log_resume_fail(
+                f"unexpected: {type(e).__name__}: {e}")
+            return None
+
+    def _log_resume_fail(self, reason: str) -> None:
+        """v1.0.87: единая точка stderr-лога при отказе resume. Юзер
+        видит причину через Console.app (.app) или терминал (dev)."""
+        try:
+            sys.stderr.write(
+                f"[montage] resume failed: {reason}, starting from scratch\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
 
     def _dump_running(self, last: Optional[str],
                        nxt: Optional[str]) -> None:
