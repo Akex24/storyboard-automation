@@ -3488,6 +3488,10 @@ class EpisodeChatView(QWidget):
         # In-memory failed-state тоже сбрасываем — иначе после удаления
         # лога CTA через restore покажет failed snapshot.
         self._montage_states.pop(ep_id, None)
+        # v1.0.88 (Stage 10): снимаем флаг montage_card_seen — старая
+        # карта (если была) уже не релевантна; новая должна получить
+        # «непросмотренный» статус (зелёная точка) когда будет готова.
+        self._unmark_montage_card_seen(ep_id)
         # v1.0.88 (индикатор failed эпизодов): лог удалён → точка убирается
         # СРАЗУ (до того как фоновый таймер тикнет через 3с).
         self._refresh_pill_indicators_safe()
@@ -4339,11 +4343,85 @@ class EpisodeChatView(QWidget):
             traceback.print_exc()
 
     def _on_open_map_clicked(self):
-        """Юзер кликнул «📂 Открыть монтажную карту» в CTA."""
+        """Юзер кликнул «📂 Открыть монтажную карту» в CTA.
+
+        v1.0.88 (Stage 10): ДО открытия попапа — помечаем карту как
+        просмотренную (`montage_card_seen=True` в episodes.json) и
+        рефрешим пилюли. Зелёная точка пропадает СРАЗУ при клике,
+        не дожидаясь закрытия попапа — юзер уже знает что карта готова
+        в момент клика, держать индикатор во время просмотра избыточно.
+
+        Race с self._refresh_pill_indicators_safe — нет: write_text
+        в `_mark_montage_card_seen` синхронный, refresh читает свежий
+        episodes.json через read_episodes_meta.
+        """
         ep_id = self._ep_id
         if not ep_id:
             return
+        self._mark_montage_card_seen(ep_id)
+        self._refresh_pill_indicators_safe()
         self._open_montage_summary_dialog(ep_id)
+
+    def _mark_montage_card_seen(self, ep_id: str) -> None:
+        """v1.0.88 (Stage 10): записывает флаг
+        `episodes.json[ep_id]['montage_card_seen'] = True`. Используется
+        в `_on_open_map_clicked` для исчезновения зелёной индикаторной
+        точки на пилюле.
+
+        Безопасно вызывать даже если карты в episodes.json нет — флаг
+        просто ляжет рядом, никаких других полей не трогает.
+        """
+        path = self._ep_meta_path()
+        if path is None or not ep_id:
+            return
+        try:
+            import json as _json
+            data = {}
+            if path.exists():
+                try:
+                    data = _json.loads(path.read_text(encoding='utf-8')) or {}
+                except Exception:
+                    data = {}
+            ep = data.setdefault(ep_id, {})
+            if ep.get('montage_card_seen') is True:
+                return  # уже стоит, не переписываем
+            ep['montage_card_seen'] = True
+            path.write_text(
+                _json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception:
+            traceback.print_exc()
+
+    def _unmark_montage_card_seen(self, ep_id: str) -> None:
+        """v1.0.88 (Stage 10): снимает флаг `montage_card_seen` —
+        вызывается из `_on_montage_start_fresh` (юзер начал заново,
+        старая карта уже не релевантна, новая должна снова получить
+        «непросмотренный» статус когда будет готова).
+        """
+        path = self._ep_meta_path()
+        if path is None or not ep_id:
+            return
+        try:
+            import json as _json
+            if not path.exists():
+                return
+            try:
+                data = _json.loads(path.read_text(encoding='utf-8')) or {}
+            except Exception:
+                return
+            ep = data.get(ep_id)
+            if not isinstance(ep, dict):
+                return
+            if 'montage_card_seen' not in ep:
+                return
+            ep.pop('montage_card_seen', None)
+            path.write_text(
+                _json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception:
+            traceback.print_exc()
 
     def _on_montage_delete_card(self, dlg, ep_id: str):
         """Юзер кликнул «🗑 Удалить» в попапе. Подтверждение + проверка

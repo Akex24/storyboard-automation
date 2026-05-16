@@ -57,6 +57,14 @@ LUMZ_THEME = {
     "accent_gold_bg": "rgba(212, 162, 86, 0.1)",
     "accent_gold_border": "rgba(212, 162, 86, 0.3)",
 
+    # v1.0.88 (Stage 10): акцент — зелёный (индикатор готовой,
+    # ещё не просмотренной монтажки на пилюле эпизода). Tailwind
+    # emerald-500 — современный, хорошо контрастирует с фиолетово-чёрным
+    # LUMZ фоном, не слишком ядовито-яркий как Material Green A400.
+    "accent_green": "#10B981",
+    "accent_green_bg": "rgba(16, 185, 129, 0.15)",
+    "accent_green_border": "rgba(16, 185, 129, 0.4)",
+
     # Радиусы скруглений
     "radius_sm": "6px",
     "radius_md": "8px",

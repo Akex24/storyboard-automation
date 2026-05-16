@@ -7550,82 +7550,140 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
-    def _episode_has_failed_pipeline(self, ep_id: str):
-        """v1.0.88 (индикатор failed эпизодов): возвращает
-        (bool, last_completed_stage|None).
+    def _episode_pipeline_state(self, ep_id: str):
+        """v1.0.88 (Stage 10): возвращает (state, last_completed_stage|None)
+        для индикатора пилюли эпизода.
 
-        True если для эпизода в `_agent_log_<ep>.json` есть upresumable
-        pipeline_state (status ∈ {"failed","running"}, last_completed_stage
-        не None и не "finalize"). Те же 4 условия что в
-        `EpisodeChatView._resumable_from_log` — дублируем тонкий helper
-        здесь, потому что нам нужен только bool + stage name (без всего
-        log_data dict для resume entry).
+        Возможные state:
+          • "failed"            — pipeline упал (status="failed" в логе)
+                                  ИЛИ status="running" но тред мёртв
+                                  (force-quit, cold-start). Точка красная
+                                  мигающая.
+          • "completed_unseen"  — карта готова в episodes.json + флаг
+                                  `montage_card_seen` отсутствует / False.
+                                  Точка зелёная статичная.
+          • "running_alive"     — status="running" + тред в
+                                  `episode_chat_view._montage_threads`
+                                  активен. Точки нет.
+          • "none"              — ни лога, ни карты, либо просмотрена.
+                                  Точки нет.
 
-        Возвращаемый stage используется в tooltip пилюли.
+        Возвращаемый stage используется только для "failed" (в tooltip).
+        Для остальных state — None.
         """
         if not ep_id or not self._current_show:
-            return (False, None)
+            return ("none", None)
+
+        # ── 1. Проверка _agent_log_<ep>.json
         try:
             log_path = (self._project_root / "shows" / self._current_show
                         / "output" / f"_agent_log_{ep_id}.json")
         except Exception:
-            return (False, None)
-        if not log_path.exists():
-            return (False, None)
+            log_path = None
+
+        status: Optional[str] = None
+        last: Optional[str] = None
+        if log_path is not None and log_path.exists():
+            try:
+                import json as _json
+                data = _json.loads(log_path.read_text(encoding='utf-8')) or {}
+                ps = data.get("pipeline_state")
+                if isinstance(ps, dict):
+                    status = ps.get("status")
+                    last = ps.get("last_completed_stage")
+            except Exception:
+                # Битый JSON / race с atomic write — игнорируем лог,
+                # пойдём дальше проверять episodes.json.
+                pass
+
+        # ── 2. status="failed" → красная (точка) сразу
+        if status == "failed" and last and last != "finalize":
+            return ("failed", last)
+
+        # ── 3. status="running" → проверить живой ли тред
+        if status == "running" and last and last != "finalize":
+            ev = getattr(self, 'episode_chat_view', None)
+            threads = (getattr(ev, '_montage_threads', None) or {}) if ev else {}
+            t = threads.get(ep_id)
+            alive = t is not None and t.isRunning()
+            if alive:
+                # Pipeline нормально работает — точки нет.
+                return ("running_alive", None)
+            # Тред мёртв (force-quit, краш Studio, или ev=None на
+            # cold-start) — это де-факто failed.
+            return ("failed", last)
+
+        # ── 4. status="completed" / legacy лог / нет лога → проверить
+        #       episodes.json: есть ли карта + просмотрена ли.
+        # `read_episodes_meta` — локальная функция модуля
+        # (определена в storyboard_app.py:632). Читаем свежие данные
+        # с диска чтобы поймать только что записанный
+        # montage_card_seen=True (например после клика «📂 Открыть»
+        # в этой же сессии).
         try:
-            import json as _json
-            data = _json.loads(log_path.read_text(encoding='utf-8')) or {}
+            meta = read_episodes_meta(
+                self._project_root / "shows" / self._current_show)
         except Exception:
-            # Битый JSON / race с atomic write — считаем не-failed
-            # (избежать ложного срабатывания на временном corrupted state).
-            return (False, None)
-        ps = data.get("pipeline_state")
-        if not isinstance(ps, dict):
-            # Legacy лог (до v1.0.87) — нет pipeline_state, считаем
-            # completed-by-default → точку НЕ рисуем.
-            return (False, None)
-        status = ps.get("status")
-        if status not in ("failed", "running"):
-            return (False, None)
-        last = ps.get("last_completed_stage")
-        if not last or last == "finalize":
-            return (False, None)
-        return (True, last)
+            meta = getattr(self, '_meta', None) or {}
+        ep_meta = meta.get(ep_id) or {}
+        card = ep_meta.get('montage_card') or {}
+        if card.get('blocks'):
+            seen = bool(ep_meta.get('montage_card_seen'))
+            if not seen:
+                return ("completed_unseen", None)
+            # Просмотрена — точки не нужно.
+            return ("none", None)
+
+        # Карты в episodes.json нет — точки тоже не нужно. Если лог был
+        # с legacy completed (без pipeline_state) → fallback "none"
+        # (нечего показывать без production-карты).
+        return ("none", None)
 
     def _refresh_episode_pill_indicators(self):
-        """v1.0.88 (индикатор failed эпизодов): пробегает по всем
-        `_episode_pills` и обновляет красную точку через
-        `set_failed_indicator(bool, stage, tooltip_template)`.
+        """v1.0.88 (Stage 8/10): пробегает по всем `_episode_pills` и
+        обновляет цветную точку через `set_state(state, stage,
+        tooltip_template)`.
 
-        Стейдж human-имя берётся через i18n ключ
-        `montage_stage_name_<stage>` (есть из этапа 7B, 3 локали);
-        tooltip template — `montage_pill_failed_tooltip` с placeholder
-        {stage}. Если ключа нет — fallback на raw id и базовый текст.
+        Stage 8 (изначально): только красная failed-точка.
+        Stage 10: 3-state система — failed (red blinking) /
+                  completed_unseen (green static) / running_alive/none
+                  (точки нет).
 
-        Setter в EpisodePillButton сам сравнивает со старым значением и
-        делает update() только при изменении → дёшево вызывать каждые 3с.
+        Stage human-имя берётся через i18n `montage_stage_name_<stage>`
+        (есть из этапа 7B, 3 локали); tooltip templates —
+        `montage_pill_failed_tooltip` (red) и
+        `montage_pill_completed_tooltip` (green). Если ключа нет —
+        fallback на дефолтную фразу.
+
+        EpisodePillButton сам управляет blink-таймером per-state →
+        дёшево вызывать каждые 3с фоновым polling-таймером.
         """
         pills = getattr(self, '_episode_pills', None)
         if not pills:
             return
         for ep_id, btn in pills.items():
             try:
-                has_failed, stage_id = self._episode_has_failed_pipeline(ep_id)
-                if has_failed and stage_id:
+                state, stage_id = self._episode_pipeline_state(ep_id)
+                if state == "failed" and stage_id:
                     stage_human = tr(f'montage_stage_name_{stage_id}')
-                    # tr() при отсутствии ключа возвращает сам ключ.
                     if stage_human.startswith('montage_stage_name_'):
                         stage_human = stage_id
                     tooltip_template = tr('montage_pill_failed_tooltip')
                     if tooltip_template == 'montage_pill_failed_tooltip':
-                        # Ключа нет в i18n — fallback на дефолтную фразу
-                        # (русская, кросс-локально приемлемо для админа).
                         tooltip_template = 'Монтажка прервана на этапе {stage}'
-                    btn.set_failed_indicator(
-                        True, stage=stage_human,
-                        tooltip_template=tooltip_template)
+                    btn.set_state("failed",
+                                   stage=stage_human,
+                                   tooltip_template=tooltip_template)
+                elif state == "completed_unseen":
+                    tooltip_template = tr('montage_pill_completed_tooltip')
+                    if tooltip_template == 'montage_pill_completed_tooltip':
+                        # Fallback default (русская — админ всегда поймёт).
+                        tooltip_template = 'Монтажка готова — кликни чтобы открыть'
+                    btn.set_state("completed_unseen",
+                                   tooltip_template=tooltip_template)
                 else:
-                    btn.set_failed_indicator(False)
+                    # "running_alive" или "none" — точки нет.
+                    btn.set_state(state)
             except Exception:
                 # Сломалась одна пилюля — не валим остальные.
                 traceback.print_exc()
