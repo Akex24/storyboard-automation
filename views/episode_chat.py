@@ -1303,7 +1303,40 @@ class EpisodeChatView(QWidget):
         pre_decision = None
         pre_filename = ""
         try:
-            d = self._read_refs_decisions().get(gen_type, {}).get(name)
+            decisions_all = self._read_refs_decisions()
+            type_bucket = decisions_all.get(gen_type, {}) or {}
+            d = type_bucket.get(name)
+            # v1.0.88 (Stage 18): alias-fallback для collision-renamed slugs.
+            # Юзер ранее сгенерил локацию несколько раз → файлы
+            # автопереименованы в `<name>_2.jpg`, `<name>_3.jpg`, и
+            # `_save_active_gen_decision` записал в decisions slug С
+            # суффиксом (`<name>_2`, `<name>_3`). AI Сценарист в чате
+            # продолжает упоминать БАЗОВОЕ имя без суффикса. Прямой
+            # lookup `decisions[<name>]` → None → idle-карточка
+            # «Сгенерировать» снова показывается несмотря на то что
+            # фактически реф уже есть. Mirror логики `_check_montage_ready`
+            # (там этот fallback уже есть для resolved-проверки).
+            # Защита от рекурсии: не применяем fallback если name УЖЕ
+            # заканчивается на `_2..._9` — иначе зациклимся на новых
+            # перегенерациях этой же версии.
+            if not isinstance(d, dict):
+                import re as _re
+                if not _re.search(r'_[2-9]$', name or ''):
+                    for _n in range(2, 10):
+                        alias_key = f"{name}_{_n}"
+                        cand = type_bucket.get(alias_key)
+                        if (isinstance(cand, dict)
+                                and cand.get('decision') == 'linked'):
+                            d = cand
+                            try:
+                                import sys as _sys_log
+                                _sys_log.stderr.write(
+                                    f"[gen_button] alias resolved: "
+                                    f"{gen_type}/{name} → {alias_key}\n")
+                                _sys_log.stderr.flush()
+                            except Exception:
+                                pass
+                            break
             if isinstance(d, dict):
                 dec = d.get('decision')
                 if dec in ('linked', 'skipped'):
