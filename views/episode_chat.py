@@ -3845,10 +3845,22 @@ class EpisodeChatView(QWidget):
 
     def _has_saved_montage_card(self, ep_id: str) -> bool:
         """True если на диске есть карта для эпизода (production-формат
-        в episodes.json или диагностический fallback _agent_log_epN.json)."""
+        в episodes.json или диагностический fallback _agent_log_epN.json).
+
+        v1.0.87 (этап А resume-фичи): fallback на _agent_log_*.json
+        уточнён — теперь True ТОЛЬКО для логов с
+        pipeline_state.status == "completed". Раньше любой существующий
+        файл лога считался «карта готова», что приводило к UI-миганию:
+        после fail Scriptwriter лог записывался с пустым stages, UI
+        ложно показывал «📂 Открыть монтажную карту».
+
+        Legacy логи без поля pipeline_state (созданные до v1.0.87)
+        считаются completed — backward compat для эпизодов где
+        монтажка делалась раньше.
+        """
         if not ep_id:
             return False
-        # 1. Production-формат
+        # 1. Production-формат — самый надёжный источник истины.
         path = self._ep_meta_path()
         if path is not None and path.exists():
             try:
@@ -3859,11 +3871,23 @@ class EpisodeChatView(QWidget):
                     return True
             except Exception:
                 traceback.print_exc()
-        # 2. Fallback: _agent_log_epN.json (для эпизодов сгенерированных
-        # до v1.0.82).
+        # 2. Fallback: _agent_log_epN.json. v1.0.87 — парсим
+        # pipeline_state.status вместо тупой existence-проверки.
         log_path = self._agent_log_path_for_ep(ep_id)
         if log_path is not None and log_path.exists():
-            return True
+            try:
+                import json as _json
+                data = _json.loads(log_path.read_text(encoding='utf-8')) or {}
+                ps = data.get('pipeline_state')
+                if ps is None:
+                    # Legacy лог (до v1.0.87) — считаем completed.
+                    return True
+                return ps.get('status') == 'completed'
+            except Exception:
+                # Битый JSON — считаем что карты нет (избежать ложного
+                # «Открыть карту» на corrupted state).
+                traceback.print_exc()
+                return False
         return False
 
     def _agent_log_path_for_ep(self, ep_id: str):

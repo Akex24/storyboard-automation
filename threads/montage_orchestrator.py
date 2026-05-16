@@ -20,6 +20,7 @@ threads/montage_orchestrator.py — multi-agent оркестратор монт�
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -213,19 +214,28 @@ class MontageOrchestratorThread(QThread):
         #   5. Финал
         # Никаких повторных проверок. rounds_used = 1 всегда (для
         # совместимости с сигналом finished_ok и caller'ом).
+        # v1.0.87 (этап А resume-фичи): локально отслеживаем последний
+        # успешно завершённый этап — используется в _dump_log
+        # (pipeline_state.last_completed_stage) и в top-level except.
+        last_completed: Optional[str] = None
         try:
             # 1) Scriptwriter
             self.progress.emit("scriptwriter_running", {})
             try:
                 montage_card = self._call_scriptwriter()
             except Exception as e:
-                self._dump_log()
+                self._dump_aborted(last_completed, "scriptwriter")
                 self.failed.emit(f"scriptwriter_failed: {e}")
                 return
 
             if self._stop:
+                self._dump_aborted(last_completed, "scriptwriter")
                 self.failed.emit("cancelled")
                 return
+
+            # Scriptwriter завершён успешно — incremental dump.
+            last_completed = "scriptwriter"
+            self._dump_running(last_completed, "validator")
 
             checker_report: Dict = {"ok": False, "errors": [], "report": []}
 
@@ -239,10 +249,12 @@ class MontageOrchestratorThread(QThread):
                     "error": str(e),
                 })
                 # Не fatal — идём дальше без правок.
-                self._finalize(montage_card, checker_report)
+                self._finalize(montage_card, checker_report,
+                               last_completed_stage=last_completed)
                 return
 
             if self._stop:
+                self._dump_aborted(last_completed, "validator")
                 self.failed.emit("cancelled")
                 return
 
@@ -259,6 +271,10 @@ class MontageOrchestratorThread(QThread):
             # Если Geometry Editor упал (TimeoutExpired / exception) —
             # missing_geometry-ошибки передаются обратно Editor'у как
             # fallback (Q1=B по плану v1.0.75).
+            # Validator R1 завершён успешно — incremental dump.
+            last_completed = "validator"
+            # next: geometry_editor если есть geometry-ошибки;
+            # editor если есть other_errors; иначе finalize.
             all_errors = list(checker_report.get("errors", []) or [])
             geometry_errors = [
                 e for e in all_errors
@@ -269,6 +285,13 @@ class MontageOrchestratorThread(QThread):
                 if not (e.get("code") or "").endswith("_missing_geometry")
             ]
             editor_input_errors = list(all_errors)  # fallback default
+            if geometry_errors:
+                _next_after_v1 = "geometry_editor"
+            elif other_errors:
+                _next_after_v1 = "editor"
+            else:
+                _next_after_v1 = "finalize"
+            self._dump_running(last_completed, _next_after_v1)
 
             if geometry_errors:
                 self.progress.emit("geometry_editor_running",
@@ -278,6 +301,10 @@ class MontageOrchestratorThread(QThread):
                         montage_card, geometry_errors)
                     # Успех — Editor получит только other_errors
                     editor_input_errors = list(other_errors)
+                    last_completed = "geometry_editor"
+                    self._dump_running(
+                        last_completed,
+                        "editor" if other_errors else "finalize")
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "geometry_editor",
@@ -290,6 +317,7 @@ class MontageOrchestratorThread(QThread):
                     # Editor УПАЛ» через _build_agent_summary.
 
                 if self._stop:
+                    self._dump_aborted(last_completed, "editor")
                     self.failed.emit("cancelled")
                     return
 
@@ -308,16 +336,20 @@ class MontageOrchestratorThread(QThread):
                     # реплику без пересчёта duration.
                     montage_card = self._apply_post_check_timings(
                         montage_card, round_num=1)
+                    last_completed = "editor"
+                    self._dump_running(last_completed, "validator_r2")
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "editor",
                         "error": str(e),
                     })
                     # Не fatal — отдаём карту до Editor'а.
-                    self._finalize(montage_card, checker_report)
+                    self._finalize(montage_card, checker_report,
+                                   last_completed_stage=last_completed)
                     return
 
                 if self._stop:
+                    self._dump_aborted(last_completed, "validator_r2")
                     self.failed.emit("cancelled")
                     return
 
@@ -335,6 +367,13 @@ class MontageOrchestratorThread(QThread):
                     r2_report = self._call_validator(montage_card, round_num=2)
                     checker_report = r2_report
                     validator_r2_ok = True
+                    last_completed = "validator_r2"
+                    _has_errs = bool(checker_report.get("errors") or [])
+                    self._dump_running(
+                        last_completed,
+                        "editor_r2" if _has_errs else
+                        ("context_reviewer" if self._use_context_reviewer
+                         else "finalize"))
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "validator_r2",
@@ -344,6 +383,7 @@ class MontageOrchestratorThread(QThread):
                     # validator_r2 как failed=True.
 
                 if self._stop:
+                    self._dump_aborted(last_completed, "editor_r2")
                     self.failed.emit("cancelled")
                     return
 
@@ -369,6 +409,8 @@ class MontageOrchestratorThread(QThread):
                     # v1.0.81: Python post-check таймингов после Editor R2
                     montage_card = self._apply_post_check_timings(
                         montage_card, round_num=2)
+                    last_completed = "editor_r2"
+                    self._dump_running(last_completed, "validator_r3")
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "editor_r2",
@@ -377,6 +419,7 @@ class MontageOrchestratorThread(QThread):
                     # Не fatal — checker_report остаётся от R2.
 
                 if self._stop:
+                    self._dump_aborted(last_completed, "validator_r3")
                     self.failed.emit("cancelled")
                     return
 
@@ -391,6 +434,11 @@ class MontageOrchestratorThread(QThread):
                 try:
                     r3_report = self._call_validator(montage_card, round_num=3)
                     checker_report = r3_report
+                    last_completed = "validator_r3"
+                    self._dump_running(
+                        last_completed,
+                        "context_reviewer" if self._use_context_reviewer
+                        else "finalize")
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "validator_r3",
@@ -399,6 +447,10 @@ class MontageOrchestratorThread(QThread):
                     # Не fatal — checker_report остаётся от R2.
 
                 if self._stop:
+                    self._dump_aborted(
+                        last_completed,
+                        "context_reviewer" if self._use_context_reviewer
+                        else "finalize")
                     self.failed.emit("cancelled")
                     return
 
@@ -407,15 +459,28 @@ class MontageOrchestratorThread(QThread):
                 self.progress.emit("context_reviewer_running", {})
                 try:
                     reviewer_report = self._call_context_reviewer(montage_card)
+                    last_completed = "context_reviewer"
+                    # next зависит от concerns — посчитаем заранее
+                    _concerns_count = len(reviewer_report.get("concerns") or [])
+                    _has_concerns = (
+                        not reviewer_report.get("ok", True)
+                        and _concerns_count > 0)
+                    self._dump_running(
+                        last_completed,
+                        "editor_after_reviewer" if _has_concerns
+                        else "finalize")
                 except Exception as e:
                     self._agent_log.append({
                         "stage": "context_reviewer",
                         "error": str(e),
                     })
-                    self._finalize(montage_card, checker_report)
+                    self._finalize(montage_card, checker_report,
+                                   last_completed_stage=last_completed)
                     return
 
                 if self._stop:
+                    self._dump_aborted(last_completed,
+                                       "editor_after_reviewer")
                     self.failed.emit("cancelled")
                     return
 
@@ -438,26 +503,56 @@ class MontageOrchestratorThread(QThread):
                     try:
                         montage_card = self._call_editor(
                             montage_card, converted_errors)
+                        last_completed = "editor_after_reviewer"
+                        self._dump_running(last_completed, "finalize")
                     except Exception as e:
                         self._agent_log.append({
                             "stage": "editor_after_reviewer",
                             "error": str(e),
                         })
-                        self._finalize(montage_card, checker_report)
+                        self._finalize(montage_card, checker_report,
+                                       last_completed_stage=last_completed)
                         return
 
             # 5) Финал
-            self._finalize(montage_card, checker_report)
+            self._finalize(montage_card, checker_report,
+                           last_completed_stage=last_completed)
         except Exception as e:
-            self._dump_log()
+            self._dump_aborted(last_completed, None)
             self.failed.emit(f"unexpected: {e}")
 
-    def _finalize(self, montage_card: dict, checker_report: dict) -> None:
+    def _finalize(self, montage_card: dict, checker_report: dict,
+                   last_completed_stage: Optional[str] = None) -> None:
         """Общий путь финализации — dump log + emit finished_ok.
         rounds_used = 1 всегда (раундов больше нет, поле оставлено для
         совместимости с сигналом и caller'ом episode_chat.py).
+
+        v1.0.87 (этап А resume-фичи): pipeline_state.status определяется
+        честно по наличию error-stage'ей в _agent_log. Если pipeline
+        прошёл fail-открыто (Editor упал, продолжили с Scriptwriter
+        картой) — status=failed с указанием первого упавшего stage.
+        Это убирает старое UI-мигание (UI больше не врёт «карта готова»
+        для эпизодов где middle-stage упал).
         """
-        log_path_str = self._dump_log()
+        had_failures = any(
+            isinstance(s, dict) and "error" in s
+            for s in self._agent_log)
+        if had_failures:
+            # Найдём первый упавший stage для resume entry.
+            failed_stage = None
+            for s in self._agent_log:
+                if isinstance(s, dict) and "error" in s:
+                    failed_stage = s.get("stage")
+                    break
+            log_path_str = self._dump_log(
+                status="failed",
+                last_completed_stage=last_completed_stage,
+                next_stage=failed_stage)
+        else:
+            log_path_str = self._dump_log(
+                status="completed",
+                last_completed_stage="finalize",
+                next_stage=None)
         agent_summary = self._build_agent_summary(1)
         self.finished_ok.emit(montage_card, checker_report, 1,
                                log_path_str or "", agent_summary)
@@ -1189,28 +1284,94 @@ class MontageOrchestratorThread(QThread):
             summary['timing']['total_sec'], 2)
         return summary
 
-    def _dump_log(self) -> Optional[str]:
-        """Сохраняет агентский лог в JSON для дебага. Возвращает путь
-        или None если не удалось."""
+    def _dump_running(self, last: Optional[str],
+                       nxt: Optional[str]) -> None:
+        """v1.0.87: shortcut для incremental dump после успеха этапа.
+        Эквивалент `_dump_log(status="running", last_completed_stage=last,
+        next_stage=nxt)`. Введён чтобы dump-сайты в run() занимали 1 строку
+        вместо 3-4."""
+        self._dump_log(status="running",
+                       last_completed_stage=last, next_stage=nxt)
+
+    def _dump_aborted(self, last: Optional[str],
+                       nxt: Optional[str]) -> None:
+        """v1.0.87: shortcut для dump при cancel/failure. Используется в
+        `if self._stop:` ветках и в top-level except'ах. Эквивалент
+        `_dump_log(status="failed", ...)`."""
+        self._dump_log(status="failed",
+                       last_completed_stage=last, next_stage=nxt)
+
+    def _dump_log(self,
+                   status: str = "running",
+                   last_completed_stage: Optional[str] = None,
+                   next_stage: Optional[str] = None) -> Optional[str]:
+        """Сохраняет агентский лог в JSON. Возвращает путь или None.
+
+        v1.0.87 (этап А resume-фичи):
+        - Атомарная запись: temp-файл `<log>.tmp` → `os.replace(...)` →
+          цель. `os.replace` стандарт Python 3.3+, кросс-платформенный
+          атомар (Mac/Linux/Win). Crash во время записи → остаётся
+          либо предыдущая валидная версия лога, либо новая полная
+          версия. Corrupted JSON исключён.
+        - Если `<log>.tmp` остался от прошлого crash (write упал до
+          os.replace) — `write_text` режим 'w' тихо перезаписывает.
+          O_EXCL не используется. Никакого блокирующего state.
+        - Поле `pipeline_state` в head — позволит resume-логике
+          (этапы Б/В) понять «упало на каком этапе, можно ли продолжить».
+        - Все ошибки логируются в stderr с деталями — НЕ глотаются
+          молча (юзер должен видеть проблему через Console.app для
+          .app или в терминале для dev). Pipeline продолжает работать
+          даже если dump упал — лог это диагностика, не блокер.
+        """
+        # Логируем намерение всегда (даже если log_path = None — это
+        # тоже сигнал для отладки).
+        try:
+            sys.stderr.write(
+                f"[montage] dump: status={status}, "
+                f"last={last_completed_stage}, next={next_stage}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
         if not self._log_path:
             return None
         try:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._log_path.write_text(
-                json.dumps({
-                    "timestamp": time.time(),
-                    "models": {
-                        "scriptwriter": self.MODEL_SCRIPTWRITER,
-                        "validator": self.MODEL_VALIDATOR,
-                        "editor": self.MODEL_EDITOR,
-                        "context_reviewer": self.MODEL_CONTEXT_REVIEWER,
-                    },
-                    "scenario_chars": len(self._scenario),
-                    "refs_summary": self._refs,
-                    "stages": self._agent_log,
-                }, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            body = json.dumps({
+                "timestamp": time.time(),
+                "models": {
+                    "scriptwriter": self.MODEL_SCRIPTWRITER,
+                    "validator": self.MODEL_VALIDATOR,
+                    "editor": self.MODEL_EDITOR,
+                    "context_reviewer": self.MODEL_CONTEXT_REVIEWER,
+                },
+                "scenario_chars": len(self._scenario),
+                "refs_summary": self._refs,
+                # v1.0.87: новое поле — состояние pipeline. UI и
+                # resume-логика читают status чтобы понять «успешно
+                # завершён / в процессе / упал».
+                "pipeline_state": {
+                    "status": status,
+                    "last_completed_stage": last_completed_stage,
+                    "next_stage": next_stage,
+                    "updated_at": time.time(),
+                },
+                "stages": self._agent_log,
+            }, ensure_ascii=False, indent=2)
+            # Atomic write: temp в том же каталоге → os.replace.
+            tmp_path = self._log_path.with_suffix(
+                self._log_path.suffix + ".tmp")
+            tmp_path.write_text(body, encoding="utf-8")
+            os.replace(str(tmp_path), str(self._log_path))
             return str(self._log_path)
-        except Exception:
+        except Exception as e:
+            # v1.0.87: НЕ глотать молча — юзер должен видеть что лог
+            # сломался. Pipeline продолжает (диагностика ≠ блокер).
+            try:
+                sys.stderr.write(
+                    f"[montage] dump FAILED for {self._log_path}: "
+                    f"{type(e).__name__}: {e}\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
             return None
