@@ -6841,6 +6841,139 @@ class MainWindow(QMainWindow):
                 "color:#ffaa44; font-size:12px; font-weight:700; letter-spacing:1.2px;")
             lay.addWidget(self.sec_admin_div_lbl)
 
+            # ── 🧠 МОНТАЖКА — модели и таймауты (v1.0.86 этап 6) ───────
+            # Три runtime-настройки оркестратора:
+            #  • montage/opus_effort  — режим Opus thinking (low..max)
+            #  • montage/chunk_timeout_opus_sec  — timeout для Opus этапов
+            #  • montage/chunk_timeout_default_sec — для Haiku/Sonnet
+            # Сохраняются в QSettings, читаются EpisodeChatView._on_montage_start
+            # и передаются в MontageOrchestratorThread. Применяются при
+            # перезапуске Studio (поток создаётся заново на каждый клик).
+            self.sec_montage_runtime_lbl = QLabel(tr('sec_montage_runtime'))
+            self.sec_montage_runtime_lbl.setObjectName("settings-section")
+            lay.addWidget(self.sec_montage_runtime_lbl)
+
+            montage_rt_frame = QFrame()
+            montage_rt_frame.setObjectName("settings-group")
+            mrf = QVBoxLayout(montage_rt_frame)
+            mrf.setSpacing(10)
+            mrf.setContentsMargins(20, 18, 20, 18)
+
+            self.montage_runtime_hint_lbl = QLabel(tr('montage_runtime_hint'))
+            self.montage_runtime_hint_lbl.setWordWrap(True)
+            self.montage_runtime_hint_lbl.setStyleSheet(
+                "color:#aaa; font-size:12px; padding-bottom:6px;")
+            mrf.addWidget(self.montage_runtime_hint_lbl)
+
+            # Подгружаем текущие значения из QSettings.
+            _qs_mrt = QSettings(APP_ORG, APP_NAME)
+            cur_effort = _qs_mrt.value(
+                "montage/opus_effort", "low", type=str)
+            if cur_effort not in ("low", "medium", "high", "xhigh", "max"):
+                cur_effort = "low"
+            try:
+                cur_timeout_opus = int(_qs_mrt.value(
+                    "montage/chunk_timeout_opus_sec", 150))
+            except (TypeError, ValueError):
+                cur_timeout_opus = 150
+            try:
+                cur_timeout_default = int(_qs_mrt.value(
+                    "montage/chunk_timeout_default_sec", 60))
+            except (TypeError, ValueError):
+                cur_timeout_default = 60
+
+            from PyQt6.QtWidgets import QComboBox as _QCB, QSpinBox as _QSB
+
+            # Строка 1: режим Opus thinking
+            opus_row = QHBoxLayout()
+            opus_row.setSpacing(12)
+            self.montage_opus_effort_label_lbl = QLabel(
+                tr('montage_opus_effort_label'))
+            self.montage_opus_effort_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            opus_row.addWidget(self.montage_opus_effort_label_lbl)
+            self.montage_opus_effort_combo = _QCB()
+            for val in ("low", "medium", "high", "xhigh", "max"):
+                self.montage_opus_effort_combo.addItem(
+                    tr(f'montage_opus_effort_{val}'), val)
+            _idx = self.montage_opus_effort_combo.findData(cur_effort)
+            if _idx >= 0:
+                self.montage_opus_effort_combo.setCurrentIndex(_idx)
+            block_wheel_event(self.montage_opus_effort_combo)
+            opus_row.addWidget(self.montage_opus_effort_combo, stretch=1)
+            mrf.addLayout(opus_row)
+            self.montage_opus_effort_hint_lbl = QLabel(
+                tr('montage_opus_effort_hint'))
+            self.montage_opus_effort_hint_lbl.setWordWrap(True)
+            self.montage_opus_effort_hint_lbl.setStyleSheet(
+                "color:rgba(255,255,255,0.45); font-size:11px;")
+            mrf.addWidget(self.montage_opus_effort_hint_lbl)
+
+            # Строка 2: chunk timeout для Opus
+            ct_opus_row = QHBoxLayout()
+            ct_opus_row.setSpacing(12)
+            self.montage_chunk_timeout_opus_label_lbl = QLabel(
+                tr('montage_chunk_timeout_opus_label'))
+            self.montage_chunk_timeout_opus_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            ct_opus_row.addWidget(self.montage_chunk_timeout_opus_label_lbl)
+            self.montage_chunk_timeout_opus_spin = _QSB()
+            self.montage_chunk_timeout_opus_spin.setMinimum(30)
+            self.montage_chunk_timeout_opus_spin.setMaximum(600)
+            self.montage_chunk_timeout_opus_spin.setSingleStep(10)
+            self.montage_chunk_timeout_opus_spin.setValue(cur_timeout_opus)
+            block_wheel_event(self.montage_chunk_timeout_opus_spin)
+            ct_opus_row.addWidget(self.montage_chunk_timeout_opus_spin, stretch=1)
+            mrf.addLayout(ct_opus_row)
+            self.montage_chunk_timeout_opus_hint_lbl = QLabel(
+                tr('montage_chunk_timeout_opus_hint'))
+            self.montage_chunk_timeout_opus_hint_lbl.setWordWrap(True)
+            self.montage_chunk_timeout_opus_hint_lbl.setStyleSheet(
+                "color:rgba(255,255,255,0.45); font-size:11px;")
+            mrf.addWidget(self.montage_chunk_timeout_opus_hint_lbl)
+
+            # Строка 3: chunk timeout для Haiku/Sonnet
+            ct_def_row = QHBoxLayout()
+            ct_def_row.setSpacing(12)
+            self.montage_chunk_timeout_default_label_lbl = QLabel(
+                tr('montage_chunk_timeout_default_label'))
+            self.montage_chunk_timeout_default_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            ct_def_row.addWidget(self.montage_chunk_timeout_default_label_lbl)
+            self.montage_chunk_timeout_default_spin = _QSB()
+            self.montage_chunk_timeout_default_spin.setMinimum(30)
+            self.montage_chunk_timeout_default_spin.setMaximum(600)
+            self.montage_chunk_timeout_default_spin.setSingleStep(10)
+            self.montage_chunk_timeout_default_spin.setValue(cur_timeout_default)
+            block_wheel_event(self.montage_chunk_timeout_default_spin)
+            ct_def_row.addWidget(self.montage_chunk_timeout_default_spin, stretch=1)
+            mrf.addLayout(ct_def_row)
+            self.montage_chunk_timeout_default_hint_lbl = QLabel(
+                tr('montage_chunk_timeout_default_hint'))
+            self.montage_chunk_timeout_default_hint_lbl.setWordWrap(True)
+            self.montage_chunk_timeout_default_hint_lbl.setStyleSheet(
+                "color:rgba(255,255,255,0.45); font-size:11px;")
+            mrf.addWidget(self.montage_chunk_timeout_default_hint_lbl)
+
+            # Кнопка «Сохранить и применить» + warning
+            self.montage_runtime_save_btn = QPushButton(
+                tr('montage_runtime_save_button'))
+            self.montage_runtime_save_btn.setCursor(
+                Qt.CursorShape.PointingHandCursor)
+            self.montage_runtime_save_btn.clicked.connect(
+                self._on_montage_runtime_save_clicked)
+            mrf.addWidget(self.montage_runtime_save_btn)
+
+            self.montage_runtime_restart_hint_lbl = QLabel(
+                tr('montage_runtime_restart_hint'))
+            self.montage_runtime_restart_hint_lbl.setStyleSheet(
+                "color: rgba(255,255,255,0.45); font-size: 11px;"
+                " padding-top: 2px;")
+            self.montage_runtime_restart_hint_lbl.setWordWrap(True)
+            mrf.addWidget(self.montage_runtime_restart_hint_lbl)
+
+            lay.addWidget(montage_rt_frame)
+
             # ── ПРОВАЙДЕР КАРТИНОК — переключатель NARWHAL / OpenAI ───────
             # Влияет на массовую генерацию шотов. Fallback когда NARWHAL
             # captcha-сервис у Fast Gen лежит. Сохраняется в QSettings
@@ -11034,6 +11167,52 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self, tr('sec_proxy'),
                     tr('proxy_save_no_restart_notice'))
+        except Exception:
+            traceback.print_exc()
+
+    def _on_montage_runtime_save_clicked(self):
+        """v1.0.86 (этап 6): сохранить 3 runtime-настройки оркестратора
+        монтажки в QSettings + диалог рестарта (по образцу
+        `_on_proxy_save_clicked`).
+
+        Ключи: `montage/opus_effort`, `montage/chunk_timeout_opus_sec`,
+        `montage/chunk_timeout_default_sec`. Применяются при создании
+        нового MontageOrchestratorThread (после перезапуска или нового
+        клика «🎬 Сделать сториборды» — settings читаются в
+        `EpisodeChatView._on_montage_start`).
+        """
+        try:
+            effort = self.montage_opus_effort_combo.currentData() or "low"
+            if effort not in ("low", "medium", "high", "xhigh", "max"):
+                effort = "low"
+            timeout_opus = int(self.montage_chunk_timeout_opus_spin.value())
+            timeout_default = int(
+                self.montage_chunk_timeout_default_spin.value())
+
+            qs = QSettings(APP_ORG, APP_NAME)
+            qs.setValue("montage/opus_effort", effort)
+            qs.setValue("montage/chunk_timeout_opus_sec", timeout_opus)
+            qs.setValue("montage/chunk_timeout_default_sec", timeout_default)
+            qs.sync()
+
+            m = QMessageBox(self)
+            m.setIcon(QMessageBox.Icon.Information)
+            m.setWindowTitle(tr('sec_montage_runtime'))
+            m.setText(tr('montage_runtime_restart_dialog'))
+            now_btn = m.addButton(
+                tr('montage_runtime_restart_now'),
+                QMessageBox.ButtonRole.AcceptRole)
+            later_btn = m.addButton(
+                tr('montage_runtime_restart_later'),
+                QMessageBox.ButtonRole.RejectRole)
+            m.setDefaultButton(later_btn)
+            m.exec()
+            if m.clickedButton() is now_btn:
+                QTimer.singleShot(0, QApplication.quit)
+            else:
+                QMessageBox.information(
+                    self, tr('sec_montage_runtime'),
+                    tr('montage_runtime_save_no_restart_notice'))
         except Exception:
             traceback.print_exc()
 

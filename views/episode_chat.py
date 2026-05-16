@@ -3207,8 +3207,33 @@ class EpisodeChatView(QWidget):
         # Читаем toggle из QSettings («Использовать Context Reviewer»
         # в секции «🎬 Монтажная карта» Settings) и передаём в orchestrator.
         # Если OFF — стадия Reviewer'а пропускается, экономия ~2 мин.
-        use_reviewer = QSettings(_sa.APP_ORG, _sa.APP_NAME).value(
+        _qs = QSettings(_sa.APP_ORG, _sa.APP_NAME)
+        use_reviewer = _qs.value(
             "montage/context_reviewer_enabled", False, type=bool)
+        # v1.0.86 (этап 6): runtime-настройки оркестратора из админ-UI.
+        # Default'ы такие же что в MontageOrchestratorThread.__init__:
+        # opus_effort="low", chunk_timeout_opus=150, default=60.
+        opus_effort = _qs.value("montage/opus_effort", "low", type=str)
+        if opus_effort not in ("low", "medium", "high", "xhigh", "max"):
+            opus_effort = "low"
+        try:
+            chunk_timeout_opus = int(_qs.value(
+                "montage/chunk_timeout_opus_sec", 150))
+        except (TypeError, ValueError):
+            chunk_timeout_opus = 150
+        try:
+            chunk_timeout_default = int(_qs.value(
+                "montage/chunk_timeout_default_sec", 60))
+        except (TypeError, ValueError):
+            chunk_timeout_default = 60
+        # Видно в Console.app для bundled .app, в терминале для dev.
+        # Греп: `[montage] runtime settings:`
+        import sys as _sys_log
+        _sys_log.stderr.write(
+            f"[montage] runtime settings: opus_effort={opus_effort}, "
+            f"chunk_timeout_opus={chunk_timeout_opus}, "
+            f"chunk_timeout_default={chunk_timeout_default}\n")
+        _sys_log.stderr.flush()
 
         from threads.montage_orchestrator import MontageOrchestratorThread
         t = MontageOrchestratorThread(
@@ -3218,6 +3243,9 @@ class EpisodeChatView(QWidget):
             show_context=show_context,
             log_path=log_path,
             use_context_reviewer=use_reviewer,
+            opus_effort=opus_effort,
+            chunk_timeout_opus=chunk_timeout_opus,
+            chunk_timeout_default=chunk_timeout_default,
             parent=self,
         )
         t.progress.connect(self._on_montage_progress)

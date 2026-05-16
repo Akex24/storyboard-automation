@@ -144,6 +144,9 @@ class MontageOrchestratorThread(QThread):
                  show_context: Optional[dict] = None,
                  log_path: Optional[Path] = None,
                  use_context_reviewer: bool = False,
+                 opus_effort: Optional[str] = None,
+                 chunk_timeout_opus: Optional[int] = None,
+                 chunk_timeout_default: Optional[int] = None,
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
@@ -164,6 +167,21 @@ class MontageOrchestratorThread(QThread):
         self._log_path = log_path
         self._stop = False
         self._agent_log: List[dict] = []  # для финального дампа
+        # v1.0.86 (этап 6): runtime-настройки из админ-UI (QSettings
+        # `montage/opus_effort`, `montage/chunk_timeout_opus_sec`,
+        # `montage/chunk_timeout_default_sec`). Caller (EpisodeChatView.
+        # _on_montage_start) читает QSettings и передаёт сюда. Если
+        # None — fallback на class-level константы (которые и были
+        # default-значениями до этапа 6).
+        self._opus_effort: str = (
+            opus_effort if opus_effort in (
+                "low", "medium", "high", "xhigh", "max") else "low")
+        self._chunk_timeout_opus: int = (
+            int(chunk_timeout_opus) if chunk_timeout_opus
+            else self.STREAM_CHUNK_TIMEOUT_OPUS_SEC)
+        self._chunk_timeout_default: int = (
+            int(chunk_timeout_default) if chunk_timeout_default
+            else self.STREAM_CHUNK_TIMEOUT_SEC)
         # v1.0.86: handle активного claude-Popen — для terminate() при
         # внешнем stop() или chunk-timeout. Используется только в
         # _run_claude_stream (новый метод). Старый _run_claude через
@@ -465,12 +483,14 @@ class MontageOrchestratorThread(QThread):
         # лимита), а с low total всего 49с, max_silence 2.6с. Качество
         # карты на low проверяется юзером — если ухудшилось, переводим
         # на "medium".
+        # v1.0.86 (этап 6): effort и chunk_timeout берутся из админ-UI
+        # (QSettings, читается в EpisodeChatView._on_montage_start).
         t0 = time.time()
         raw = self._run_claude_stream(
             SCRIPTWRITER_SYSTEM, user,
             model=self.MODEL_SCRIPTWRITER,
-            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC,
-            effort="low")
+            chunk_timeout_sec=self._chunk_timeout_opus,
+            effort=self._opus_effort)
         duration_sec = round(time.time() - t0, 2)
         montage = self._parse_json(raw)
         self._agent_log.append({
@@ -512,8 +532,11 @@ class MontageOrchestratorThread(QThread):
         # context_reviewer) пока на старом методе — этап 3.
         # Покрывает все три раунда (R1, R2, R3) — это одна функция
         # вызывается с разным round_num.
+        # v1.0.86 (этап 6): chunk_timeout из админ-UI (default 60с для
+        # Haiku — для Validator/Geometry/Reviewer этого хватает).
         raw = self._run_claude_stream(validator_system, user,
-                                       model=self.MODEL_VALIDATOR)
+                                       model=self.MODEL_VALIDATOR,
+                                       chunk_timeout_sec=self._chunk_timeout_default)
         duration_sec = round(time.time() - t0, 2)
         ai_report = self._parse_json(raw)
 
@@ -564,11 +587,12 @@ class MontageOrchestratorThread(QThread):
         # v1.0.86 (этап 5): effort="low" — та же мотивация что у
         # Scriptwriter. Editor применяет N исправлений к JSON-карте
         # — менее открытая задача, low effort должен справиться.
+        # v1.0.86 (этап 6): effort и chunk_timeout из админ-UI.
         raw = self._run_claude_stream(
             EDITOR_SYSTEM, user,
             model=self.MODEL_EDITOR,
-            chunk_timeout_sec=self.STREAM_CHUNK_TIMEOUT_OPUS_SEC,
-            effort="low")
+            chunk_timeout_sec=self._chunk_timeout_opus,
+            effort=self._opus_effort)
         duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
         stage_name = "editor" if round_num == 1 else f"editor_r{round_num}"
@@ -607,8 +631,10 @@ class MontageOrchestratorThread(QThread):
         # стриминг. Запускается только при `*_missing_geometry` ошибках.
         # Не fatal: при exception падает в fallback (Editor получит ВСЕ
         # ошибки включая missing_geometry).
+        # v1.0.86 (этап 6): chunk_timeout из админ-UI (Haiku default 60с).
         raw = self._run_claude_stream(system, user,
-                                       model=self.MODEL_GEOMETRY_EDITOR)
+                                       model=self.MODEL_GEOMETRY_EDITOR,
+                                       chunk_timeout_sec=self._chunk_timeout_default)
         duration_sec = round(time.time() - t0, 2)
         new_card = self._parse_json(raw)
         self._agent_log.append({
@@ -672,8 +698,10 @@ class MontageOrchestratorThread(QThread):
         # Опциональный (toggle в Settings), default OFF — для большинства
         # пользователей этот код не запускается. Не fatal: при exception
         # pipeline catch'ит и идёт к _finalize.
+        # v1.0.86 (этап 6): chunk_timeout из админ-UI (Sonnet default 60с).
         raw = self._run_claude_stream(CONTEXT_REVIEWER_SYSTEM, user,
-                                       model=self.MODEL_CONTEXT_REVIEWER)
+                                       model=self.MODEL_CONTEXT_REVIEWER,
+                                       chunk_timeout_sec=self._chunk_timeout_default)
         duration_sec = round(time.time() - t0, 2)
         report = self._parse_json(raw)
         # Нормализуем — на случай если AI вернул concerns под другим
