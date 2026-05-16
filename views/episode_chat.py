@@ -256,6 +256,13 @@ class EpisodeChatView(QWidget):
         self._montage_cta.start_requested.connect(self._on_montage_start)
         self._montage_cta.retry_requested.connect(self._on_montage_start)
         self._montage_cta.cancel_requested.connect(self._on_montage_cancel)
+        # v1.0.87 (этап 7D resume-фичи): кнопки KIND_RESUMABLE CTA.
+        # resume_requested — продолжить pipeline с last_completed_stage из
+        # `_agent_log_<ep>.json`. start_fresh_requested — удалить лог и
+        # запустить заново.
+        self._montage_cta.resume_requested.connect(self._on_montage_resume)
+        self._montage_cta.start_fresh_requested.connect(
+            self._on_montage_start_fresh)
         # v1.0.82: новая кнопка «📂 Открыть монтажную карту»
         self._montage_cta.open_map_requested.connect(self._on_open_map_clicked)
         self._montage_cta.hide()
@@ -635,20 +642,39 @@ class EpisodeChatView(QWidget):
             except Exception:
                 traceback.print_exc()
             return
-        # 3) Failed snapshot.
-        if state and state.get('kind') == 'failed':
-            try:
-                self._montage_cta.show_failed(state.get('reason') or "")
-            except Exception:
-                traceback.print_exc()
-            return
-        # v1.0.82: 4) Карта уже сохранена на диске → CTA «📂 Открыть».
+        # v1.0.82: 2) Карта уже сохранена на диске → CTA «📂 Открыть».
+        # v1.0.87 (этап 7D): completed карта приоритетнее resumable —
+        # если pipeline дошёл до конца, ресюмить нечего.
         try:
             if self._has_saved_montage_card(ep_id):
                 self._montage_cta.show_open_map()
                 return
         except Exception:
             traceback.print_exc()
+        # v1.0.87 (этап 7D resume-фичи): 3) Упавший pipeline с лога →
+        # «🔄 Продолжить / 🆕 Начать заново».
+        # Приоритет ВЫШЕ failed in-memory state: in-session fail после
+        # первого incremental dump оставляет валидный лог; resumable CTA
+        # полезнее красного «упало» баннера. Failed-ветка остаётся как
+        # fallback для early-fail БЕЗ лога (Scriptwriter упал до первого
+        # dump → лога нет → resumable вернёт None → доходим до failed).
+        try:
+            info = self._resumable_from_log(ep_id)
+            if info:
+                self._montage_cta.show_resumable(
+                    info["last_completed_stage"],
+                    info.get("next_stage"))
+                self._montage_cta.show()
+                return
+        except Exception:
+            traceback.print_exc()
+        # 4) Failed snapshot (early-fail без лога или ручной reason).
+        if state and state.get('kind') == 'failed':
+            try:
+                self._montage_cta.show_failed(state.get('reason') or "")
+            except Exception:
+                traceback.print_exc()
+            return
         # 5) Иначе — пусть `_check_montage_ready` (тикает раз в 2с) решит.
         # Скрываем сейчас, чтобы старое состояние от прошлого ep_id не
         # «протекало» в новый.
@@ -2618,6 +2644,31 @@ class EpisodeChatView(QWidget):
         except Exception:
             traceback.print_exc()
 
+        # v1.0.87 (этап 7D resume-фичи): если pipeline упал в прошлой
+        # сессии (или продолжает крутиться по записи лога, но тред мёртв
+        # после рестарта Studio) — показываем «🔄 Продолжить / 🆕 Начать
+        # заново» вместо обычного idle. Приоритет выше legacy
+        # episode_has_montage_card и in-memory failed-state (см.
+        # _restore_montage_cta_for_current_ep).
+        try:
+            info = self._resumable_from_log(self._ep_id)
+            if info:
+                self._montage_cta.show_resumable(
+                    info["last_completed_stage"],
+                    info.get("next_stage"))
+                self._montage_cta.show()
+                new_state = f"resumable_{info['last_completed_stage']}"
+                if getattr(self, '_last_montage_state', None) != new_state:
+                    self._last_montage_state = new_state
+                    self._diag_log_append(
+                        'montage_ready',
+                        f"ep={self._ep_id} state=resumable "
+                        f"last={info['last_completed_stage']} "
+                        f"next={info.get('next_stage')}")
+                return
+        except Exception:
+            traceback.print_exc()
+
         # 2026-05-06 fallback (legacy): эпизоды до v1.0.82 могли иметь
         # только урезанный blocks-формат после клика «Делать сториборды»
         # — без полной montage_card. Тогда CTA скрыта (как раньше).
@@ -3270,6 +3321,170 @@ class EpisodeChatView(QWidget):
             self._montage_cta.show_running('montage_status_scriptwriter')
         t.start()
 
+    def _on_montage_resume(self):
+        """v1.0.87 (этап 7D resume-фичи): клик «🔄 Продолжить» в
+        KIND_RESUMABLE CTA. Загружает _agent_log_<ep>.json целиком,
+        собирает АКТУАЛЬНЫЕ runtime-настройки (из QSettings / filesystem
+        — НЕ из лога!), создаёт MontageOrchestratorThread с resume_from=
+        <распарсенный лог>. Orchestrator на 7C извлекает montage_card +
+        checker_report + last_completed_stage и пропускает уже сделанные
+        этапы.
+
+        Структура почти идентична `_on_montage_start` — отличия:
+          • `resume_from=log_data` kwarg в конструкторе.
+          • System-сообщение в чат через `tr('montage_resume_starting',
+            stage=<human_name>)` перед t.start().
+          • Если лог исчез между показом resumable и кликом — fallback
+            на обычный `_on_montage_start()`.
+        """
+        ep_id = self._ep_id
+        if not ep_id:
+            return
+        existing = self._montage_threads.get(ep_id)
+        if existing is not None and existing.isRunning():
+            return  # для этого эпизода уже бежит — игнор клика
+
+        info = self._resumable_from_log(ep_id)
+        if info is None:
+            # Лог пропал / стал completed между показом CTA и кликом.
+            # Безопасный fallback — обычный старт с нуля.
+            try:
+                import sys as _sys_log
+                _sys_log.stderr.write(
+                    f"[montage] resume: log gone for ep={ep_id}, "
+                    f"falling back to fresh start\n")
+                _sys_log.stderr.flush()
+            except Exception:
+                pass
+            self._on_montage_start()
+            return
+        log_data = info["log_data"]
+        last_stage = info["last_completed_stage"]
+
+        cli = _sa.find_claude_cli()
+        if not cli:
+            self._montage_cta.show_failed(tr('new_ep_cli_missing'))
+            return
+
+        scenario = self._load_scenario_text()
+        if not scenario:
+            self._montage_cta.show_failed("Не нашёл текст сценария эпизода.")
+            return
+
+        refs_summary = self._build_refs_summary_for_orchestrator()
+        if not refs_summary['locations']:
+            self._montage_cta.show_failed("Нет залинкованных локаций.")
+            return
+
+        # Лог-путь тот же что и у обычного старта — orchestrator
+        # перезапишет его с новым прогрессом через atomic dump.
+        log_path = None
+        try:
+            cur_show = getattr(self._mw, '_current_show', None)
+            if cur_show:
+                log_path = (self._mw._project_root / "shows" / cur_show
+                            / "output"
+                            / f"_agent_log_{self._ep_id}.json")
+        except Exception:
+            pass
+
+        show_context = self._load_show_context()
+
+        # Runtime-настройки — АКТУАЛЬНЫЕ (из QSettings), не из лога.
+        # Юзер мог изменить settings между fail и resume — берём свежие.
+        _qs = QSettings(_sa.APP_ORG, _sa.APP_NAME)
+        use_reviewer = _qs.value(
+            "montage/context_reviewer_enabled", False, type=bool)
+        opus_effort = _qs.value("montage/opus_effort", "low", type=str)
+        if opus_effort not in ("low", "medium", "high", "xhigh", "max"):
+            opus_effort = "low"
+        try:
+            chunk_timeout_opus = int(_qs.value(
+                "montage/chunk_timeout_opus_sec", 150))
+        except (TypeError, ValueError):
+            chunk_timeout_opus = 150
+        try:
+            chunk_timeout_default = int(_qs.value(
+                "montage/chunk_timeout_default_sec", 60))
+        except (TypeError, ValueError):
+            chunk_timeout_default = 60
+        import sys as _sys_log
+        _sys_log.stderr.write(
+            f"[montage] resume runtime settings: opus_effort={opus_effort}, "
+            f"chunk_timeout_opus={chunk_timeout_opus}, "
+            f"chunk_timeout_default={chunk_timeout_default}, "
+            f"last_completed={last_stage}\n")
+        _sys_log.stderr.flush()
+
+        from threads.montage_orchestrator import MontageOrchestratorThread
+        t = MontageOrchestratorThread(
+            claude_cli_path=cli,
+            scenario_text=scenario,
+            refs_summary=refs_summary,
+            show_context=show_context,
+            log_path=log_path,
+            use_context_reviewer=use_reviewer,
+            opus_effort=opus_effort,
+            chunk_timeout_opus=chunk_timeout_opus,
+            chunk_timeout_default=chunk_timeout_default,
+            resume_from=log_data,
+            parent=self,
+        )
+        t.progress.connect(self._on_montage_progress)
+        t.finished_ok.connect(self._on_montage_finished_ok)
+        t.failed.connect(self._on_montage_failed)
+        t.finished.connect(
+            lambda ep=ep_id: self._montage_threads.pop(ep, None))
+        self._montage_threads[ep_id] = t
+        self._montage_states[ep_id] = {
+            'kind': 'running',
+            'stage': 'montage_status_scriptwriter',
+            'info': {},
+        }
+        # System-сообщение в чат — пользователь видит «Продолжаем
+        # монтажку с этапа X» прямо в истории эпизода.
+        try:
+            stage_human = tr(f'montage_stage_name_{last_stage}')
+            # Если ключа нет, tr() возвращает сам ключ → fallback на raw id.
+            if stage_human.startswith('montage_stage_name_'):
+                stage_human = last_stage
+            line = tr('montage_resume_starting', stage=stage_human)
+            _sa.append_chat_message(self._ep_id, "system", line, kind='system')
+            self._render_message(line, kind='system')
+        except Exception:
+            traceback.print_exc()
+        if ep_id == self._ep_id:
+            self._montage_cta.show_running('montage_status_scriptwriter')
+        t.start()
+
+    def _on_montage_start_fresh(self):
+        """v1.0.87 (этап 7D resume-фичи): клик «🆕 Начать заново» в
+        KIND_RESUMABLE CTA. Удаляет `_agent_log_<ep>.json` чтобы старый
+        pipeline_state не мешал — после этого CTA через
+        `_check_montage_ready` встанет в обычный idle. Потом запускаем
+        стандартный `_on_montage_start()`.
+
+        Используется когда юзер решил что старая монтажка плохая или
+        refs изменились настолько, что resume бесполезен.
+        """
+        ep_id = self._ep_id
+        if not ep_id:
+            return
+        log_path = self._agent_log_path_for_ep(ep_id)
+        if log_path is not None and log_path.exists():
+            try:
+                log_path.unlink(missing_ok=True)
+                import sys as _sys_log
+                _sys_log.stderr.write(
+                    f"[montage] start fresh: removed {log_path}\n")
+                _sys_log.stderr.flush()
+            except Exception:
+                traceback.print_exc()
+        # In-memory failed-state тоже сбрасываем — иначе после удаления
+        # лога CTA через restore покажет failed snapshot.
+        self._montage_states.pop(ep_id, None)
+        self._on_montage_start()
+
     def _montage_ep_for_sender(self) -> Optional[str]:
         """2026-05-07: ищет ep_id в `_montage_threads` по `self.sender()`.
         Используется в слотах прогресса/финиша — чтобы знать какому
@@ -3889,6 +4104,52 @@ class EpisodeChatView(QWidget):
                 traceback.print_exc()
                 return False
         return False
+
+    def _resumable_from_log(self, ep_id: str):
+        """v1.0.87 (этап 7D resume-фичи): True если для эпизода есть
+        упавший pipeline, который можно продолжить.
+
+        Возвращает dict {"log_data", "last_completed_stage", "next_stage"}
+        либо None. На любую ошибку парсинга / неподходящий status / битый
+        log_path — возвращает None (caller рисует обычный idle/hide).
+
+        Условия для resumable:
+          • Файл `_agent_log_<ep>.json` существует и парсится.
+          • `pipeline_state` в JSON присутствует (legacy логи без поля
+            считаются completed → ресюмить нечего).
+          • `pipeline_state.status` ∈ {"failed", "running"} (completed —
+            это уже готовая карта, для неё `_has_saved_montage_card`
+            показывает "Открыть").
+          • `last_completed_stage` не None и не "finalize" (finalize =
+            pipeline дошёл до конца, нечего продолжать).
+        """
+        if not ep_id:
+            return None
+        log_path = self._agent_log_path_for_ep(ep_id)
+        if log_path is None or not log_path.exists():
+            return None
+        try:
+            import json as _json
+            data = _json.loads(log_path.read_text(encoding='utf-8')) or {}
+        except Exception:
+            traceback.print_exc()
+            return None
+        ps = data.get("pipeline_state")
+        if not isinstance(ps, dict):
+            # Legacy лог (до v1.0.87) — считаем completed, не ресюмим.
+            return None
+        status = ps.get("status")
+        last = ps.get("last_completed_stage")
+        nxt = ps.get("next_stage")
+        if status not in ("failed", "running"):
+            return None
+        if not last or last == "finalize":
+            return None
+        return {
+            "log_data": data,
+            "last_completed_stage": last,
+            "next_stage": nxt,
+        }
 
     def _agent_log_path_for_ep(self, ep_id: str):
         """Путь к диагностическому логу агентов конкретного эпизода
