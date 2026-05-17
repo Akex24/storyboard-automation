@@ -7748,13 +7748,22 @@ class MainWindow(QMainWindow):
         # v1.0.88 (Stage 11 diag): один сводный лог на тик. Активный
         # юзер в Console.app увидит изменение state'ов когда зелёная
         # должна была появиться, но не появилась — точная диагностика.
-        try:
-            import sys as _sys_log
-            _sys_log.stderr.write(
-                f"[pill] refresh: {len(pills)} eps → {state_summary}\n")
-            _sys_log.stderr.flush()
-        except Exception:
-            pass
+        # v1.0.88 (noise fix): пишем в лог ТОЛЬКО при реальном изменении
+        # state'ов с прошлого тика. Раньше polling 3с генерил десятки
+        # тысяч одинаковых "8 eps → all none" строк в _studio_diag.log
+        # за рабочий день — юзер не мог найти реальные события.
+        # `_last_pill_states` создаётся лениво как атрибут instance —
+        # None при первом тике, потом dict с prev state_summary.
+        prev_summary = getattr(self, '_last_pill_states', None)
+        if state_summary != prev_summary:
+            self._last_pill_states = dict(state_summary)
+            try:
+                import sys as _sys_log
+                _sys_log.stderr.write(
+                    f"[pill] refresh: {len(pills)} eps → {state_summary}\n")
+                _sys_log.stderr.flush()
+            except Exception:
+                pass
 
     def _select_episode(self, ep: str):
         # 2026-05-07: уход с refs view — очистить unseen для prev ep.
