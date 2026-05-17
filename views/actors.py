@@ -657,6 +657,13 @@ class ActorsView(QWidget):
         self.grid.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.grid_widget)
 
+        # 2026-05-17 (Этап 1): хранилище текстур — доступно ВСЕМ (не
+        # admin-only). Папка actors/_textures/ глобальная, шарится между
+        # сериалами. Этап 1 — только загрузка/хранение. Наложение —
+        # Этап 2 (отдельно). Класс определён в конце файла.
+        self.textures_zone = TexturesDropZone(self.project_root, parent=self)
+        lay.addWidget(self.textures_zone)
+
         lay.addStretch()
         scroll.setWidget(inner)
 
@@ -1854,3 +1861,409 @@ class ActorsView(QWidget):
             display = _sa.actor_display_name(self.project_root, target)
             self.status_bar.showMessage(
                 tr('actors_loaded_status', n=copied, actor=display), 5000)
+
+
+# ─── Этап 1: хранилище текстур (2026-05-17) ──────────────────────────────────
+# Доступно ВСЕМ пользователям (не admin-only). Папка глобальная:
+# `actors/_textures/` — рядом со слагами актёров, шарится между сериалами.
+# Этап 1: только drag-drop загрузка + сетка превью + удаление + fullscreen.
+# Этап 2 (позже): наложение на existing рефы. Этап 3: «Показать в папке».
+
+
+class _TextureFullscreenDialog(QDialog):
+    """Фуллскрин-просмотр текстуры. Клик в любую точку или Esc → закрыть.
+
+    Pattern скопирован из FullscreenImageDialog (storyboard_app.py) — но
+    локальный, чтобы не плодить зависимости. Сама картинка скейлится
+    под доступную область экрана через KeepAspectRatio.
+    """
+
+    def __init__(self, image_path: Path, parent=None):
+        super().__init__(parent)
+        self._image_path = Path(image_path)
+        # Frameless + modal на весь экран
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.FramelessWindowHint)
+        self.setModal(True)
+        self.setStyleSheet(
+            "QDialog { background:#000; }"
+            "QLabel#tex-fs-img { background:#000; }"
+            "QLabel#tex-fs-hint { color:rgba(255,255,255,0.55);"
+            " font-size:12px; background:transparent;"
+            " padding:8px; }")
+        # Размер ~95% screen
+        try:
+            from PyQt6.QtWidgets import QApplication as _QApp
+            geo = _QApp.primaryScreen().availableGeometry()
+            self.resize(int(geo.width() * 0.95),
+                        int(geo.height() * 0.95))
+        except Exception:
+            self.resize(1200, 800)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._img_lbl = QLabel()
+        self._img_lbl.setObjectName("tex-fs-img")
+        self._img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._img_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        outer.addWidget(self._img_lbl, stretch=1)
+        hint = QLabel(tr('actors_textures_fullscreen_hint'))
+        hint.setObjectName("tex-fs-hint")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(hint)
+        self._load_pixmap()
+
+    def _load_pixmap(self):
+        try:
+            pix = QPixmap(str(self._image_path))
+            if pix.isNull():
+                return
+            target_w = max(200, self.width() - 20)
+            target_h = max(200, self.height() - 60)
+            pix = pix.scaled(
+                QSize(target_w, target_h),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self._img_lbl.setPixmap(pix)
+        except Exception:
+            traceback.print_exc()
+
+    def mousePressEvent(self, ev):
+        # Клик в любую точку — закрыть.
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.accept()
+        super().mousePressEvent(ev)
+
+    def keyPressEvent(self, ev):
+        # Esc — закрыть. (QDialog обычно сам обрабатывает Esc через
+        # reject, но при FramelessWindowHint поведение нестабильно —
+        # явный обработчик надёжнее.)
+        if ev.key() == Qt.Key.Key_Escape:
+            self.accept()
+            return
+        super().keyPressEvent(ev)
+
+    def resizeEvent(self, ev):
+        # При изменении размера окна пересчитываем pixmap чтобы
+        # вписаться в новые габариты без обрезки.
+        super().resizeEvent(ev)
+        self._load_pixmap()
+
+
+class _TextureThumb(QFrame):
+    """Превью одной текстуры (90×90) + кнопка «🗑 Удалить» снизу.
+
+    Сигналы:
+      • clicked(Path)          — клик по превью → fullscreen-просмотр
+      • delete_requested(Path) — клик «🗑 Удалить» (после confirm в parent)
+
+    Pattern: вдохновлено `_PhotoThumb` в widgets/actor_dialogs.py, но
+    конструкция отдельная (не наследование, не общий класс — Этап 1
+    держит всё локально в views/actors.py чтобы не задеть actor_dialogs).
+    """
+
+    THUMB_SIZE = 90
+
+    clicked = pyqtSignal(object)           # Path
+    delete_requested = pyqtSignal(object)  # Path
+
+    def __init__(self, file_path: Path, parent=None):
+        super().__init__(parent)
+        self._file_path = Path(file_path)
+        self.setObjectName("texture-thumb")
+        self.setStyleSheet(
+            "QFrame#texture-thumb { background: transparent;"
+            " border: none; }"
+            "QLabel#texture-img { background:#1a1424;"
+            " border:1px solid #2a1f3d; border-radius:6px; }"
+            "QLabel#texture-img:hover { border-color:#6e4cc4; }"
+            "QPushButton#texture-del { background:transparent;"
+            " color:#c47878; border:1px solid #5a2c2c;"
+            " border-radius:4px; padding:2px 6px; font-size:10px;"
+            " font-weight:500; }"
+            "QPushButton#texture-del:hover { color:#fff;"
+            " border-color:#c4304c;"
+            " background:rgba(196,48,76,0.10); }")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        # Превью
+        self._img_lbl = QLabel()
+        self._img_lbl.setObjectName("texture-img")
+        self._img_lbl.setFixedSize(self.THUMB_SIZE, self.THUMB_SIZE)
+        self._img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._img_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        try:
+            pix = QPixmap(str(self._file_path))
+            if not pix.isNull():
+                pix = pix.scaled(
+                    QSize(self.THUMB_SIZE - 2, self.THUMB_SIZE - 2),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                self._img_lbl.setPixmap(pix)
+        except Exception:
+            pass
+        # Клик по картинке → fullscreen
+        self._img_lbl.mousePressEvent = self._on_img_clicked
+        lay.addWidget(self._img_lbl,
+                      alignment=Qt.AlignmentFlag.AlignCenter)
+        # Кнопка удалить
+        del_btn = QPushButton(tr('actors_textures_delete_btn'))
+        del_btn.setObjectName("texture-del")
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.clicked.connect(self._on_delete_clicked)
+        lay.addWidget(del_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def _on_img_clicked(self, ev):
+        try:
+            if ev.button() == Qt.MouseButton.LeftButton:
+                self.clicked.emit(self._file_path)
+        except Exception:
+            traceback.print_exc()
+
+    def _on_delete_clicked(self):
+        try:
+            self.delete_requested.emit(self._file_path)
+        except Exception:
+            traceback.print_exc()
+
+
+class TexturesDropZone(QWidget):
+    """Этап 1 хранилища текстур — drop-зона + сетка превью + удаление.
+
+    Поведение:
+      • drag-drop PNG/JPG/JPEG/WEBP — копируются в `actors/_textures/`
+        (создаётся при первой загрузке через mkdir(parents=True,
+        exist_ok=True)). Папка глобальная, шарится между сериалами.
+      • collision: file already exists → суффикс `_2`, `_3`...
+      • Превью 90×90 в сетке по 6 в ряд.
+      • Клик по превью → fullscreen-просмотр (Esc/клик закрывает).
+      • Кнопка «🗑 Удалить» под каждым превью с confirm.
+      • Доступно ВСЕМ пользователям (не admin-only).
+
+    drop-handlers скопированы pattern из ActorsView (1712-1751), но
+    цель — `actors/_textures/`, а не `_upload_to_actor`. Существующие
+    handlers ActorsView НЕ тронуты — они обрабатывают drop в зону
+    фоток актёра, наша зона работает только когда курсор над её
+    QFrame (отдельный widget = свой event-target).
+    """
+
+    THUMBS_PER_ROW = 6
+
+    def __init__(self, project_root: Path, parent=None):
+        super().__init__(parent)
+        self.project_root = Path(project_root)
+        self.setAcceptDrops(True)
+        self._build()
+        self.refresh()
+
+    def textures_dir(self) -> Path:
+        """Путь к глобальной папке текстур — `actors/_textures/`.
+        Создание делается лениво в _save_textures.
+        """
+        return self.project_root / "actors" / "_textures"
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+
+        # Заголовок секции — стиль "settings-section" как у других
+        # секций ActorsView (sec_admin_lbl / sec_list_lbl).
+        self._section_lbl = QLabel(tr('actors_section_textures'))
+        self._section_lbl.setObjectName("settings-section")
+        outer.addWidget(self._section_lbl)
+
+        # Drop-зона (стиль аналогично actors-drop, но свой objectName)
+        self._drop_frame = QFrame()
+        self._drop_frame.setObjectName("textures-drop")
+        self._drop_frame.setMinimumHeight(90)
+        self._apply_drop_style(False)
+        df_lay = QVBoxLayout(self._drop_frame)
+        df_lay.setContentsMargins(20, 14, 20, 14)
+        df_lay.setSpacing(4)
+        df_lay.addStretch()
+        self._drop_lbl = QLabel(tr('actors_textures_drop_label'))
+        self._drop_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drop_lbl.setStyleSheet(
+            "color:#d8c8ff; font-size:13px; font-weight:600;"
+            " background:transparent;")
+        df_lay.addWidget(self._drop_lbl)
+        self._drop_hint = QLabel(tr('actors_textures_drop_hint'))
+        self._drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drop_hint.setStyleSheet(
+            "color:#aaa; font-size:11px; background:transparent;")
+        df_lay.addWidget(self._drop_hint)
+        df_lay.addStretch()
+        outer.addWidget(self._drop_frame)
+
+        # «Пусто» / сетка превью
+        self._empty_lbl = QLabel(tr('actors_textures_empty'))
+        self._empty_lbl.setStyleSheet(
+            "color:#888; font-size:12px; font-style:italic; padding:8px;")
+        self._empty_lbl.hide()
+        outer.addWidget(self._empty_lbl)
+
+        self._grid_widget = QWidget()
+        self._grid_widget.setStyleSheet("background: transparent;")
+        self._grid = QGridLayout(self._grid_widget)
+        self._grid.setSpacing(10)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._grid_widget)
+
+    def _apply_drop_style(self, hover: bool):
+        if hover:
+            self._drop_frame.setStyleSheet(
+                "QFrame#textures-drop {"
+                " background: rgba(110,76,196,0.25);"
+                " border: 2px dashed rgba(190,150,255,0.85);"
+                " border-radius: 12px; }")
+        else:
+            self._drop_frame.setStyleSheet(
+                "QFrame#textures-drop {"
+                " background: rgba(110,76,196,0.10);"
+                " border: 2px dashed rgba(160,120,240,0.45);"
+                " border-radius: 12px; }")
+
+    def refresh(self):
+        """Сканирует actors/_textures/ и перерисовывает сетку превью."""
+        # Чистим текущую сетку
+        try:
+            while self._grid.count():
+                item = self._grid.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+        except Exception:
+            traceback.print_exc()
+
+        tex_dir = self.textures_dir()
+        files: List[Path] = []
+        try:
+            if tex_dir.is_dir():
+                exts = {".png", ".jpg", ".jpeg", ".webp"}
+                files = sorted([
+                    p for p in tex_dir.iterdir()
+                    if p.is_file() and p.suffix.lower() in exts
+                ], key=lambda p: p.name.lower())
+        except Exception:
+            traceback.print_exc()
+            files = []
+
+        if not files:
+            self._empty_lbl.show()
+            self._grid_widget.hide()
+            return
+        self._empty_lbl.hide()
+        self._grid_widget.show()
+
+        cols = self.THUMBS_PER_ROW
+        for i, fp in enumerate(files):
+            thumb = _TextureThumb(fp, parent=self._grid_widget)
+            thumb.clicked.connect(self._on_thumb_clicked)
+            thumb.delete_requested.connect(self._on_thumb_delete)
+            r, c = divmod(i, cols)
+            self._grid.addWidget(thumb, r, c)
+        # Distribute the unused tail to the right
+        for c in range(cols):
+            self._grid.setColumnStretch(c, 0)
+        self._grid.setColumnStretch(cols, 1)
+
+    # ── drop-handlers (скопирован pattern из ActorsView 1712-1751) ───────
+
+    def dragEnterEvent(self, ev):
+        if ev.mimeData().hasUrls():
+            ev.acceptProposedAction()
+            self._apply_drop_style(True)
+
+    def dragMoveEvent(self, ev):
+        # Без этого dropEvent не сработает на macOS.
+        if ev.mimeData().hasUrls():
+            ev.acceptProposedAction()
+
+    def dragLeaveEvent(self, ev):
+        self._apply_drop_style(False)
+
+    def dropEvent(self, ev):
+        self._apply_drop_style(False)
+        try:
+            urls = ev.mimeData().urls() if ev.mimeData() else []
+            files = [Path(u.toLocalFile()) for u in urls
+                     if u.toLocalFile() and Path(u.toLocalFile()).is_file()]
+            exts = {".png", ".jpg", ".jpeg", ".webp"}
+            files = [f for f in files if f.suffix.lower() in exts]
+            if not files:
+                return
+            self._save_textures(files)
+        except Exception:
+            traceback.print_exc()
+
+    # ── file ops ─────────────────────────────────────────────────────────
+
+    def _save_textures(self, files: List[Path]) -> None:
+        """Копирует файлы в `actors/_textures/`. На collision добавляет
+        суффикс _2, _3... Файл-источник не трогаем. После — refresh."""
+        import shutil
+        tex_dir = self.textures_dir()
+        try:
+            tex_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            traceback.print_exc()
+            return
+        for src in files:
+            try:
+                dst = tex_dir / src.name
+                if dst.exists():
+                    stem, ext = src.stem, src.suffix
+                    i = 2
+                    while (tex_dir / f"{stem}_{i}{ext}").exists():
+                        i += 1
+                    dst = tex_dir / f"{stem}_{i}{ext}"
+                shutil.copy2(str(src), str(dst))
+            except Exception:
+                traceback.print_exc()
+        self.refresh()
+
+    def _on_thumb_clicked(self, file_path):
+        """Клик по превью → fullscreen-просмотр."""
+        try:
+            dlg = _TextureFullscreenDialog(Path(file_path), parent=self)
+            dlg.exec()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_thumb_delete(self, file_path):
+        """Клик «🗑 Удалить» под превью — confirm + unlink + refresh."""
+        try:
+            p = Path(file_path)
+            ans = QMessageBox.question(
+                self,
+                tr('actors_textures_delete_btn'),
+                tr('actors_textures_delete_confirm', name=p.name),
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                traceback.print_exc()
+                return
+            self.refresh()
+        except Exception:
+            traceback.print_exc()
+
+    def apply_lang(self):
+        """Перевод при смене языка (вызывается из ActorsView.apply_lang
+        если потребуется в будущем — сейчас не подключено, текст обновится
+        при следующем refresh)."""
+        try:
+            self._section_lbl.setText(tr('actors_section_textures'))
+            self._drop_lbl.setText(tr('actors_textures_drop_label'))
+            self._drop_hint.setText(tr('actors_textures_drop_hint'))
+            self._empty_lbl.setText(tr('actors_textures_empty'))
+        except Exception:
+            traceback.print_exc()
