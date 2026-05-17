@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
-from threads import GenerateActorRefThread
+from threads import GenerateActorRefThread, EditActorRefThread
 from widgets import (
     AddActorDialog, ChooseActorDialog, ActorPhotosDialog,
     CreateActorRefDialog, RefResultDialog,
@@ -882,9 +882,14 @@ class ActorsView(QWidget):
             dlg = ActorPhotosDialog(display, refs, parent=self,
                                     folder_path=folder_path,
                                     enable_delete=True,
-                                    enable_pick_for_ep=pick_for_ep_active)
+                                    enable_pick_for_ep=pick_for_ep_active,
+                                    enable_edit=True)
             if pick_for_ep_active:
                 dlg.picked_for_ep.connect(self._on_pick_existing_ref_for_ep)
+            # 2026-05-17: edit-режим для рефа актёра (попап «Все референсы»).
+            # Юзер вводит коротко правку → EditActorRefThread → новый
+            # файл в той же папке актёра с инкрементным суффиксом.
+            dlg.edit_ref_requested.connect(self._on_edit_actor_ref)
             dlg.setWindowTitle(tr('actor_refs_dialog_title',
                                   name=display, n=len(refs)))
             dlg.exec()
@@ -893,6 +898,83 @@ class ActorsView(QWidget):
                 self._unseen_refs.pop(slug, None)
             # Юзер мог удалить рефы — обновляем счётчик «(N)» на карточке
             self.refresh()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_edit_actor_ref(self, path, instruction: str):
+        """2026-05-17: edit-режим для рефа актёра из попапа «Все референсы».
+
+        Юзер ввёл коротко правку (например «добавь штукатурку на голову»).
+        Запускаем `EditActorRefThread`:
+          • source = текущий реф `path` (uploaded через _read_image_for_upload —
+            ресайз ≤2000px + MIME по магическим байтам, симметрия с
+            create-flow и shot-edit);
+          • prompt — шаблон с `[@]img1` identity-якорем + инструкцией;
+          • результат — НОВЫЙ файл в той же папке с инкрементным суффиксом
+            (тот же collision-rename что в GenerateActorRefThread).
+
+        Сам thread живёт в ActorsView (не в попапе) — переживает
+        закрытие диалога. Прогресс/finished/error обрабатываются
+        локально (статус-бар + refresh карточки). Auto-link к эпизоду
+        НЕ делается — это просто новый вариант рефа.
+        """
+        try:
+            from pathlib import Path as _Path
+            src = _Path(path)
+            if not src.exists():
+                return
+            # Папка актёра — родитель файла (refs/characters/<character>/).
+            target_dir = src.parent
+            # «slug» для diag-лога — character_slug (имя папки). Reverse
+            # lookup до actor_slug опционален и для лога не критичен.
+            actor_slug = target_dir.name
+            if not hasattr(self, '_ref_threads'):
+                self._ref_threads = []
+            thread = EditActorRefThread(
+                actor_slug=actor_slug,
+                target_dir=target_dir,
+                source_image_path=src,
+                instruction=instruction,
+                parent=None,
+            )
+            self._ref_threads.append(thread)
+
+            def _on_progress(msg: str):
+                self._show_status_persistent(msg)
+
+            def _on_finished(target_path: str):
+                try:
+                    name = _Path(target_path).name
+                    self._show_status_temp(
+                        tr('create_ref_done', filename=name))
+                except Exception:
+                    pass
+                # Перерисуем карточку актёра — счётчик «(N)» вырастет
+                try:
+                    self.refresh()
+                except Exception:
+                    traceback.print_exc()
+                try:
+                    self._notify_tab_blink_if_hidden()
+                except Exception:
+                    pass
+
+            def _on_error(msg: str):
+                try:
+                    self._show_status_temp(f"⚠ {msg}")
+                except Exception:
+                    pass
+
+            thread.progress.connect(_on_progress)
+            thread.finished.connect(_on_finished)
+            thread.error.connect(_on_error)
+            thread.start()
+            # Сразу даём фидбек что генерация пошла
+            try:
+                self._show_status_persistent(
+                    tr('create_ref_uploading', n=1))
+            except Exception:
+                pass
         except Exception:
             traceback.print_exc()
 

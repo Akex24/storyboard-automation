@@ -35,7 +35,7 @@ from PyQt6.QtGui import QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QPlainTextEdit, QComboBox, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
-    QScrollArea, QStackedWidget, QMessageBox,
+    QScrollArea, QStackedWidget, QMessageBox, QDialogButtonBox,
 )
 
 from i18n import tr
@@ -241,11 +241,16 @@ class ActorPhotosDialog(QDialog):
     # Эмитится с полным path сгенерированного рефа. Caller (ActorsView)
     # извлекает character_slug из родительской папки и пишет decision.
     picked_for_ep = pyqtSignal(object)   # Path
+    # 2026-05-17: сигнал «✎ Изменить» — отправляется когда юзер ввёл
+    # текст инструкции в попапе. Caller (ActorsView) сам запускает
+    # EditActorRefThread с этими (path, instruction).
+    edit_ref_requested = pyqtSignal(object, str)   # (Path, instruction)
 
     def __init__(self, display_name: str, photos: List[Path], parent=None,
                  folder_path: Optional[Path] = None,
                  enable_delete: bool = False,
-                 enable_pick_for_ep: bool = False):
+                 enable_pick_for_ep: bool = False,
+                 enable_edit: bool = False):
         super().__init__(parent)
         self.photos = list(photos)
         # Включает кнопку «🗑 Удалить» под каждым thumb в сетке. По умолчанию
@@ -257,6 +262,13 @@ class ActorPhotosDialog(QDialog):
         # pending — юзер пришёл из «+ Добавить персонажа» и хочет взять
         # готовый реф вместо генерации нового.
         self.enable_pick_for_ep = bool(enable_pick_for_ep)
+        # 2026-05-17: включает кнопку «✎ Изменить» под каждым thumb'ом.
+        # Активна в попапе «Все референсы» — юзер может коротко описать
+        # правку (например «добавь штукатурку на голову»), Studio запустит
+        # EditActorRefThread (FastGen с текущим рефом как identity-якорь
+        # + инструкцией). Лицо/идентичность сохранятся, изменится только
+        # запрошенный элемент.
+        self.enable_edit = bool(enable_edit)
         self._display_name = display_name
         self.setWindowTitle(tr('actor_photos_title',
                                name=display_name, n=len(self.photos)))
@@ -280,7 +292,15 @@ class ActorPhotosDialog(QDialog):
             " border:1px solid #4d8a4d; border-radius:6px; padding:6px 10px;"
             " font-size:12px; font-weight:600; }"
             "QPushButton#photos-pick:hover { background:#4d7a4d; color:#fff;"
-            " border-color:#6dba6d; }")
+            " border-color:#6dba6d; }"
+            # 2026-05-17: кнопка «✎ Изменить» — нейтральный outline стиль
+            # (не destructive как Удалить, не accept как Использовать).
+            "QPushButton#photos-edit { background:transparent;"
+            " color:#d8c8ff; border:1px solid #6e4cc4;"
+            " border-radius:6px; padding:6px 10px; font-size:12px;"
+            " font-weight:500; }"
+            "QPushButton#photos-edit:hover { background:#2a1f3d;"
+            " color:#fff; border-color:#8e6cdc; }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
@@ -398,6 +418,13 @@ class ActorPhotosDialog(QDialog):
                 pick_btn.clicked.connect(
                     lambda _checked=False, path=p: self._on_pick_thumb(path))
                 cell_lay.addWidget(pick_btn)
+            if self.enable_edit:
+                edit_btn = QPushButton(tr('actor_ref_edit_btn'))
+                edit_btn.setObjectName("photos-edit")
+                edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                edit_btn.clicked.connect(
+                    lambda _checked=False, path=p: self._on_edit_thumb(path))
+                cell_lay.addWidget(edit_btn)
             if self.enable_delete:
                 del_btn = QPushButton(tr('actor_photos_delete_btn'))
                 del_btn.setObjectName("photos-delete")
@@ -423,6 +450,60 @@ class ActorPhotosDialog(QDialog):
         except Exception:
             traceback.print_exc()
         self.accept()
+
+    def _on_edit_thumb(self, path):
+        """2026-05-17: клик «✎ Изменить» под thumb-ом.
+
+        Открывает попап с QPlainTextEdit инструкцией. На Ok с непустой
+        инструкцией — emit `edit_ref_requested(Path, instruction)`. Сам
+        thread запускает caller (ActorsView._on_edit_actor_ref), здесь
+        только UI. Pattern скопирован с _ask_ref_edit_instruction из
+        storyboard_app.py, но с actor-специфичными i18n ключами.
+        """
+        try:
+            dlg = QDialog(self)
+            dlg.setWindowTitle(tr('actor_ref_edit_dialog_title'))
+            dlg.setFixedSize(460, 260)
+            v = QVBoxLayout(dlg)
+            v.setSpacing(12)
+            v.setContentsMargins(20, 18, 20, 16)
+            title = QLabel(tr('actor_ref_edit_dialog_q'))
+            title.setStyleSheet(
+                "color:#ddd; font-size:14px; font-weight:500;")
+            v.addWidget(title)
+            hint = QLabel(tr('actor_ref_edit_dialog_hint'))
+            hint.setStyleSheet("color:#888; font-size:11px;")
+            hint.setWordWrap(True)
+            v.addWidget(hint)
+            text = QPlainTextEdit()
+            text.setPlaceholderText(
+                tr('actor_ref_edit_dialog_placeholder'))
+            text.setStyleSheet(
+                "QPlainTextEdit { background:#15101e;"
+                " border:1px solid #2c2240; border-radius:6px;"
+                " color:#ddd; padding:8px; font-size:13px; }")
+            v.addWidget(text, stretch=1)
+            btns = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok
+                | QDialogButtonBox.StandardButton.Cancel)
+            btns.button(QDialogButtonBox.StandardButton.Ok).setText(
+                tr('edit_dialog_send'))
+            btns.button(QDialogButtonBox.StandardButton.Cancel).setText(
+                tr('edit_dialog_cancel'))
+            btns.accepted.connect(dlg.accept)
+            btns.rejected.connect(dlg.reject)
+            v.addWidget(btns)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            instr = text.toPlainText().strip()
+            if not instr:
+                return
+            try:
+                self.edit_ref_requested.emit(Path(path), instr)
+            except Exception:
+                traceback.print_exc()
+        except Exception:
+            traceback.print_exc()
 
     def _on_delete_thumb(self, path: Path):
         """Клик «🗑 Удалить» под thumb-ом. Спрашивает подтверждение,

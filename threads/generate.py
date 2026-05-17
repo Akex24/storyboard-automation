@@ -1013,3 +1013,208 @@ class GenerateActorRefThread(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
+
+class EditActorRefThread(QThread):
+    """2026-05-17: edit-режим для УЖЕ СГЕНЕРИРОВАННОГО рефа актёра.
+
+    Симметричный аналог `RefGenerateThread(mode='edit')` (locations/objects)
+    и `GenerateThread(edit_instruction=...)` (shots): берёт существующий
+    реф как identity-anchor `[@]img1`, отправляет в FastGen с короткой
+    инструкцией и шаблоном «keep identity, modify only requested element»,
+    сохраняет результат НОВЫМ файлом в той же папке с инкрементным
+    суффиксом (collision-rename как в GenerateActorRefThread).
+
+    Отличие от GenerateActorRefThread:
+      • 1 ref (текущий) вместо 1-10 (исходные фотки);
+      • prompt построен из шаблона + instruction, не ACTOR_REF_PROMPT_*;
+      • НЕ перезаписывает source-файл (юзер должен видеть оба варианта).
+
+    Этот класс — отдельный, ничего из существующего кода не трогает.
+    """
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(str)        # путь к сохранённому файлу
+    error = pyqtSignal(str)
+
+    # Шаблон промпта — identity-якорь + точечная правка. Зеркалит логику
+    # _build_edit_prompt из GenerateThread и edit-промпт RefGenerateThread,
+    # но с акцентом «лицо/идентичность НЕ перерисовывать».
+    _EDIT_PROMPT_TEMPLATE = (
+        "[@]img1 is the current actor identity reference sheet "
+        "(multi-panel layout).\n\n"
+        "MODIFICATION REQUESTED: {instruction}\n\n"
+        "Apply ONLY the requested modification. Keep ALL identity "
+        "features EXACTLY identical to [@]img1: same face, same person, "
+        "same facial proportions, same eyes, same nose, same mouth, "
+        "same hairstyle, same skin tone, same age, same ethnicity. "
+        "Keep the overall multi-panel sheet layout, lighting, "
+        "background, and art style EXACTLY as in [@]img1. Do NOT "
+        "redraw the face. Apply the modification only to the requested "
+        "element."
+    )
+
+    def __init__(self, actor_slug: str, target_dir: Path,
+                 source_image_path: Path, instruction: str,
+                 parent=None):
+        super().__init__(parent)
+        self.actor_slug = actor_slug
+        self.target_dir = Path(target_dir)
+        self.source_image_path = Path(source_image_path)
+        self.instruction = (instruction or "").strip()
+
+    def _diag_log(self, msg: str) -> None:
+        """Append [actor_edit] line to `shows/<show>/_studio_diag.log`.
+        Симметрия с GenerateActorRefThread._diag_log — show_root через
+        self.target_dir.parents[2]. Failures проглатываются."""
+        try:
+            from datetime import datetime as _dt
+            show_root = self.target_dir.parents[2]
+            log_path = show_root / "_studio_diag.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            ts = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} [actor_edit] {msg}\n")
+        except Exception:
+            try:
+                import sys as _sys
+                _sys.stderr.write(f"[actor_edit] {msg}\n")
+            except Exception:
+                pass
+
+    def run(self):
+        try:
+            if not self.instruction:
+                self.error.emit("Edit без инструкции — нечего применять")
+                return
+            if not self.source_image_path.exists():
+                self.error.emit(
+                    f"Нет исходного рефа: {self.source_image_path.name}")
+                return
+            key = _sa.load_api_key()
+            if not key:
+                self.error.emit(tr('create_ref_no_api_key'))
+                return
+            session = requests.Session()
+            session.headers.update({"X-API-Key": key})
+
+            # 1. Upload текущего рефа как identity-anchor.
+            #    _read_image_for_upload даёт ресайз ≤2000px (LANCZOS,
+            #    JPEG q=92) + MIME по магическим байтам.
+            self.progress.emit(tr('create_ref_uploading', n=1))
+            data_bytes, mime = _read_image_for_upload(
+                self.source_image_path)
+            r = session.post(
+                f"{_sa.STORAGE_BASE}/upload",
+                files={"file": (self.source_image_path.name,
+                                data_bytes, mime)},
+                timeout=60)
+            r.raise_for_status()
+            upload_data = r.json()
+            fh = (upload_data.get("file_hash")
+                  or upload_data.get("file")
+                  or upload_data.get("hash"))
+            if not fh:
+                raise RuntimeError(f"upload missing hash: {upload_data}")
+            ref_hashes = [fh]
+
+            # 2. Целевая папка + collision-free имя на основе source-stem.
+            #    Пример: olya_ref_3.jpg → olya_ref_3_edit.jpg → ... _edit_2.jpg
+            target_dir = self.target_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            base = self.source_image_path.stem + "_edit"
+            ext = ".jpg"
+            target = target_dir / f"{base}{ext}"
+            if target.exists():
+                i = 2
+                while (target_dir / f"{base}_{i}{ext}").exists():
+                    i += 1
+                target = target_dir / f"{base}_{i}{ext}"
+
+            # 3. Промпт + payload + endpoint (та же логика что в
+            #    GenerateActorRefThread, без model field).
+            self.progress.emit(tr('create_ref_generating'))
+            prompt_text = self._EDIT_PROMPT_TEMPLATE.format(
+                instruction=self.instruction)
+            provider = _sa.image_provider()
+            payload = {
+                "prompt": prompt_text,
+                "aspect_ratio": "16:9",
+            }
+            if ref_hashes:
+                if (provider == _sa.IMAGE_PROVIDER_OPENAI
+                        and len(ref_hashes) > 2):
+                    ref_hashes = ref_hashes[:2]
+                payload["reference_images"] = ref_hashes
+            endpoint = ("/api/v4/openai/image/generate"
+                        if provider == _sa.IMAGE_PROVIDER_OPENAI
+                        else "/api/v4/flow/image/generate")
+            r = session.post(f"{_sa.API_BASE}{endpoint}",
+                             json=payload, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            op_id = data.get("operation_id")
+            if not op_id:
+                self.error.emit(f"No operation_id: {data}")
+                return
+
+            # Diag-лог формата, который просил юзер.
+            self._diag_log(
+                f"slug={self.actor_slug} "
+                f"source={self.source_image_path.name} "
+                f"instruction_length={len(self.instruction)} "
+                f"target={target.name} op_id={op_id}")
+
+            # 4. Polling (5 мин timeout, тот же pattern что в
+            #    GenerateActorRefThread).
+            POLL_TIMEOUT_SEC = 300
+            poll_started = time.monotonic()
+            last_status = ""
+            while True:
+                time.sleep(4)
+                elapsed = int(time.monotonic() - poll_started)
+                if elapsed > POLL_TIMEOUT_SEC:
+                    self.error.emit(
+                        f"API timeout: статус «{last_status or 'unknown'}» "
+                        f"оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
+                    return
+                try:
+                    r = session.get(
+                        f"{_sa.API_BASE}/api/v4/operations/{op_id}",
+                        timeout=30)
+                    r.raise_for_status()
+                    d = r.json()
+                except Exception as poll_ex:
+                    self.error.emit(f"Polling network error: {poll_ex}")
+                    return
+                status = (d.get("status") or "").lower()
+                last_status = status
+                if status == "success":
+                    result = d.get("result") or []
+                    uri = result[0] if isinstance(result, list) else result
+                    if isinstance(uri, dict):
+                        uri = (uri.get("url") or uri.get("ref")
+                               or uri.get("file_hash") or "")
+                    uri = str(uri)
+                    if uri.startswith("data:"):
+                        _, b64 = uri.split(",", 1)
+                        image_bytes = base64.b64decode(b64)
+                    else:
+                        fh = uri[5:] if uri.startswith("file:") else uri
+                        r2 = session.get(
+                            f"{_sa.STORAGE_BASE}/file/{fh}/raw",
+                            timeout=120)
+                        r2.raise_for_status()
+                        image_bytes = r2.content
+                    target.write_bytes(image_bytes)
+                    self.finished.emit(str(target))
+                    return
+                if status == "error":
+                    self.error.emit(f"API error: {d.get('error')}")
+                    return
+                self.progress.emit(
+                    tr('create_ref_polling_status',
+                       status=status or 'pending', sec=elapsed))
+
+        except Exception as e:
+            self.error.emit(str(e))
