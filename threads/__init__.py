@@ -23,6 +23,7 @@ from threads.generate import (
     RefGenerateThread,
     GenerateActorRefThread,
     EditActorRefThread,
+    ApplyTextureThread,
     ClaudeGeometryThread,
     RunEpisodeThread,
 )
@@ -45,6 +46,7 @@ __all__ = [
     'RefGenerateThread',
     'GenerateActorRefThread',
     'EditActorRefThread',
+    'ApplyTextureThread',
     'ClaudeGeometryThread',
     'RunEpisodeThread',
     # autonomous_gen (sub-MVP «кнопка автономной генерации в чате»)

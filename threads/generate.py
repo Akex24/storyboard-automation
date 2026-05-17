@@ -1218,3 +1218,89 @@ class EditActorRefThread(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
+
+class ApplyTextureThread(QThread):
+    """2026-05-17 (Этап 2): PIL-композит ref + texture с opacity, zoom, offset.
+
+    Никаких API-запросов — чистая локальная PIL операция (1-3с на
+    16:9 картинке). Запускается в QThread чтобы UI не подвисал.
+
+    Алгоритм:
+      base = Image.open(source).convert("RGB")
+      tex  = Image.open(texture).convert("RGB")
+      # zoom: тек size = base.size * (zoom/100). Если zoom=100, tex
+      # точно ложится на base (так было до zoom-расширения).
+      tex  = tex.resize((base.w * zoom/100, base.h * zoom/100), LANCZOS)
+      # crop центр + offset → возвращает регион base.size:
+      #   left = tex.w/2 - base.w/2 + offset_x
+      #   top  = tex.h/2 - base.h/2 + offset_y
+      # offset clamp: |off| ≤ (tex.size - base.size) / 2 — чтобы crop
+      # не вылез за границы tex.
+      cropped = tex.crop((left, top, left + base.w, top + base.h))
+      result  = Image.blend(base, cropped, opacity / 100.0)
+      result.save(target, "JPEG", quality=92)
+
+    `Image.blend(a, b, α)` = a*(1-α) + b*α. При α=0 чистый base,
+    при α=1 чистая texture. Юзер выбирает opacity 10-100, zoom 100-300.
+    `offset_x`/`offset_y` — в координатах full-size base (px), могут
+    быть отрицательными (двигать влево/вверх).
+
+    Файл-источник (ref) и текстура — НЕ модифицируются. Имя результата
+    не зависит от zoom/offset (только от opacity) — при повторном
+    Apply с тем же opacity файл перезаписывается; договор с юзером.
+    """
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(str)        # путь к сохранённому файлу
+    error = pyqtSignal(str)
+
+    def __init__(self, source_image_path: Path, texture_path: Path,
+                 opacity_percent: int, target_path: Path,
+                 zoom_percent: int = 100,
+                 offset_x: int = 0, offset_y: int = 0,
+                 parent=None):
+        super().__init__(parent)
+        self.source_image_path = Path(source_image_path)
+        self.texture_path = Path(texture_path)
+        self.opacity_percent = int(opacity_percent)
+        self.target_path = Path(target_path)
+        self.zoom_percent = int(zoom_percent)
+        self.offset_x = int(offset_x)
+        self.offset_y = int(offset_y)
+
+    def run(self):
+        try:
+            self.progress.emit(tr('apply_texture_progress'))
+            if not self.source_image_path.exists():
+                self.error.emit(
+                    f"Нет исходного рефа: {self.source_image_path.name}")
+                return
+            if not self.texture_path.exists():
+                self.error.emit(
+                    f"Нет файла текстуры: {self.texture_path.name}")
+                return
+            opacity = max(0, min(100, self.opacity_percent)) / 100.0
+            zoom = max(100, min(300, self.zoom_percent)) / 100.0
+            base = Image.open(self.source_image_path).convert("RGB")
+            tex = Image.open(self.texture_path).convert("RGB")
+            bw, bh = base.size
+            tex_w = max(bw, int(round(bw * zoom)))
+            tex_h = max(bh, int(round(bh * zoom)))
+            if tex.size != (tex_w, tex_h):
+                tex = tex.resize(
+                    (tex_w, tex_h), Image.Resampling.LANCZOS)
+            # Crop центральной области размера base с offset
+            max_off_x = (tex_w - bw) // 2
+            max_off_y = (tex_h - bh) // 2
+            off_x = max(-max_off_x, min(max_off_x, self.offset_x))
+            off_y = max(-max_off_y, min(max_off_y, self.offset_y))
+            left = (tex_w - bw) // 2 + off_x
+            top = (tex_h - bh) // 2 + off_y
+            cropped = tex.crop((left, top, left + bw, top + bh))
+            result = Image.blend(base, cropped, opacity)
+            self.target_path.parent.mkdir(parents=True, exist_ok=True)
+            result.save(str(self.target_path), "JPEG", quality=92)
+            self.finished.emit(str(self.target_path))
+        except Exception as e:
+            self.error.emit(str(e))

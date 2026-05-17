@@ -30,12 +30,13 @@ import traceback
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QSize, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QUrl, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QPlainTextEdit, QComboBox, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
     QScrollArea, QStackedWidget, QMessageBox, QDialogButtonBox,
+    QSlider,
 )
 
 from i18n import tr
@@ -245,12 +246,18 @@ class ActorPhotosDialog(QDialog):
     # текст инструкции в попапе. Caller (ActorsView) сам запускает
     # EditActorRefThread с этими (path, instruction).
     edit_ref_requested = pyqtSignal(object, str)   # (Path, instruction)
+    # 2026-05-17 (Этап 2): сигнал «🎨 Наложить текстуру» — отправляется
+    # при клике под thumb-ом. Caller (ActorsView) сам открывает
+    # ApplyTextureDialog с выбором текстуры + opacity, и запускает
+    # ApplyTextureThread. Здесь только UI-trigger, никаких диалогов.
+    apply_texture_requested = pyqtSignal(object)   # Path
 
     def __init__(self, display_name: str, photos: List[Path], parent=None,
                  folder_path: Optional[Path] = None,
                  enable_delete: bool = False,
                  enable_pick_for_ep: bool = False,
-                 enable_edit: bool = False):
+                 enable_edit: bool = False,
+                 enable_texture: bool = False):
         super().__init__(parent)
         self.photos = list(photos)
         # Включает кнопку «🗑 Удалить» под каждым thumb в сетке. По умолчанию
@@ -269,6 +276,10 @@ class ActorPhotosDialog(QDialog):
         # + инструкцией). Лицо/идентичность сохранятся, изменится только
         # запрошенный элемент.
         self.enable_edit = bool(enable_edit)
+        # 2026-05-17 (Этап 2): включает кнопку «🎨 Текстура» под thumb'ом.
+        # Локальный PIL-композит (без API). Результат — отдельный файл
+        # в shows/<show>/refs/characters_texture/<character>/.
+        self.enable_texture = bool(enable_texture)
         self._display_name = display_name
         self.setWindowTitle(tr('actor_photos_title',
                                name=display_name, n=len(self.photos)))
@@ -300,7 +311,16 @@ class ActorPhotosDialog(QDialog):
             " border-radius:6px; padding:6px 10px; font-size:12px;"
             " font-weight:500; }"
             "QPushButton#photos-edit:hover { background:#2a1f3d;"
-            " color:#fff; border-color:#8e6cdc; }")
+            " color:#fff; border-color:#8e6cdc; }"
+            # 2026-05-17 (Этап 2): кнопка «🎨 Текстура» — промежуточный
+            # вариант между accept и destructive (золотой/янтарный
+            # outline, ассоциация с краской/материалом).
+            "QPushButton#photos-texture { background:transparent;"
+            " color:#d4a256; border:1px solid #b88a3c;"
+            " border-radius:6px; padding:6px 10px; font-size:12px;"
+            " font-weight:500; }"
+            "QPushButton#photos-texture:hover { background:#2a1f12;"
+            " color:#ffd24d; border-color:#d4a256; }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
@@ -425,6 +445,13 @@ class ActorPhotosDialog(QDialog):
                 edit_btn.clicked.connect(
                     lambda _checked=False, path=p: self._on_edit_thumb(path))
                 cell_lay.addWidget(edit_btn)
+            if self.enable_texture:
+                texture_btn = QPushButton(tr('actor_photos_texture_btn'))
+                texture_btn.setObjectName("photos-texture")
+                texture_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                texture_btn.clicked.connect(
+                    lambda _checked=False, path=p: self._on_texture_thumb(path))
+                cell_lay.addWidget(texture_btn)
             if self.enable_delete:
                 del_btn = QPushButton(tr('actor_photos_delete_btn'))
                 del_btn.setObjectName("photos-delete")
@@ -502,6 +529,18 @@ class ActorPhotosDialog(QDialog):
                 self.edit_ref_requested.emit(Path(path), instr)
             except Exception:
                 traceback.print_exc()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_texture_thumb(self, path):
+        """2026-05-17 (Этап 2): клик «🎨 Текстура» под thumb-ом.
+
+        Просто эмит сигнала с Path рефа. Caller (ActorsView) откроет
+        ApplyTextureDialog (picker + слайдер + preview), получит
+        выбор юзера и запустит ApplyTextureThread.
+        """
+        try:
+            self.apply_texture_requested.emit(Path(path))
         except Exception:
             traceback.print_exc()
 
@@ -1552,4 +1591,567 @@ class RefResultDialog(QDialog):
             self.accept()
         except Exception:
             traceback.print_exc()
-            self.accept()
+
+
+# ─── Этап 2 (2026-05-17): диалог наложения текстуры на реф актёра ────────────
+
+
+class _TexturePickerThumb(QFrame):
+    """Превью одной текстуры (90×90) в picker'е ApplyTextureDialog.
+
+    Отличия от `_TextureThumb` (views/actors.py):
+      • НЕТ кнопки «Удалить» (picker — read-only).
+      • НЕТ fullscreen-просмотра по клику.
+      • Клик → emit clicked(Path) для выбора в picker'е.
+      • Selected-state: рамка меняет цвет (золотая когда выбрана).
+
+    Создаём отдельный класс, а не реюзаем `_TextureThumb` из views/actors.py
+    — у того другая семантика (storage management vs picker).
+    """
+
+    THUMB_SIZE = 90
+
+    clicked = pyqtSignal(object)   # Path
+
+    def __init__(self, file_path: Path, parent=None):
+        super().__init__(parent)
+        self._file_path = Path(file_path)
+        self._is_selected = False
+        self.setObjectName("texture-picker-thumb")
+        self._apply_style()
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(0)
+        self._img_lbl = QLabel()
+        self._img_lbl.setFixedSize(self.THUMB_SIZE, self.THUMB_SIZE)
+        self._img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._img_lbl.setStyleSheet(
+            "background:#1a1424; border-radius:4px;")
+        try:
+            pix = QPixmap(str(self._file_path))
+            if not pix.isNull():
+                pix = pix.scaled(
+                    QSize(self.THUMB_SIZE - 4, self.THUMB_SIZE - 4),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                self._img_lbl.setPixmap(pix)
+        except Exception:
+            pass
+        lay.addWidget(self._img_lbl,
+                      alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def _apply_style(self):
+        if self._is_selected:
+            self.setStyleSheet(
+                "QFrame#texture-picker-thumb {"
+                " background:rgba(212,162,86,0.20);"
+                " border:2px solid #d4a256;"
+                " border-radius:6px; }")
+        else:
+            self.setStyleSheet(
+                "QFrame#texture-picker-thumb {"
+                " background:transparent;"
+                " border:2px solid transparent;"
+                " border-radius:6px; }"
+                "QFrame#texture-picker-thumb:hover {"
+                " border-color:#6e4cc4; }")
+
+    def set_selected(self, selected: bool):
+        self._is_selected = bool(selected)
+        self._apply_style()
+
+    def file_path(self) -> Path:
+        return self._file_path
+
+    def mousePressEvent(self, ev):
+        try:
+            if ev.button() == Qt.MouseButton.LeftButton:
+                self.clicked.emit(self._file_path)
+        except Exception:
+            traceback.print_exc()
+        super().mousePressEvent(ev)
+
+
+class _PreviewLabel(QLabel):
+    """2026-05-17 (Этап 2 доп): QLabel с drag-handler'ами для перетаскивания
+    текстуры внутри preview.
+
+    Сигнал drag_moved(dx, dy) эмитится при движении мыши с зажатой ЛКМ,
+    delta в координатах preview-pixels (caller сам конвертирует в
+    full-size через `_preview_ratio`).
+
+    Drag активируется через set_drag_enabled(True) — например когда
+    zoom > 100%. При zoom = 100% перетаскивать нечего, курсор Arrow,
+    события игнорируются.
+    """
+
+    drag_moved = pyqtSignal(int, int)   # dx, dy in preview pixels
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drag_enabled = False
+        self._dragging = False
+        self._last_pos = None
+        self.setMouseTracking(False)
+
+    def set_drag_enabled(self, enabled: bool):
+        self._drag_enabled = bool(enabled)
+        if not self._drag_enabled:
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        else:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def mousePressEvent(self, ev):
+        try:
+            if (self._drag_enabled
+                    and ev.button() == Qt.MouseButton.LeftButton):
+                self._dragging = True
+                # PyQt6: event.position() возвращает QPointF — берём int.
+                try:
+                    p = ev.position()
+                    self._last_pos = (int(p.x()), int(p.y()))
+                except Exception:
+                    p = ev.pos()
+                    self._last_pos = (int(p.x()), int(p.y()))
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        except Exception:
+            traceback.print_exc()
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        try:
+            if self._dragging and self._last_pos is not None:
+                try:
+                    p = ev.position()
+                    x, y = int(p.x()), int(p.y())
+                except Exception:
+                    p = ev.pos()
+                    x, y = int(p.x()), int(p.y())
+                dx = x - self._last_pos[0]
+                dy = y - self._last_pos[1]
+                self._last_pos = (x, y)
+                if dx or dy:
+                    self.drag_moved.emit(dx, dy)
+        except Exception:
+            traceback.print_exc()
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        try:
+            if (self._dragging
+                    and ev.button() == Qt.MouseButton.LeftButton):
+                self._dragging = False
+                if self._drag_enabled:
+                    self.setCursor(Qt.CursorShape.OpenHandCursor)
+        except Exception:
+            traceback.print_exc()
+        super().mouseReleaseEvent(ev)
+
+
+class ApplyTextureDialog(QDialog):
+    """Picker текстуры + слайдер opacity + live preview.
+
+    Возвращает через accept():
+      • selected_texture: Optional[Path]  — выбранная текстура
+      • selected_opacity: int             — 10..100 (slider value)
+
+    Структура:
+      ┌─ заголовок «Наложить текстуру»
+      ├─ horizontal split:
+      │   left (60%):  QScrollArea с сеткой превью текстур (~4 в ряду)
+      │   right (40%): QLabel preview ~300×300 (downscaled ref+texture)
+      ├─ слайдер opacity 10..100 + label
+      └─ Apply (Ok) | Cancel
+
+    Если папка `textures_dir` пуста — вместо сетки empty-сообщение,
+    кнопка Apply скрыта, осталась только Close.
+
+    Live preview: PIL.blend на downscaled версии ref'а + текстуры
+    (preview-size фиксированный, ~300px). Debounce 200ms через QTimer
+    single-shot — иначе на каждое движение слайдера CPU спайк.
+
+    Cross-platform: только PyQt6 + PIL, никакого subprocess.
+    """
+
+    PREVIEW_MAX = 320
+    DEBOUNCE_MS = 200
+
+    def __init__(self, ref_path: Path, textures_dir: Path, parent=None):
+        super().__init__(parent)
+        self.ref_path = Path(ref_path)
+        self.textures_dir = Path(textures_dir)
+        self.selected_texture: Optional[Path] = None
+        self.selected_opacity: int = 30
+        # 2026-05-17 (Этап 2 доп): zoom + drag-offset текстуры.
+        # zoom_percent: 100..300, default 100 (нет zoom).
+        # offset_x/y — смещение центра crop'а в full-size base-px.
+        self.selected_zoom: int = 100
+        self.selected_offset_x: int = 0
+        self.selected_offset_y: int = 0
+        # Кеш для перевода координат preview ↔ full-size base.
+        # Заполняется в _update_preview.
+        self._preview_ratio: float = 1.0
+        self._cached_base_size: Optional[tuple] = None
+        self._thumbs: List[_TexturePickerThumb] = []
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(self.DEBOUNCE_MS)
+        self._preview_timer.timeout.connect(self._update_preview)
+
+        self.setWindowTitle(tr('apply_texture_dialog_title'))
+        self.setModal(True)
+        self.resize(880, 560)
+        self.setStyleSheet(
+            "QDialog { background:#15101e; }"
+            "QLabel#apply-tex-section { color:#d8c8ff;"
+            " font-size:12px; font-weight:600;"
+            " background:transparent; padding:4px 0; }"
+            "QLabel#apply-tex-empty { color:#888; font-size:13px;"
+            " font-style:italic; padding:24px;"
+            " background:transparent; }"
+            "QLabel#apply-tex-preview { background:#0a0612;"
+            " border:1px solid #2c2240; border-radius:6px; }"
+            "QLabel#apply-tex-opacity { color:#ddd;"
+            " font-size:13px; background:transparent; }"
+            "QPushButton#apply-tex-apply { background:#3a2c52;"
+            " color:#fff; border:none; border-radius:6px;"
+            " padding:8px 18px; font-size:13px; font-weight:600; }"
+            "QPushButton#apply-tex-apply:hover { background:#4d3a6b; }"
+            "QPushButton#apply-tex-apply:disabled { color:#666;"
+            " background:#1a1330; }"
+            "QPushButton#apply-tex-cancel { background:transparent;"
+            " color:#cfcfcf; border:1px solid #3a2c52;"
+            " border-radius:6px; padding:8px 16px; font-size:13px; }"
+            "QPushButton#apply-tex-cancel:hover {"
+            " background:#1f1730; color:#fff; }")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(18, 16, 18, 14)
+        outer.setSpacing(10)
+
+        split = QHBoxLayout()
+        split.setSpacing(14)
+
+        # left: picker
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        sec_pick = QLabel(tr('apply_texture_dialog_title'))
+        sec_pick.setObjectName("apply-tex-section")
+        left.addWidget(sec_pick)
+
+        textures = self._scan_textures()
+        if not textures:
+            empty = QLabel(tr('apply_texture_no_textures'))
+            empty.setObjectName("apply-tex-empty")
+            empty.setWordWrap(True)
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            left.addWidget(empty, stretch=1)
+            self._has_textures = False
+        else:
+            self._has_textures = True
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setStyleSheet(
+                "QScrollArea { background:transparent;"
+                " border:1px solid #2c2240; border-radius:6px; }")
+            inner = QWidget()
+            inner.setStyleSheet("background:transparent;")
+            grid = QGridLayout(inner)
+            grid.setSpacing(8)
+            grid.setContentsMargins(8, 8, 8, 8)
+            cols = 4
+            for i, tx in enumerate(textures):
+                thumb = _TexturePickerThumb(tx, parent=inner)
+                thumb.clicked.connect(self._on_texture_clicked)
+                r, c = divmod(i, cols)
+                grid.addWidget(thumb, r, c)
+                self._thumbs.append(thumb)
+            for c in range(cols):
+                grid.setColumnStretch(c, 0)
+            grid.setColumnStretch(cols, 1)
+            scroll.setWidget(inner)
+            left.addWidget(scroll, stretch=1)
+        split.addLayout(left, stretch=6)
+
+        # right: preview
+        right = QVBoxLayout()
+        right.setSpacing(6)
+        sec_prev = QLabel(tr('apply_texture_dialog_title'))
+        sec_prev.setObjectName("apply-tex-section")
+        right.addWidget(sec_prev)
+        self._preview_lbl = _PreviewLabel()
+        self._preview_lbl.setObjectName("apply-tex-preview")
+        self._preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_lbl.setMinimumSize(280, 280)
+        # Drag активируется когда zoom>100 (см. _on_zoom_changed).
+        self._preview_lbl.drag_moved.connect(self._on_drag_moved)
+        right.addWidget(self._preview_lbl, stretch=1)
+        # Подсказка под preview — видна только когда zoom>100.
+        self._drag_hint_lbl = QLabel(tr('apply_texture_drag_hint'))
+        self._drag_hint_lbl.setStyleSheet(
+            "color:#888; font-size:11px; background:transparent;"
+            " padding-top:4px;")
+        self._drag_hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drag_hint_lbl.hide()
+        right.addWidget(self._drag_hint_lbl)
+        split.addLayout(right, stretch=4)
+        outer.addLayout(split)
+
+        # opacity слайдер
+        opacity_row = QHBoxLayout()
+        opacity_row.setSpacing(12)
+        self._opacity_lbl = QLabel(
+            tr('apply_texture_opacity_label', n=self.selected_opacity))
+        self._opacity_lbl.setObjectName("apply-tex-opacity")
+        self._opacity_lbl.setMinimumWidth(180)
+        opacity_row.addWidget(self._opacity_lbl)
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setMinimum(10)
+        self._slider.setMaximum(100)
+        self._slider.setSingleStep(5)
+        self._slider.setPageStep(10)
+        self._slider.setValue(self.selected_opacity)
+        self._slider.valueChanged.connect(self._on_opacity_changed)
+        opacity_row.addWidget(self._slider, stretch=1)
+        outer.addLayout(opacity_row)
+
+        # 2026-05-17 (Этап 2 доп): zoom слайдер 100..300% + reset позиции.
+        zoom_row = QHBoxLayout()
+        zoom_row.setSpacing(12)
+        self._zoom_lbl = QLabel(
+            tr('apply_texture_zoom_label', n=self.selected_zoom))
+        self._zoom_lbl.setObjectName("apply-tex-opacity")
+        self._zoom_lbl.setMinimumWidth(180)
+        zoom_row.addWidget(self._zoom_lbl)
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider.setMinimum(100)
+        self._zoom_slider.setMaximum(300)
+        self._zoom_slider.setSingleStep(10)
+        self._zoom_slider.setPageStep(10)
+        self._zoom_slider.setValue(self.selected_zoom)
+        self._zoom_slider.valueChanged.connect(self._on_zoom_changed)
+        zoom_row.addWidget(self._zoom_slider, stretch=1)
+        self._reset_pos_btn = QPushButton(
+            tr('apply_texture_reset_position_btn'))
+        self._reset_pos_btn.setObjectName("apply-tex-cancel")
+        self._reset_pos_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reset_pos_btn.clicked.connect(self._on_reset_position)
+        zoom_row.addWidget(self._reset_pos_btn)
+        outer.addLayout(zoom_row)
+
+        # кнопки внизу
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._cancel_btn = QPushButton(
+            tr('apply_texture_cancel_btn') if self._has_textures
+            else tr('apply_texture_close_btn'))
+        self._cancel_btn.setObjectName("apply-tex-cancel")
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self._cancel_btn)
+        if self._has_textures:
+            self._apply_btn = QPushButton(tr('apply_texture_apply_btn'))
+            self._apply_btn.setObjectName("apply-tex-apply")
+            self._apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._apply_btn.setEnabled(False)
+            self._apply_btn.clicked.connect(self._on_apply)
+            btn_row.addWidget(self._apply_btn)
+        else:
+            self._apply_btn = None
+        outer.addLayout(btn_row)
+
+        # Стартовый preview — чистый ref без текстуры
+        self._update_preview()
+
+    def _scan_textures(self) -> List[Path]:
+        try:
+            if not self.textures_dir.is_dir():
+                return []
+            exts = {".png", ".jpg", ".jpeg", ".webp"}
+            return sorted([
+                p for p in self.textures_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in exts
+            ], key=lambda p: p.name.lower())
+        except Exception:
+            traceback.print_exc()
+            return []
+
+    def _on_texture_clicked(self, file_path):
+        try:
+            self.selected_texture = Path(file_path)
+            # 2026-05-17 (Этап 2 доп): при смене текстуры сбрасываем
+            # offset (но не zoom — юзер мог настроить нужный масштаб
+            # и пробовать разные текстуры на нём).
+            self.selected_offset_x = 0
+            self.selected_offset_y = 0
+            for t in self._thumbs:
+                t.set_selected(t.file_path() == self.selected_texture)
+            if self._apply_btn is not None:
+                self._apply_btn.setEnabled(True)
+            self._preview_timer.start()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_opacity_changed(self, value: int):
+        try:
+            self.selected_opacity = int(value)
+            self._opacity_lbl.setText(
+                tr('apply_texture_opacity_label', n=self.selected_opacity))
+            self._preview_timer.start()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_zoom_changed(self, value: int):
+        """2026-05-17 (Этап 2 доп): zoom-слайдер 100..300%."""
+        try:
+            self.selected_zoom = int(value)
+            self._zoom_lbl.setText(
+                tr('apply_texture_zoom_label', n=self.selected_zoom))
+            # Включаем/выключаем drag по preview + подсказку
+            drag_on = self.selected_zoom > 100
+            self._preview_lbl.set_drag_enabled(drag_on)
+            if drag_on:
+                self._drag_hint_lbl.show()
+            else:
+                self._drag_hint_lbl.hide()
+                # zoom=100 — offset уже не имеет смысла, обнуляем
+                self.selected_offset_x = 0
+                self.selected_offset_y = 0
+            # Clamp offset под новый zoom (если уменьшили — может вылезти)
+            self._clamp_offset()
+            self._preview_timer.start()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_drag_moved(self, dx_preview: int, dy_preview: int):
+        """2026-05-17 (Этап 2 доп): движение мыши с зажатой ЛКМ по preview.
+        Переводим delta из preview-pixels в full-size base-pixels и
+        копим в selected_offset_x/y с clamp."""
+        try:
+            if self.selected_zoom <= 100:
+                return
+            if self._preview_ratio <= 0:
+                return
+            dx_full = int(round(dx_preview / self._preview_ratio))
+            dy_full = int(round(dy_preview / self._preview_ratio))
+            self.selected_offset_x += dx_full
+            self.selected_offset_y += dy_full
+            self._clamp_offset()
+            self._preview_timer.start()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_reset_position(self):
+        """2026-05-17 (Этап 2 доп): сброс zoom=100 + offset=(0,0)."""
+        try:
+            self.selected_zoom = 100
+            self.selected_offset_x = 0
+            self.selected_offset_y = 0
+            try:
+                self._zoom_slider.setValue(100)
+            except Exception:
+                pass
+            self._zoom_lbl.setText(
+                tr('apply_texture_zoom_label', n=self.selected_zoom))
+            self._preview_lbl.set_drag_enabled(False)
+            self._drag_hint_lbl.hide()
+            self._preview_timer.start()
+        except Exception:
+            traceback.print_exc()
+
+    def _clamp_offset(self):
+        """Ограничивает offset так чтобы crop не вылез за границы
+        zoomed-tex'а. Max |off_x| = (tex_w - base_w) / 2 в координатах
+        full-size base."""
+        try:
+            bs = self._cached_base_size
+            if not bs:
+                return
+            bw, bh = bs
+            zoom = self.selected_zoom / 100.0
+            tex_w = max(bw, int(round(bw * zoom)))
+            tex_h = max(bh, int(round(bh * zoom)))
+            max_off_x = max(0, (tex_w - bw) // 2)
+            max_off_y = max(0, (tex_h - bh) // 2)
+            self.selected_offset_x = max(
+                -max_off_x, min(max_off_x, self.selected_offset_x))
+            self.selected_offset_y = max(
+                -max_off_y, min(max_off_y, self.selected_offset_y))
+        except Exception:
+            traceback.print_exc()
+
+    def _update_preview(self):
+        """PIL.blend на downscaled (≤PREVIEW_MAX) base+texture, потом в
+        QLabel.setPixmap. Без выбранной текстуры — чистый ref."""
+        try:
+            from PIL import Image as _PILImage
+            from PIL.ImageQt import ImageQt
+        except Exception:
+            # Fallback: PIL.ImageQt отсутствует — показываем чистый ref
+            # без блендинга (preview без эффекта).
+            try:
+                pix = QPixmap(str(self.ref_path))
+                if not pix.isNull():
+                    pix = pix.scaled(
+                        QSize(self.PREVIEW_MAX, self.PREVIEW_MAX),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
+                    self._preview_lbl.setPixmap(pix)
+            except Exception:
+                traceback.print_exc()
+            return
+        try:
+            base = _PILImage.open(self.ref_path).convert("RGB")
+            # Кеш для drag-конвертации preview↔full и clamp.
+            self._cached_base_size = base.size
+            ratio = self.PREVIEW_MAX / float(max(base.size))
+            if ratio < 1.0:
+                new_w = max(1, int(base.size[0] * ratio))
+                new_h = max(1, int(base.size[1] * ratio))
+                base_small = base.resize(
+                    (new_w, new_h), _PILImage.Resampling.LANCZOS)
+                self._preview_ratio = ratio
+            else:
+                base_small = base
+                self._preview_ratio = 1.0
+            if self.selected_texture is not None:
+                tex = _PILImage.open(
+                    self.selected_texture).convert("RGB")
+                # 2026-05-17 (Этап 2 доп): zoom + offset на preview.
+                # Применяем тот же алгоритм что в ApplyTextureThread.run,
+                # но на downscaled base_small.
+                zoom = max(100, min(300, self.selected_zoom)) / 100.0
+                bw, bh = base_small.size
+                tex_w = max(bw, int(round(bw * zoom)))
+                tex_h = max(bh, int(round(bh * zoom)))
+                tex = tex.resize(
+                    (tex_w, tex_h), _PILImage.Resampling.LANCZOS)
+                # Переводим full-size offset в preview-space:
+                off_x_prev = int(round(
+                    self.selected_offset_x * self._preview_ratio))
+                off_y_prev = int(round(
+                    self.selected_offset_y * self._preview_ratio))
+                # clamp preview-side
+                max_off_x = max(0, (tex_w - bw) // 2)
+                max_off_y = max(0, (tex_h - bh) // 2)
+                off_x_prev = max(-max_off_x, min(max_off_x, off_x_prev))
+                off_y_prev = max(-max_off_y, min(max_off_y, off_y_prev))
+                left = (tex_w - bw) // 2 + off_x_prev
+                top = (tex_h - bh) // 2 + off_y_prev
+                cropped = tex.crop((left, top, left + bw, top + bh))
+                alpha = self.selected_opacity / 100.0
+                result = _PILImage.blend(base_small, cropped, alpha)
+            else:
+                result = base_small
+            qimg = ImageQt(result)
+            self._preview_lbl.setPixmap(QPixmap.fromImage(qimg))
+        except Exception:
+            traceback.print_exc()
+
+    def _on_apply(self):
+        if self.selected_texture is None:
+            return
+        self.accept()

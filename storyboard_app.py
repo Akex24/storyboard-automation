@@ -234,6 +234,10 @@ SEEDANCE_DIR    = Path()
 LOCATIONS_DIR   = Path()
 CHARACTERS_DIR  = Path()
 OBJECTS_DIR     = Path()
+# 2026-05-17 (Этап 2): результаты «🎨 Наложить текстуру» —
+# PIL-композит ref + texture с opacity. Папка лениво создаётся
+# в ApplyTextureThread.run через mkdir(parents=True, exist_ok=True).
+CHARACTERS_TEXTURE_DIR = Path()
 
 
 def shows_dir(project_root: Path) -> Path:
@@ -1862,7 +1866,7 @@ def setup_paths_for_show(project_root: Path, show_name: Optional[str]) -> None:
     """Устанавливает глобальные пути в папку активного сериала.
     Если show_name=None — пути «зануляются» (в проекте нет сериалов)."""
     global SHOW_ROOT, ENV_FILE, PROMPTS_DIR, STORYBOARDS_DIR, SEEDANCE_DIR
-    global LOCATIONS_DIR, CHARACTERS_DIR, OBJECTS_DIR
+    global LOCATIONS_DIR, CHARACTERS_DIR, OBJECTS_DIR, CHARACTERS_TEXTURE_DIR
     ENV_FILE = project_root / ".env"
     if not show_name:
         SHOW_ROOT       = project_root / "shows" / "_none_"
@@ -1872,6 +1876,7 @@ def setup_paths_for_show(project_root: Path, show_name: Optional[str]) -> None:
         LOCATIONS_DIR   = SHOW_ROOT / "refs" / "locations"
         CHARACTERS_DIR  = SHOW_ROOT / "refs" / "characters"
         OBJECTS_DIR     = SHOW_ROOT / "refs" / "objects"
+        CHARACTERS_TEXTURE_DIR = SHOW_ROOT / "refs" / "characters_texture"
         return
     SHOW_ROOT       = project_root / "shows" / show_name
     PROMPTS_DIR     = SHOW_ROOT / "output" / "prompts"
@@ -1881,6 +1886,7 @@ def setup_paths_for_show(project_root: Path, show_name: Optional[str]) -> None:
     LOCATIONS_DIR   = refs / "locations"
     CHARACTERS_DIR  = refs / "characters"
     OBJECTS_DIR     = refs / "objects"
+    CHARACTERS_TEXTURE_DIR = refs / "characters_texture"
     STORYBOARDS_DIR.mkdir(parents=True, exist_ok=True)
     PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
     SEEDANCE_DIR.mkdir(parents=True, exist_ok=True)

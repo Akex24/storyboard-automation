@@ -37,11 +37,16 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
-from threads import GenerateActorRefThread, EditActorRefThread
+from threads import (
+    GenerateActorRefThread, EditActorRefThread, ApplyTextureThread,
+)
 from widgets import (
     AddActorDialog, ChooseActorDialog, ActorPhotosDialog,
     CreateActorRefDialog, RefResultDialog,
 )
+# 2026-05-17 (Этап 2): ApplyTextureDialog не реэкспортирован через
+# widgets/__init__.py — импортируем напрямую чтобы не задеть лишний файл.
+from widgets.actor_dialogs import ApplyTextureDialog
 
 
 class _AppProxy:
@@ -890,13 +895,17 @@ class ActorsView(QWidget):
                                     folder_path=folder_path,
                                     enable_delete=True,
                                     enable_pick_for_ep=pick_for_ep_active,
-                                    enable_edit=True)
+                                    enable_edit=True,
+                                    enable_texture=True)
             if pick_for_ep_active:
                 dlg.picked_for_ep.connect(self._on_pick_existing_ref_for_ep)
             # 2026-05-17: edit-режим для рефа актёра (попап «Все референсы»).
             # Юзер вводит коротко правку → EditActorRefThread → новый
             # файл в той же папке актёра с инкрементным суффиксом.
             dlg.edit_ref_requested.connect(self._on_edit_actor_ref)
+            # 2026-05-17 (Этап 2): «🎨 Текстура» — открыть ApplyTextureDialog
+            # → ApplyTextureThread → shows/<show>/refs/characters_texture/.
+            dlg.apply_texture_requested.connect(self._on_apply_texture_to_ref)
             dlg.setWindowTitle(tr('actor_refs_dialog_title',
                                   name=display, n=len(refs)))
             dlg.exec()
@@ -1054,6 +1063,142 @@ class ActorsView(QWidget):
             try:
                 self._show_status_persistent(
                     tr('create_ref_uploading', n=1))
+            except Exception:
+                pass
+        except Exception:
+            traceback.print_exc()
+
+    def _on_apply_texture_to_ref(self, ref_path):
+        """2026-05-17 (Этап 2): handler «🎨 Текстура» из попапа всех рефов.
+
+        Открывает ApplyTextureDialog (picker текстур + слайдер opacity +
+        live preview). Если юзер выбрал текстуру и нажал «Применить» —
+        запускает ApplyTextureThread:
+          • source = ref_path
+          • texture = диалог.selected_texture
+          • opacity = диалог.selected_opacity
+          • target = CHARACTERS_TEXTURE_DIR/<character_slug>/
+                     <ref_stem>_<opacity>pct.jpg
+            Если файл уже существует (тот же opacity повторно) —
+            **перезаписывается** (юзер expectation).
+
+        Индикатор прогресса — по тому же pattern что в _on_edit_actor_ref:
+          • reverse-lookup actor_slug по character_slug + current_show
+          • _active_generations[actor_slug] + card.start_progress
+          • _on_progress / _on_finished / _on_error
+        """
+        try:
+            from pathlib import Path as _Path
+            src = _Path(ref_path)
+            if not src.exists():
+                return
+            character_slug = src.parent.name
+            # 1. Открыть picker-диалог
+            textures_dir = self.project_root / "actors" / "_textures"
+            dlg = ApplyTextureDialog(src, textures_dir, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            tex_path = dlg.selected_texture
+            opacity = int(dlg.selected_opacity)
+            if tex_path is None:
+                return
+            # 2. Reverse-lookup actor_slug по character + current_show
+            actor_slug = character_slug
+            try:
+                cur_show = _sa.get_current_show(self.project_root)
+                actors_meta = _sa.read_actors_meta(self.project_root) or {}
+                for a_slug, a_data in actors_meta.items():
+                    roles = (a_data or {}).get('roles') or {}
+                    if roles.get(cur_show) == character_slug:
+                        actor_slug = a_slug
+                        break
+            except Exception:
+                traceback.print_exc()
+            # 3. Target path: CHARACTERS_TEXTURE_DIR/<char>/<stem>_NNpct.jpg
+            try:
+                tex_root = _sa.CHARACTERS_TEXTURE_DIR
+            except Exception:
+                tex_root = None
+            if not tex_root:
+                # Fallback — собираем путь руками если CHARACTERS_TEXTURE_DIR
+                # ещё не инициализирован (теоретически не должно случаться,
+                # init_show_paths вызывается при выборе шоу).
+                cur_show = _sa.get_current_show(self.project_root) or "_none_"
+                tex_root = (self.project_root / "shows" / cur_show
+                            / "refs" / "characters_texture")
+            target_dir = _Path(tex_root) / character_slug
+            target_path = target_dir / f"{src.stem}_{opacity}pct.jpg"
+            # 4. Thread + индикатор (симметрия с _on_edit_actor_ref)
+            if not hasattr(self, '_ref_threads'):
+                self._ref_threads = []
+            if not hasattr(self, '_active_generations'):
+                self._active_generations: Dict[str, Dict] = {}
+            thread = ApplyTextureThread(
+                source_image_path=src,
+                texture_path=tex_path,
+                opacity_percent=opacity,
+                target_path=target_path,
+                zoom_percent=int(getattr(dlg, 'selected_zoom', 100)),
+                offset_x=int(getattr(dlg, 'selected_offset_x', 0)),
+                offset_y=int(getattr(dlg, 'selected_offset_y', 0)),
+                parent=None,
+            )
+            self._ref_threads.append(thread)
+            self._active_generations[actor_slug] = {
+                'started_at': time.time(),
+                'label': tr('apply_texture_progress'),
+            }
+            self._actor_errors.pop(actor_slug, None)
+            card = self._cards_by_slug.get(actor_slug) if hasattr(
+                self, '_cards_by_slug') else None
+            if card is not None:
+                card.clear_error()
+                card.start_progress(tr('apply_texture_progress'))
+
+            def _on_progress(msg: str):
+                if actor_slug in self._active_generations:
+                    self._active_generations[actor_slug]['label'] = msg
+                c = self._cards_by_slug.get(actor_slug)
+                if c is not None:
+                    c.update_progress(msg)
+                self._show_status_persistent(msg)
+
+            def _on_finished(out_path: str):
+                self._active_generations.pop(actor_slug, None)
+                c = self._cards_by_slug.get(actor_slug)
+                if c is not None:
+                    c.stop_progress()
+                try:
+                    name = _Path(out_path).name
+                    self._show_status_temp(
+                        tr('apply_texture_done', filename=name))
+                except Exception:
+                    pass
+                try:
+                    self.refresh()
+                except Exception:
+                    traceback.print_exc()
+                try:
+                    self._notify_tab_blink_if_hidden()
+                except Exception:
+                    pass
+
+            def _on_error(msg: str):
+                self._active_generations.pop(actor_slug, None)
+                c = self._cards_by_slug.get(actor_slug)
+                if c is not None:
+                    c.stop_progress()
+                try:
+                    self._show_status_temp(f"⚠ {msg}")
+                except Exception:
+                    pass
+
+            thread.progress.connect(_on_progress)
+            thread.finished.connect(_on_finished)
+            thread.error.connect(_on_error)
+            thread.start()
+            try:
+                self._show_status_persistent(tr('apply_texture_progress'))
             except Exception:
                 pass
         except Exception:
