@@ -10972,6 +10972,7 @@ class MainWindow(QMainWindow):
             #    Singular keys в refs_decisions: location / object / character.
             #    Plural folders на диске: locations/ objects/ characters/.
             targets: list = []  # list of (category_singular, slug)
+            character_slugs: list = []  # для дополнения текстурированными версиями (Этап 4)
             loc = block.get('location')
             if isinstance(loc, str) and loc:
                 targets.append(('location', loc))
@@ -10981,6 +10982,7 @@ class MainWindow(QMainWindow):
             for char_slug in (block.get('characters') or []):
                 if isinstance(char_slug, str) and char_slug:
                     targets.append(('character', char_slug))
+                    character_slugs.append(char_slug)
 
             # 3. Резолвить slug → путь на диске.
             cat_to_plural = {'location': 'locations',
@@ -11061,9 +11063,60 @@ class MainWindow(QMainWindow):
                         f"copy failed for {src}: "
                         f"{type(e).__name__}: {e}\n")
 
+            # 5b. (Этап 4) Дополнить текстурированными версиями персонажей.
+            #     Для каждого character slug заглядываем в
+            #     shows/<show>/refs/characters_texture/<slug>/, берём самый
+            #     свежий *.jpg/*.jpeg/*.png по mtime и копируем рядом с
+            #     оригиналами под именем texture__<slug>__<src.name>.
+            #     Префикс гарантирует:
+            #       • нет коллизии с оригиналом персонажа
+            #       • нет коллизии с текстурами других персонажей
+            #       • не матчит storyboard_pattern → на следующем клике
+            #         cleanup-цикл его корректно сотрёт.
+            texture_root = show_root / "refs" / "characters_texture"
+            texture_count = 0
+            allowed_ext = {'.jpg', '.jpeg', '.png'}
+            for char_slug in character_slugs:
+                tex_dir = texture_root / char_slug
+                if not tex_dir.exists() or not tex_dir.is_dir():
+                    continue
+                try:
+                    candidates = [p for p in tex_dir.iterdir()
+                                  if p.is_file()
+                                  and p.suffix.lower() in allowed_ext]
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"failed to list textures for {char_slug}: "
+                        f"{type(e).__name__}: {e}\n")
+                    continue
+                if not candidates:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"no textures for {char_slug}\n")
+                    continue
+                try:
+                    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"failed to pick latest texture for {char_slug}: "
+                        f"{type(e).__name__}: {e}\n")
+                    continue
+                dest_name = f"texture__{char_slug}__{latest.name}"
+                try:
+                    shutil.copy2(latest, dest_dir / dest_name)
+                    texture_count += 1
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"texture copy failed for {latest}: "
+                        f"{type(e).__name__}: {e}\n")
+
             _sys_log.stderr.write(
                 f"[block_refs] ep={ep_id} block={block_n} "
                 f"found={copied_count} missing={missing_count} "
+                f"textures={texture_count} "
                 f"dest={dest_dir}\n")
             _sys_log.stderr.flush()
 
