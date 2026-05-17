@@ -11732,6 +11732,14 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def _save_png(self):
+        """v1.0.88 (2026-05-17): прямой save в папку блока без QFileDialog.
+        Раньше открывался системный «Сохранить как» — юзер сам выбирал
+        путь. Теперь файл сразу копируется в .cache/_block_view/<ep>_block<N>/
+        с именем `<ep>_block<N>.jpg`. На повторных кликах добавляется
+        суффикс `_2`, `_3` и т.д. — старые файлы не перезаписываются.
+        Папка та же, что у кнопки «🗂 Рефы блока», но без rmtree —
+        накопление, не очистка.
+        """
         if not self.current_block:
             return
         # Проверяем что хотя бы один шот существует
@@ -11739,16 +11747,36 @@ class MainWindow(QMainWindow):
         if not any_exists:
             self.status_bar.showMessage(tr('status_no_shots'))
             return
-
-        dest, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить стриборд",
-            str(Path.home() / "Desktop" / f"{self.current_block}.png"),
-            "PNG (*.png);;JPEG (*.jpg)")
-        if not dest:
+        # Парсим ep_id + block_n из current_block (формат "epN_block_M")
+        m = re.match(r'(ep\d+)_block_(\d+)', self.current_block)
+        if not m:
             return
+        ep_id = m.group(1)
+        block_n = int(m.group(2))
+        if not self._current_show:
+            return
+        # Папка блока в .cache/_block_view/ (та же, что у «Рефы блока»,
+        # но БЕЗ rmtree — файлы накапливаются между кликами).
+        show_root = self._project_root / "shows" / self._current_show
+        dest_dir = (show_root / ".cache" / "_block_view"
+                    / f"{ep_id}_block{block_n}")
         try:
-            stitch_shots_to_landscape(self.current_block, Path(dest))
-            self.status_bar.showMessage(tr('status_saved', path=dest))
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка экспорта", str(e))
+            return
+        # Collision-free имя: base.jpg → base_2.jpg → base_3.jpg ...
+        base = f"{ep_id}_block{block_n}"
+        ext = ".jpg"
+        candidate = dest_dir / f"{base}{ext}"
+        n = 2
+        while candidate.exists():
+            candidate = dest_dir / f"{base}_{n}{ext}"
+            n += 1
+        try:
+            stitch_shots_to_landscape(self.current_block, candidate)
+            self.status_bar.showMessage(
+                tr('status_saved', path=str(candidate)), 6000)
         except Exception as e:
             QMessageBox.warning(self, "Ошибка экспорта", str(e))
 
