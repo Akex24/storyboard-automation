@@ -10972,7 +10972,6 @@ class MainWindow(QMainWindow):
             #    Singular keys в refs_decisions: location / object / character.
             #    Plural folders на диске: locations/ objects/ characters/.
             targets: list = []  # list of (category_singular, slug)
-            character_slugs: list = []  # для дополнения текстурированными версиями (Этап 4)
             loc = block.get('location')
             if isinstance(loc, str) and loc:
                 targets.append(('location', loc))
@@ -10982,14 +10981,13 @@ class MainWindow(QMainWindow):
             for char_slug in (block.get('characters') or []):
                 if isinstance(char_slug, str) and char_slug:
                     targets.append(('character', char_slug))
-                    character_slugs.append(char_slug)
 
             # 3. Резолвить slug → путь на диске.
             cat_to_plural = {'location': 'locations',
                              'object': 'objects',
                              'character': 'characters'}
             refs_root = show_root / "refs"
-            resolved: list = []  # list of (category, src_path, basename_for_dest)
+            resolved: list = []  # list of (category, slug, src_path, basename_for_dest)
             missing_count = 0
             for cat, slug in targets:
                 bucket = decisions.get(cat) if isinstance(decisions, dict) else None
@@ -11012,7 +11010,7 @@ class MainWindow(QMainWindow):
                 # (например "david/david_belaya_khlopkovaya_rubashka.jpg").
                 # В dest-папке используем только basename — без поддиректории.
                 basename = src.name
-                resolved.append((cat, src, basename))
+                resolved.append((cat, slug, src, basename))
 
             # 4. Создать .cache/_block_view/<ep>_block<N>/ — очистить если был.
             #    2026-05-17: сторибоарды (<ep>_block<N>.jpg, <ep>_block<N>_2.jpg
@@ -11047,9 +11045,14 @@ class MainWindow(QMainWindow):
                 return
 
             # 5. Копировать. На коллизию имён — добавить префикс категории.
+            #    Для category=='character' накапливаем (slug, src.stem)
+            #    в character_originals — Этап 4 использует это чтобы
+            #    подобрать конкретно ту текстуру, которая сделана
+            #    из этого оригинала (а не любую свежую в slug-папке).
             seen_basenames: set = set()
             copied_count = 0
-            for cat, src, basename in resolved:
+            character_originals: list = []  # list[(slug, src_stem)]
+            for cat, slug, src, basename in resolved:
                 final_name = basename
                 if final_name in seen_basenames:
                     final_name = f"{cat}__{basename}"
@@ -11057,6 +11060,8 @@ class MainWindow(QMainWindow):
                 try:
                     shutil.copy2(src, dest_dir / final_name)
                     copied_count += 1
+                    if cat == 'character':
+                        character_originals.append((slug, src.stem))
                 except Exception as e:
                     _sys_log.stderr.write(
                         f"[block_refs] ep={ep_id} block={block_n}: "
@@ -11064,43 +11069,49 @@ class MainWindow(QMainWindow):
                         f"{type(e).__name__}: {e}\n")
 
             # 5b. (Этап 4) Дополнить текстурированными версиями персонажей.
-            #     Для каждого character slug заглядываем в
-            #     shows/<show>/refs/characters_texture/<slug>/, берём самый
-            #     свежий *.jpg/*.jpeg/*.png по mtime и копируем рядом с
-            #     оригиналами под именем texture__<slug>__<src.name>.
-            #     Префикс гарантирует:
-            #       • нет коллизии с оригиналом персонажа
-            #       • нет коллизии с текстурами других персонажей
-            #       • не матчит storyboard_pattern → на следующем клике
-            #         cleanup-цикл его корректно сотрёт.
+            #     Для КАЖДОГО скопированного оригинала персонажа ищем в
+            #     characters_texture/<slug>/ файлы которые начинаются с
+            #     того же stem + "_" (например для оригинала
+            #     "laura_belyy_khalat" подойдут "laura_belyy_khalat_30pct.jpg",
+            #     "laura_belyy_khalat_50pct.jpg"). Берём самый свежий по
+            #     mtime среди этой группы и кладём в dest_dir под именем
+            #     texture__<slug>__<latest.name>.
+            #     Префикс "_" в фильтре критичен — иначе "laura_khalat" мог
+            #     бы поймать "laura_khalat2_30pct".
+            #     Имя dest-файла не матчит storyboard_pattern → cleanup-цикл
+            #     на следующем клике его корректно стирает.
             texture_root = show_root / "refs" / "characters_texture"
             texture_count = 0
             allowed_ext = {'.jpg', '.jpeg', '.png'}
-            for char_slug in character_slugs:
+            for char_slug, orig_stem in character_originals:
                 tex_dir = texture_root / char_slug
                 if not tex_dir.exists() or not tex_dir.is_dir():
                     continue
+                prefix = orig_stem + "_"
                 try:
-                    candidates = [p for p in tex_dir.iterdir()
-                                  if p.is_file()
-                                  and p.suffix.lower() in allowed_ext]
+                    candidates = [
+                        p for p in tex_dir.iterdir()
+                        if p.is_file()
+                        and p.suffix.lower() in allowed_ext
+                        and p.stem.startswith(prefix)
+                    ]
                 except Exception as e:
                     _sys_log.stderr.write(
                         f"[block_refs] ep={ep_id} block={block_n}: "
-                        f"failed to list textures for {char_slug}: "
+                        f"failed to list textures for {char_slug}/{orig_stem}: "
                         f"{type(e).__name__}: {e}\n")
                     continue
                 if not candidates:
                     _sys_log.stderr.write(
                         f"[block_refs] ep={ep_id} block={block_n}: "
-                        f"no textures for {char_slug}\n")
+                        f"no textures for {char_slug}/{orig_stem}\n")
                     continue
                 try:
                     latest = max(candidates, key=lambda p: p.stat().st_mtime)
                 except Exception as e:
                     _sys_log.stderr.write(
                         f"[block_refs] ep={ep_id} block={block_n}: "
-                        f"failed to pick latest texture for {char_slug}: "
+                        f"failed to pick latest texture for {char_slug}/{orig_stem}: "
                         f"{type(e).__name__}: {e}\n")
                     continue
                 dest_name = f"texture__{char_slug}__{latest.name}"
