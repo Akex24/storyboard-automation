@@ -930,6 +930,25 @@ class GenerateActorRefThread(QThread):
                 f"slug={self.actor_slug} provider={provider} "
                 f"refs={len(ref_hashes)}/{len(self.photo_paths)} "
                 f"op_id={op_id}")
+            # 2026-05-17 (расширение): полный payload-дамп для случая когда
+            # upload прошёл (refs=N/M, op_id есть), но лицо на выходе
+            # непохоже. Сравнить ровно то что улетело в Fast Gen с тем
+            # как юзер шлёт ВРУЧНУЮ на сайте Nano Banana. api_key в
+            # payload НЕТ — он в session.headers (X-API-Key), не пишется.
+            try:
+                _prompt_head = (self.prompt_text or "")[:200].replace(
+                    "\n", " ")
+                self._diag_log(
+                    f"slug={self.actor_slug} endpoint={endpoint} "
+                    f"payload_keys={sorted(payload.keys())} "
+                    f"aspect_ratio={payload.get('aspect_ratio')!r} "
+                    f"prompt_length={len(self.prompt_text)}")
+                self._diag_log(
+                    f"slug={self.actor_slug} ref_hashes={ref_hashes}")
+                self._diag_log(
+                    f"slug={self.actor_slug} prompt_head={_prompt_head!r}")
+            except Exception:
+                pass
 
             # Polling
             # 2026-05-10 (БАГ 8 fix): добавлен timeout на весь polling-loop
