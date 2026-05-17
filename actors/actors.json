@@ -23,7 +23,7 @@
       "nazvanie_seriyala_1": "viktor",
       "finalnyy_raschet": "viktor",
       "testovyy_serial": "peter",
-      "finalnyy_raschet_2": "viktor"
+      "finalnyy_raschet_2": "politseyskiy"
     }
   },
   "vova": {
@@ -41,7 +41,7 @@
       "nazvanie_seriyala_1": "mark",
       "nazvanie_seriala_2": "mark",
       "finalnyy_raschet": "mark",
-      "finalnyy_raschet_2": "mark"
+      "finalnyy_raschet_2": "policeman"
     }
   },
   "akter_4": {
@@ -65,7 +65,8 @@
   "akter_5": {
     "display_name": "Тарас",
     "roles": {
-      "testovyy_serial": "alex"
+      "testovyy_serial": "alex",
+      "finalnyy_raschet_2": "worker"
     }
   },
   "akter_6": {
@@ -73,7 +74,7 @@
     "roles": {
       "nazvanie_seriala_2": "policeman",
       "testovyy_serial": "mark",
-      "finalnyy_raschet_2": "policeman"
+      "finalnyy_raschet_2": "police_officer"
     }
   },
   "vremennyi_akter_1": {
