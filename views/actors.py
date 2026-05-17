@@ -917,6 +917,11 @@ class ActorsView(QWidget):
         закрытие диалога. Прогресс/finished/error обрабатываются
         локально (статус-бар + refresh карточки). Auto-link к эпизоду
         НЕ делается — это просто новый вариант рефа.
+
+        Прогресс-индикатор (2026-05-17 fix): reverse-lookup actor_slug
+        по character_slug (имя папки) + current_show через actors.json,
+        затем тот же UI-flow что в create-flow — start_progress на
+        карточке + регистрация в _active_generations.
         """
         try:
             from pathlib import Path as _Path
@@ -925,11 +930,33 @@ class ActorsView(QWidget):
                 return
             # Папка актёра — родитель файла (refs/characters/<character>/).
             target_dir = src.parent
-            # «slug» для diag-лога — character_slug (имя папки). Reverse
-            # lookup до actor_slug опционален и для лога не критичен.
-            actor_slug = target_dir.name
+            # character_slug = имя папки (например 'laura'). Для diag-лога
+            # и thread'а — этого достаточно.
+            character_slug = target_dir.name
+            # Reverse-lookup actor_slug по character_slug + current_show.
+            # actors.json хранит {actor_slug: {roles: {show: character}}}.
+            # Нужно чтобы найти ActorCard в self._cards_by_slug (он
+            # индексирован по actor_slug, например 'akter_4', не по
+            # character_slug 'laura'). Без этого индикатор прогресса
+            # не появится на карточке.
+            actor_slug = character_slug
+            try:
+                cur_show = _sa.get_current_show(self.project_root)
+                actors_meta = _sa.read_actors_meta(self.project_root) or {}
+                for a_slug, a_data in actors_meta.items():
+                    roles = (a_data or {}).get('roles') or {}
+                    if roles.get(cur_show) == character_slug:
+                        actor_slug = a_slug
+                        break
+            except Exception:
+                # Reverse-lookup упал — fallback на character_slug.
+                # Thread всё равно стартует, просто без индикатора на
+                # карточке. Юзер увидит результат после refresh.
+                traceback.print_exc()
             if not hasattr(self, '_ref_threads'):
                 self._ref_threads = []
+            if not hasattr(self, '_active_generations'):
+                self._active_generations: Dict[str, Dict] = {}
             thread = EditActorRefThread(
                 actor_slug=actor_slug,
                 target_dir=target_dir,
@@ -939,10 +966,35 @@ class ActorsView(QWidget):
             )
             self._ref_threads.append(thread)
 
+            # Регистрация в _active_generations + старт индикатора на
+            # карточке — симметрия с create-flow (start_ref_generation).
+            self._active_generations[actor_slug] = {
+                'started_at': time.time(),
+                'label': tr('actor_progress_starting'),
+            }
+            self._actor_errors.pop(actor_slug, None)
+            card = self._cards_by_slug.get(actor_slug) if hasattr(
+                self, '_cards_by_slug') else None
+            if card is not None:
+                card.clear_error()
+                card.start_progress(tr('actor_progress_starting'))
+
             def _on_progress(msg: str):
+                # Обновляем overlay на карточке + статус-бар (симметрия
+                # с create-flow _on_progress).
+                if actor_slug in self._active_generations:
+                    self._active_generations[actor_slug]['label'] = msg
+                c = self._cards_by_slug.get(actor_slug)
+                if c is not None:
+                    c.update_progress(msg)
                 self._show_status_persistent(msg)
 
             def _on_finished(target_path: str):
+                # Снять индикатор + чистка _active_generations.
+                self._active_generations.pop(actor_slug, None)
+                c = self._cards_by_slug.get(actor_slug)
+                if c is not None:
+                    c.stop_progress()
                 try:
                     name = _Path(target_path).name
                     self._show_status_temp(
@@ -960,6 +1012,11 @@ class ActorsView(QWidget):
                     pass
 
             def _on_error(msg: str):
+                # Снять индикатор + чистка _active_generations.
+                self._active_generations.pop(actor_slug, None)
+                c = self._cards_by_slug.get(actor_slug)
+                if c is not None:
+                    c.stop_progress()
                 try:
                     self._show_status_temp(f"⚠ {msg}")
                 except Exception:
