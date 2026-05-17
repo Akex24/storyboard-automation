@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QSize, QUrl, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDesktopServices
@@ -1775,13 +1775,23 @@ class ApplyTextureDialog(QDialog):
     Cross-platform: только PyQt6 + PIL, никакого subprocess.
     """
 
-    PREVIEW_MAX = 320
+    PREVIEW_MAX = 460
     DEBOUNCE_MS = 200
 
-    def __init__(self, ref_path: Path, textures_dir: Path, parent=None):
+    def __init__(self, ref_path: Path, textures_dir: Path,
+                 parent=None, result_dir: Optional[Path] = None):
         super().__init__(parent)
         self.ref_path = Path(ref_path)
         self.textures_dir = Path(textures_dir)
+        # 2026-05-17 (Этап 2 патч): путь к папке результатов
+        # (shows/<show>/refs/characters_texture/<character>/). Используется
+        # для load_meta_for_source — восстановление настроек последней
+        # применённой текстуры для этого ref'а.
+        self.result_dir: Optional[Path] = (
+            Path(result_dir) if result_dir else None)
+        # texture_name → dict с {opacity, zoom, offset_x, offset_y, ...}
+        # Заполняется в _load_meta_for_source() после _scan_textures.
+        self._meta_by_texture: Dict[str, Dict] = {}
         self.selected_texture: Optional[Path] = None
         self.selected_opacity: int = 30
         # 2026-05-17 (Этап 2 доп): zoom + drag-offset текстуры.
@@ -1802,7 +1812,7 @@ class ApplyTextureDialog(QDialog):
 
         self.setWindowTitle(tr('apply_texture_dialog_title'))
         self.setModal(True)
-        self.resize(880, 560)
+        self.resize(740, 520)
         self.setStyleSheet(
             "QDialog { background:#15101e; }"
             "QLabel#apply-tex-section { color:#d8c8ff;"
@@ -1837,7 +1847,7 @@ class ApplyTextureDialog(QDialog):
         # left: picker
         left = QVBoxLayout()
         left.setSpacing(6)
-        sec_pick = QLabel(tr('apply_texture_dialog_title'))
+        sec_pick = QLabel(tr('apply_texture_section_picker'))
         sec_pick.setObjectName("apply-tex-section")
         left.addWidget(sec_pick)
 
@@ -1862,7 +1872,7 @@ class ApplyTextureDialog(QDialog):
             grid = QGridLayout(inner)
             grid.setSpacing(8)
             grid.setContentsMargins(8, 8, 8, 8)
-            cols = 4
+            cols = 3
             for i, tx in enumerate(textures):
                 thumb = _TexturePickerThumb(tx, parent=inner)
                 thumb.clicked.connect(self._on_texture_clicked)
@@ -1874,18 +1884,18 @@ class ApplyTextureDialog(QDialog):
             grid.setColumnStretch(cols, 1)
             scroll.setWidget(inner)
             left.addWidget(scroll, stretch=1)
-        split.addLayout(left, stretch=6)
+        split.addLayout(left, stretch=4)
 
         # right: preview
         right = QVBoxLayout()
         right.setSpacing(6)
-        sec_prev = QLabel(tr('apply_texture_dialog_title'))
+        sec_prev = QLabel(tr('apply_texture_section_preview'))
         sec_prev.setObjectName("apply-tex-section")
         right.addWidget(sec_prev)
         self._preview_lbl = _PreviewLabel()
         self._preview_lbl.setObjectName("apply-tex-preview")
         self._preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._preview_lbl.setMinimumSize(280, 280)
+        self._preview_lbl.setMinimumSize(420, 420)
         # Drag активируется когда zoom>100 (см. _on_zoom_changed).
         self._preview_lbl.drag_moved.connect(self._on_drag_moved)
         right.addWidget(self._preview_lbl, stretch=1)
@@ -1897,7 +1907,7 @@ class ApplyTextureDialog(QDialog):
         self._drag_hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drag_hint_lbl.hide()
         right.addWidget(self._drag_hint_lbl)
-        split.addLayout(right, stretch=4)
+        split.addLayout(right, stretch=6)
         outer.addLayout(split)
 
         # opacity слайдер
@@ -1963,8 +1973,128 @@ class ApplyTextureDialog(QDialog):
             self._apply_btn = None
         outer.addLayout(btn_row)
 
-        # Стартовый preview — чистый ref без текстуры
+        # 2026-05-17 (Этап 2 патч): подгружаем .meta.json для текущего
+        # ref'а — собираем словарь {texture_name → meta} и автовыбираем
+        # последнюю применённую текстуру + её настройки.
+        try:
+            self._meta_by_texture = self._load_meta_for_source()
+            self._apply_last_meta_on_open()
+        except Exception:
+            traceback.print_exc()
+
+        # Стартовый preview — чистый ref без текстуры (или с последней
+        # текстурой если apply_last_meta_on_open её выбрал).
         self._update_preview()
+
+    def _load_meta_for_source(self) -> Dict[str, Dict]:
+        """2026-05-17 (Этап 2 патч): сканирует result_dir на .meta.json
+        файлы с совпадающим `source_stem`. Возвращает
+        {texture_name → meta_dict}, упорядоченный по mtime убыванию
+        (последнее применение первым). Failures проглатываем — meta
+        опциональна, при отсутствии диалог открывается с дефолтами.
+        """
+        try:
+            if self.result_dir is None or not self.result_dir.is_dir():
+                return {}
+            import json as _json
+            source_stem = self.ref_path.stem
+            entries = []  # (mtime, texture_name, meta_dict)
+            for p in self.result_dir.iterdir():
+                if not p.is_file():
+                    continue
+                if not p.name.endswith('.meta.json'):
+                    continue
+                try:
+                    data = _json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if data.get('source_stem') != source_stem:
+                    continue
+                tex_name = data.get('texture_name')
+                if not isinstance(tex_name, str):
+                    continue
+                try:
+                    mtime = p.stat().st_mtime
+                except Exception:
+                    mtime = 0.0
+                entries.append((mtime, tex_name, data))
+            entries.sort(key=lambda e: e[0], reverse=True)
+            # Если для одной texture_name есть несколько записей —
+            # оставляем САМУЮ свежую (первую после сортировки).
+            result: Dict[str, Dict] = {}
+            for _mtime, tex_name, data in entries:
+                if tex_name not in result:
+                    result[tex_name] = data
+            return result
+        except Exception:
+            traceback.print_exc()
+            return {}
+
+    def _apply_last_meta_on_open(self):
+        """2026-05-17 (Этап 2 патч): при открытии диалога автовыбираем
+        текстуру + настройки из самой свежей .meta.json (если есть).
+        Иначе оставляем дефолты (нет выбранной текстуры, opacity=30,
+        zoom=100, offset=0)."""
+        if not self._meta_by_texture:
+            return
+        # entries в _meta_by_texture упорядочены по убыванию mtime —
+        # первый ключ это самая свежая запись.
+        try:
+            tex_name = next(iter(self._meta_by_texture.keys()))
+            meta = self._meta_by_texture[tex_name]
+        except StopIteration:
+            return
+        # Найти соответствующий thumb по basename
+        target_thumb = None
+        for t in self._thumbs:
+            if t.file_path().name == tex_name:
+                target_thumb = t
+                break
+        if target_thumb is None:
+            return
+        self.selected_texture = target_thumb.file_path()
+        for t in self._thumbs:
+            t.set_selected(t.file_path() == self.selected_texture)
+        # Восстанавливаем настройки из meta (с защитой от пропущенных полей)
+        self._apply_meta_settings(meta)
+        if self._apply_btn is not None:
+            self._apply_btn.setEnabled(True)
+
+    def _apply_meta_settings(self, meta: Dict):
+        """Применяет dict с настройками к слайдерам/state.
+        Не зовёт _update_preview — caller сделает это сам."""
+        try:
+            op = int(meta.get('opacity', 30))
+            op = max(10, min(100, op))
+            self.selected_opacity = op
+            try:
+                self._slider.setValue(op)
+            except Exception:
+                pass
+            self._opacity_lbl.setText(
+                tr('apply_texture_opacity_label', n=op))
+            zm = int(meta.get('zoom', 100))
+            zm = max(100, min(300, zm))
+            self.selected_zoom = zm
+            try:
+                self._zoom_slider.setValue(zm)
+            except Exception:
+                pass
+            self._zoom_lbl.setText(
+                tr('apply_texture_zoom_label', n=zm))
+            self.selected_offset_x = int(meta.get('offset_x', 0))
+            self.selected_offset_y = int(meta.get('offset_y', 0))
+            # Включаем drag если zoom>100
+            drag_on = self.selected_zoom > 100
+            self._preview_lbl.set_drag_enabled(drag_on)
+            if drag_on:
+                self._drag_hint_lbl.show()
+            else:
+                self._drag_hint_lbl.hide()
+        except Exception:
+            traceback.print_exc()
 
     def _scan_textures(self) -> List[Path]:
         try:
@@ -1982,11 +2112,17 @@ class ApplyTextureDialog(QDialog):
     def _on_texture_clicked(self, file_path):
         try:
             self.selected_texture = Path(file_path)
-            # 2026-05-17 (Этап 2 доп): при смене текстуры сбрасываем
-            # offset (но не zoom — юзер мог настроить нужный масштаб
-            # и пробовать разные текстуры на нём).
-            self.selected_offset_x = 0
-            self.selected_offset_y = 0
+            # 2026-05-17 (Этап 2 патч): если для этой текстуры есть
+            # сохранённая meta (юзер раньше применял эту же текстуру к
+            # этому же ref'у) — подставляем прежние opacity/zoom/offset.
+            # Иначе сбрасываем offset на дефолт (zoom оставляем — юзер
+            # мог настроить нужный масштаб и пробовать разные текстуры).
+            meta = self._meta_by_texture.get(self.selected_texture.name)
+            if isinstance(meta, dict):
+                self._apply_meta_settings(meta)
+            else:
+                self.selected_offset_x = 0
+                self.selected_offset_y = 0
             for t in self._thumbs:
                 t.set_selected(t.file_path() == self.selected_texture)
             if self._apply_btn is not None:
@@ -2029,7 +2165,13 @@ class ApplyTextureDialog(QDialog):
     def _on_drag_moved(self, dx_preview: int, dy_preview: int):
         """2026-05-17 (Этап 2 доп): движение мыши с зажатой ЛКМ по preview.
         Переводим delta из preview-pixels в full-size base-pixels и
-        копим в selected_offset_x/y с clamp."""
+        копим в selected_offset_x/y с clamp.
+
+        2026-05-17 (Этап 2 патч): инверсия знака — Photoshop hand-tool
+        семантика. Тянешь мышь вправо → картинка едет вправо (на самом
+        деле двигаем crop-окно ВЛЕВО внутри текстуры → видна более
+        левая часть → визуально текстура съезжает вправо).
+        """
         try:
             if self.selected_zoom <= 100:
                 return
@@ -2037,8 +2179,8 @@ class ApplyTextureDialog(QDialog):
                 return
             dx_full = int(round(dx_preview / self._preview_ratio))
             dy_full = int(round(dy_preview / self._preview_ratio))
-            self.selected_offset_x += dx_full
-            self.selected_offset_y += dy_full
+            self.selected_offset_x -= dx_full
+            self.selected_offset_y -= dy_full
             self._clamp_offset()
             self._preview_timer.start()
         except Exception:

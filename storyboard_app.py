@@ -281,12 +281,19 @@ def write_actors_meta(project_root: Path, meta: Dict) -> None:
 
 
 def list_actors(project_root: Path) -> List[str]:
-    """Список slug'ов актёров (имена папок в actors/, исключая системные)."""
+    """Список slug'ов актёров (имена папок в actors/, исключая системные).
+
+    Системные = начинаются с `.` (скрытые .DS_Store и т.п.) ИЛИ с `_`
+    (служебные store-папки: `_textures/` для Этапа 1 хранилища текстур
+    и любые будущие). Не отображаются на вкладке Актёры как карточки.
+    """
     ad = actors_dir(project_root)
     if not ad.exists():
         return []
     return sorted(p.name for p in ad.iterdir()
-                  if p.is_dir() and not p.name.startswith("."))
+                  if p.is_dir()
+                  and not p.name.startswith(".")
+                  and not p.name.startswith("_"))
 
 
 def actor_display_name(project_root: Path, slug: str) -> str:

@@ -423,6 +423,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'apply_texture_zoom_label': 'Размер текстуры: {n}%',
         'apply_texture_reset_position_btn': 'Сбросить позицию',
         'apply_texture_drag_hint': 'Перетащите текстуру внутри preview мышью',
+        # 2026-05-17 (Этап 2 патч): заголовки секций picker / preview.
+        'apply_texture_section_picker': 'Текстура',
+        'apply_texture_section_preview': 'Предпросмотр',
         'ref_status_regen': 'Перегенерирую {name}…',
         'ref_status_edit':  'Применяю изменения к {name}…',
         'ref_done_title':              'Изображение обновлено',
@@ -1008,6 +1011,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'apply_texture_zoom_label': 'Розмір текстури: {n}%',
         'apply_texture_reset_position_btn': 'Скинути позицію',
         'apply_texture_drag_hint': 'Перетягніть текстуру всередині preview мишкою',
+        # 2026-05-17 (Етап 2 патч): заголовки секцій picker / preview.
+        'apply_texture_section_picker': 'Текстура',
+        'apply_texture_section_preview': 'Передперегляд',
         'ref_status_regen': 'Перегенерую {name}…',
         'ref_status_edit':  'Застосовую зміни до {name}…',
         'ref_done_title':              'Зображення оновлено',
@@ -1576,6 +1582,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'apply_texture_zoom_label': 'Texture size: {n}%',
         'apply_texture_reset_position_btn': 'Reset position',
         'apply_texture_drag_hint': 'Drag the texture inside the preview with the mouse',
+        # 2026-05-17 (Stage 2 patch): picker / preview section headers.
+        'apply_texture_section_picker': 'Texture',
+        'apply_texture_section_preview': 'Preview',
         'ref_status_regen': 'Regenerating {name}…',
         'ref_status_edit':  'Applying changes to {name}…',
         'ref_done_title':              'Image updated',

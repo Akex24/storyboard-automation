@@ -1093,9 +1093,25 @@ class ActorsView(QWidget):
             if not src.exists():
                 return
             character_slug = src.parent.name
-            # 1. Открыть picker-диалог
+            # 1. Открыть picker-диалог. result_dir рассчитываем заранее
+            #    (CHARACTERS_TEXTURE_DIR/<character>/) — диалог
+            #    использует его для load_meta_for_source (восстановление
+            #    прошлых настроек).
             textures_dir = self.project_root / "actors" / "_textures"
-            dlg = ApplyTextureDialog(src, textures_dir, parent=self)
+            try:
+                tex_root_for_meta = _sa.CHARACTERS_TEXTURE_DIR
+            except Exception:
+                tex_root_for_meta = None
+            if not tex_root_for_meta:
+                cur_show = _sa.get_current_show(self.project_root) or "_none_"
+                tex_root_for_meta = (
+                    self.project_root / "shows" / cur_show
+                    / "refs" / "characters_texture")
+            result_dir_for_meta = (
+                _Path(tex_root_for_meta) / character_slug)
+            dlg = ApplyTextureDialog(
+                src, textures_dir, parent=self,
+                result_dir=result_dir_for_meta)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             tex_path = dlg.selected_texture

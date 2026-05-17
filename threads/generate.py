@@ -1301,6 +1301,30 @@ class ApplyTextureThread(QThread):
             result = Image.blend(base, cropped, opacity)
             self.target_path.parent.mkdir(parents=True, exist_ok=True)
             result.save(str(self.target_path), "JPEG", quality=92)
+            # 2026-05-17 (Этап 2 патч): сохраняем .meta.json рядом с jpg.
+            # При следующем открытии ApplyTextureDialog для того же ref'а —
+            # восстанавливаем последние настройки (текстура + opacity +
+            # zoom + offset). Failures проглатываем — основное действие
+            # (jpg) уже выполнено, finished нужно эмитить.
+            try:
+                import json as _json
+                from datetime import datetime as _dt
+                meta_path = self.target_path.with_suffix('.meta.json')
+                meta = {
+                    "source_stem": self.source_image_path.stem,
+                    "texture_name": self.texture_path.name,
+                    "opacity": self.opacity_percent,
+                    "zoom": self.zoom_percent,
+                    "offset_x": self.offset_x,
+                    "offset_y": self.offset_y,
+                    "saved_at": _dt.now().isoformat(),
+                }
+                meta_path.write_text(
+                    _json.dumps(meta, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+            except Exception:
+                import traceback as _tb
+                _tb.print_exc()
             self.finished.emit(str(self.target_path))
         except Exception as e:
             self.error.emit(str(e))
