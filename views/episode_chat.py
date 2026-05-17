@@ -1543,15 +1543,29 @@ class EpisodeChatView(QWidget):
         # Следующая idle из очереди — появляется сразу.
         self._advance_gen_queue()
 
-    def _is_likely_animal(self, name: str, description: str) -> bool:
-        """Эвристика для БАГ 2 fix: character-маркер — на самом деле
-        животное? Проверяем slug + описание против `_ANIMAL_KEYWORDS`.
-        Если хотя бы одно ключевое слово найдено (substring match,
-        case-insensitive) — True. Это safety net на случай если агент
-        не послушал PRODUCER_INSTRUCTIONS правило «животные → ОБЪЕКТЫ».
+    def _is_likely_animal(self, name: str, description: str = '') -> bool:
+        """2026-05-17: проверка только в начале описания.
+        Раньше substring match по всему тексту — слова типа 'собак'
+        в контексте сюжета ('после нападения собаки') ложно срабатывали
+        на людей. Теперь смотрим:
+        1) сам slug (Rex/dog_1/cat — явные имена-животные)
+        2) первый сегмент описания до знака препинания —
+           там стоит роль/тип персонажа, а не сюжетный контекст.
         """
-        blob = f"{name} {description or ''}".lower()
-        return any(kw in blob for kw in _ANIMAL_KEYWORDS)
+        name_lower = (name or '').lower()
+        # 1. Проверка slug
+        if any(kw in name_lower for kw in _ANIMAL_KEYWORDS):
+            return True
+        # 2. Проверка первого сегмента описания
+        desc = (description or '').strip()
+        if not desc:
+            return False
+        # Режем по знакам препинания: тире, запятая, точка, точка с
+        # запятой, скобка. Берём первый сегмент — там роль персонажа.
+        import re
+        first_segment = re.split(r'[—\-,.;(]', desc, maxsplit=1)[0]
+        first_segment_lower = first_segment.lower()
+        return any(kw in first_segment_lower for kw in _ANIMAL_KEYWORDS)
 
     def _append_animal_redirect_message(self, name: str) -> None:
         """System-сообщение в чат когда character-маркер
