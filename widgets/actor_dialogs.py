@@ -2288,8 +2288,19 @@ class ApplyTextureDialog(QDialog):
                 result = _PILImage.blend(base_small, cropped, alpha)
             else:
                 result = base_small
-            qimg = ImageQt(result)
-            self._preview_lbl.setPixmap(QPixmap.fromImage(qimg))
+            # 2026-05-17 (Этап 2 патч): PIL → QPixmap через PNG-буфер.
+            # Раньше: ImageQt(result) + QPixmap.fromImage. На PyQt6
+            # это давало артефакты (первые N строк норм, остальное
+            # растягивается / серая текстура). Стабильный путь —
+            # сохранить PIL.Image в PNG через BytesIO и загрузить
+            # QPixmap из этих байтов.
+            from io import BytesIO as _BytesIO
+            buf = _BytesIO()
+            result.save(buf, format="PNG")
+            buf.seek(0)
+            pix = QPixmap()
+            pix.loadFromData(buf.getvalue(), "PNG")
+            self._preview_lbl.setPixmap(pix)
         except Exception:
             traceback.print_exc()
 
