@@ -816,6 +816,30 @@ class GenerateActorRefThread(QThread):
         self.prompt_text = prompt_text
         self.output_filename = output_filename  # без .jpg
 
+    def _diag_log(self, msg: str) -> None:
+        """2026-05-17: append [actor_gen] line to
+        `shows/<show>/_studio_diag.log`. Active show определяется из
+        `self.target_dir` (формат `shows/<show>/refs/characters/<char>/`).
+        Failures проглатываются — actor-flow не должен валиться из-за
+        проблем с логированием. Зеркалит паттерн `_diag_log_append` из
+        views/episode_chat.py, но без зависимости от MainWindow."""
+        try:
+            from datetime import datetime as _dt
+            # target_dir = .../shows/<show>/refs/characters/<character>/
+            # parents[0]=characters, [1]=refs, [2]=<show>  ← show_root
+            show_root = self.target_dir.parents[2]
+            log_path = show_root / "_studio_diag.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            ts = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} [actor_gen] {msg}\n")
+        except Exception:
+            try:
+                import sys as _sys
+                _sys.stderr.write(f"[actor_gen] {msg}\n")
+            except Exception:
+                pass
+
     def run(self):
         try:
             key = _sa.load_api_key()
@@ -826,18 +850,22 @@ class GenerateActorRefThread(QThread):
             session.headers.update({"X-API-Key": key})
 
             # Загружаем все фотки актёра как референсы (до 10 — ограничение API)
+            # 2026-05-17: переезд на общую _read_image_for_upload — даёт
+            # ресайз до MAX_REF_SIDE=2000px (LANCZOS, JPEG q=92, в памяти)
+            # и MIME по магическим байтам. Раньше inline-цикл слал
+            # iPhone-фотки 2316×3088 как есть → Fast Gen «many-image
+            # requests» жаловался на лимит 2000px и identity-bind ломался
+            # (юзеру казалось что «фотки не доходят» — лицо непохоже).
+            # Симметрия с GenerateThread._upload_file (шоты) и
+            # RefGenerateThread._upload (location/object).
             self.progress.emit(tr('create_ref_uploading',
                                   n=min(len(self.photo_paths), 10)))
             ref_hashes = []
             for p in self.photo_paths[:10]:
-                ext = p.suffix.lower().lstrip(".")
-                mime = {"jpg":"image/jpeg","jpeg":"image/jpeg",
-                        "png":"image/png","webp":"image/webp"}.get(
-                            ext, "image/jpeg")
-                with open(p, "rb") as f:
-                    r = session.post(f"{_sa.STORAGE_BASE}/upload",
-                                     files={"file": (p.name, f, mime)},
-                                     timeout=60)
+                data_bytes, mime = _read_image_for_upload(p)
+                r = session.post(f"{_sa.STORAGE_BASE}/upload",
+                                 files={"file": (p.name, data_bytes, mime)},
+                                 timeout=60)
                 r.raise_for_status()
                 data = r.json()
                 fh = (data.get("file_hash") or data.get("file")
@@ -895,6 +923,13 @@ class GenerateActorRefThread(QThread):
             if not op_id:
                 self.error.emit(f"No operation_id: {data}")
                 return
+            # 2026-05-17: diag-лог в `shows/<show>/_studio_diag.log` —
+            # видимость в чате при отладке (раньше actor-flow не писал
+            # вообще ничего, симптомы «лицо непохоже» были без следов).
+            self._diag_log(
+                f"slug={self.actor_slug} provider={provider} "
+                f"refs={len(ref_hashes)}/{len(self.photo_paths)} "
+                f"op_id={op_id}")
 
             # Polling
             # 2026-05-10 (БАГ 8 fix): добавлен timeout на весь polling-loop
