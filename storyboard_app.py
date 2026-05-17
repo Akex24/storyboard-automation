@@ -10983,11 +10983,25 @@ class MainWindow(QMainWindow):
                 resolved.append((cat, src, basename))
 
             # 4. Создать .cache/_block_view/<ep>_block<N>/ — очистить если был.
+            #    2026-05-17: сторибоарды (<ep>_block<N>.jpg, <ep>_block<N>_2.jpg
+            #    и т.д. от _save_png) живут в этой же папке и НЕ должны
+            #    удаляться — юзер хочет смотреть рефы и склейку рядом.
+            #    Удаляем только то что НЕ сториборд.
             dest_dir = (show_root / ".cache" / "_block_view"
                         / f"{ep_id}_block{block_n}")
+            storyboard_pattern = re.compile(
+                rf'^{re.escape(ep_id)}_block{block_n}(_\d+)?\.(jpg|jpeg|png)$',
+                re.IGNORECASE
+            )
             try:
                 if dest_dir.exists():
-                    shutil.rmtree(dest_dir)
+                    for item in dest_dir.iterdir():
+                        if item.is_file() and storyboard_pattern.match(item.name):
+                            continue
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
                 dest_dir.mkdir(parents=True, exist_ok=True)
             except Exception as e:
                 _sys_log.stderr.write(
