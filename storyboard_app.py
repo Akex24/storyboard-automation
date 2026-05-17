@@ -4883,6 +4883,21 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
+    def has_active_character_gens_for_ep(self, ep_id: str) -> bool:
+        """2026-05-17: симметрия с has_active_gens_for_ep, но для
+        character-flow (Actors-вкладка). EpisodeChatView._check_montage_ready
+        раньше смотрел глобальный ActorsView._active_generations (без ep_id) —
+        любая character-генерация на любом эпизоде скрывала CTA «Сделать
+        монтажную карту» во ВСЕХ эпизодах. Теперь читаем per-ep реестр
+        `_active_character_gens` (заполняется через
+        register_active_character_gen с привязкой к ep_id).
+        """
+        try:
+            bucket = (self._active_character_gens or {}).get(ep_id)
+            return bool(bucket)
+        except Exception:
+            return False
+
     # 2026-05-07: реестр character-генераций (Actors-flow). Парный API
     # с register_active_gen для location/object, но проще — без thread'а
     # и без панели (character-генерации уже видны в табе «Актёры»).

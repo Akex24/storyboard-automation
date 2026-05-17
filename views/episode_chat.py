@@ -2746,13 +2746,15 @@ class EpisodeChatView(QWidget):
             self._montage_cta.hide()
             return
 
-        # 4. Активные генерации рефов на вкладке Актёры — если есть хоть
-        #    одна (юзер запустил «Создать референс» и она ещё крутится),
-        #    CTA не показываем: реф не готов.
+        # 4. Активные character-генерации (Actors-flow) ТОЛЬКО ДЛЯ
+        #    ТЕКУЩЕГО ЭПИЗОДА — если для этого эпизода крутится хоть
+        #    одна, CTA не показываем: реф не готов.
+        #    2026-05-17: симметрия с шагом 2 (location/object). Раньше
+        #    спрашивали глобальный ActorsView._active_generations без
+        #    ep_id — любая character-генерация скрывала CTA на ВСЕХ
+        #    эпизодах. Теперь per-ep через MW._active_character_gens.
         try:
-            av = getattr(self._mw, 'actors_view', None)
-            active_gens = getattr(av, '_active_generations', None) or {}
-            if active_gens:
+            if self._mw.has_active_character_gens_for_ep(self._ep_id):
                 self._montage_cta.hide()
                 return
         except Exception:
