@@ -257,7 +257,8 @@ class ActorPhotosDialog(QDialog):
                  enable_delete: bool = False,
                  enable_pick_for_ep: bool = False,
                  enable_edit: bool = False,
-                 enable_texture: bool = False):
+                 enable_texture: bool = False,
+                 texture_folder_path: Optional[Path] = None):
         super().__init__(parent)
         self.photos = list(photos)
         # Включает кнопку «🗑 Удалить» под каждым thumb в сетке. По умолчанию
@@ -280,6 +281,14 @@ class ActorPhotosDialog(QDialog):
         # Локальный PIL-композит (без API). Результат — отдельный файл
         # в shows/<show>/refs/characters_texture/<character>/.
         self.enable_texture = bool(enable_texture)
+        # 2026-05-17 (Этап 3): путь к папке результатов наложения текстур
+        # (shows/<show>/refs/characters_texture/<character>/). Если задан —
+        # внизу диалога появляется вторая кнопка «🎨 Папка с текстурами»
+        # рядом с «📂 Показать в папке». Папка создаётся лениво при клике
+        # (mkdir parents=True, exist_ok=True) — кнопка работает даже если
+        # юзер ещё не накладывал текстуру.
+        self._texture_folder_path: Optional[Path] = (
+            Path(texture_folder_path) if texture_folder_path else None)
         self._display_name = display_name
         self.setWindowTitle(tr('actor_photos_title',
                                name=display_name, n=len(self.photos)))
@@ -383,6 +392,27 @@ class ActorPhotosDialog(QDialog):
             bottom.addWidget(self.open_folder_btn)
         else:
             self.open_folder_btn = None
+
+        # 2026-05-17 (Этап 3): «🎨 Папка с текстурами» — рядом с «Показать
+        # в папке». Только если caller передал texture_folder_path.
+        # Стиль зеркалит «🎨 Текстура» кнопки под thumb (золотой outline)
+        # для визуальной связи. Папка создаётся лениво в _on_show_texture_folder.
+        if self._texture_folder_path is not None:
+            self.open_texture_folder_btn = QPushButton(
+                tr('actor_photos_show_texture_folder_btn'))
+            self.open_texture_folder_btn.setStyleSheet(
+                "QPushButton { background:transparent; color:#d4a256;"
+                " border:1px solid #b88a3c; border-radius:6px;"
+                " padding:8px 14px; font-size:12px; font-weight:600; }"
+                "QPushButton:hover { background:#2a1f12; color:#ffd24d;"
+                " border-color:#d4a256; }")
+            self.open_texture_folder_btn.setCursor(
+                Qt.CursorShape.PointingHandCursor)
+            self.open_texture_folder_btn.clicked.connect(
+                self._on_show_texture_folder)
+            bottom.addWidget(self.open_texture_folder_btn)
+        else:
+            self.open_texture_folder_btn = None
 
         bottom.addStretch()
         self.close_btn = QPushButton(tr('actor_photos_close'))
@@ -580,6 +610,22 @@ class ActorPhotosDialog(QDialog):
                 return
             QDesktopServices.openUrl(
                 QUrl.fromLocalFile(str(self._folder_path.resolve())))
+        except Exception:
+            traceback.print_exc()
+
+    def _on_show_texture_folder(self):
+        """2026-05-17 (Этап 3): «🎨 Папка с текстурами» — открыть в
+        Finder/Explorer папку результатов наложения текстур. Если папки
+        ещё нет (юзер ни разу не накладывал) — создаём через
+        mkdir(parents=True, exist_ok=True). Симметрия с Этапом 1 где
+        actors/_textures/ тоже создаётся лениво."""
+        try:
+            if self._texture_folder_path is None:
+                return
+            self._texture_folder_path.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(
+                    str(self._texture_folder_path.resolve())))
         except Exception:
             traceback.print_exc()
 

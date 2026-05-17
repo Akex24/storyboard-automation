@@ -885,6 +885,32 @@ class ActorsView(QWidget):
                 folder_path = refs[0].parent
             except Exception:
                 folder_path = None
+            # 2026-05-17 (Этап 3): вторая кнопка «🎨 Папка с текстурами» —
+            # путь к shows/<show>/refs/characters_texture/<character>/.
+            # character_slug определяется из folder_path (имя папки рефов).
+            # Если folder_path не вычислился — texture_folder_path None,
+            # кнопка просто не появится.
+            texture_folder_path = None
+            if folder_path is not None:
+                try:
+                    character_slug_for_tex = folder_path.name
+                    tex_root_for_open = None
+                    try:
+                        tex_root_for_open = _sa.CHARACTERS_TEXTURE_DIR
+                    except Exception:
+                        tex_root_for_open = None
+                    if not tex_root_for_open:
+                        cur_show = (_sa.get_current_show(self.project_root)
+                                    or "_none_")
+                        tex_root_for_open = (
+                            self.project_root / "shows" / cur_show
+                            / "refs" / "characters_texture")
+                    from pathlib import Path as _Path2
+                    texture_folder_path = (
+                        _Path2(tex_root_for_open) / character_slug_for_tex)
+                except Exception:
+                    traceback.print_exc()
+                    texture_folder_path = None
             # 2026-05-05: если активен wildcard pending (юзер пришёл из
             # «+ Добавить персонажа» в РЕФЕРЕНСАХ) — показываем под каждой
             # превью кнопку «✓ Использовать в эпизоде» чтобы юзер взял
@@ -896,7 +922,8 @@ class ActorsView(QWidget):
                                     enable_delete=True,
                                     enable_pick_for_ep=pick_for_ep_active,
                                     enable_edit=True,
-                                    enable_texture=True)
+                                    enable_texture=True,
+                                    texture_folder_path=texture_folder_path)
             if pick_for_ep_active:
                 dlg.picked_for_ep.connect(self._on_pick_existing_ref_for_ep)
             # 2026-05-17: edit-режим для рефа актёра (попап «Все референсы»).

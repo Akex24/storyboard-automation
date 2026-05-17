@@ -78,6 +78,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'actor_photos_empty': 'У этого актёра пока нет фото.',
         'actor_photos_close': 'Закрыть',
         'actor_photos_open_folder': '📂  Показать в папке',
+        # 2026-05-17 (Этап 3): вторая кнопка — папка с результатами
+        # наложения текстур (shows/<show>/refs/characters_texture/<character>/).
+        'actor_photos_show_texture_folder_btn': '🎨  Папка с текстурами',
         'actor_photos_delete_btn': '🗑  Удалить',
         'actor_photos_delete_title': 'Удалить реф',
         'actor_photos_delete_confirm': 'Удалить файл «{filename}»?\n\nДействие необратимо — файл будет стёрт с диска.',
@@ -671,6 +674,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'actor_photos_empty': 'У цього актора поки немає фото.',
         'actor_photos_close': 'Закрити',
         'actor_photos_open_folder': '📂  Показати в папці',
+        # 2026-05-17 (Етап 3): друга кнопка — папка з результатами накладання текстур.
+        'actor_photos_show_texture_folder_btn': '🎨  Папка з текстурами',
         'actor_photos_delete_btn': '🗑  Видалити',
         'actor_photos_delete_title': 'Видалити реф',
         'actor_photos_delete_confirm': 'Видалити файл «{filename}»?\n\nДія незворотна — файл буде стертий з диска.',
@@ -1242,6 +1247,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'actor_photos_empty': 'This actor has no photos yet.',
         'actor_photos_close': 'Close',
         'actor_photos_open_folder': '📂  Show in folder',
+        # 2026-05-17 (Stage 3): second button — texture-result folder.
+        'actor_photos_show_texture_folder_btn': '🎨  Texture folder',
         'actor_photos_delete_btn': '🗑  Delete',
         'actor_photos_delete_title': 'Delete reference',
         'actor_photos_delete_confirm': 'Delete file «{filename}»?\n\nThis action cannot be undone — the file will be removed from disk.',
