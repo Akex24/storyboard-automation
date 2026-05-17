@@ -1266,55 +1266,6 @@ class EpisodeChatView(QWidget):
                     return
             except Exception:
                 pass
-        # v1.0.88 (исходный фикс ep07): disk-side check для location/object.
-        # Если файл рефа уже на диске под именем `<name>.<ext>` ИЛИ
-        # `<name>_2..._9.<ext>` (collision-rename после повторной генерации)
-        # — карточка «Сгенерировать» не нужна, юзер реф уже видит на
-        # вкладке REFERENCES. Без этой проверки AI Сценарист каждый раз
-        # упоминает базовый slug → карточка идёт в idle → новая попытка
-        # сгенерировать вариант `_4`/`_5` без необходимости.
-        # Character не покрывается (вложенная per-character папка с
-        # разными outfit-файлами, семантика «реф есть» сложнее) —
-        # character flow продолжает работать как раньше.
-        if gen_type in ('location', 'object'):
-            try:
-                cur_show = getattr(self._mw, '_current_show', None)
-                if cur_show:
-                    sub = ('locations' if gen_type == 'location'
-                           else 'objects')
-                    base = (self._mw._project_root / "shows" / cur_show
-                            / "refs" / sub)
-                    exts = ('.jpg', '.jpeg', '.png', '.webp')
-                    found = False
-                    # Базовый файл <name>.<ext>
-                    for ext in exts:
-                        if (base / f"{name}{ext}").exists():
-                            found = True
-                            break
-                    # Suffix variants <name>_2..._9.<ext>
-                    if not found:
-                        import re as _re
-                        if not _re.search(r'_[2-9]$', name or ''):
-                            for _n in range(2, 10):
-                                for ext in exts:
-                                    if (base / f"{name}_{_n}{ext}").exists():
-                                        found = True
-                                        break
-                                if found:
-                                    break
-                    if found:
-                        try:
-                            import sys as _sys_log
-                            _sys_log.stderr.write(
-                                f"[gen_button] skipped (file on disk): "
-                                f"{gen_type}/{name}\n")
-                            _sys_log.stderr.flush()
-                        except Exception:
-                            pass
-                        self._gen_seen_names.add(name)
-                        return
-            except Exception:
-                pass
         # Запоминаем имя ДАЖЕ если кнопка уже занята — чтобы при
         # повторных chunks (стрим) не пытаться создать ту же.
         self._gen_seen_names.add(name)
