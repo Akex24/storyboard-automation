@@ -995,6 +995,23 @@ class ActorsView(QWidget):
                 c = self._cards_by_slug.get(actor_slug)
                 if c is not None:
                     c.stop_progress()
+                # 2026-05-17: добавляем результат в pending-список актёра — это
+                # триггерит жёлтую плашку "🆕 Готов новый референс (N)" на карточке
+                # при следующем refresh. Симметрия с create-flow _on_finished.
+                try:
+                    if not hasattr(self, '_pending_variants'):
+                        self._pending_variants = {}
+                    self._pending_variants.setdefault(actor_slug, []).append(target_path)
+                    # Если открыт RefResultDialog — добавим вариант сразу в его стек
+                    open_dlg = self._open_result_dialogs.get(actor_slug) if hasattr(
+                        self, '_open_result_dialogs') else None
+                    if open_dlg is not None:
+                        try:
+                            open_dlg.append_variant(target_path)
+                        except Exception:
+                            traceback.print_exc()
+                except Exception:
+                    traceback.print_exc()
                 try:
                     name = _Path(target_path).name
                     self._show_status_temp(
