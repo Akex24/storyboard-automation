@@ -9678,6 +9678,15 @@ class MainWindow(QMainWindow):
             thread.error.connect(
                 lambda msg: self._on_regen_error(msg, target_block, panel_idx))
             thread.start()
+            # 2026-05-17: закрываем родительский ShotViewerDialog (если был
+            # открыт) — юзер не должен вручную крестить попап после
+            # «Сохранить и регенерировать».
+            sv = self._get_open_shot_viewer(target_block, panel_idx)
+            if sv is not None:
+                try:
+                    sv.close()
+                except Exception:
+                    pass
             self._refresh_block_indicator(target_block)
             self.status_bar.showMessage(
                 f"AI-edit SHOT {panel_idx + 1}: «{short_instruction[:60]}»…")
@@ -9711,6 +9720,14 @@ class MainWindow(QMainWindow):
         thread.error.connect(
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
+        # 2026-05-17: закрываем родительский ShotViewerDialog (если был
+        # открыт) — симметрично с AI-edit веткой выше.
+        sv = self._get_open_shot_viewer(target_block, panel_idx)
+        if sv is not None:
+            try:
+                sv.close()
+            except Exception:
+                pass
         self._refresh_block_indicator(target_block)
         self.status_bar.showMessage(
             f"Перегенерирую SHOT {panel_idx + 1} с правленым промптом…")

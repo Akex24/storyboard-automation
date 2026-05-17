@@ -127,3 +127,64 @@ class LumzBackground(QWidget):
         # Не вызываем super().paintEvent — QWidget по умолчанию не рисует
         # фон (если не задан autoFillBackground=True), а наш paint полностью
         # покрывает прямоугольник.
+
+
+# ── Готовые стили кнопок LUMZ ──────────────────────────────────────────
+# 2026-05-17: единый источник правды для стилей кнопок в LUMZ-стилистике.
+# Раньше каждый виджет копипастил hex'ы LUMZ в свой setStyleSheet
+# (gen_button.py, montage_cta.py, montage_summary_dialog.py и т.д.).
+# Новые виджеты импортируют `lumz_button_qss` отсюда. Существующие
+# модули с собственными inline-стилями НЕ трогаем — мигрировать
+# можно отдельной задачей.
+
+def lumz_button_qss(variant: str = 'primary', object_name: str = '') -> str:
+    """Возвращает QSS-строку для кнопки в LUMZ-стилистике.
+
+    Аргументы:
+      variant:
+        • 'primary'   — залитая accent_red (главное действие, CTA)
+        • 'secondary' — нейтральная outline (вторичное действие)
+        • 'subtle'    — transparent link-like (минимальное действие)
+      object_name: если задан → селектор `QPushButton#<name>`;
+        иначе `QPushButton` (применяется ко всем кнопкам в скоупе).
+        Полезно склеивать несколько вариантов в одном setStyleSheet:
+            dlg.setStyleSheet(
+                "QDialog { background:#0a0a0d; }"
+                + lumz_button_qss('primary', 'btn_save')
+                + lumz_button_qss('subtle',  'btn_cancel')
+            )
+    """
+    sel = f"QPushButton#{object_name}" if object_name else "QPushButton"
+    if variant == 'primary':
+        return (
+            f"{sel} {{ background:#e4344a; color:#ffffff; border:none;"
+            " border-radius:6px; padding:6px 14px;"
+            " font-size:12px; font-weight:500; min-height:30px; }}"
+            f"{sel}:hover {{ background:#d92d44; }}"
+            f"{sel}:pressed {{ background:#c52539; }}"
+            f"{sel}:disabled {{ background:rgba(255,255,255,0.06);"
+            " color:rgba(255,255,255,0.40); }}"
+        )
+    if variant == 'secondary':
+        return (
+            f"{sel} {{ background:rgba(255,255,255,0.06);"
+            " border:1px solid rgba(255,255,255,0.12);"
+            " color:#ffffff; border-radius:6px;"
+            " padding:6px 14px; font-size:12px; font-weight:500;"
+            " min-height:30px; }}"
+            f"{sel}:hover {{ background:rgba(255,255,255,0.10);"
+            " border-color:rgba(255,255,255,0.20); }}"
+            f"{sel}:disabled {{ color:rgba(255,255,255,0.40);"
+            " border-color:rgba(255,255,255,0.06); }}"
+        )
+    if variant == 'subtle':
+        return (
+            f"{sel} {{ background:transparent;"
+            " color:rgba(255,255,255,0.55); border:none;"
+            " border-radius:6px; padding:6px 14px;"
+            " font-size:12px; min-height:30px; }}"
+            f"{sel}:hover {{ color:#ffffff;"
+            " background:rgba(255,255,255,0.04); }}"
+            f"{sel}:disabled {{ color:rgba(255,255,255,0.30); }}"
+        )
+    raise ValueError(f"unknown variant: {variant!r}")

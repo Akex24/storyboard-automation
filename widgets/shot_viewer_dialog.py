@@ -26,10 +26,11 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QWidget, QFrame, QSizePolicy
+    QScrollArea, QWidget, QFrame, QSizePolicy, QApplication
 )
 
 from i18n import tr
+from views.theme import lumz_button_qss
 
 
 # 2026-05-07 (фикс UI): уменьшено чтобы попап влезал на 14" MacBook
@@ -144,34 +145,39 @@ class ShotViewerDialog(QDialog):
         self.setWindowTitle(
             tr('shot_viewer_title', n=panel_idx + 1))
         self.setModal(False)
-        # 2026-05-07: уменьшен min size чтобы помещался на 14" MacBook.
-        # Total ≈ header(25) + selected(20) + preview(688) + strip_label(15) +
-        # strip(135) + actions(40) + spacings/margins (~70) = ~993 → ставим
-        # min 480×780 (preview можно слегка ужать в маленьком окне через
-        # AspectRatio scaling).
-        # min width = sum minimumWidth кнопок (150+170+180+stretch+110) +
-        # margins/spacings. Получаем ~700px минимум.
-        self.setMinimumSize(720, 800)
-        self.resize(740, 900)
+        # 2026-05-17: адаптивный размер под родительское окно. Раньше был
+        # фиксированный 720×800 min + 740×900 resize — не помещался на
+        # 14" MacBook (1512×982 logical) при особенно высоком dock/menu.
+        # Теперь max = 90% от main window (или экрана, если parent нет),
+        # min = 600×700 — preview ужмётся в scroll-area если нужно.
+        parent_win = self.parent().window() if self.parent() else None
+        if parent_win:
+            pw, ph = parent_win.width(), parent_win.height()
+        else:
+            geo = QApplication.primaryScreen().availableGeometry()
+            pw, ph = geo.width(), geo.height()
+        max_w, max_h = int(pw * 0.9), int(ph * 0.9)
+        self.setMinimumSize(600, 700)
+        self.setMaximumSize(max_w, max_h)
+        self.resize(min(740, max_w), min(900, max_h))
         self._build()
         self.refresh()
 
     def _build(self):
+        # 2026-05-17: убрана старая фиолетовая палитра #action/#primary —
+        # перешли на LUMZ через lumz_button_qss() из views/theme.py.
+        # Раскладка 4 кнопок: edit=subtle, regen=primary (главное действие),
+        # use=secondary (outline), close=subtle.
         self.setStyleSheet(
-            "QDialog { background:#0f0a18; }"
+            "QDialog { background:#0a0a0d; }"
             "QLabel#header { color:#fff; font-size:14px; font-weight:600; }"
-            "QLabel#hint { color:#888; font-size:11px; }"
-            "QLabel#empty { color:#6a6a8a; font-style:italic; font-size:12px; }"
-            "QPushButton#action { background:#2a1d4a; border:1px solid #4a3470;"
-            " border-radius:6px; color:#fff; font-size:13px; padding:6px 14px;"
-            " min-height:30px; }"
-            "QPushButton#action:hover { background:#3a2a60;"
-            " border-color:#6a4ea0; }"
-            "QPushButton#action:disabled { background:#1a1330; color:#666;"
-            " border-color:#322545; }"
-            "QPushButton#primary { background:#6e4cc4; border:1px solid #6e4cc4;"
-            " color:#fff; font-weight:600; }"
-            "QPushButton#primary:hover { background:#7d5bd4; }"
+            "QLabel#hint { color:rgba(255,255,255,0.55); font-size:11px; }"
+            "QLabel#empty { color:rgba(255,255,255,0.40);"
+            " font-style:italic; font-size:12px; }"
+            + lumz_button_qss('subtle', 'btn_edit')
+            + lumz_button_qss('primary', 'btn_regen')
+            + lumz_button_qss('secondary', 'btn_use')
+            + lumz_button_qss('subtle', 'btn_close')
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -254,7 +260,7 @@ class ShotViewerDialog(QDialog):
         # больше fontMetrics, плюс делаем общий min width диалога
         # достаточным чтобы помещались все 4 кнопки в одну строку.
         self.btn_edit = QPushButton(tr('shot_viewer_btn_edit'))
-        self.btn_edit.setObjectName("action")
+        self.btn_edit.setObjectName("btn_edit")
         self.btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_edit.setMinimumWidth(150)
         self.btn_edit.clicked.connect(
@@ -262,16 +268,19 @@ class ShotViewerDialog(QDialog):
         actions.addWidget(self.btn_edit)
 
         self.btn_regen = QPushButton(tr('shot_viewer_btn_regen'))
-        self.btn_regen.setObjectName("action")
+        self.btn_regen.setObjectName("btn_regen")
         self.btn_regen.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_regen.setMinimumWidth(170)
-        self.btn_regen.clicked.connect(
-            lambda: self.regen_requested.emit(self.panel_idx))
+        # 2026-05-17: клик «Перегенерировать» закрывает попап (юзер просил —
+        # не нужно вручную крестить после клика).
+        def _on_regen_clicked():
+            self.regen_requested.emit(self.panel_idx)
+            self.close()
+        self.btn_regen.clicked.connect(_on_regen_clicked)
         actions.addWidget(self.btn_regen)
 
         self.btn_use = QPushButton(tr('shot_viewer_btn_use'))
-        self.btn_use.setObjectName("action")
-        self.btn_use.setProperty("primary", True)
+        self.btn_use.setObjectName("btn_use")
         self.btn_use.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_use.setMinimumWidth(180)
         self.btn_use.setEnabled(False)
@@ -281,7 +290,7 @@ class ShotViewerDialog(QDialog):
         actions.addStretch()
 
         self.btn_close = QPushButton(tr('shot_viewer_btn_close'))
-        self.btn_close.setObjectName("action")
+        self.btn_close.setObjectName("btn_close")
         self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_close.setMinimumWidth(110)
         self.btn_close.clicked.connect(self.close)
