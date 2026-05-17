@@ -41,17 +41,27 @@ _IMG_EXT = {'.jpg', '.jpeg', '.png', '.webp'}
 class _RefThumbCard(QFrame):
     """Одна карточка с превью + кнопкой «Выбрать»."""
 
-    def __init__(self, file_path: Path, on_pick, parent=None):
+    def __init__(self, file_path: Path, on_pick, parent=None,
+                 is_exact_match: bool = False):
         super().__init__(parent)
         self._file_path = file_path
         self._on_pick = on_pick
-        self.setObjectName("ref-thumb-card")
+        # 2026-05-17: exact-match карточка (stem файла == slug маркера)
+        # подсвечивается зелёной рамкой 2px — юзер видит «вот точное
+        # попадание» сразу, без чтения имён.
+        self.setObjectName(
+            "ref-thumb-card-exact" if is_exact_match else "ref-thumb-card")
         self.setFrameShape(QFrame.Shape.NoFrame)
         # 2026-05-08: LUMZ-стиль — bg_subtle + LUMZ accent_red на hover/btn.
         self.setStyleSheet(
             "QFrame#ref-thumb-card { background:rgba(255,255,255,0.04);"
             " border:1px solid rgba(255,255,255,0.06); border-radius:8px; }"
             "QFrame#ref-thumb-card:hover {"
+            " border-color:rgba(228,52,74,0.40); }"
+            "QFrame#ref-thumb-card-exact {"
+            " background:rgba(255,255,255,0.04);"
+            " border:2px solid #3ec46d; border-radius:8px; }"
+            "QFrame#ref-thumb-card-exact:hover {"
             " border-color:rgba(228,52,74,0.40); }"
             "QLabel#thumb-name { color:rgba(255,255,255,0.70);"
             " font-size:11px; }"
@@ -127,11 +137,17 @@ class RefPickerDialog(QDialog):
             picked = dlg.selected_filename  # str, например "laura_clean.jpg"
     """
     def __init__(self, folder_path: Path, title: str,
-                 parent=None, columns: int = 3):
+                 parent=None, columns: int = 3,
+                 slug: Optional[str] = None):
         super().__init__(parent)
         self.folder_path = Path(folder_path)
         self.selected_filename: Optional[str] = None
         self._columns = max(1, columns)
+        # 2026-05-17: slug маркера (если задан) поднимает совпадающие
+        # рефы в начало списка и подсвечивает exact-match рамкой.
+        # None = generic-открытие (кнопка «+ Добавить локацию» во
+        # вкладке РЕФЕРЕНСЫ) — обычная алфавитная сортировка.
+        self._slug: Optional[str] = (slug or None)
         self.setWindowTitle(title)
         self.setMinimumSize(680, 560)
         # 2026-05-08: LUMZ — фон тёмный нейтральный, заголовок белый,
@@ -176,9 +192,13 @@ class RefPickerDialog(QDialog):
             grid = QGridLayout(grid_host)
             grid.setSpacing(12)
             grid.setContentsMargins(4, 4, 4, 4)
+            slug_lc = self._slug.lower() if self._slug else None
             for i, fp in enumerate(files):
                 row, col = divmod(i, self._columns)
-                card = _RefThumbCard(fp, self._on_pick)
+                is_exact = bool(
+                    slug_lc and fp.stem.lower() == slug_lc)
+                card = _RefThumbCard(
+                    fp, self._on_pick, is_exact_match=is_exact)
                 grid.addWidget(card, row, col)
             # Заполнить пустыми колонками если нужно
             grid.setColumnStretch(self._columns, 1)
@@ -196,7 +216,12 @@ class RefPickerDialog(QDialog):
         outer.addLayout(btn_row)
 
     def _collect_files(self) -> List[Path]:
-        """Сканирует folder_path на картинки. Сортирует по имени."""
+        """Сканирует folder_path на картинки.
+
+        Сортировка двухуровневая: если задан `self._slug`, файлы чьё
+        имя начинается со slug (case-insensitive) поднимаются в начало,
+        внутри каждой группы — алфавит. Без slug — обычный алфавит.
+        """
         try:
             if not self.folder_path.is_dir():
                 return []
@@ -204,6 +229,15 @@ class RefPickerDialog(QDialog):
                 p for p in self.folder_path.iterdir()
                 if p.is_file() and p.suffix.lower() in _IMG_EXT
             ]
+            slug_lc = self._slug.lower() if self._slug else None
+            if slug_lc:
+                return sorted(
+                    files,
+                    key=lambda p: (
+                        0 if p.name.lower().startswith(slug_lc) else 1,
+                        p.name.lower(),
+                    ),
+                )
             return sorted(files, key=lambda p: p.name.lower())
         except Exception:
             return []

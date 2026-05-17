@@ -2442,7 +2442,13 @@ class EpisodeChatView(QWidget):
             from widgets import RefPickerDialog
             from PyQt6.QtWidgets import QDialog
             title = tr('gen_picker_title', name=name)
-            dlg = RefPickerDialog(refs_dir, title, parent=self)
+            # 2026-05-17: slug=name → exact-match (stem == name)
+            # подсвечивается зелёной рамкой, "name*"-файлы поднимаются
+            # в начало списка. Для character папка уже refs/characters/
+            # <name>/ (slug-сортировка избыточна) — но передаём
+            # единообразно: highlight'нёт точное «<name>.jpg» если оно
+            # есть, остальные останутся по алфавиту.
+            dlg = RefPickerDialog(refs_dir, title, parent=self, slug=name)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             picked_name = dlg.selected_filename
