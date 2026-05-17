@@ -543,13 +543,6 @@ class EpisodeChatView(QWidget):
         # на ЭП21 видно полный ответ — но без кнопок. Восстанавливаем
         # кнопки прогоняя assistant-историю через `synthesize_gen_markers`.
         if prev_ep != ep_id:
-            # v1.0.88 (Stage 19): сначала удаляем orphan GenButton'ы от
-            # предыдущего эпизода (state linked/skipped/done остаются
-            # в _gen_layout после `_clear_gen_button` который чистит
-            # только active idle). Без этого `_restore_gen_buttons_from_history`
-            # добавляет НОВЫЕ карточки СВЕРХУ старых → визуальные дубли
-            # при цикле ep_A → ep_B → ep_A.
-            self._clear_orphan_gen_buttons()
             self._restore_gen_buttons_from_history(msgs)
         # 2026-05-06: всегда сверяем активную карточку и очередь с
         # `refs_decisions`. Если за время отсутствия в чате (например
@@ -1484,54 +1477,17 @@ class EpisodeChatView(QWidget):
         # Накопитель stream'а сбрасываем — fallback парсер пойдёт по
         # свежему ответу.
         self._stream_full = ''
-        # v1.0.88 (Stage 19): orphan GenButton чистка вынесена в
-        # `_clear_orphan_gen_buttons` — теперь зовётся также из
-        # `set_episode` чтобы при переключении эпизодов не накапливались
-        # дубли карточек в state linked/skipped/done. CharacterOutfitPicker
-        # остаётся inline здесь — `reset_state` спец-случай (удаление
-        # эпизода), а picker'ы других эпизодов в `set_episode` должны
-        # переживать переключение (см. set_episode logic).
-        self._clear_orphan_gen_buttons()
-        # Дополнительно для reset_state — orphan CharacterOutfitPicker.
+        # Если в layout остались «осиротевшие» GenButton-карточки от
+        # предыдущих маркеров (например done/skipped/linked) — удаляем.
         try:
+            from widgets import GenButton
             from widgets.character_outfit_picker import CharacterOutfitPicker
             for i in reversed(range(self._gen_layout.count())):
                 item = self._gen_layout.itemAt(i)
                 if item is None:
                     continue
                 w = item.widget()
-                if isinstance(w, CharacterOutfitPicker):
-                    self._gen_layout.removeWidget(w)
-                    w.setParent(None)
-                    w.deleteLater()
-        except Exception:
-            traceback.print_exc()
-
-    def _clear_orphan_gen_buttons(self):
-        """v1.0.88 (Stage 19): удаляет все GenButton виджеты из
-        `_gen_layout`. Используется в двух местах:
-
-          1. `reset_state` — при удалении эпизода (вместе с inline
-             чисткой CharacterOutfitPicker).
-          2. `set_episode` — при переключении эпизода (`prev_ep != ep_id`),
-             ДО `_restore_gen_buttons_from_history`. Без этого orphan
-             карточки в state linked/skipped/done от прошлого эпизода
-             остаются в layout, а новые карточки добавляются СВЕРХУ →
-             визуальные дубли при повторных возвратах на эпизод.
-
-        НЕ трогает CharacterOutfitPicker — picker'ы per-episode (см.
-        `_outfit_pickers` dict), должны переживать переключение между
-        эпизодами. Юзер может быть в середине выбора одежды для ep_A,
-        переключиться на ep_B, вернуться — picker должен остаться.
-        """
-        try:
-            from widgets import GenButton
-            for i in reversed(range(self._gen_layout.count())):
-                item = self._gen_layout.itemAt(i)
-                if item is None:
-                    continue
-                w = item.widget()
-                if isinstance(w, GenButton):
+                if isinstance(w, (GenButton, CharacterOutfitPicker)):
                     self._gen_layout.removeWidget(w)
                     w.setParent(None)
                     w.deleteLater()
