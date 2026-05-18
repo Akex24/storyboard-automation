@@ -327,9 +327,10 @@ class SeedanceRegenThread(QThread):
                             для альтернативной вариации)
 
     Сигналы:
-      • done(text)        — успешная перегенерация, текст уже записан
-                            в файл, передаётся как новое содержимое
-                            попапа
+      • done(text)        — успешная перегенерация, текст возвращается
+                            попапу (НЕ записан в файл — попап сам решает
+                            куда писать; см. UI tabs архитектуру в
+                            `storyboard_app._show_seedance_popup`).
       • failed(msg)       — ошибка
     """
 
@@ -406,10 +407,12 @@ class SeedanceRegenThread(QThread):
             txt = self._run_claude_regen(SEEDANCE_WRITER_SYSTEM, user)
             txt = SeedancePipelineThread._sanitize(txt)
 
-            self._seedance_dir.mkdir(parents=True, exist_ok=True)
-            out_path = (self._seedance_dir
-                        / f"{self._ep_id}_block_{self._block_n}.txt")
-            out_path.write_text(txt, encoding='utf-8')
+            # 2026-05-18 (UI tabs): regen больше НЕ перезаписывает
+            # `<ep>_block_N.txt` — оригинал защищён как «Вкладка 1».
+            # Попап (storyboard_app._show_seedance_popup) сам пишет
+            # результат в новую вкладку `<ep>_block_N_tab<K>.txt`.
+            # `_seedance_dir` параметр оставлен для backward-compat,
+            # внутри run() не используется.
 
             self.done.emit(txt)
         except Exception as e:

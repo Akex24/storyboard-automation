@@ -3500,6 +3500,209 @@ def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
     return f"{header_new.strip()}\n\n{panel_body}"
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Seedance prompt tabs — persistent state of versions (2026-05-18)
+# ─────────────────────────────────────────────────────────────────────────
+# Каждый блок монтажной карты имеет один или несколько Seedance промптов
+# (оригинал + альтернативные версии через regen/compress). Чтобы не
+# терять версии при закрытии попапа — хранение на диске:
+#   <seedance_dir>/<ep>_block_<N>.txt           — Вкладка 1 (оригинал)
+#   <seedance_dir>/<ep>_block_<N>_tab<K>.txt    — последующие вкладки
+#   <seedance_dir>/<ep>_block_<N>_tabs.json     — порядок + active_idx +
+#                                                  monotonic next_idx
+#
+# JSON формат:
+#   {
+#     "version": 1,
+#     "next_idx": 4,                  ← monotonic, только растёт
+#     "active_idx": 1,
+#     "tabs": [
+#       {"title": "Вкладка 1", "file": "<ep>_block_<N>.txt",      "source": "original"},
+#       {"title": "Вкладка 2", "file": "<ep>_block_<N>_tab2.txt", "source": "regen"},
+#       {"title": "Вкладка 3", "file": "<ep>_block_<N>_tab3.txt", "source": "compress"}
+#     ]
+#   }
+#
+# Helper'ы тестируемы в unit-режиме без QtWidgets (только pathlib/json).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _seedance_tabs_path(seedance_dir: Path, ep_id: str, block_n: int) -> Path:
+    """Путь к JSON-файлу с состоянием вкладок Seedance промпта блока."""
+    return Path(seedance_dir) / f"{ep_id}_block_{block_n}_tabs.json"
+
+
+def _next_tab_idx(seedance_dir: Path, ep_id: str, block_n: int,
+                    hint_from_json: int = 2) -> int:
+    """Monotonic next_idx для нового `_tab<K>.txt`.
+
+    Возвращает `max(hint_from_json, max(существующих _tab<K>.txt) + 1)`.
+    Защита от collisions если кто-то положил `_tab<K>.txt` руками минуя
+    JSON. Минимум — 2 (так как вкладка 1 это `_block_<N>.txt` без суффикса).
+    """
+    max_existing = 1
+    base = f"{ep_id}_block_{block_n}_tab"
+    try:
+        for p in Path(seedance_dir).glob(f"{base}*.txt"):
+            stem = p.stem
+            if not stem.startswith(base):
+                continue
+            tail = stem[len(base):]
+            if tail.isdigit():
+                n = int(tail)
+                if n > max_existing:
+                    max_existing = n
+    except Exception:
+        pass
+    return max(hint_from_json, max_existing + 1)
+
+
+def _save_seedance_tabs(tabs_path: Path, tabs_state: list, active_idx: int,
+                          next_idx: int) -> None:
+    """Атомарно сохраняет JSON с состоянием вкладок.
+
+    Использует temp-file + os.replace для атомарности (паттерн как у
+    `_save_active_gen_decision` — атомарный rename POSIX-style).
+    Silent fail в stderr если диск переполнен / нет прав.
+    """
+    payload = {
+        "version": 1,
+        "next_idx": int(next_idx),
+        "active_idx": int(active_idx),
+        "tabs": list(tabs_state),
+    }
+    try:
+        tabs_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = tabs_path.with_suffix(
+            tabs_path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+        os.replace(str(tmp), str(tabs_path))
+    except Exception as e:
+        try:
+            sys.stderr.write(
+                f"[_save_seedance_tabs] WARN: {type(e).__name__}: {e}\n")
+        except Exception:
+            pass
+
+
+def _load_seedance_tabs(tabs_path: Path, seedance_dir: Path,
+                          ep_id: str, block_n: int,
+                          fallback_text: Optional[str] = None
+                          ) -> tuple:
+    """Загружает state вкладок Seedance промпта блока.
+
+    Возвращает `(tabs_state, active_idx, next_idx, save_needed)`:
+      • tabs_state — list[dict] с полями `title`, `file`, `source`,
+                     `text` (тело прочитано с диска)
+      • active_idx — индекс активной вкладки (clamped в bounds)
+      • next_idx   — monotonic счётчик для следующей новой вкладки
+      • save_needed — True если состояние нужно сразу записать обратно
+                      (либо создан дефолт, либо отфильтрованы stale entries)
+
+    Логика:
+      1. Если JSON отсутствует: создаём дефолт с одной вкладкой
+         «Вкладка 1» → `<ep>_block_<N>.txt`. Если fallback_text задан
+         и .txt отсутствует — пишем fallback_text в .txt тоже.
+      2. Если JSON есть: читаем, для каждой вкладки читаем file.txt.
+         Stale entries (файл из JSON отсутствует на диске) пропускаются
+         + save_needed=True (auto-clean).
+      3. Битый JSON → log + создаём дефолт.
+    """
+    orig_file = f"{ep_id}_block_{block_n}.txt"
+    orig_path = Path(seedance_dir) / orig_file
+
+    def _make_default() -> tuple:
+        # Дефолт: одна вкладка «Вкладка 1» → оригинал.
+        text = fallback_text
+        # `not text` покрывает и None, и пустую строку (если caller передал
+        # "" — пробуем прочитать с диска вместо показа пустой вкладки).
+        if not text:
+            try:
+                if orig_path.exists():
+                    text = orig_path.read_text(encoding="utf-8")
+            except Exception:
+                text = None
+        tab = {
+            "title": "Вкладка 1",
+            "file": orig_file,
+            "source": "original",
+            "text": text or "",
+        }
+        nxt = _next_tab_idx(seedance_dir, ep_id, block_n, hint_from_json=2)
+        return [tab], 0, nxt, True
+
+    if not Path(tabs_path).exists():
+        return _make_default()
+
+    try:
+        raw = json.loads(Path(tabs_path).read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("version") != 1:
+            raise ValueError("invalid version or schema")
+        tabs_in = raw.get("tabs") or []
+        if not isinstance(tabs_in, list) or not tabs_in:
+            raise ValueError("empty tabs list")
+    except Exception as e:
+        try:
+            sys.stderr.write(
+                f"[_load_seedance_tabs] WARN: broken JSON {tabs_path.name}: "
+                f"{type(e).__name__}: {e}, falling back to default\n")
+        except Exception:
+            pass
+        return _make_default()
+
+    # Auto-clean stale entries
+    tabs_state: list = []
+    save_needed = False
+    for entry in tabs_in:
+        if not isinstance(entry, dict):
+            save_needed = True
+            continue
+        fname = entry.get("file")
+        if not isinstance(fname, str):
+            save_needed = True
+            continue
+        fpath = Path(seedance_dir) / fname
+        if not fpath.exists():
+            save_needed = True
+            continue
+        try:
+            text = fpath.read_text(encoding="utf-8")
+        except Exception:
+            save_needed = True
+            continue
+        tabs_state.append({
+            "title": entry.get("title") or f"Вкладка {len(tabs_state) + 1}",
+            "file": fname,
+            "source": entry.get("source") or "unknown",
+            "text": text,
+        })
+
+    if not tabs_state:
+        return _make_default()
+
+    # active_idx — clamp в bounds
+    try:
+        active_idx = int(raw.get("active_idx", 0))
+    except (TypeError, ValueError):
+        active_idx = 0
+    if active_idx < 0 or active_idx >= len(tabs_state):
+        active_idx = 0
+        save_needed = True
+
+    # next_idx — monotonic + защита от collisions
+    try:
+        json_next = int(raw.get("next_idx", 2))
+    except (TypeError, ValueError):
+        json_next = 2
+    nxt = _next_tab_idx(seedance_dir, ep_id, block_n, hint_from_json=json_next)
+    if nxt != json_next:
+        save_needed = True
+
+    return tabs_state, active_idx, nxt, save_needed
+
+
 def _extract_panel_body(prompt_text: str, panel_idx: int) -> Optional[str]:
     """Извлекает «сырое» тело Panel N из .txt промпта блока — то что
     идёт после «Panel N (Position):» до следующей `Panel \\d+ (` или
@@ -8487,7 +8690,16 @@ class MainWindow(QMainWindow):
         # промпты сторибордов чистились, а Seedance — нет). Теперь корзина
         # удаляет всё что относится к эпизоду.
         try:
+            # 2026-05-18 (UI tabs): расширено — удаляем не только
+            # `<ep>_block_*.txt` (оригиналы + tab-версии _tab<K>.txt
+            # подпадают под этот же glob), но и `<ep>_block_*_tabs.json`
+            # (per-block state вкладок).
             for p in SEEDANCE_DIR.glob(f"{ep_id}_block_*.txt"):
+                try:
+                    p.unlink()
+                except Exception as ex:
+                    errors.append(f"seedance {p.name}: {ex}")
+            for p in SEEDANCE_DIR.glob(f"{ep_id}_block_*_tabs.json"):
                 try:
                     p.unlink()
                 except Exception as ex:
@@ -11271,20 +11483,40 @@ class MainWindow(QMainWindow):
             # После рестарта state-машина переоценится при следующем тике.
             return
 
+        # 2026-05-18 (UI tabs): попап читает state через
+        # _load_seedance_tabs (учитывает _tabs.json + читает _tab<K>.txt
+        # файлы вкладок). Здесь же даём ему fallback-текст из
+        # `<ep>_block_<N>.txt` для случая когда _tabs.json нет —
+        # тогда создастся одна вкладка «оригинал».
+        # Pending check работает по оригиналу: если .txt отсутствует И
+        # _tabs.json тоже отсутствует — промпт ещё генерится.
+        # ep_id уже распарсен из self.current_block выше regex'ом —
+        # используем его (а не self._current_episode) чтобы исключить
+        # рассинхрон если current_episode отстал от current_block.
         seedance_path = SEEDANCE_DIR / f"{self.current_block}.txt"
-        if not seedance_path.exists() or seedance_path.stat().st_size == 0:
+        tabs_json_path = _seedance_tabs_path(SEEDANCE_DIR, ep_id, block_n)
+        has_txt = seedance_path.exists() and seedance_path.stat().st_size > 0
+        has_json = tabs_json_path.exists()
+        if not has_txt and not has_json:
             QMessageBox.information(
                 self, tr('seedance_popup_title', block_n=block_n),
                 tr('seedance_popup_pending'))
             return
-        try:
-            text = seedance_path.read_text(encoding='utf-8')
-        except Exception as e:
-            QMessageBox.warning(
-                self, tr('seedance_popup_title', block_n=block_n),
-                tr('seedance_popup_failed', msg=str(e)[:200]))
-            return
-        self._show_seedance_popup(block_n, text)
+        text = ""
+        if has_txt:
+            try:
+                text = seedance_path.read_text(encoding='utf-8')
+            except Exception as e:
+                # Если только _tabs.json — это ОК (попап прочитает
+                # сам по записям JSON). Если и .txt нечитаем и .json нет
+                # — реальная ошибка.
+                if not has_json:
+                    QMessageBox.warning(
+                        self, tr('seedance_popup_title', block_n=block_n),
+                        tr('seedance_popup_failed', msg=str(e)[:200]))
+                    return
+                text = ""
+        self._show_seedance_popup(block_n, ep_id, text)
 
     def _refresh_seedance_btn_state(self):
         """v1.0.85: периодически (раз в 30с) переоценивает state seedance_btn.
@@ -11326,18 +11558,43 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
-    def _show_seedance_popup(self, block_n: int, text: str):
-        """Большой попап с textarea промпта + textarea инструкции +
-        кнопками «Перегенерировать», «Скопировать», «Закрыть».
+    def _show_seedance_popup(self, block_n: int, ep_id: str, text: str):
+        """Попап с QTabWidget версий Seedance промпта блока.
 
-        Регенерация работает прямо в этом попапе: юзер пишет фидбэк
-        (опционально) → клик «Перегенерировать» → Opus 4.7 переписывает
-        блок → главный textarea обновляется новым текстом, фидбэк
-        очищается. Файл `output/seedance/<ep>_block_N.txt` перезаписан.
+        Архитектура (2026-05-18 — UI tabs):
+          • Каждая вкладка — отдельный файл `_tab<K>.txt`.
+          • Вкладка 1 (без крестика) = оригинал `<ep>_block_<N>.txt`,
+            никогда не перезаписывается через regen.
+          • Вкладки 2+ создаются кнопками «Изменить» / «Сократить» —
+            пишутся в `<ep>_block_<N>_tab<K>.txt` (K = monotonic).
+          • Состояние (порядок, active_idx, next_idx) хранится в
+            `<ep>_block_<N>_tabs.json` — переживает перезапуск Studio.
+
+        Args:
+          block_n: номер блока (1-based, например 5 → ep16_block_5).
+          ep_id:   идентификатор эпизода `ep<N>` — распарсен caller'ом
+                   из `self.current_block` чтобы исключить рассинхрон
+                   с `self._current_episode`.
+          text:    fallback-содержимое оригинала для создания «Вкладка 1»
+                   если `_tabs.json` отсутствует.
         """
+        from PyQt6.QtWidgets import QSpinBox as _QSB, QTabWidget as _QTW, QTabBar as _QTB
+        from PyQt6.QtGui import QColor as _QColor
+
+        tabs_path = _seedance_tabs_path(SEEDANCE_DIR, ep_id, block_n)
+        loaded_tabs, loaded_active, next_idx_box, save_needed = \
+            _load_seedance_tabs(
+                tabs_path, SEEDANCE_DIR, ep_id, block_n, fallback_text=text)
+
+        # Mutable boxes для closures (next_idx — счётчик, нужно менять)
+        next_idx_holder = [int(next_idx_box)]
+        # tabs_state — синхронизирован с QTabWidget. Каждая запись:
+        # {"title": str, "file": str, "source": str, "text": str}
+        tabs_state: list = list(loaded_tabs)
+
         dlg = QDialog(self)
         dlg.setWindowTitle(tr('seedance_popup_title', block_n=block_n))
-        dlg.setMinimumSize(780, 720)  # +100px по высоте под нижнюю textarea
+        dlg.setMinimumSize(780, 720)
         v = QVBoxLayout(dlg)
         v.setSpacing(10)
         v.setContentsMargins(20, 16, 20, 16)
@@ -11347,19 +11604,22 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         v.addWidget(hint)
 
-        # Главный textarea — текст промпта (обновляется при regen / compress)
-        ta = QPlainTextEdit()
-        ta.setPlainText(text)
-        ta.setReadOnly(True)
-        ta.setStyleSheet(
-            "QPlainTextEdit { background:#15101e; border:1px solid #2c2240; "
-            "border-radius:6px; color:#ddd; padding:10px; "
-            "font-size:12px; font-family: 'Menlo','Consolas',monospace; }")
-        v.addWidget(ta, stretch=1)
+        # ── QTabWidget с вкладками промптов ──
+        tabs_widget = _QTW()
+        tabs_widget.setTabsClosable(True)
+        tabs_widget.setMovable(False)  # порядок стабилен (idx=0 всегда оригинал)
+        tabs_widget.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #2c2240; border-radius:6px; "
+            "background:#15101e; }"
+            "QTabBar::tab { background:#1a1424; color:#aaa; padding:6px 14px; "
+            "border:1px solid #2c2240; border-bottom:none; "
+            "border-top-left-radius:6px; border-top-right-radius:6px; "
+            "margin-right:2px; }"
+            "QTabBar::tab:selected { background:#2a1d44; color:#d8c8ff; }"
+            "QTabBar::tab:hover { background:#221a30; }")
+        v.addWidget(tabs_widget, stretch=1)
 
-        # ── Счётчик длины промпта (зелёный / красный по сравнению с limit) ──
-        # Используется фичей «✂️ Сократить» — юзер видит влезает ли текущий
-        # текст в его лимит. Обновляется через ta.textChanged.
+        # ── Счётчик длины активной вкладки ──
         length_label = QLabel("")
         length_label.setStyleSheet("color:#7cc97c; font-size:11px;")
         v.addWidget(length_label)
@@ -11377,13 +11637,13 @@ class MainWindow(QMainWindow):
             "border-radius:6px; color:#ddd; padding:8px; font-size:12px; }")
         v.addWidget(instr_ta)
 
-        # Маленькая статус-строка под инструкцией для ошибок regen
         regen_status = QLabel("")
         regen_status.setStyleSheet("color:#ff8a8a; font-size:11px;")
         regen_status.setWordWrap(True)
         regen_status.setVisible(False)
         v.addWidget(regen_status)
 
+        # ── Кнопки: regen / copy / close ──
         btns_row = QHBoxLayout()
         regen_btn = QPushButton(tr('seedance_popup_regen'))
         regen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -11399,68 +11659,8 @@ class MainWindow(QMainWindow):
         close_btn = QPushButton(tr('seedance_popup_close'))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        # Текущий текст в попапе (обновляется при успешном regen).
-        # Используем list-обёртку чтобы closures могли его менять.
-        current_text_box = [text]
-
-        def _do_copy():
-            try:
-                QApplication.clipboard().setText(current_text_box[0])
-                copy_btn.setText(tr('seedance_popup_copied'))
-            except Exception:
-                pass
-
-        def _do_regen():
-            instruction = instr_ta.toPlainText().strip()
-            try:
-                self._start_seedance_regen(
-                    block_n=block_n,
-                    previous_prompt=current_text_box[0],
-                    user_instruction=instruction,
-                    on_done=lambda new_text: _on_regen_success(new_text),
-                    on_failed=lambda msg: _on_regen_error(msg),
-                )
-                regen_btn.setEnabled(False)
-                regen_btn.setText(tr('seedance_popup_regenerating'))
-                instr_ta.setEnabled(False)
-                regen_status.setVisible(False)
-                regen_status.setText("")
-                # Сбрасываем «✓ Скопировано» — после regen скопированный
-                # старый текст уже неактуален, копировать надо новый.
-                copy_btn.setText(tr('seedance_popup_copy'))
-            except Exception as e:
-                _on_regen_error(str(e)[:200])
-
-        def _on_regen_success(new_text: str):
-            current_text_box[0] = new_text
-            ta.setPlainText(new_text)
-            instr_ta.clear()
-            instr_ta.setEnabled(True)
-            regen_btn.setEnabled(True)
-            regen_btn.setText(tr('seedance_popup_regen'))
-
-        def _on_regen_error(msg: str):
-            instr_ta.setEnabled(True)
-            regen_btn.setEnabled(True)
-            regen_btn.setText(tr('seedance_popup_regen'))
-            regen_status.setText(tr('seedance_popup_regen_failed', msg=msg))
-            regen_status.setVisible(True)
-
-        regen_btn.clicked.connect(_do_regen)
-        copy_btn.clicked.connect(_do_copy)
-        close_btn.clicked.connect(dlg.accept)
-        btns_row.addWidget(regen_btn)
-        btns_row.addWidget(copy_btn)
-        btns_row.addStretch()
-        btns_row.addWidget(close_btn)
-        v.addLayout(btns_row)
-
-        # ── (Compress) Отдельный ряд: «Цель» / «Лимит» / «✂️ Сократить» ──
-        # Сжимает текущий текст промпта до target_chars через Opus 4.7
-        # --effort low. Target/limit персистятся в QSettings под namespace
-        # seedance_compress/. Default 3700 / 4000.
+        # ── Compress row: target/limit/compress ──
         try:
-            from PyQt6.QtWidgets import QSpinBox as _QSB
             _qs_compress = QSettings(APP_ORG, APP_NAME)
             try:
                 cur_target = int(_qs_compress.value(
@@ -11477,7 +11677,6 @@ class MainWindow(QMainWindow):
 
         compress_row = QHBoxLayout()
         compress_row.setSpacing(8)
-
         target_lbl = QLabel(tr('compress_target_label'))
         target_lbl.setStyleSheet("color:#aaa; font-size:12px;")
         compress_row.addWidget(target_lbl)
@@ -11505,31 +11704,208 @@ class MainWindow(QMainWindow):
 
         compress_btn = QPushButton(tr('compress_btn'))
         compress_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        compress_btn.setStyleSheet(
-            "QPushButton { background:#2a1d44; color:#c9aaff; border:1px solid "
-            "#4a2f7a; border-radius:6px; padding:6px 12px; font-size:13px; "
-            "font-weight:600; }"
-            "QPushButton:hover { background:#372659; }"
-            "QPushButton:disabled { background:#1a1428; color:#666; "
-            "border-color:#2a2240; }")
+        compress_btn.setStyleSheet(regen_btn.styleSheet())
         compress_row.addWidget(compress_btn)
         compress_row.addStretch()
-        v.addLayout(compress_row)
 
-        # ── Логика счётчика длины ──
-        def _update_length_label():
-            cur_len = len(ta.toPlainText())
-            cur_limit_val = int(limit_spin.value())
-            color = "#7cc97c" if cur_len <= cur_limit_val else "#ff8a8a"
-            length_label.setText(
-                tr('compress_length_label', n=cur_len))
-            length_label.setStyleSheet(
-                f"color:{color}; font-size:11px;")
-        _update_length_label()
-        ta.textChanged.connect(_update_length_label)
-        limit_spin.valueChanged.connect(lambda _v: _update_length_label())
+        # ── Helper closures ──
+        TAB_TEXTAREA_QSS = (
+            "QPlainTextEdit { background:#15101e; border:none; "
+            "color:#ddd; padding:10px; font-size:12px; "
+            "font-family: 'Menlo','Consolas',monospace; }")
 
-        # ── Логика кнопки «✂️ Сократить» ──
+        def _build_textarea(text_val: str) -> QPlainTextEdit:
+            t = QPlainTextEdit()
+            t.setPlainText(text_val or "")
+            t.setReadOnly(True)
+            t.setStyleSheet(TAB_TEXTAREA_QSS)
+            return t
+
+        def _format_tab_title(pos_idx: int, text_len: int) -> str:
+            """Заголовок «Вкладка N (X)» где N — позиция в QTabWidget,
+            X — текущая длина текста этой вкладки."""
+            return tr('seedance_tab_label_format',
+                       n=pos_idx + 1, chars=text_len)
+
+        def _apply_tab_color(pos_idx: int, text_len: int) -> None:
+            """Красит заголовок зелёным/красным по лимиту."""
+            lim = int(limit_spin.value())
+            try:
+                bar = tabs_widget.tabBar()
+                color = _QColor("#7cc97c") if text_len <= lim else _QColor("#ff8a8a")
+                bar.setTabTextColor(pos_idx, color)
+            except Exception:
+                pass
+
+        def _refresh_titles() -> None:
+            """Пересчитывает все заголовки + цвета (после смены limit /
+            добавления/удаления вкладки)."""
+            for i, st in enumerate(tabs_state):
+                ln = len(st.get("text") or "")
+                tabs_widget.setTabText(i, _format_tab_title(i, ln))
+                _apply_tab_color(i, ln)
+                # Также синхронизируем title в state (для save)
+                st["title"] = f"Вкладка {i + 1}"
+
+        def _disable_tab_close(pos_idx: int) -> None:
+            """Убирает крестик у заданной вкладки. Используется для idx=0
+            (оригинал — нельзя закрыть)."""
+            try:
+                bar = tabs_widget.tabBar()
+                bar.setTabButton(pos_idx,
+                                 _QTB.ButtonPosition.RightSide, None)
+            except Exception:
+                pass
+
+        def _active_text() -> str:
+            i = tabs_widget.currentIndex()
+            if 0 <= i < len(tabs_state):
+                return tabs_state[i].get("text") or ""
+            return ""
+
+        def _update_length_label() -> None:
+            ln = len(_active_text())
+            lim = int(limit_spin.value())
+            color = "#7cc97c" if ln <= lim else "#ff8a8a"
+            length_label.setText(tr('compress_length_label', n=ln))
+            length_label.setStyleSheet(f"color:{color}; font-size:11px;")
+
+        def _persist() -> None:
+            _save_seedance_tabs(
+                tabs_path, tabs_state,
+                active_idx=tabs_widget.currentIndex(),
+                next_idx=next_idx_holder[0])
+
+        def _build_initial_tabs() -> None:
+            for i, st in enumerate(tabs_state):
+                ta_w = _build_textarea(st.get("text") or "")
+                tabs_widget.addTab(ta_w, "")
+            _refresh_titles()
+            # Idx 0 — без крестика
+            _disable_tab_close(0)
+            # Активная вкладка
+            ai = min(max(0, loaded_active), len(tabs_state) - 1)
+            tabs_widget.setCurrentIndex(ai)
+
+        def _add_new_tab(new_text: str, source: str) -> None:
+            k = int(next_idx_holder[0])
+            new_file = f"{ep_id}_block_{block_n}_tab{k}.txt"
+            new_path = SEEDANCE_DIR / new_file
+            try:
+                SEEDANCE_DIR.mkdir(parents=True, exist_ok=True)
+                new_path.write_text(new_text, encoding="utf-8")
+            except Exception as e:
+                sys.stderr.write(
+                    f"[seedance_tabs] failed to write {new_file}: "
+                    f"{type(e).__name__}: {e}\n")
+                return
+            next_idx_holder[0] = k + 1
+            st_entry = {
+                "title": f"Вкладка {len(tabs_state) + 1}",
+                "file": new_file,
+                "source": source,
+                "text": new_text,
+            }
+            tabs_state.append(st_entry)
+            ta_w = _build_textarea(new_text)
+            tabs_widget.addTab(ta_w, "")
+            _refresh_titles()
+            tabs_widget.setCurrentIndex(len(tabs_state) - 1)
+            _persist()
+
+        def _on_tab_close(pos_idx: int) -> None:
+            if pos_idx == 0:
+                return  # защита — оригинал нельзя закрыть
+            if pos_idx < 0 or pos_idx >= len(tabs_state):
+                return
+            # Удалить файл с диска
+            try:
+                fname = tabs_state[pos_idx].get("file") or ""
+                if fname:
+                    fpath = SEEDANCE_DIR / fname
+                    if fpath.exists():
+                        fpath.unlink()
+            except Exception as e:
+                sys.stderr.write(
+                    f"[seedance_tabs] failed to unlink: "
+                    f"{type(e).__name__}: {e}\n")
+            del tabs_state[pos_idx]
+            tabs_widget.removeTab(pos_idx)
+            _refresh_titles()
+            _persist()
+
+        def _on_tab_changed(new_idx: int) -> None:
+            _update_length_label()
+            _persist()
+
+        # ── Smart enabled state regen_btn ──
+        def _on_instr_text_changed() -> None:
+            has = bool(instr_ta.toPlainText().strip())
+            if not has:
+                regen_btn.setEnabled(False)
+                regen_btn.setToolTip(tr('seedance_regen_disabled_tooltip'))
+            else:
+                regen_btn.setEnabled(True)
+                regen_btn.setToolTip("")
+
+        def _lock_ui(active_btn: QPushButton, active_text: str) -> None:
+            active_btn.setEnabled(False)
+            active_btn.setText(active_text)
+            target_spin.setEnabled(False)
+            limit_spin.setEnabled(False)
+            tabs_widget.tabBar().setEnabled(False)
+            instr_ta.setEnabled(False)
+            # Вторая кнопка тоже disabled пока работает первая
+            if active_btn is regen_btn:
+                compress_btn.setEnabled(False)
+            else:
+                regen_btn.setEnabled(False)
+            regen_status.setVisible(False)
+            regen_status.setText("")
+            copy_btn.setText(tr('seedance_popup_copy'))
+
+        def _unlock_ui() -> None:
+            regen_btn.setText(tr('seedance_popup_regen'))
+            compress_btn.setText(tr('compress_btn'))
+            target_spin.setEnabled(True)
+            limit_spin.setEnabled(True)
+            tabs_widget.tabBar().setEnabled(True)
+            instr_ta.setEnabled(True)
+            compress_btn.setEnabled(True)
+            _on_instr_text_changed()  # пересчёт enabled для regen_btn
+
+        # ── Handlers ──
+        def _do_copy():
+            try:
+                QApplication.clipboard().setText(_active_text())
+                copy_btn.setText(tr('seedance_popup_copied'))
+            except Exception:
+                pass
+
+        def _do_regen():
+            instruction = instr_ta.toPlainText().strip()
+            try:
+                self._start_seedance_regen(
+                    block_n=block_n,
+                    previous_prompt=_active_text(),
+                    user_instruction=instruction,
+                    on_done=lambda new_text: _on_regen_success(new_text),
+                    on_failed=lambda msg: _on_regen_error(msg),
+                )
+                _lock_ui(regen_btn, tr('seedance_popup_regenerating'))
+            except Exception as e:
+                _on_regen_error(str(e)[:200])
+
+        def _on_regen_success(new_text: str):
+            _add_new_tab(new_text, source="regen")
+            instr_ta.clear()
+            _unlock_ui()
+
+        def _on_regen_error(msg: str):
+            _unlock_ui()
+            regen_status.setText(tr('seedance_popup_regen_failed', msg=msg))
+            regen_status.setVisible(True)
+
         def _persist_compress_settings():
             try:
                 _qs = QSettings(APP_ORG, APP_NAME)
@@ -11540,46 +11916,56 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        def _on_compress_success(new_text: str):
-            current_text_box[0] = new_text
-            ta.setPlainText(new_text)
-            compress_btn.setEnabled(True)
-            compress_btn.setText(tr('compress_btn'))
-            target_spin.setEnabled(True)
-            limit_spin.setEnabled(True)
-            regen_btn.setEnabled(True)
-            copy_btn.setText(tr('seedance_popup_copy'))
-
-        def _on_compress_error(msg: str):
-            compress_btn.setEnabled(True)
-            compress_btn.setText(tr('compress_btn'))
-            target_spin.setEnabled(True)
-            limit_spin.setEnabled(True)
-            regen_btn.setEnabled(True)
-            regen_status.setText(tr('compress_failed', msg=msg))
-            regen_status.setVisible(True)
-
         def _do_compress():
             target_chars = int(target_spin.value())
             _persist_compress_settings()
             try:
                 self._start_seedance_compress(
-                    current_prompt=current_text_box[0],
+                    current_prompt=_active_text(),
                     target_chars=target_chars,
                     on_done=lambda new_text: _on_compress_success(new_text),
                     on_failed=lambda msg: _on_compress_error(msg),
                 )
-                compress_btn.setEnabled(False)
-                compress_btn.setText(tr('compressing'))
-                target_spin.setEnabled(False)
-                limit_spin.setEnabled(False)
-                regen_btn.setEnabled(False)
-                regen_status.setVisible(False)
-                regen_status.setText("")
+                _lock_ui(compress_btn, tr('compressing'))
             except Exception as e:
                 _on_compress_error(str(e)[:200])
 
+        def _on_compress_success(new_text: str):
+            _add_new_tab(new_text, source="compress")
+            _unlock_ui()
+
+        def _on_compress_error(msg: str):
+            _unlock_ui()
+            regen_status.setText(tr('compress_failed', msg=msg))
+            regen_status.setVisible(True)
+
+        # ── Wire up ──
+        _build_initial_tabs()
+        _update_length_label()
+        if save_needed:
+            _persist()  # auto-clean stale entries / создание дефолтного JSON
+
+        regen_btn.clicked.connect(_do_regen)
+        copy_btn.clicked.connect(_do_copy)
+        close_btn.clicked.connect(dlg.accept)
         compress_btn.clicked.connect(_do_compress)
+        tabs_widget.tabCloseRequested.connect(_on_tab_close)
+        tabs_widget.currentChanged.connect(_on_tab_changed)
+        instr_ta.textChanged.connect(_on_instr_text_changed)
+        limit_spin.valueChanged.connect(
+            lambda _v: (_refresh_titles(), _update_length_label()))
+        # Финальная страховка — при закрытии попапа дозаписать state
+        dlg.finished.connect(lambda _r: _persist())
+
+        # Initial enabled state regen_btn (нет фидбэка → disabled)
+        _on_instr_text_changed()
+
+        btns_row.addWidget(regen_btn)
+        btns_row.addWidget(copy_btn)
+        btns_row.addStretch()
+        btns_row.addWidget(close_btn)
+        v.addLayout(btns_row)
+        v.addLayout(compress_row)
 
         dlg.exec()
 
