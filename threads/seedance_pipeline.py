@@ -415,12 +415,20 @@ class SeedanceRegenThread(QThread):
 
     def _run_claude_regen(self, system_prompt: str, user_prompt: str) -> str:
         """Дубликат `_run_claude` из `SeedancePipelineThread` — выделен
-        чтобы не зависеть от instance pipeline-треда. Логика идентична."""
+        чтобы не зависеть от instance pipeline-треда. Логика идентична.
+
+        v1.0.86+: добавлен `--effort low` для Opus thinking. Диагностика
+        montage pipeline показала что default effort (high/xhigh) даёт
+        120-160с silence на Opus, low — почти ноль (max silence 2.6с).
+        Регенерация — точечная переделка одного блока с фидбэком, низкий
+        effort должен справиться без ущерба качеству.
+        Массовый _run_claude (выше) — отдельная задача, пока не трогаем."""
         if not self._cli:
             raise RuntimeError("claude CLI not found")
         cmd = [self._cli, "-p",
                "--system-prompt", system_prompt,
-               "--output-format", "text"]
+               "--output-format", "text",
+               "--effort", "low"]
         if self._model:
             cmd.extend(["--model", self._model])
         kwargs: dict = {

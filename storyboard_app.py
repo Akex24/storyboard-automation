@@ -11298,13 +11298,6 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background:#372659; }"
             "QPushButton:disabled { background:#1a1428; color:#666; "
             "border-color:#2a2240; }")
-        # Временная блокировка регенерации Seedance промпта — пока чиним
-        # инструкцию регенерации. Кнопка остаётся видимой (disabled
-        # styleSheet выше), tooltip объясняет причину. Внутренняя логика
-        # _do_regen / _on_regen_success / _on_regen_error не тронута —
-        # вернуть кнопку в работу = удалить эти 2 строки.
-        regen_btn.setEnabled(False)
-        regen_btn.setToolTip(tr('seedance_popup_regen_disabled_tooltip'))
         copy_btn = QPushButton(tr('seedance_popup_copy'))
         copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn = QPushButton(tr('seedance_popup_close'))
