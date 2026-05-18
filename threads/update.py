@@ -1696,8 +1696,14 @@ class SendUpdateThread(QThread):
                                         continue
                                     if f.name in ('.DS_Store', 'Thumbs.db'):
                                         continue
-                                    rel = f.relative_to(actors_root)
-                                    zf.write(f, arcname=f"actors/{rel}")
+                                    # ВАЖНО: НЕ называть переменную `rel` —
+                                    # она затрёт `rel` из outer scope (dict от
+                                    # _sa.create_github_release c upload_url),
+                                    # и `rel["upload_url"]` ниже бросит
+                                    # TypeError: PosixPath is not subscriptable.
+                                    # Bug пойман в v1.0.68/1.0.69 (см. runtime.log).
+                                    arc_rel = f.relative_to(actors_root)
+                                    zf.write(f, arcname=f"actors/{arc_rel}")
                                     packed_files += 1
                     if packed_files > 0 and actors_zip_path.exists():
                         a_size_mb = max(
