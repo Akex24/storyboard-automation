@@ -101,5 +101,8 @@
     "roles": {
       "finalnyy_raschet_2": "worker"
     }
+  },
+  "aktrisa_1": {
+    "display_name": "Актриса 1"
   }
 }
