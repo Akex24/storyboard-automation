@@ -11258,7 +11258,7 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         v.addWidget(hint)
 
-        # Главный textarea — текст промпта (обновляется при regen)
+        # Главный textarea — текст промпта (обновляется при regen / compress)
         ta = QPlainTextEdit()
         ta.setPlainText(text)
         ta.setReadOnly(True)
@@ -11267,6 +11267,13 @@ class MainWindow(QMainWindow):
             "border-radius:6px; color:#ddd; padding:10px; "
             "font-size:12px; font-family: 'Menlo','Consolas',monospace; }")
         v.addWidget(ta, stretch=1)
+
+        # ── Счётчик длины промпта (зелёный / красный по сравнению с limit) ──
+        # Используется фичей «✂️ Сократить» — юзер видит влезает ли текущий
+        # текст в его лимит. Обновляется через ta.textChanged.
+        length_label = QLabel("")
+        length_label.setStyleSheet("color:#7cc97c; font-size:11px;")
+        v.addWidget(length_label)
 
         # ── Лейбл + textarea инструкции «что переделать» ──
         instr_lbl = QLabel(tr('seedance_popup_instruction_label'))
@@ -11358,6 +11365,132 @@ class MainWindow(QMainWindow):
         btns_row.addStretch()
         btns_row.addWidget(close_btn)
         v.addLayout(btns_row)
+
+        # ── (Compress) Отдельный ряд: «Цель» / «Лимит» / «✂️ Сократить» ──
+        # Сжимает текущий текст промпта до target_chars через Opus 4.7
+        # --effort low. Target/limit персистятся в QSettings под namespace
+        # seedance_compress/. Default 3700 / 4000.
+        try:
+            from PyQt6.QtWidgets import QSpinBox as _QSB
+            _qs_compress = QSettings(APP_ORG, APP_NAME)
+            try:
+                cur_target = int(_qs_compress.value(
+                    "seedance_compress/target_chars", 3700))
+            except (TypeError, ValueError):
+                cur_target = 3700
+            try:
+                cur_limit = int(_qs_compress.value(
+                    "seedance_compress/limit_chars", 4000))
+            except (TypeError, ValueError):
+                cur_limit = 4000
+        except Exception:
+            cur_target, cur_limit = 3700, 4000
+
+        compress_row = QHBoxLayout()
+        compress_row.setSpacing(8)
+
+        target_lbl = QLabel(tr('compress_target_label'))
+        target_lbl.setStyleSheet("color:#aaa; font-size:12px;")
+        compress_row.addWidget(target_lbl)
+        target_spin = _QSB()
+        target_spin.setRange(500, 15000)
+        target_spin.setSingleStep(100)
+        target_spin.setValue(cur_target)
+        target_spin.setStyleSheet(
+            "QSpinBox { background:#181024; color:#ddd; border:1px solid "
+            "#3a2c52; border-radius:4px; padding:3px 6px; font-size:12px; "
+            "min-width: 80px; }")
+        block_wheel_event(target_spin)
+        compress_row.addWidget(target_spin)
+
+        limit_lbl = QLabel(tr('compress_limit_label'))
+        limit_lbl.setStyleSheet("color:#aaa; font-size:12px;")
+        compress_row.addWidget(limit_lbl)
+        limit_spin = _QSB()
+        limit_spin.setRange(500, 15000)
+        limit_spin.setSingleStep(100)
+        limit_spin.setValue(cur_limit)
+        limit_spin.setStyleSheet(target_spin.styleSheet())
+        block_wheel_event(limit_spin)
+        compress_row.addWidget(limit_spin)
+
+        compress_btn = QPushButton(tr('compress_btn'))
+        compress_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        compress_btn.setStyleSheet(
+            "QPushButton { background:#2a1d44; color:#c9aaff; border:1px solid "
+            "#4a2f7a; border-radius:6px; padding:6px 12px; font-size:13px; "
+            "font-weight:600; }"
+            "QPushButton:hover { background:#372659; }"
+            "QPushButton:disabled { background:#1a1428; color:#666; "
+            "border-color:#2a2240; }")
+        compress_row.addWidget(compress_btn)
+        compress_row.addStretch()
+        v.addLayout(compress_row)
+
+        # ── Логика счётчика длины ──
+        def _update_length_label():
+            cur_len = len(ta.toPlainText())
+            cur_limit_val = int(limit_spin.value())
+            color = "#7cc97c" if cur_len <= cur_limit_val else "#ff8a8a"
+            length_label.setText(
+                tr('compress_length_label', n=cur_len))
+            length_label.setStyleSheet(
+                f"color:{color}; font-size:11px;")
+        _update_length_label()
+        ta.textChanged.connect(_update_length_label)
+        limit_spin.valueChanged.connect(lambda _v: _update_length_label())
+
+        # ── Логика кнопки «✂️ Сократить» ──
+        def _persist_compress_settings():
+            try:
+                _qs = QSettings(APP_ORG, APP_NAME)
+                _qs.setValue(
+                    "seedance_compress/target_chars", int(target_spin.value()))
+                _qs.setValue(
+                    "seedance_compress/limit_chars", int(limit_spin.value()))
+            except Exception:
+                pass
+
+        def _on_compress_success(new_text: str):
+            current_text_box[0] = new_text
+            ta.setPlainText(new_text)
+            compress_btn.setEnabled(True)
+            compress_btn.setText(tr('compress_btn'))
+            target_spin.setEnabled(True)
+            limit_spin.setEnabled(True)
+            regen_btn.setEnabled(True)
+            copy_btn.setText(tr('seedance_popup_copy'))
+
+        def _on_compress_error(msg: str):
+            compress_btn.setEnabled(True)
+            compress_btn.setText(tr('compress_btn'))
+            target_spin.setEnabled(True)
+            limit_spin.setEnabled(True)
+            regen_btn.setEnabled(True)
+            regen_status.setText(tr('compress_failed', msg=msg))
+            regen_status.setVisible(True)
+
+        def _do_compress():
+            target_chars = int(target_spin.value())
+            _persist_compress_settings()
+            try:
+                self._start_seedance_compress(
+                    current_prompt=current_text_box[0],
+                    target_chars=target_chars,
+                    on_done=lambda new_text: _on_compress_success(new_text),
+                    on_failed=lambda msg: _on_compress_error(msg),
+                )
+                compress_btn.setEnabled(False)
+                compress_btn.setText(tr('compressing'))
+                target_spin.setEnabled(False)
+                limit_spin.setEnabled(False)
+                regen_btn.setEnabled(False)
+                regen_status.setVisible(False)
+                regen_status.setText("")
+            except Exception as e:
+                _on_compress_error(str(e)[:200])
+
+        compress_btn.clicked.connect(_do_compress)
 
         dlg.exec()
 
@@ -11493,6 +11626,50 @@ class MainWindow(QMainWindow):
         def _cleanup():
             try:
                 self._seedance_regen_threads.remove(thread)
+            except Exception:
+                pass
+
+        thread.done.connect(lambda _t: _cleanup())
+        thread.failed.connect(lambda _m: _cleanup())
+        thread.start()
+
+    def _start_seedance_compress(self, current_prompt: str,
+                                   target_chars: int,
+                                   on_done,
+                                   on_failed):
+        """Запускает `SeedanceCompressThread` — сжимает Seedance промпт
+        до `target_chars` через Opus 4.7 + --effort low.
+
+        В отличие от `_start_seedance_regen` не требует montage_card /
+        refs / Bible / voice_profiles — Compressor работает только с
+        текущим текстом промпта (всё необходимое уже внутри).
+
+        Файл `output/seedance/<ep>_block_N.txt` НЕ перезаписывается —
+        результат возвращается в попап через callback, юзер сам решит
+        копировать или ещё раз сжимать.
+        """
+        cli = find_claude_cli()
+        if not cli:
+            on_failed("claude CLI not found")
+            return
+        from threads.seedance_pipeline import SeedanceCompressThread
+        thread = SeedanceCompressThread(
+            claude_cli_path=cli,
+            current_prompt=current_prompt,
+            target_chars=int(target_chars),
+            model="claude-opus-4-7",
+            parent=self,
+        )
+        thread.done.connect(on_done)
+        thread.failed.connect(on_failed)
+        # Хранить ссылку чтобы тред не сборщил мусор пока работает
+        if not hasattr(self, '_seedance_compress_threads'):
+            self._seedance_compress_threads = []
+        self._seedance_compress_threads.append(thread)
+
+        def _cleanup():
+            try:
+                self._seedance_compress_threads.remove(thread)
             except Exception:
                 pass
 

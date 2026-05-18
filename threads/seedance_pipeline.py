@@ -34,7 +34,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from agents.seedance_prompts import (
     SYSTEM as SEEDANCE_WRITER_SYSTEM,
+    SYSTEM_COMPRESS,
     build_user_prompt as build_seedance_user_prompt,
+    build_compress_user_prompt,
 )
 
 
@@ -448,4 +450,95 @@ class SeedanceRegenThread(QThread):
         out = (r.stdout or "").strip()
         if not out:
             raise RuntimeError("empty response from Seedance Writer")
+        return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# COMPRESS: сжатие готового Seedance промпта до target_chars.
+# Используется в попапе «🎬 Промпт Seedance» — кнопка «✂️ Сократить»
+# рядом с «↻ Перегенерировать». Не пишет на диск (в отличие от regen
+# который перезаписывает output/seedance/<ep>_block_N.txt). Юзер сам
+# решит — копировать новый текст или нажать ещё раз с другим target.
+# ─────────────────────────────────────────────────────────────────────────
+class SeedanceCompressThread(QThread):
+    """Сжатие готового Seedance промпта до целевой длины.
+
+    На вход:
+      • current_prompt — текущий текст промпта (из textarea попапа)
+      • target_chars   — целевая длина в символах (default 3700)
+      • model          — id модели CLI (`claude-opus-4-7` по умолчанию)
+
+    SYSTEM_COMPRESS .format(target_chars=…) подставляет цель в инструкцию.
+    User-prompt включает current_prompt + дублированную цель.
+
+    Сигналы:
+      • done(text)  — успех, новый текст промпта
+      • failed(msg) — ошибка
+    """
+
+    done = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    SUBPROCESS_TIMEOUT_SEC = 600
+
+    def __init__(self, claude_cli_path: str,
+                 current_prompt: str,
+                 target_chars: int,
+                 model: Optional[str] = None,
+                 parent=None):
+        super().__init__(parent)
+        self._cli = claude_cli_path
+        self._current_prompt = current_prompt or ""
+        self._target_chars = int(target_chars)
+        self._model = model
+
+    def run(self) -> None:
+        try:
+            # SYSTEM_COMPRESS — шаблон с {target_chars}. Подставляем
+            # конкретную цель ДО передачи в CLI чтобы Opus получил
+            # числовую цель уже в системном промпте (не размытое
+            # «уложиться»).
+            system = SYSTEM_COMPRESS.format(target_chars=self._target_chars)
+            user = build_compress_user_prompt(
+                self._current_prompt, self._target_chars)
+            txt = self._run_claude_compress(system, user)
+            # Sanitize — общий с regen/primary pipeline (срезает markdown
+            # обёртки если AI обернул всё в ``` ещё раз).
+            txt = SeedancePipelineThread._sanitize(txt)
+            self.done.emit(txt)
+        except Exception as e:
+            self.failed.emit(str(e)[:500])
+
+    def _run_claude_compress(self, system_prompt: str,
+                              user_prompt: str) -> str:
+        """Копия `_run_claude_regen` из SeedanceRegenThread (включая
+        `--effort low`). Выделен чтобы не зависеть от instance regen
+        thread'а. Логика идентична: subprocess.run с timeout=600с,
+        CREATE_NO_WINDOW под Win32, чтение stdout как text/utf-8.
+        """
+        if not self._cli:
+            raise RuntimeError("claude CLI not found")
+        cmd = [self._cli, "-p",
+               "--system-prompt", system_prompt,
+               "--output-format", "text",
+               "--effort", "low"]
+        if self._model:
+            cmd.extend(["--model", self._model])
+        kwargs: dict = {
+            'input': user_prompt,
+            'capture_output': True,
+            'text': True,
+            'timeout': self.SUBPROCESS_TIMEOUT_SEC,
+            'encoding': 'utf-8',
+        }
+        if sys.platform == 'win32':
+            CREATE_NO_WINDOW = 0x08000000
+            kwargs['creationflags'] = CREATE_NO_WINDOW
+        r = subprocess.run(cmd, **kwargs)
+        if r.returncode != 0:
+            stderr = (r.stderr or "")[:500]
+            raise RuntimeError(f"claude exit={r.returncode}: {stderr}")
+        out = (r.stdout or "").strip()
+        if not out:
+            raise RuntimeError("empty response from Seedance Compressor")
         return out
