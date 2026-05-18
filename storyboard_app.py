@@ -3505,16 +3505,68 @@ def _extract_panel_body(prompt_text: str, panel_idx: int) -> Optional[str]:
     идёт после «Panel N (Position):» до следующей `Panel \\d+ (` или
     `===ПРОМПТ_БЛОК...КОНЕЦ===`. БЕЗ хедера блока. Используется в
     `_on_edit_shot` для pre-fill попапа правки.
+
+    Защита от LLM self-correction артефактов (v1.0.70+):
+    PromptWriter Opus иногда пишет в финальный output строку вида
+    «Panel 2 (Far Left—wait correcting): see next.» рядом с настоящей
+    «Panel 2 (Middle Left): <реальное тело>». Парсер по re.search брал
+    первое совпадение → пользователь видел мусор. Кейс: ep16_block_5
+    финальный_расчет_2 (см. _session_log).
+
+    Алгоритм при множественных совпадениях:
+      1. Собрать все matches для `Panel N (...)`.
+      2. Отфильтровать совпадения с markers self-correction:
+         «wait correcting», «see next», «ignore above», «actually,»
+         + любое body длиной <20 символов начинающееся с «see ».
+      3. Из оставшихся выбрать совпадение с самым длинным body
+         (мусор обычно короткий, реальная панель — длинная).
+      4. Fallback если все отфильтрованы: вернуть последнее
+         совпадение (LLM обычно «исправляется» в сторону правильного).
+      5. Logging в stderr с количеством отфильтрованных.
     """
     target = panel_idx + 1
     pat = re.compile(
         rf'Panel\s+{target}\s+\([^)]+\):\s*(.*?)(?=Panel\s+\d+\s+\(|===ПРОМПТ_БЛОК.*?КОНЕЦ|\Z)',
         re.DOTALL,
     )
-    m = pat.search(prompt_text)
-    if not m:
+    matches = list(pat.finditer(prompt_text))
+    if not matches:
         return None
-    return m.group(1).strip()
+    if len(matches) == 1:
+        return matches[0].group(1).strip()
+
+    # Множественные matches — это LLM-артефакт. Чистим.
+    ARTIFACT_MARKERS = (
+        "wait, correcting", "wait correcting",
+        "see next", "ignore above", "actually,",
+    )
+    bodies = [m.group(1).strip() for m in matches]
+
+    def _is_artifact(b: str) -> bool:
+        bl = b.lower()
+        if len(b) < 20 and bl.startswith("see "):
+            return True
+        for marker in ARTIFACT_MARKERS:
+            if marker in bl:
+                return True
+        return False
+
+    real = [b for b in bodies if not _is_artifact(b)]
+    if real:
+        picked = max(real, key=len)
+        filtered_count = len(bodies) - len(real)
+    else:
+        # Все matches помечены как артефакт — fallback на последнее.
+        picked = bodies[-1]
+        filtered_count = len(bodies)
+    try:
+        sys.stderr.write(
+            f"[_extract_panel_body] WARN: Panel {target} has "
+            f"{len(matches)} matches, filtered {filtered_count} as "
+            f"self-correction artifacts, picked body_len={len(picked)}\n")
+    except Exception:
+        pass
+    return picked
 
 
 def _replace_panel_body(prompt_text: str, panel_idx: int, new_body: str) -> str:
