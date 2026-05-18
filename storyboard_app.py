@@ -2499,6 +2499,43 @@ def fetch_release_asset_info(version: str) -> Optional[Dict]:
         return None
 
 
+def fetch_release_asset_by_name(version: str, name_pattern: str) -> Optional[Dict]:
+    """Возвращает info об asset релиза `app-vX.Y.Z` по подстроке в имени.
+
+    В отличие от `fetch_release_asset_info` (платформо-зависимый поиск
+    `*-mac.zip` / `*-win.zip`) ищет ЛЮБОЙ asset по substring (case-insensitive).
+    Используется для дополнительных release-assets: `actors-snapshot-vX.Y.Z.zip`
+    (платформо-независимый снапшот папки actors/ для тихой синхронизации
+    на стороне коллеги — см. `DownloadAppUpdateThread._sync_actors_snapshot`).
+
+    Args:
+        version: версия без префикса `app-v` (например "1.0.69").
+        name_pattern: подстрока для поиска в `asset.name` (например
+                      "actors-snapshot" или "actors").
+    Returns:
+        Полный asset dict от GitHub API (содержит `browser_download_url`,
+        `size`, `name`) или None если не найден / сеть упала.
+    """
+    needle = (name_pattern or "").lower()
+    if not needle:
+        return None
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/releases"
+        r = requests.get(url, timeout=10,
+                         headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            return None
+        for rel in r.json():
+            if rel.get("tag_name") == f"app-v{version}":
+                for asset in rel.get("assets", []):
+                    name = asset.get("name", "").lower()
+                    if needle in name:
+                        return asset
+        return None
+    except Exception:
+        return None
+
+
 def fetch_all_release_stats() -> List[Dict]:
     """Возвращает список {tag, version, downloads} для последних релизов приложения."""
     try:

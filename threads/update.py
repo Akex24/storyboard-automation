@@ -32,6 +32,7 @@ import io
 import os
 import sys
 import json
+import time
 import datetime
 import subprocess
 import shutil
@@ -299,6 +300,224 @@ class DownloadAppUpdateThread(QThread):
             base = Path(tempfile.gettempdir()) / 'StoryboardStudio'
         return base / f"storyboard_update_{self.target_version}_{os.getpid()}"
 
+    def _sync_actors_snapshot(self) -> None:
+        """Тихая синхронизация папки `actors/` на стороне коллеги.
+
+        Качает release-asset `actors-snapshot-v<target>.zip` (если есть),
+        распаковывает в отдельный tempdir, и зеркалит slug-папки + actors.json
+        в локальный `self.root / "actors"`.
+
+        Что ЗЕРКАЛИТСЯ:
+          - actors/actors.json (целиком — поле `roles` затирается, это
+            продуктовое решение)
+          - actors/<slug>/ (фото актёров)
+          - Slug удалённый у админа — удаляется и у коллеги
+
+        Что НЕ ТРОГАЕТСЯ:
+          - actors/_textures/ — глобальные текстуры коллеги
+          - actors/_* — любые служебные папки начинающиеся с _
+          - actors/.DS_Store / Thumbs.db
+          - Файлы и папки которые в локальной actors/ есть но НЕ
+            упоминаются в zip (если admin их явно не удалил — оставляем)
+
+        Failure modes:
+          - Asset не найден в Release: log + return (старый Send Update
+            без этой фичи — нормально, актёры останутся как есть).
+          - Скачивание упало / zip битый: log + return, local actors/
+            не тронут.
+          - Apply одного slug упал (Defender lock и т.п.): retry 3×
+            с 200ms задержкой, потом skip slug, продолжаем остальные.
+          - Любая uncaught exception ловится в caller (run()), не валит
+            основной .app update.
+
+        Защита от self-sync для админа:
+          Если у юзера есть `.git/` директория — это админ с source
+          репозитория, его actors/ — source of truth, не трогаем.
+        """
+        # ── 0. Guard для админа ──
+        if (self.root / '.git').is_dir():
+            self._early_log(
+                "[actors_sync] admin detected (.git exists), skipping")
+            return
+
+        # ── 1. Найти actors-snapshot asset ──
+        self._early_log(
+            f"[actors_sync] start, target=v{self.target_version}")
+        asset = _sa.fetch_release_asset_by_name(
+            self.target_version, "actors-snapshot")
+        if not asset:
+            self._early_log(
+                "[actors_sync] asset 'actors-snapshot' not found in release, "
+                "skipping (старый Send Update без этой фичи — норма)")
+            return
+        a_name = asset.get('name', '?')
+        a_size = asset.get('size', 0)
+        a_url = asset.get('browser_download_url')
+        if not a_url:
+            self._early_log(
+                f"[actors_sync] asset has no download_url, skipping: {a_name}")
+            return
+        self._early_log(
+            f"[actors_sync] asset found: {a_name}, size={a_size} bytes")
+
+        # ── 2. Скачать zip в память ──
+        try:
+            r = requests.get(a_url, timeout=300, stream=True)
+            r.raise_for_status()
+            zip_buf = io.BytesIO()
+            done = 0
+            for chunk in r.iter_content(chunk_size=65536):
+                zip_buf.write(chunk)
+                done += len(chunk)
+            self._early_log(
+                f"[actors_sync] downloaded {done} bytes")
+        except Exception as e:
+            self._early_log(
+                f"[actors_sync] download failed: {type(e).__name__}: {e}")
+            return
+
+        # ── 3. Валидировать и распаковать в отдельный tempdir ──
+        actors_tmp = (Path(tempfile.gettempdir())
+                      / "StoryboardStudio"
+                      / f"actors_snapshot_{self.target_version}_{os.getpid()}")
+        try:
+            if actors_tmp.exists():
+                shutil.rmtree(actors_tmp, ignore_errors=True)
+            actors_tmp.mkdir(parents=True, exist_ok=True)
+            zip_buf.seek(0)
+            if not zipfile.is_zipfile(zip_buf):
+                self._early_log(
+                    "[actors_sync] downloaded file is not a valid zip, skipping")
+                return
+            zip_buf.seek(0)
+            with zipfile.ZipFile(zip_buf) as z:
+                # Sanity: проверим что внутри есть верхняя папка `actors/`.
+                names = z.namelist()
+                if not any(n.startswith('actors/') for n in names):
+                    self._early_log(
+                        "[actors_sync] zip has no 'actors/' prefix, skipping")
+                    return
+                z.extractall(actors_tmp)
+            self._early_log(
+                f"[actors_sync] zip extracted to {actors_tmp}")
+        except Exception as e:
+            self._early_log(
+                f"[actors_sync] extract failed: {type(e).__name__}: {e}")
+            try:
+                if actors_tmp.exists():
+                    shutil.rmtree(actors_tmp, ignore_errors=True)
+            except Exception:
+                pass
+            return
+
+        # ── 4. Подсчитать дельту: что заменять, что удалять ──
+        local_actors = self.root / "actors"
+        new_actors = actors_tmp / "actors"
+        if not new_actors.is_dir():
+            self._early_log(
+                "[actors_sync] zip extracted but no 'actors/' folder inside, "
+                "skipping")
+            try:
+                shutil.rmtree(actors_tmp, ignore_errors=True)
+            except Exception:
+                pass
+            return
+        local_actors.mkdir(parents=True, exist_ok=True)
+
+        def _is_protected(name: str) -> bool:
+            """Имена которые НЕ синкаются (защищены)."""
+            if not name:
+                return True
+            if name.startswith('_'):
+                return True
+            if name in ('.DS_Store', 'Thumbs.db'):
+                return True
+            return False
+
+        zip_slugs = {p.name for p in new_actors.iterdir()
+                     if p.is_dir() and not _is_protected(p.name)}
+        # Страховка: если в zip 0 slug-папок — что-то сломалось при упаковке.
+        # НЕ удаляем локальных актёров, abort sync.
+        if not zip_slugs:
+            self._early_log(
+                "[actors_sync] zip contains 0 slug folders — abort to prevent "
+                "data loss on coworker's side")
+            try:
+                shutil.rmtree(actors_tmp, ignore_errors=True)
+            except Exception:
+                pass
+            return
+        local_slugs = {p.name for p in local_actors.iterdir()
+                       if p.is_dir() and not _is_protected(p.name)}
+        to_replace = zip_slugs
+        to_delete = local_slugs - zip_slugs
+        self._early_log(
+            f"[actors_sync] zip_slugs={sorted(zip_slugs)}, "
+            f"local_slugs={sorted(local_slugs)}, "
+            f"to_replace={len(to_replace)}, to_delete={len(to_delete)}")
+
+        # ── 5. Apply (retry 3× с 200ms на каждом slug) ──
+        def _retry(fn, what: str, slug: str) -> bool:
+            for attempt in range(1, 4):
+                try:
+                    fn()
+                    if attempt > 1:
+                        self._early_log(
+                            f"[actors_sync] {what} {slug}: OK on attempt {attempt}")
+                    return True
+                except Exception as e:
+                    self._early_log(
+                        f"[actors_sync] {what} {slug}: attempt {attempt}/3 "
+                        f"failed: {type(e).__name__}: {e}")
+                    time.sleep(0.2)
+            return False
+
+        replaced = 0
+        deleted = 0
+        skipped = 0
+        # Заменяем каждый slug
+        for slug in sorted(to_replace):
+            src = new_actors / slug
+            dst = local_actors / slug
+
+            def _do_replace(_src=src, _dst=dst):
+                if _dst.exists():
+                    shutil.rmtree(_dst)
+                shutil.copytree(_src, _dst)
+            if _retry(_do_replace, "replace", slug):
+                replaced += 1
+            else:
+                skipped += 1
+        # Удаляем slug-папки которых нет в zip
+        for slug in sorted(to_delete):
+            dst = local_actors / slug
+
+            def _do_delete(_dst=dst):
+                shutil.rmtree(_dst)
+            if _retry(_do_delete, "delete", slug):
+                deleted += 1
+            else:
+                skipped += 1
+        # actors.json — целиком копируем (поле `roles` затирается по дизайну)
+        zip_json = new_actors / "actors.json"
+        if zip_json.is_file():
+            dst_json = local_actors / "actors.json"
+
+            def _do_copy_json(_src=zip_json, _dst=dst_json):
+                shutil.copy2(_src, _dst)
+            if not _retry(_do_copy_json, "copy_json", "actors.json"):
+                skipped += 1
+
+        # ── 6. Cleanup tempdir ──
+        try:
+            shutil.rmtree(actors_tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+        self._early_log(
+            f"[actors_sync] DONE: replaced={replaced}, "
+            f"deleted={deleted}, skipped={skipped}")
+
     def run(self):
         """Скачивает новую версию + создаёт bootstrap-скрипт + запускает его.
 
@@ -445,6 +664,18 @@ class DownloadAppUpdateThread(QThread):
                     "В архиве не найдено приложение Storyboard Studio.")
                 return
             new_app_src = candidates[0]
+
+            # ── Тихий sync actors/ (best-effort, без отдельного UI) ──
+            # Качаем actors-snapshot-vX.Y.Z.zip из того же релиза и
+            # зеркалим в self.root / "actors". Локальные _textures и
+            # любые _* служебные папки НЕ ТРОГАЕМ. Любая ошибка тут —
+            # log + continue, не валим основной .app update.
+            try:
+                self._sync_actors_snapshot()
+            except Exception as _e:
+                self._early_log(
+                    f"[actors_sync] uncaught error (skipped): "
+                    f"{type(_e).__name__}: {_e}")
 
             self.progress.emit("Готовлю установку…", 85)
 
@@ -1419,6 +1650,80 @@ class SendUpdateThread(QThread):
                     pass
 
                 uploaded = True
+
+                # ── actors-snapshot.zip — отдельный release-asset ──
+                # Платформо-независимый снапшот папки actors/ для тихой
+                # синхронизации на стороне коллеги (см.
+                # DownloadAppUpdateThread._sync_actors_snapshot). Содержит:
+                #   - actors/actors.json
+                #   - actors/<slug>/*.jpg (фото актёров)
+                # ИСКЛЮЧАЕТСЯ:
+                #   - actors/_textures/ — локальные текстуры коллег
+                #   - actors/.DS_Store / Thumbs.db — мусор ОС
+                #   - actors/_*/ — любые служебные папки начинающиеся с _
+                # Если упаковка/upload упали — Send Update НЕ валится
+                # (актёры синкаются best-effort, основной .app уже выехал).
+                try:
+                    self.progress.emit("Архивирую actors-snapshot…")
+                    actors_zip_name = (
+                        f"actors-snapshot-v{new_app_version}.zip")
+                    actors_zip_path = self.root / "dist" / actors_zip_name
+                    if actors_zip_path.exists():
+                        actors_zip_path.unlink()
+                    actors_root = self.root / "actors"
+                    packed_files = 0
+                    if actors_root.is_dir():
+                        with zipfile.ZipFile(
+                                actors_zip_path, 'w',
+                                zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                            # actors.json — корневой файл папки.
+                            json_p = actors_root / "actors.json"
+                            if json_p.is_file():
+                                zf.write(
+                                    json_p,
+                                    arcname=f"actors/actors.json")
+                                packed_files += 1
+                            # Slug-папки актёров (исключая _*).
+                            for slug_dir in actors_root.iterdir():
+                                if not slug_dir.is_dir():
+                                    continue
+                                if slug_dir.name.startswith('_'):
+                                    continue
+                                if slug_dir.name in ('.DS_Store',):
+                                    continue
+                                for f in slug_dir.rglob('*'):
+                                    if not f.is_file():
+                                        continue
+                                    if f.name in ('.DS_Store', 'Thumbs.db'):
+                                        continue
+                                    rel = f.relative_to(actors_root)
+                                    zf.write(f, arcname=f"actors/{rel}")
+                                    packed_files += 1
+                    if packed_files > 0 and actors_zip_path.exists():
+                        a_size_mb = max(
+                            1, actors_zip_path.stat().st_size // (1024 * 1024))
+                        self.progress.emit(
+                            f"Загружаю actors-snapshot ({a_size_mb} МБ)…")
+                        a_ok = _sa.upload_release_asset(
+                            token, rel["upload_url"], actors_zip_path)
+                        try:
+                            actors_zip_path.unlink()
+                        except Exception:
+                            pass
+                        if not a_ok:
+                            sys.stderr.write(
+                                "[send_update] actors-snapshot upload failed "
+                                "(non-fatal, .app уже выехал)\n")
+                except Exception as _e:
+                    # Не валим Send Update если actors-snapshot не собрался.
+                    sys.stderr.write(
+                        f"[send_update] actors-snapshot pack/upload error: "
+                        f"{type(_e).__name__}: {_e}\n")
+                    try:
+                        if actors_zip_path.exists():
+                            actors_zip_path.unlink()
+                    except Exception:
+                        pass
 
             self.finished.emit(new_version, new_app_version, uploaded)
         except subprocess.CalledProcessError as e:

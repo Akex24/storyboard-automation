@@ -1186,6 +1186,49 @@ overwrite'ит project pipeline.py из bundle если содержимое о�
 - Файлы проекта (`*.md`, `instructions/`, `agents/`, `.py`) при этом
   потоке **не трогаются**.
 
+### B.1 Тихая синхронизация actors/ (v1.0.70+)
+
+Между Send Update и DownloadApp есть второй release-asset:
+`actors-snapshot-v<N>.zip` — платформо-независимый.
+
+**Админская сторона** ([threads/update.py:SendUpdateThread](threads/update.py)
+после upload .app zip):
+- Пакует `actors/actors.json` + `actors/<slug>/*` (фото актёров).
+- **Исключает** `actors/_textures/`, `.DS_Store`, `Thumbs.db`, любые `_*`
+  служебные папки.
+- Заливает как второй asset в тот же `app-vX.Y.Z` Release через тот же
+  `upload_release_asset(rel["upload_url"], actors_zip_path)`.
+- Любой failure pack/upload — **не валит** Send Update (best-effort,
+  `.app` уже выехал).
+
+**Коллежья сторона** ([threads/update.py:DownloadAppUpdateThread._sync_actors_snapshot](threads/update.py)):
+- Вызывается ПОСЛЕ успешной распаковки .app/.exe zip, ДО создания
+  bootstrap-скрипта. Не идёт через bootstrap — `actors/` не залочены
+  процессом Studio, можно подменять live.
+- Через `fetch_release_asset_by_name(version, "actors-snapshot")`
+  ищет asset в Release.
+- Качает zip → валидирует `is_zipfile` + наличие `actors/` префикса →
+  распаковывает в отдельный tempdir (`<tmp>/actors_snapshot_<v>_<pid>/`).
+- Дельта: `to_replace = zip_slugs`, `to_delete = local_slugs - zip_slugs`.
+- Apply slug-by-slug (`rmtree + copytree`), retry 3× × 200ms на каждом
+  shutdown — против Windows Defender locks.
+- `actors.json` копируется целиком (поле `roles` затирается — продуктовое
+  решение, у коллег `roles` не отображается в UI).
+- **Защита:**
+  - Локальная `actors/_textures/` НЕ трогается (фильтр `_is_protected`).
+  - Любые `_*` папки и `.DS_Store/Thumbs.db` НЕ трогаются.
+  - Если у пользователя есть `.git/` — это админ, skip целиком.
+- Любая ошибка → `_early_log` (в `%LOCALAPPDATA%\StoryboardStudio\logs\`
+  или `~/Library/Logs/StoryboardStudio/`) + continue (актёры остаются
+  как были, основной .app update не страдает).
+
+**Backward compat:**
+- Старый Send Update (без actors-snapshot.zip) + новый Download:
+  `fetch_release_asset_by_name` вернёт None → log + return, .app
+  обновится без actors-sync.
+- Новый Send Update + старый Download: старый не знает про asset,
+  игнорирует. Следующий апдейт подхватит.
+
 **Hardened flow (2026-05-09 после Failure mode A на Win,
 + 2026-05-10 retry-loop против Windows Defender lock):**
 - Studio пишет ДВА маркера в `project_root` ДО запуска bootstrap'а:
