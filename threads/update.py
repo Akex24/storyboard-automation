@@ -1677,11 +1677,45 @@ class SendUpdateThread(QThread):
                                 actors_zip_path, 'w',
                                 zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
                             # actors.json — корневой файл папки.
+                            # 2026-05-19: strip поля `roles` из каждого
+                            # actor record перед упаковкой. `roles` —
+                            # ЛОКАЛЬНОЕ состояние коллеги (связь актёра
+                            # с персонажами в ЕГО шоу через UI «Создать
+                            # референс»). Раньше zip содержал админовские
+                            # `roles` (его шоу) → после Send Update у коллеги
+                            # затирались его собственные `roles` → счётчик
+                            # «Все референсы (N)» падал в 0 → кнопка
+                            # пропадала у всех актёров до первой генерации
+                            # нового рефа. Комментарий выше (docstring,
+                            # «поле roles затирается по дизайну») описывал
+                            # ИМЕННО это поведение, но реализация не
+                            # делала strip. Теперь делает.
                             json_p = actors_root / "actors.json"
                             if json_p.is_file():
-                                zf.write(
-                                    json_p,
-                                    arcname=f"actors/actors.json")
+                                stripped_bytes = None
+                                try:
+                                    raw = json_p.read_text(encoding="utf-8")
+                                    data = json.loads(raw)
+                                    if isinstance(data, dict):
+                                        for slug, rec in list(data.items()):
+                                            if (isinstance(rec, dict)
+                                                    and "roles" in rec):
+                                                del rec["roles"]
+                                        stripped_bytes = json.dumps(
+                                            data, ensure_ascii=False,
+                                            indent=2).encode("utf-8")
+                                except Exception:
+                                    # битый JSON / IO error → fallback
+                                    # на оригинальный файл (старое поведение).
+                                    stripped_bytes = None
+                                if stripped_bytes is not None:
+                                    zf.writestr(
+                                        "actors/actors.json",
+                                        stripped_bytes)
+                                else:
+                                    zf.write(
+                                        json_p,
+                                        arcname="actors/actors.json")
                                 packed_files += 1
                             # Slug-папки актёров (исключая _*).
                             for slug_dir in actors_root.iterdir():
