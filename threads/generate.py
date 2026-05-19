@@ -132,13 +132,32 @@ class GenerateThread(QThread):
         self.edit_instruction = (edit_instruction or "").strip() or None
 
     def _upload_file(self, session: requests.Session, path: Path) -> str:
-        """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует по resolved-path.
+        """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует
+        по (resolved-path, mtime_ns).
+
+        2026-05-19: cache_key переведён с одиночного `str(path.resolve())`
+        на кортеж `(resolved, mtime_ns)`. Старый ключ не учитывал содержимое
+        файла — после `shutil.copy2(vN, public)` (как в GenerateThread save
+        path и в "Использовать эту") public-файл менял content, но cache
+        возвращал hash от ПРЕДЫДУЩЕГО content'а. Edit-mode payload улетал
+        с устаревшим `[@]img0` → Nano Banana работала с СТАРОЙ базой,
+        результаты всех последовательных edit'ов выглядели визуально
+        идентично (ep25_block_5_shot2 v5..v8 — 4 «копии» одной и той же
+        генерации). Добавление mtime_ns в ключ автоматически инвалидирует
+        кэш при любой записи в файл — нужны явные `pop` нигде не нужны.
 
         Если картинка по большой стороне больше MAX_REF_SIDE (1920) —
         пережимает в памяти перед отправкой. Файл на диске не трогается.
         Так обходим лимит API «many-image requests 2000px».
         """
-        cache_key = str(path.resolve())
+        resolved = str(path.resolve())
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            # Файл исчез между resolve() и stat() — гонка либо удаление.
+            # 0 как mtime обеспечит cache miss (никакой реальный mtime != 0).
+            mtime_ns = 0
+        cache_key = (resolved, mtime_ns)
         if cache_key in _sa._upload_cache:
             return _sa._upload_cache[cache_key]
         data_bytes, mime = _read_image_for_upload(path)
