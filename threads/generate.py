@@ -295,6 +295,17 @@ class GenerateThread(QThread):
             return ([], {}, [], "", "")
         prompt_text = prompt_file.read_text(encoding="utf-8")
         refs = _sa.parse_refs(prompt_text)
+        # 2026-05-19: для character-тегов перепроверяем актуальный filename
+        # в episodes.json.refs_decisions, который обновляется при смене
+        # актёра в UI. Шапка prompts/*.txt генерится PromptWriter'ом единожды
+        # и не перезаписывается → stale character filename. Без override'а
+        # payload улетал с устаревшим фото актёра (см. диагностику
+        # ep25_block_1_shot1: Arthur трижды переключался, payload улетал
+        # с первым ref-файлом). Override НЕ трогает location/object refs.
+        try:
+            refs = self._override_character_refs(refs)
+        except Exception:
+            pass  # fallback на шапку при любой ошибке (старое поведение)
         clean_body = _sa.extract_shot_prompt(prompt_text, self.panel_idx) or ""
         filtered_refs: Dict = {}
         sorted_tags: List[str] = []
@@ -327,6 +338,102 @@ class GenerateThread(QThread):
                     pct = 5 + int((idx + 1) / n * 20)
                     self.step.emit(f"Загружаю рефы ({idx+1}/{n})…", pct)
         return (ref_hashes, filtered_refs, sorted_tags, clean_body, prompt_text)
+
+    def _override_character_refs(self, refs: Dict[str, Path]) -> Dict[str, Path]:
+        """Для character-рефов подменяет Path из шапки prompt-файла на
+        актуальный из episodes.json.refs_decisions.
+
+        Контракт episodes.json:
+          refs_decisions.character[<slug>] = {
+              "decision": "linked",
+              "filename": "<slug>/<file>.jpg"   # относительный путь
+                                                # от refs/characters/
+          }
+
+        Алгоритм:
+          1. Извлекаем ep_id из self.block_name (regex 'ep\\d+').
+          2. Читаем episodes.json текущего шоу через _sa.SHOW_ROOT.
+          3. Для каждого (tag, path) в refs:
+             - Если path не внутри CHARACTERS_DIR — пропускаем (location/object).
+             - slug = path.parent.name (для refs/characters/arthur/*.jpg → 'arthur').
+             - Берём refs_decisions.character[slug]['filename'] → basename.
+             - Резолвим через _sa.find_ref_image() → новый Path.
+             - Если найден и отличается от текущего — overrideим refs[tag],
+               эмитим progress сообщение для диагностики.
+
+        Fallback на любую ошибку (нет ep_id, нет JSON, нет slug, нет file
+        на диске) — возвращаем refs без изменений. Не валит pipeline.
+
+        Не трогает: locations, objects, character'ы вне CHARACTERS_DIR,
+        character'ы без записи в refs_decisions, character'ы с
+        decision != 'linked', character'ы где basename из refs_decisions
+        совпадает с тем что в шапке (override не нужен).
+        """
+        import json
+        m = re.match(r'^(ep\d+)_', self.block_name)
+        if not m:
+            return refs
+        ep_id = m.group(1)
+        episodes_json = _sa.SHOW_ROOT / "episodes.json"
+        if not episodes_json.exists():
+            return refs
+        try:
+            data = json.loads(episodes_json.read_text(encoding="utf-8"))
+        except Exception:
+            return refs
+        ep = data.get(ep_id) if isinstance(data, dict) else None
+        if not isinstance(ep, dict):
+            return refs
+        decisions = ep.get("refs_decisions")
+        if not isinstance(decisions, dict):
+            return refs
+        char_decisions = decisions.get("character")
+        if not isinstance(char_decisions, dict):
+            return refs
+
+        chars_dir = _sa.CHARACTERS_DIR
+        try:
+            chars_dir_resolved = chars_dir.resolve()
+        except Exception:
+            return refs
+
+        out = dict(refs)  # копия чтобы не мутировать вход
+        for tag, path in list(refs.items()):
+            try:
+                p_resolved = path.resolve()
+            except Exception:
+                continue
+            # Является ли path character-рефом? (внутри CHARACTERS_DIR)
+            try:
+                p_resolved.relative_to(chars_dir_resolved)
+            except ValueError:
+                continue  # location/object — пропускаем
+            slug = path.parent.name
+            d = char_decisions.get(slug)
+            if not isinstance(d, dict) or d.get("decision") != "linked":
+                continue
+            filename = d.get("filename") or ""
+            if not filename:
+                continue
+            # filename из refs_decisions — относительный путь вида
+            # "<slug>/<file>.jpg". Резолвим через find_ref_image по basename.
+            basename = Path(filename).name
+            new_path = _sa.find_ref_image(basename)
+            if new_path is None:
+                continue
+            try:
+                if new_path.resolve() == p_resolved:
+                    continue  # уже актуальный — override не нужен
+            except Exception:
+                pass
+            out[tag] = new_path
+            try:
+                self.progress.emit(
+                    f"override {tag} {slug}: "
+                    f"{path.name} → {new_path.name}")
+            except Exception:
+                pass
+        return out
 
     def run(self):
         start_time = time.time()
