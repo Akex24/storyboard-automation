@@ -33,6 +33,7 @@ from typing import Dict, List, Optional
 from PyQt6.QtCore import Qt, QSize, QUrl, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog, QLabel, QLineEdit, QPlainTextEdit, QComboBox, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
     QScrollArea, QStackedWidget, QMessageBox, QDialogButtonBox,
@@ -772,7 +773,20 @@ class CreateActorRefDialog(QDialog):
 
         self.setWindowTitle(tr('create_ref_title', name=display_name))
         self.setModal(True)
-        self.resize(640, 700)
+        # 2026-05-19: адаптивный размер под parent/screen. Раньше
+        # resize(640, 700) фиксированный — на 14" MBP (1512×982 logical
+        # visible) контент обрезался снизу. Pattern из ShotViewerDialog:
+        # min = 560×500, max = 90% parent/screen, resize клампируется по max.
+        parent_win = self.parent().window() if self.parent() else None
+        if parent_win:
+            pw, ph = parent_win.width(), parent_win.height()
+        else:
+            geo = QApplication.primaryScreen().availableGeometry()
+            pw, ph = geo.width(), geo.height()
+        max_w, max_h = int(pw * 0.9), int(ph * 0.9)
+        self.setMinimumSize(560, 500)
+        self.setMaximumSize(max_w, max_h)
+        self.resize(min(640, max_w), min(700, max_h))
         self.setStyleSheet(
             "QDialog { background:#15101e; }"
             "QLabel#cr-section { color:#cfcfcf; font-size:12px;"
@@ -807,9 +821,28 @@ class CreateActorRefDialog(QDialog):
             "QPushButton#cr-cancel:hover { color:#fff;"
             " border-color:#5a4a82; }")
 
-        outer = QVBoxLayout(self)
+        # 2026-05-19: контент обёрнут в QScrollArea, чтобы при ужатом
+        # окне на маленьком экране (14" MBP) нижние кнопки/поля не
+        # обрезались — появлялся вертикальный scrollbar. Имя `outer`
+        # сохранено: оно теперь привязано к content_widget'у внутри
+        # scroll-area, все 16 вызовов `outer.addWidget/addLayout` ниже
+        # работают как раньше.
+        root_lay = QVBoxLayout(self)
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        content_scroll = QScrollArea()
+        content_scroll.setWidgetResizable(True)
+        content_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        content_scroll.setStyleSheet(
+            "QScrollArea { background:transparent; border:none; }")
+        content_widget = QWidget()
+        outer = QVBoxLayout(content_widget)
         outer.setContentsMargins(22, 18, 22, 18)
         outer.setSpacing(10)
+        content_scroll.setWidget(content_widget)
+        root_lay.addWidget(content_scroll)
 
         # ── Описание (textarea) ─────────────────────────────────────────
         self.desc_section_lbl = QLabel(tr('create_ref_desc_section'))
