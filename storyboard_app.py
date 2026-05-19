@@ -11599,15 +11599,15 @@ class MainWindow(QMainWindow):
         v.setSpacing(10)
         v.setContentsMargins(20, 16, 20, 16)
 
-        hint = QLabel(tr('seedance_popup_hint'))
-        hint.setStyleSheet("color:#888; font-size:11px;")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
-
         # ── QTabWidget с вкладками промптов ──
         tabs_widget = _QTW()
         tabs_widget.setTabsClosable(True)
         tabs_widget.setMovable(False)  # порядок стабилен (idx=0 всегда оригинал)
+        # БАГ 2 — на macOS Qt по умолчанию рендерит close-button слева (Apple
+        # convention). План А: QSS subcontrol-position: right переводит крестик
+        # на правую сторону вкладки. Если на macOS не сработает (Qt может
+        # игнорировать subcontrol-position для close-button) — см. план Б ниже
+        # в _disable_tab_close (закомментирован _ensure_close_btn_right).
         tabs_widget.setStyleSheet(
             "QTabWidget::pane { border:1px solid #2c2240; border-radius:6px; "
             "background:#15101e; }"
@@ -11616,7 +11616,8 @@ class MainWindow(QMainWindow):
             "border-top-left-radius:6px; border-top-right-radius:6px; "
             "margin-right:2px; }"
             "QTabBar::tab:selected { background:#2a1d44; color:#d8c8ff; }"
-            "QTabBar::tab:hover { background:#221a30; }")
+            "QTabBar::tab:hover { background:#221a30; }"
+            "QTabBar::close-button { subcontrol-position: right; }")
         v.addWidget(tabs_widget, stretch=1)
 
         # ── Счётчик длины активной вкладки ──
@@ -11749,13 +11750,38 @@ class MainWindow(QMainWindow):
 
         def _disable_tab_close(pos_idx: int) -> None:
             """Убирает крестик у заданной вкладки. Используется для idx=0
-            (оригинал — нельзя закрыть)."""
+            (оригинал — нельзя закрыть). Убираем с обеих сторон: macOS Qt
+            кладёт close-button на LeftSide, Win/Linux — на RightSide."""
             try:
                 bar = tabs_widget.tabBar()
                 bar.setTabButton(pos_idx,
                                  _QTB.ButtonPosition.RightSide, None)
+                bar.setTabButton(pos_idx,
+                                 _QTB.ButtonPosition.LeftSide, None)
             except Exception:
                 pass
+
+        # ── ПЛАН Б для БАГ 2 (раскомментировать если QSS subcontrol-position
+        #    выше не сработал на macOS — Qt иногда игнорирует это правило).
+        #    Также нужно добавить QToolButton в импорт PyQt6.QtWidgets вверху
+        #    функции _show_seedance_popup. Вызывать _ensure_close_btn_right(i)
+        #    в _add_new_tab сразу после tabs_widget.addTab(...) для idx > 0. ──
+        # def _ensure_close_btn_right(pos_idx: int) -> None:
+        #     """Кастомный крестик ✕ на RightSide, дефолтный с LeftSide убирается."""
+        #     try:
+        #         bar = tabs_widget.tabBar()
+        #         bar.setTabButton(pos_idx, _QTB.ButtonPosition.LeftSide, None)
+        #         btn = QToolButton()
+        #         btn.setText("✕")
+        #         btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        #         btn.setStyleSheet(
+        #             "QToolButton { background:transparent; color:#888; "
+        #             "border:none; padding:0 4px; font-size:12px; }"
+        #             "QToolButton:hover { color:#d8c8ff; }")
+        #         btn.clicked.connect(lambda _ck=False, _i=pos_idx: _on_tab_close(_i))
+        #         bar.setTabButton(pos_idx, _QTB.ButtonPosition.RightSide, btn)
+        #     except Exception:
+        #         pass
 
         def _active_text() -> str:
             i = tabs_widget.currentIndex()
