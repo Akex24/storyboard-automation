@@ -11324,10 +11324,21 @@ class MainWindow(QMainWindow):
                 rf'^{re.escape(ep_id)}_block{block_n}(_\d+)?\.(jpg|jpeg|png)$',
                 re.IGNORECASE
             )
+            # 2026-05-19: Seedance save-file (.txt) + ZIP-снапшот папки
+            # (.zip) с именами вида <show>_<ep_id>_block_<N>.<ext> —
+            # сохраняем при cleanup'е. .txt пишется кнопкой «💾 Сохранить»
+            # Seedance popup, .zip создаётся ниже в этом же методе
+            # (rezip каждый клик).
+            seedance_artifact_pattern = re.compile(
+                rf'^.+_{re.escape(ep_id)}_block_{block_n}\.(txt|zip)$',
+                re.IGNORECASE
+            )
             try:
                 if dest_dir.exists():
                     for item in dest_dir.iterdir():
-                        if item.is_file() and storyboard_pattern.match(item.name):
+                        if item.is_file() and (
+                                storyboard_pattern.match(item.name)
+                                or seedance_artifact_pattern.match(item.name)):
                             continue
                         if item.is_dir():
                             shutil.rmtree(item)
@@ -11431,6 +11442,45 @@ class MainWindow(QMainWindow):
                 f"textures={texture_count} "
                 f"dest={dest_dir}\n")
             _sys_log.stderr.flush()
+
+            # 5c. (2026-05-19) ZIP-снапшот папки для удобной отправки
+            # коллегам. Имя: <show>_<ep>_block_<N>.zip. Пересоздаётся
+            # каждый клик (Вариант A — всегда актуальный). Сам zip
+            # исключается из своего содержимого (защита от рекурсии)
+            # и сохраняется от cleanup'а через seedance_artifact_pattern
+            # выше. Если папка пуста (нет рефов) — zip не создаём.
+            # Если self._current_show пуст (странный edge) — тоже skip.
+            if self._current_show:
+                try:
+                    zip_name = (f"{self._current_show}_{ep_id}"
+                                f"_block_{block_n}.zip")
+                    zip_path = dest_dir / zip_name
+                    if zip_path.exists():
+                        zip_path.unlink()
+                    zip_path_resolved = zip_path.resolve()
+                    items_to_zip = [
+                        p for p in dest_dir.iterdir()
+                        if p.is_file()
+                        and p.name not in ('.DS_Store', 'Thumbs.db')
+                        and p.resolve() != zip_path_resolved
+                    ]
+                    if items_to_zip:
+                        with zipfile.ZipFile(
+                                zip_path, 'w',
+                                zipfile.ZIP_DEFLATED,
+                                compresslevel=6) as zf:
+                            for item in items_to_zip:
+                                zf.write(item, arcname=item.name)
+                        _sys_log.stderr.write(
+                            f"[block_refs] ep={ep_id} block={block_n} "
+                            f"zip={zip_path.name} files={len(items_to_zip)}\n")
+                        _sys_log.stderr.flush()
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"zip failed: {type(e).__name__}: {e}\n")
+                    _sys_log.stderr.flush()
+                    # не валим — продолжаем к open
 
             # 6. Открыть папку в файловом менеджере.
             if sys.platform == "darwin":
