@@ -464,15 +464,19 @@ class SeedanceRegenThread(QThread):
 # решит — копировать новый текст или нажать ещё раз с другим target.
 # ─────────────────────────────────────────────────────────────────────────
 class SeedanceCompressThread(QThread):
-    """Сжатие готового Seedance промпта до целевой длины.
+    """Сжатие готового Seedance промпта в коридор [target..limit].
 
     На вход:
       • current_prompt — текущий текст промпта (из textarea попапа)
-      • target_chars   — целевая длина в символах (default 3700)
+      • target_chars   — нижняя граница коридора (default 3700).
+        Опускаться ниже Opus'у запрещено правилом коридора в SYSTEM_COMPRESS.
+      • limit_chars    — верхняя граница коридора (default 4000).
+        Если current_prompt уже ≤ limit_chars — Opus вернёт текст 1:1.
       • model          — id модели CLI (`claude-opus-4-7` по умолчанию)
 
-    SYSTEM_COMPRESS .format(target_chars=…) подставляет цель в инструкцию.
-    User-prompt включает current_prompt + дублированную цель.
+    SYSTEM_COMPRESS .format(target_chars=…, limit_chars=…, current_len=…)
+    подставляет коридор + текущую длину в инструкцию. User-prompt включает
+    current_prompt + дублированный коридор.
 
     Сигналы:
       • done(text)  — успех, новый текст промпта
@@ -487,23 +491,31 @@ class SeedanceCompressThread(QThread):
     def __init__(self, claude_cli_path: str,
                  current_prompt: str,
                  target_chars: int,
+                 limit_chars: int,
                  model: Optional[str] = None,
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
         self._current_prompt = current_prompt or ""
         self._target_chars = int(target_chars)
+        self._limit_chars = int(limit_chars)
         self._model = model
 
     def run(self) -> None:
         try:
-            # SYSTEM_COMPRESS — шаблон с {target_chars}. Подставляем
-            # конкретную цель ДО передачи в CLI чтобы Opus получил
-            # числовую цель уже в системном промпте (не размытое
-            # «уложиться»).
-            system = SYSTEM_COMPRESS.format(target_chars=self._target_chars)
+            # SYSTEM_COMPRESS — шаблон с {target_chars}, {limit_chars},
+            # {current_len}. Подставляем коридор и текущую длину ДО передачи
+            # в CLI — Opus видит правило коридора в системном промпте.
+            system = SYSTEM_COMPRESS.format(
+                target_chars=self._target_chars,
+                limit_chars=self._limit_chars,
+                current_len=len(self._current_prompt),
+            )
             user = build_compress_user_prompt(
-                self._current_prompt, self._target_chars)
+                self._current_prompt,
+                self._target_chars,
+                self._limit_chars,
+            )
             txt = self._run_claude_compress(system, user)
             # Sanitize — общий с regen/primary pipeline (срезает markdown
             # обёртки если AI обернул всё в ``` ещё раз).

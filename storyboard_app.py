@@ -11866,6 +11866,7 @@ class MainWindow(QMainWindow):
             # её текст становится «✓ Скопировано» и оставался таким на всех
             # вкладках. Сбрасываем при каждом переключении.
             copy_btn.setText(tr('seedance_popup_copy'))
+            _update_compress_btn_state()
             _persist()
 
         # ── Smart enabled state regen_btn ──
@@ -11877,6 +11878,22 @@ class MainWindow(QMainWindow):
             else:
                 regen_btn.setEnabled(True)
                 regen_btn.setToolTip("")
+
+        def _update_compress_btn_state() -> None:
+            """БАГ 7 — disabled когда текущая длина уже ≤ limit_chars.
+            Гард во время операции (анимация активна) — не трогаем
+            enabled-state, им управляет _lock_ui / _unlock_ui."""
+            if _anim["timer"] is not None:
+                return
+            ln = len(_active_text())
+            lim = int(limit_spin.value())
+            if ln <= lim:
+                compress_btn.setEnabled(False)
+                compress_btn.setToolTip(
+                    tr('seedance_compress_disabled_tooltip'))
+            else:
+                compress_btn.setEnabled(True)
+                compress_btn.setToolTip("")
 
         # ── БАГ 5 — анимация бегущих точек на «Перегенерирую/Сжимаю» ──
         # mutable dict в closure (чтобы не нужен nonlocal в inner-функциях).
@@ -11962,6 +11979,7 @@ class MainWindow(QMainWindow):
             instr_ta.setEnabled(True)
             compress_btn.setEnabled(True)
             _on_instr_text_changed()  # пересчёт enabled для regen_btn
+            _update_compress_btn_state()  # БАГ 7 — пересчёт для compress_btn
 
         # ── Handlers ──
         def _do_copy():
@@ -12007,11 +12025,13 @@ class MainWindow(QMainWindow):
 
         def _do_compress():
             target_chars = int(target_spin.value())
+            limit_chars = int(limit_spin.value())
             _persist_compress_settings()
             try:
                 self._start_seedance_compress(
                     current_prompt=_active_text(),
                     target_chars=target_chars,
+                    limit_chars=limit_chars,
                     on_done=lambda new_text: _on_compress_success(new_text),
                     on_failed=lambda msg: _on_compress_error(msg),
                 )
@@ -12042,12 +12062,16 @@ class MainWindow(QMainWindow):
         tabs_widget.currentChanged.connect(_on_tab_changed)
         instr_ta.textChanged.connect(_on_instr_text_changed)
         limit_spin.valueChanged.connect(
-            lambda _v: (_refresh_titles(), _update_length_label()))
+            lambda _v: (_refresh_titles(), _update_length_label(),
+                        _update_compress_btn_state()))
+        target_spin.valueChanged.connect(
+            lambda _v: _update_compress_btn_state())
         # Финальная страховка — при закрытии попапа дозаписать state
         dlg.finished.connect(lambda _r: _persist())
 
         # Initial enabled state regen_btn (нет фидбэка → disabled)
         _on_instr_text_changed()
+        _update_compress_btn_state()
 
         btns_row.addWidget(regen_btn)
         btns_row.addWidget(copy_btn)
@@ -12199,10 +12223,13 @@ class MainWindow(QMainWindow):
 
     def _start_seedance_compress(self, current_prompt: str,
                                    target_chars: int,
+                                   limit_chars: int,
                                    on_done,
                                    on_failed):
         """Запускает `SeedanceCompressThread` — сжимает Seedance промпт
-        до `target_chars` через Opus 4.7 + --effort low.
+        в коридор [target_chars..limit_chars] через Opus 4.7 + --effort low.
+        Если current_prompt уже ≤ limit_chars — Opus вернёт текст 1:1
+        (правило коридора в SYSTEM_COMPRESS).
 
         В отличие от `_start_seedance_regen` не требует montage_card /
         refs / Bible / voice_profiles — Compressor работает только с
@@ -12221,6 +12248,7 @@ class MainWindow(QMainWindow):
             claude_cli_path=cli,
             current_prompt=current_prompt,
             target_chars=int(target_chars),
+            limit_chars=int(limit_chars),
             model="claude-opus-4-7",
             parent=self,
         )
