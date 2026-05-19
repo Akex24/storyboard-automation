@@ -172,15 +172,34 @@ class GenerateThread(QThread):
           • sorted_tags — порядок тегов в payload['reference_images']
             ПОСЛЕ [@]img0 (текущий шот = индекс 0).
         """
+        # БАГ 8 — раньше regex `[@]imgN <Word>` бил по ВСЕМУ source-prompt'у
+        # и хватал случайное слово после тега в теле панели (например
+        # `windows of [@]img1 on the right` → label «on»). Чинится строгим
+        # ограничением поиска CHARACTERS-блоком: от маркера `CHARACTERS:`
+        # до пустой строки или начала первой `Panel N`. Внутри блока
+        # каждая строка имеет вид «[@]imgN <Name> — wearing EXACT SAME...».
+        # Если тега в CHARACTERS нет (это локация / объект / storyboard) —
+        # fallback на `Path.stem` файла («wheelchair», «living_room_old_…»).
+        char_block = ""
+        m_block = re.search(
+            r'CHARACTERS:\s*\n(.+?)(?:\n\s*\n|Panel\s+\d)',
+            source_prompt, re.DOTALL)
+        if m_block:
+            char_block = m_block.group(1)
         legend_lines = []
         for tag in sorted_tags:
             p = filtered_refs.get(tag)
             if p is None:
                 continue
-            # Имя из source CHARACTERS-блока: «[@]img5 Arthur — wearing...».
             n = tag.split("img")[-1]
-            m = re.search(rf'\[@\]img{n}\s+([A-Za-z][\w-]*)', source_prompt)
-            label = m.group(1) if m else p.stem
+            label = None
+            if char_block:
+                nm = re.search(
+                    rf'\[@\]img{n}\s+([A-Za-z][\w-]*)', char_block)
+                if nm:
+                    label = nm.group(1)
+            if label is None:
+                label = p.stem  # для локации / объектов
             legend_lines.append(f"{tag} = {label}")
         legend = ("\n".join(legend_lines) if legend_lines
                   else "(no additional references for this shot)")
@@ -203,24 +222,34 @@ class GenerateThread(QThread):
         )
 
     def _collect_shot_refs(
-        self, session: requests.Session
+        self, session: requests.Session,
+        apply_panel_filter: bool = True,
     ) -> tuple:
         """Собирает рефы для одного шота (общий хелпер для regen и edit).
 
         2026-05-19: вынесено из inline-логики regen-ветки чтобы edit-mode
-        мог использовать ту же фильтрацию по упомянутым тегам Panel N.
-        Без этого reuse'а edit-mode не получал бы ни одного фото актёра
-        (Nano Banana рисовала случайные лица вместо Arthur'а).
+        мог использовать ту же логику парсинга шапки. Без этого reuse'а
+        edit-mode не получал бы ни одного фото актёра (Nano Banana
+        рисовала случайные лица вместо Arthur'а).
+
+        Параметр `apply_panel_filter` (default True — текущее regen-поведение):
+          • True  — фильтр по тегам упомянутым в теле Panel N
+            (умный regen: загружаем только то что реально в кадре).
+          • False — берём ВСЕ рефы из шапки source-prompt'а без фильтра.
+            Используется в edit-mode: юзер может в инструкции упомянуть
+            ЛЮБОГО актёра из CHARACTERS-блока (даже того кого нет в этой
+            конкретной панели), и его реф должен быть в payload.
 
         Читает output/prompts/<block>.txt, парсит шапку «# [@]imgN = file»,
-        вычленяет тело Panel N + теги упомянутые именно в этом шоте,
-        фильтрует рефы до used_tags, загружает их в Fast Gen storage
-        в порядке возрастания N.
+        вычленяет тело Panel N + (опционально) фильтрует рефы по тегам
+        упомянутым в этом шоте, загружает в Fast Gen storage в порядке
+        возрастания N.
 
         Возвращает (ref_hashes, filtered_refs, sorted_tags, clean_body,
                     prompt_text):
           • ref_hashes — list[str] file_hash в порядке sorted_tags.
-          • filtered_refs — {tag: Path} только используемые в этом шоте.
+          • filtered_refs — {tag: Path}. При apply_panel_filter=False
+            это все рефы шапки; при True — только использованные в Panel N.
           • sorted_tags — список тегов в порядке возрастания imgN.
           • clean_body — тело Panel N как готовый prompt без шапки.
           • prompt_text — оригинальный source-prompt (для извлечения имён).
@@ -237,9 +266,15 @@ class GenerateThread(QThread):
         sorted_tags: List[str] = []
         ref_hashes: List[str] = []
         if refs:
-            used_tags = _sa.extract_shot_tags(prompt_text, self.panel_idx)
-            if used_tags:
-                filtered_refs = {t: refs[t] for t in refs if t in used_tags}
+            if apply_panel_filter:
+                used_tags = _sa.extract_shot_tags(
+                    prompt_text, self.panel_idx)
+                if used_tags:
+                    filtered_refs = {
+                        t: refs[t] for t in refs if t in used_tags}
+            else:
+                # edit-mode: все рефы из шапки, без фильтрации.
+                filtered_refs = dict(refs)
             skipped = sorted(set(refs.keys()) - set(filtered_refs.keys()),
                              key=lambda t: int(re.search(r'\d+', t).group()))
             if skipped:
@@ -291,9 +326,14 @@ class GenerateThread(QThread):
                 existing_path = existing
                 self.step.emit("Загружаю текущий шот…", 10)
                 base_hash = self._upload_file(session, existing)
-                # Те же рефы что регенил бы regen этого шота.
+                # ВСЕ рефы из шапки source-prompt'а (без Panel-фильтрации).
+                # Юзер в инструкции может упомянуть любого актёра из
+                # CHARACTERS — даже того кто не активен в этой конкретной
+                # панели (например «охранник пусть встанет за диваном»
+                # в Panel 1 где он не упоминался) — его реф нужен в payload.
                 (shot_hashes, filtered_refs, sorted_tags, _body, prompt_text
-                 ) = self._collect_shot_refs(session)
+                 ) = self._collect_shot_refs(
+                    session, apply_panel_filter=False)
                 # Текущий шот ПЕРВЫЙ → ему достанется [@]img0 в payload;
                 # затем рефы по возрастанию N из source-шапки.
                 ref_hashes = [base_hash] + shot_hashes
