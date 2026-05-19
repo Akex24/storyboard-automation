@@ -150,18 +150,114 @@ class GenerateThread(QThread):
         _sa._upload_cache[cache_key] = fh
         return fh
 
-    def _build_edit_prompt(self, instruction: str) -> str:
-        """Строит промпт для edit-режима: img1 = текущий шот, инструкция, всё остальное оставить."""
+    def _build_edit_prompt(self, instruction: str,
+                            source_prompt: str,
+                            filtered_refs: Dict,
+                            sorted_tags: List[str]) -> str:
+        """Строит промпт для edit-режима.
+
+        2026-05-19: edit-mode теперь прикрепляет к payload ВСЕ рефы шота
+        (актёры/объекты/локация) — те же что в regen-режиме. Без них
+        Nano Banana не знала кто такой «Arthur» в инструкции и рисовала
+        случайное лицо. Текущий сториборд кладётся ПЕРВЫМ ref'ом
+        с тегом [@]img0 (вне диапазона source-шапки img1..imgN).
+
+        Параметры:
+          • instruction — текст пользователя «что изменить».
+          • source_prompt — текст output/prompts/<block>.txt целиком
+            (нужен чтобы извлечь имена персонажей из CHARACTERS-блока
+            вида «[@]img5 Arthur — wearing ...»).
+          • filtered_refs — {tag: Path} рефов выбранных _collect_shot_refs
+            для этого шота (только те теги что упомянуты в Panel N).
+          • sorted_tags — порядок тегов в payload['reference_images']
+            ПОСЛЕ [@]img0 (текущий шот = индекс 0).
+        """
+        legend_lines = []
+        for tag in sorted_tags:
+            p = filtered_refs.get(tag)
+            if p is None:
+                continue
+            # Имя из source CHARACTERS-блока: «[@]img5 Arthur — wearing...».
+            n = tag.split("img")[-1]
+            m = re.search(rf'\[@\]img{n}\s+([A-Za-z][\w-]*)', source_prompt)
+            label = m.group(1) if m else p.stem
+            legend_lines.append(f"{tag} = {label}")
+        legend = ("\n".join(legend_lines) if legend_lines
+                  else "(no additional references for this shot)")
         return (
-            "[@]img1 is the current storyboard panel — pencil sketch, "
-            "black and white, vertical 9:16 format.\n\n"
+            "[@]img0 is the CURRENT storyboard panel — pencil sketch, "
+            "black and white, vertical 9:16 format. Use it as the BASE "
+            "for modification.\n\n"
+            "REFERENCE LEGEND (use these faces/objects when modifying):\n"
+            f"{legend}\n\n"
             f"MODIFICATION REQUESTED: {instruction}\n\n"
             "Apply ONLY the requested modification. Keep ALL other elements "
-            "EXACTLY identical to [@]img1: composition, framing, camera angle, "
-            "remaining characters, their poses and expressions, lighting, "
-            "background, the pencil sketch art style. Do not redraw or restyle. "
-            "Output: single vertical 9:16 panel, same pencil sketch black and white style."
+            "EXACTLY identical to [@]img0: composition, framing, camera "
+            "angle, remaining characters, their poses and expressions, "
+            "lighting, background, the pencil sketch art style.\n"
+            "If the modification involves a character by name — use the "
+            "corresponding [@]img reference above to match their face "
+            "accurately.\n"
+            "Do not redraw or restyle. Output: single vertical 9:16 panel, "
+            "same pencil sketch black and white style."
         )
+
+    def _collect_shot_refs(
+        self, session: requests.Session
+    ) -> tuple:
+        """Собирает рефы для одного шота (общий хелпер для regen и edit).
+
+        2026-05-19: вынесено из inline-логики regen-ветки чтобы edit-mode
+        мог использовать ту же фильтрацию по упомянутым тегам Panel N.
+        Без этого reuse'а edit-mode не получал бы ни одного фото актёра
+        (Nano Banana рисовала случайные лица вместо Arthur'а).
+
+        Читает output/prompts/<block>.txt, парсит шапку «# [@]imgN = file»,
+        вычленяет тело Panel N + теги упомянутые именно в этом шоте,
+        фильтрует рефы до used_tags, загружает их в Fast Gen storage
+        в порядке возрастания N.
+
+        Возвращает (ref_hashes, filtered_refs, sorted_tags, clean_body,
+                    prompt_text):
+          • ref_hashes — list[str] file_hash в порядке sorted_tags.
+          • filtered_refs — {tag: Path} только используемые в этом шоте.
+          • sorted_tags — список тегов в порядке возрастания imgN.
+          • clean_body — тело Panel N как готовый prompt без шапки.
+          • prompt_text — оригинальный source-prompt (для извлечения имён).
+        Если prompts/<block>.txt отсутствует — всё пустое (caller сам
+        решает что делать с пустым clean_body).
+        """
+        prompt_file = _sa.PROMPTS_DIR / f"{self.block_name}.txt"
+        if not prompt_file.exists():
+            return ([], {}, [], "", "")
+        prompt_text = prompt_file.read_text(encoding="utf-8")
+        refs = _sa.parse_refs(prompt_text)
+        clean_body = _sa.extract_shot_prompt(prompt_text, self.panel_idx) or ""
+        filtered_refs: Dict = {}
+        sorted_tags: List[str] = []
+        ref_hashes: List[str] = []
+        if refs:
+            used_tags = _sa.extract_shot_tags(prompt_text, self.panel_idx)
+            if used_tags:
+                filtered_refs = {t: refs[t] for t in refs if t in used_tags}
+            skipped = sorted(set(refs.keys()) - set(filtered_refs.keys()),
+                             key=lambda t: int(re.search(r'\d+', t).group()))
+            if skipped:
+                self.progress.emit(
+                    f"Пропущены рефы (нет в шоте {self.panel_idx + 1}): "
+                    + ", ".join(skipped))
+            if filtered_refs:
+                sorted_tags = sorted(
+                    filtered_refs,
+                    key=lambda t: int(re.search(r'\d+', t).group()),
+                )
+                n = len(sorted_tags)
+                for idx, tag in enumerate(sorted_tags):
+                    ref_hashes.append(
+                        self._upload_file(session, filtered_refs[tag]))
+                    pct = 5 + int((idx + 1) / n * 20)
+                    self.step.emit(f"Загружаю рефы ({idx+1}/{n})…", pct)
+        return (ref_hashes, filtered_refs, sorted_tags, clean_body, prompt_text)
 
     def run(self):
         start_time = time.time()
@@ -172,65 +268,51 @@ class GenerateThread(QThread):
 
             ref_hashes: List[str] = []
             clean: str = ""
+            # Всегда определены к моменту dump-блока (см. ниже) — даже
+            # если рефов нет, регенерация прошла без шапки или edit-mode
+            # запущен без source-prompt'а.
+            filtered_refs: Dict = {}
+            sorted_tags: List[str] = []
+            existing_path = None  # путь к текущему сториборду в edit-mode
 
             if self.edit_instruction:
                 # ── EDIT-режим ─────────────────────────────────────────────
-                # Существующий файл шота → единственный реф.
-                # Если файла нет — невозможно редактировать (нечего изменять).
+                # Текущий файл шота — БАЗА ([@]img0). К нему теперь добавляем
+                # ВСЕ рефы шота (актёры/объекты/локация) — те же что в regen.
+                # Без рефов актёров Nano Banana не знала кто такой «Arthur»
+                # в инструкции «put Arthur in the wheelchair» и рисовала
+                # случайное лицо. См. _build_edit_prompt и _collect_shot_refs.
                 existing = _sa.shot_path(self.block_name, self.panel_idx)
                 if not existing.exists():
                     self.error.emit(
                         f"Edit невозможен: исходного файла шота нет ({existing.name}). "
                         "Сначала сделай обычную регенерацию.")
                     return
+                existing_path = existing
                 self.step.emit("Загружаю текущий шот…", 10)
-                ref_hashes = [self._upload_file(session, existing)]
-                clean = self._build_edit_prompt(self.edit_instruction)
+                base_hash = self._upload_file(session, existing)
+                # Те же рефы что регенил бы regen этого шота.
+                (shot_hashes, filtered_refs, sorted_tags, _body, prompt_text
+                 ) = self._collect_shot_refs(session)
+                # Текущий шот ПЕРВЫЙ → ему достанется [@]img0 в payload;
+                # затем рефы по возрастанию N из source-шапки.
+                ref_hashes = [base_hash] + shot_hashes
+                clean = self._build_edit_prompt(
+                    self.edit_instruction, prompt_text,
+                    filtered_refs, sorted_tags)
             else:
                 # ── Обычная регенерация ───────────────────────────────────
                 prompt_file = _sa.PROMPTS_DIR / f"{self.block_name}.txt"
                 if not prompt_file.exists():
                     self.error.emit(f"Промпт не найден: {prompt_file.name}")
                     return
-
-                prompt_text = prompt_file.read_text(encoding="utf-8")
-                refs        = _sa.parse_refs(prompt_text)
-                clean       = _sa.extract_shot_prompt(prompt_text, self.panel_idx) or ""
+                (ref_hashes, filtered_refs, sorted_tags, clean, _src
+                 ) = self._collect_shot_refs(session)
                 if not clean:
                     self.error.emit(
                         f"SHOT {self.panel_idx + 1}: панель пустая или Panel "
                         f"{self.panel_idx + 1} не найден в промпте {prompt_file.name}")
                     return
-
-                # Умный реген: оставляем только те рефы, теги которых реально
-                # упомянуты в теле этой панели. Раньше отправлялись ВСЕ рефы
-                # блока (включая персонажа которого нет в кадре) — это и
-                # экономически невыгодно и ломает API на «толстых» рефах.
-                if refs:
-                    used_tags = _sa.extract_shot_tags(prompt_text, self.panel_idx)
-                    if used_tags:
-                        filtered_refs = {t: refs[t] for t in refs if t in used_tags}
-                        skipped = sorted(set(refs.keys()) - set(filtered_refs.keys()),
-                                         key=lambda t: int(re.search(r'\d+', t).group()))
-                    else:
-                        # тело шота без тегов — отправляем без рефов
-                        filtered_refs = {}
-                        skipped = sorted(refs.keys(),
-                                         key=lambda t: int(re.search(r'\d+', t).group()))
-                    if skipped:
-                        self.progress.emit(
-                            f"Пропущены рефы (нет в шоте {self.panel_idx + 1}): "
-                            + ", ".join(skipped))
-                    if filtered_refs:
-                        n = len(filtered_refs)
-                        sorted_tags = sorted(
-                            filtered_refs,
-                            key=lambda t: int(re.search(r'\d+', t).group()),
-                        )
-                        for idx, tag in enumerate(sorted_tags):
-                            ref_hashes.append(self._upload_file(session, filtered_refs[tag]))
-                            pct = 5 + int((idx + 1) / n * 20)
-                            self.step.emit(f"Загружаю рефы ({idx+1}/{n})…", pct)
 
             self.step.emit("Отправляю запрос…", 28)
 
@@ -280,15 +362,15 @@ class GenerateThread(QThread):
                 dump_path = (_sa.STORYBOARDS_DIR
                              / f"_payload_dump_{self.block_name}"
                                f"_shot{self.panel_idx + 1}.txt")
-                # filtered_refs и sorted_tags могут отсутствовать в
-                # edit-режиме (там только один реф = текущий шот).
+                # В edit-mode reference_images[0] — текущий сториборд
+                # (тег [@]img0), далее идут рефы шота. В regen — только
+                # рефы шота. filtered_refs/sorted_tags теперь ВСЕГДА
+                # определены (см. инициализацию выше).
                 pairs = []
-                try:
-                    for tag in sorted_tags:  # type: ignore[name-defined]
-                        pairs.append((tag, filtered_refs.get(tag)))  # type: ignore[name-defined]
-                except NameError:
-                    pairs = [(f"<edit-mode-ref-{i}>", None)
-                             for i in range(len(ref_hashes))]
+                if self.edit_instruction:
+                    pairs.append(("[@]img0", existing_path))
+                for tag in sorted_tags:
+                    pairs.append((tag, filtered_refs.get(tag)))
                 lines = [
                     f"=== PAYLOAD DUMP {datetime.datetime.now().isoformat()} ===",
                     f"Block: {self.block_name}",
