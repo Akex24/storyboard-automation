@@ -66,7 +66,8 @@
     "display_name": "Тарас",
     "roles": {
       "testovyy_serial": "alex",
-      "finalnyy_raschet_2": "detective"
+      "finalnyy_raschet_2": "detective",
+      "testovyy_serial_2": "arthur"
     }
   },
   "akter_6": {
@@ -74,13 +75,15 @@
     "roles": {
       "nazvanie_seriala_2": "policeman",
       "testovyy_serial": "mark",
-      "finalnyy_raschet_2": "police_officer"
+      "finalnyy_raschet_2": "police_officer",
+      "testovyy_serial_2": "max"
     }
   },
   "vremennyi_akter_1": {
     "display_name": "Временный актер 1",
     "roles": {
-      "finalnyy_raschet_2": "worker"
+      "finalnyy_raschet_2": "worker",
+      "testovyy_serial_2": "guard"
     }
   },
   "vremennyi_akter_2": {
@@ -93,7 +96,8 @@
     "display_name": "Настя",
     "roles": {
       "testovyy_serial": "emma",
-      "finalnyy_raschet_2": "khloe"
+      "finalnyy_raschet_2": "khloe",
+      "testovyy_serial_2": "anna"
     }
   },
   "vremennyi_akter_3": {
