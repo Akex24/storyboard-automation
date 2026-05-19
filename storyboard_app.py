@@ -11657,6 +11657,12 @@ class MainWindow(QMainWindow):
             "border-color:#2a2240; }")
         copy_btn = QPushButton(tr('seedance_popup_copy'))
         copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 2026-05-19: «💾 Сохранить» — пишет текст активной вкладки в
+        # shows/<show>/.cache/_block_view/<ep_id>_block<N>/<show>_<ep_id>_block_<N>.txt
+        # (ту же папку открывает кнопка «🗂 Рефы блока» на странице эпизода).
+        # Стиль наследует от copy_btn — единая action-кнопка.
+        save_btn = QPushButton(tr('seedance_popup_save'))
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn = QPushButton(tr('seedance_popup_close'))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -11866,6 +11872,9 @@ class MainWindow(QMainWindow):
             # её текст становится «✓ Скопировано» и оставался таким на всех
             # вкладках. Сбрасываем при каждом переключении.
             copy_btn.setText(tr('seedance_popup_copy'))
+            # save_btn — та же логика что у copy_btn: общая на все вкладки,
+            # после «✓ Сохранено» возвращаем дефолтный текст при переключении.
+            save_btn.setText(tr('seedance_popup_save'))
             _update_compress_btn_state()
             _persist()
 
@@ -11989,6 +11998,30 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        def _do_save():
+            """2026-05-19: пишет текст активной вкладки на диск в папку
+            рефов блока (которую открывает кнопка «🗂 Рефы блока»).
+            Путь: shows/<show>/.cache/_block_view/<ep_id>_block<N>/.
+            Имя файла: <show_slug>_<ep_id>_block_<N>.txt
+            (с подчёркиванием перед N — отличается от имени папки
+            «<ep_id>_block<N>» где подчёркивания нет).
+            Перезаписывает существующий файл молча."""
+            try:
+                text = _active_text()
+                if not text:
+                    return
+                show_slug = self._current_show or ""
+                if not show_slug:
+                    return
+                dest_dir = (SHOW_ROOT / ".cache" / "_block_view"
+                            / f"{ep_id}_block{block_n}")
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                fname = f"{show_slug}_{ep_id}_block_{block_n}.txt"
+                (dest_dir / fname).write_text(text, encoding="utf-8")
+                save_btn.setText(tr('seedance_popup_saved'))
+            except Exception:
+                traceback.print_exc()
+
         def _do_regen():
             instruction = instr_ta.toPlainText().strip()
             try:
@@ -12056,6 +12089,7 @@ class MainWindow(QMainWindow):
 
         regen_btn.clicked.connect(_do_regen)
         copy_btn.clicked.connect(_do_copy)
+        save_btn.clicked.connect(_do_save)
         close_btn.clicked.connect(dlg.accept)
         compress_btn.clicked.connect(_do_compress)
         tabs_widget.tabCloseRequested.connect(_on_tab_close)
@@ -12075,6 +12109,7 @@ class MainWindow(QMainWindow):
 
         btns_row.addWidget(regen_btn)
         btns_row.addWidget(copy_btn)
+        btns_row.addWidget(save_btn)
         btns_row.addStretch()
         btns_row.addWidget(close_btn)
         v.addLayout(btns_row)
