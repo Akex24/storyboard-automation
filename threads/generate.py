@@ -222,6 +222,16 @@ class GenerateThread(QThread):
             legend_lines.append(f"{tag} = {label}")
         legend = ("\n".join(legend_lines) if legend_lines
                   else "(no additional references for this shot)")
+        # 2026-05-19: смягчение edit-prompt'а. Прошлая версия содержала
+        # «Apply ONLY the requested modification. Keep ALL other elements
+        # EXACTLY identical to [@]img0: ... poses and expressions, ...».
+        # Это блокировало позиционные правки: при инструкции «Анна и Макс
+        # пересядьте с пола на диван» модель видела противоречие (инструкция
+        # требует смены поз, но «Keep poses identical» запрещает) и
+        # возвращала картинку почти 1:1 (с шумом, но без перестановки).
+        # Новая версия явно РАЗРЕШАЕТ перестановки персонажей и оставляет
+        # защищёнными только то что должно быть одинаковым ВСЕГДА:
+        # художественный стиль (pencil sketch), формат (9:16), сеттинг.
         return (
             "[@]img0 is the CURRENT storyboard panel — pencil sketch, "
             "black and white, vertical 9:16 format. Use it as the BASE "
@@ -229,15 +239,20 @@ class GenerateThread(QThread):
             "REFERENCE LEGEND (use these faces/objects when modifying):\n"
             f"{legend}\n\n"
             f"MODIFICATION REQUESTED: {instruction}\n\n"
-            "Apply ONLY the requested modification. Keep ALL other elements "
-            "EXACTLY identical to [@]img0: composition, framing, camera "
-            "angle, remaining characters, their poses and expressions, "
-            "lighting, background, the pencil sketch art style.\n"
-            "If the modification involves a character by name — use the "
-            "corresponding [@]img reference above to match their face "
-            "accurately.\n"
-            "Do not redraw or restyle. Output: single vertical 9:16 panel, "
-            "same pencil sketch black and white style."
+            "Apply the requested modification to [@]img0. Characters CAN "
+            "change positions, poses, and locations within the scene if "
+            "the instruction requires it (for example: sitting/standing/"
+            "walking, moving from floor to sofa, swapping places). When "
+            "modifying:\n"
+            "- Match character faces to their reference images "
+            "([@]img5, [@]img6, etc.) by name in the legend above\n"
+            "- Keep the same art style (pencil sketch, black and white, "
+            "clear outlines)\n"
+            "- Keep the same vertical 9:16 format\n"
+            "- Use the same setting/location ([@]img1) unless instructed "
+            "otherwise\n"
+            "Output: single vertical 9:16 panel, same pencil sketch "
+            "black and white style as [@]img0."
         )
 
     def _collect_shot_refs(
