@@ -11898,6 +11898,17 @@ class MainWindow(QMainWindow):
             _anim["base"] = base_text
             _anim["tick"] = 0
             btn.setText(f"{base_text}.")  # сразу 1 точка, без задержки
+            # БАГ 6 — кнопка дёргалась при смене точек (1→2→3). Резервируем
+            # минимальную ширину под самый длинный вариант «base...» через
+            # fontMetrics. setMinimumWidth не препятствует росту при смене
+            # i18n-языка на более длинный текст. +30 px — запас под padding
+            # `8px 14px` (28) + border (2).
+            try:
+                fm = btn.fontMetrics()
+                reserved = fm.horizontalAdvance(base_text + "...") + 30
+                btn.setMinimumWidth(max(btn.width(), reserved))
+            except Exception:
+                pass
             t = QTimer(dlg)
             t.setInterval(400)
             t.timeout.connect(_tick_anim)
@@ -11906,9 +11917,18 @@ class MainWindow(QMainWindow):
 
         def _stop_btn_animation() -> None:
             t = _anim["timer"]
+            btn = _anim["btn"]  # запоминаем до очистки state
             if t is not None:
                 try:
                     t.stop()
+                except Exception:
+                    pass
+            if btn is not None:
+                # БАГ 6 — возвращаем layout-естественную ширину кнопки.
+                # Кнопки regen_btn/compress_btn явно не задают min/fixed width
+                # в QSS, так что setMinimumWidth(0) корректно восстанавливает.
+                try:
+                    btn.setMinimumWidth(0)
                 except Exception:
                     pass
             _anim["timer"] = None
