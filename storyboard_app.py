@@ -11862,6 +11862,10 @@ class MainWindow(QMainWindow):
 
         def _on_tab_changed(new_idx: int) -> None:
             _update_length_label()
+            # БАГ 4 — copy_btn общий для всех вкладок; после копирования
+            # её текст становится «✓ Скопировано» и оставался таким на всех
+            # вкладках. Сбрасываем при каждом переключении.
+            copy_btn.setText(tr('seedance_popup_copy'))
             _persist()
 
         # ── Smart enabled state regen_btn ──
@@ -11874,9 +11878,47 @@ class MainWindow(QMainWindow):
                 regen_btn.setEnabled(True)
                 regen_btn.setToolTip("")
 
+        # ── БАГ 5 — анимация бегущих точек на «Перегенерирую/Сжимаю» ──
+        # mutable dict в closure (чтобы не нужен nonlocal в inner-функциях).
+        # parent=dlg у QTimer → авто-cleanup при закрытии попапа.
+        _anim = {"timer": None, "btn": None, "base": "", "tick": 0}
+
+        def _tick_anim() -> None:
+            _anim["tick"] = (_anim["tick"] + 1) % 3
+            dots = "." * (_anim["tick"] + 1)
+            btn = _anim["btn"]
+            if btn is not None:
+                try:
+                    btn.setText(f"{_anim['base']}{dots}")
+                except Exception:
+                    pass
+
+        def _start_btn_animation(btn: QPushButton, base_text: str) -> None:
+            _anim["btn"] = btn
+            _anim["base"] = base_text
+            _anim["tick"] = 0
+            btn.setText(f"{base_text}.")  # сразу 1 точка, без задержки
+            t = QTimer(dlg)
+            t.setInterval(400)
+            t.timeout.connect(_tick_anim)
+            t.start()
+            _anim["timer"] = t
+
+        def _stop_btn_animation() -> None:
+            t = _anim["timer"]
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+            _anim["timer"] = None
+            _anim["btn"] = None
+            _anim["base"] = ""
+            _anim["tick"] = 0
+
         def _lock_ui(active_btn: QPushButton, active_text: str) -> None:
             active_btn.setEnabled(False)
-            active_btn.setText(active_text)
+            _start_btn_animation(active_btn, active_text)
             target_spin.setEnabled(False)
             limit_spin.setEnabled(False)
             tabs_widget.tabBar().setEnabled(False)
@@ -11891,6 +11933,7 @@ class MainWindow(QMainWindow):
             copy_btn.setText(tr('seedance_popup_copy'))
 
         def _unlock_ui() -> None:
+            _stop_btn_animation()
             regen_btn.setText(tr('seedance_popup_regen'))
             compress_btn.setText(tr('compress_btn'))
             target_spin.setEnabled(True)
