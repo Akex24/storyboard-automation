@@ -23,7 +23,8 @@
       "nazvanie_seriyala_1": "viktor",
       "finalnyy_raschet": "viktor",
       "testovyy_serial": "peter",
-      "finalnyy_raschet_2": "politseyskiy"
+      "finalnyy_raschet_2": "politseyskiy",
+      "audit_na_vyzhivanie": "hale"
     }
   },
   "vova": {
@@ -41,7 +42,8 @@
       "nazvanie_seriyala_1": "mark",
       "nazvanie_seriala_2": "mark",
       "finalnyy_raschet": "mark",
-      "finalnyy_raschet_2": "policeman"
+      "finalnyy_raschet_2": "policeman",
+      "audit_na_vyzhivanie": "cole"
     }
   },
   "akter_4": {
@@ -59,7 +61,8 @@
       "nazvanie_seriala_2": "laura",
       "finalnyy_raschet": "laura",
       "testovyy_serial": "eve",
-      "finalnyy_raschet_2": "laura"
+      "finalnyy_raschet_2": "laura",
+      "audit_na_vyzhivanie": "maren"
     }
   },
   "akter_5": {
@@ -108,5 +111,8 @@
   },
   "aktrisa_1": {
     "display_name": "Актриса 1"
+  },
+  "maks": {
+    "display_name": "Макс"
   }
 }
