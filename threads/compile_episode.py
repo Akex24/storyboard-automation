@@ -86,6 +86,26 @@ class CompileEpisodeThread(QThread):
             zip_dir = show_root / "output" / self.ep_id
             zip_dir.mkdir(parents=True, exist_ok=True)
             zip_path = zip_dir / f"{self.show_slug}_{self.ep_id}.zip"
+            # 2026-05-20: чистим zip_dir от всего кроме нашего zip-файла.
+            # macOS Finder при двойном клике на zip распаковывает его рядом
+            # в папку `<show>_<ep>/` (или `<...> 2/`, `<...> 3/`...). После
+            # нескольких «Собрать серию» в output/<ep>/ накапливаются
+            # распакованные копии. Юзер хочет видеть только актуальный zip.
+            try:
+                for item in zip_dir.iterdir():
+                    if item.is_file() and item.name == zip_path.name:
+                        continue  # наш zip — оставляем (всё равно перепишется)
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        else:
+                            item.unlink()
+                    except Exception as e:
+                        self._log(f"cleanup failed for {item.name}: "
+                                  f"{type(e).__name__}: {e}")
+            except Exception as e:
+                self._log(f"zip_dir cleanup iterdir failed: "
+                          f"{type(e).__name__}: {e}")
             if zip_path.exists():
                 zip_path.unlink()
             with zipfile.ZipFile(zip_path, 'w',
