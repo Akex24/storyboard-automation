@@ -6500,6 +6500,11 @@ class MainWindow(QMainWindow):
         # пилюлю блока.
         if hasattr(self, 'block_refs_btn'):
             self.block_refs_btn.setText(tr('block_refs_btn'))
+        if hasattr(self, 'compile_ep_btn'):
+            # Только если кнопка в покое — не затирать «⏳ Собираю серию…»
+            # во время активного compile-потока.
+            if getattr(self, '_compile_thread', None) is None:
+                self.compile_ep_btn.setText(tr('compile_ep_btn'))
         # Перерисовать пилюли эпизодов и блоков (префикс «ЭП/ЕП/EP», «Блок/Block»)
         if hasattr(self, '_meta') and self._current_show:
             self._meta = read_episodes_meta(SHOW_ROOT)
@@ -6623,6 +6628,34 @@ class MainWindow(QMainWindow):
         # title-плашка торчала «за пилюлями», не на правом краю.
         ep_row.addWidget(self.ep_pills_container)
         ep_row.addStretch()
+        # 2026-05-19: «📦 Собрать серию» — packing все блоки эпизода
+        # (рефы + сториборды + Seedance .txt) в один zip-архив.
+        # Размещение: СПРАВА от ep_pills, СЛЕВА от ep_title_label.
+        # Видимость синхронно с delete_ep_btn (когда выбран эпизод).
+        self.compile_ep_btn = QPushButton(tr('compile_ep_btn'))
+        self.compile_ep_btn.setObjectName("compile-ep-btn")
+        self.compile_ep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.compile_ep_btn.setStyleSheet(
+            "QPushButton#compile-ep-btn {"
+            " background: rgba(228, 52, 74, 0.10);"
+            " border: 1px solid rgba(228, 52, 74, 0.25);"
+            " border-radius: 8px;"
+            " color: #e4344a;"
+            " padding: 8px 14px;"
+            " font-size: 12px; font-weight: 500;"
+            "}"
+            "QPushButton#compile-ep-btn:hover {"
+            " background: rgba(228, 52, 74, 0.18);"
+            " border-color: rgba(228, 52, 74, 0.40); }"
+            "QPushButton#compile-ep-btn:pressed {"
+            " background: rgba(228, 52, 74, 0.25); }"
+            "QPushButton#compile-ep-btn:disabled {"
+            " color: rgba(228, 52, 74, 0.55);"
+            " background: rgba(228, 52, 74, 0.06); }"
+        )
+        self.compile_ep_btn.setVisible(False)
+        self.compile_ep_btn.clicked.connect(self._on_compile_episode_btn)
+        ep_row.addWidget(self.compile_ep_btn)
         # 2026-05-07: title — кликабельная кнопка. Клик → попап с
         # оригинальным сценарием эпизода (из shows/<slug>/scenarios/epNN.txt).
         self.ep_title_label = QPushButton("")
@@ -7791,6 +7824,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'delete_ep_btn'):
                 self.delete_ep_btn.setEnabled(False)
                 self.delete_ep_btn.setVisible(False)
+            if hasattr(self, 'compile_ep_btn'):
+                self.compile_ep_btn.setVisible(False)
             # 2026-05-08 hotfix: scenario_drop_zone устанавливается в None
             # (для совместимости со старыми callers), поэтому hasattr=True
             # но значение None. Защита через is-not-None — иначе крах
@@ -7893,6 +7928,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'delete_ep_btn'):
                 self.delete_ep_btn.setEnabled(False)
                 self.delete_ep_btn.setVisible(False)
+            if hasattr(self, 'compile_ep_btn'):
+                self.compile_ep_btn.setVisible(False)
             self._populate_blocks()
 
         # v1.0.88 (индикатор failed эпизодов): после пересоздания пилюль —
@@ -8127,6 +8164,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'delete_ep_btn'):
             self.delete_ep_btn.setEnabled(True)
             self.delete_ep_btn.setVisible(True)
+        if hasattr(self, 'compile_ep_btn'):
+            self.compile_ep_btn.setVisible(True)
         self._populate_blocks()
         # Восстанавливаем view (refs/chat) если был не на shots.
         # _populate_blocks по умолчанию переключил content_stack на блок 0
@@ -9273,6 +9312,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'delete_ep_btn'):
             self.delete_ep_btn.setEnabled(False)
             self.delete_ep_btn.setVisible(False)
+        if hasattr(self, 'compile_ep_btn'):
+            self.compile_ep_btn.setVisible(False)
         self.content_stack.setCurrentIndex(3)
         self.save_btn.hide()
         self._clear_status_now()
@@ -11507,6 +11548,142 @@ class MainWindow(QMainWindow):
                     tr('block_refs_btn_error'))
             except Exception:
                 pass
+
+    def _on_compile_episode_btn(self):
+        """v1.0.X (2026-05-19): клик «📦 Собрать серию».
+
+        Запускает CompileEpisodeThread в фоне — собирает все блоки
+        текущего эпизода (рефы + сториборды + Seedance .txt) в один zip:
+          shows/<show>/output/<ep_id>/<show>_<ep_id>.zip
+
+        UI: 3 состояния кнопки с бегущими точками во время работы.
+          • Покой:    "📦 Собрать серию"
+          • В работе: "⏳ Собираю серию." → ".." → "..." (QTimer 400ms)
+          • Готово:   возврат в покой через 0.5 сек после finished.
+                      Finder/Explorer открыт на shows/<show>/output/<ep_id>/.
+          • Ошибка:   "✕ Ошибка — повтори" на 3 сек, потом покой.
+        """
+        if not self._current_episode or not self._current_show:
+            return
+        # Защита от двойного клика — пока поток жив, кнопка disabled.
+        if getattr(self, '_compile_thread', None) is not None:
+            return
+        from threads.compile_episode import CompileEpisodeThread
+
+        btn = self.compile_ep_btn
+        base_running = tr('compile_ep_btn_running')
+
+        # ── Animation state (бегущие точки) ────────────────────────
+        anim = {"timer": None, "tick": 0}
+
+        def _tick():
+            anim["tick"] = (anim["tick"] + 1) % 3
+            dots = "." * (anim["tick"] + 1)
+            try:
+                btn.setText(f"{base_running}{dots}")
+            except Exception:
+                pass
+
+        def _start_animation():
+            try:
+                btn.setText(f"{base_running}.")
+                # резерв ширины чтобы кнопка не дёргалась
+                fm = btn.fontMetrics()
+                reserved = fm.horizontalAdvance(base_running + "...") + 30
+                btn.setMinimumWidth(max(btn.width(), reserved))
+            except Exception:
+                pass
+            t = QTimer(self)
+            t.setInterval(400)
+            t.timeout.connect(_tick)
+            t.start()
+            anim["timer"] = t
+
+        def _stop_animation():
+            t = anim["timer"]
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+                anim["timer"] = None
+            try:
+                btn.setMinimumWidth(0)
+            except Exception:
+                pass
+
+        # ── Cleanup общий ──────────────────────────────────────────
+        def _restore_idle():
+            try:
+                btn.setText(tr('compile_ep_btn'))
+                btn.setEnabled(True)
+            except Exception:
+                pass
+
+        # ── Handlers сигналов ──────────────────────────────────────
+        def _on_finished(zip_path: str):
+            _stop_animation()
+            self._compile_thread = None
+            # Открыть папку <ep_id>/ в файловом менеджере (юзер увидит
+            # zip внутри). Pattern из _on_block_refs_btn.
+            try:
+                folder = str(Path(zip_path).parent)
+                if sys.platform == "darwin":
+                    subprocess.run(
+                        ["open", folder], **no_console_kwargs())
+                elif sys.platform == "win32":
+                    subprocess.run(
+                        ["explorer", folder], **no_console_kwargs())
+                else:
+                    subprocess.run(
+                        ["xdg-open", folder], **no_console_kwargs())
+            except Exception:
+                traceback.print_exc()
+            # Возврат в покой через 500мс.
+            QTimer.singleShot(500, _restore_idle)
+
+        def _on_error(msg: str):
+            _stop_animation()
+            self._compile_thread = None
+            if msg == "empty_episode":
+                try:
+                    QMessageBox.information(
+                        self, tr('compile_ep_btn'),
+                        tr('compile_ep_empty'))
+                except Exception:
+                    pass
+                _restore_idle()
+                return
+            try:
+                btn.setText(tr('compile_ep_btn_error'))
+                btn.setEnabled(False)
+            except Exception:
+                pass
+            # Через 3 сек обратно в покой.
+            QTimer.singleShot(3000, _restore_idle)
+
+        # ── Запуск ─────────────────────────────────────────────────
+        try:
+            btn.setEnabled(False)
+            _start_animation()
+            thread = CompileEpisodeThread(
+                self._project_root, self._current_show,
+                self._current_episode, parent=self)
+            thread.finished.connect(_on_finished)
+            thread.error.connect(_on_error)
+            self._compile_thread = thread
+            thread.start()
+        except Exception as e:
+            _stop_animation()
+            self._compile_thread = None
+            traceback.print_exc()
+            try:
+                QMessageBox.warning(
+                    self, tr('compile_ep_btn'),
+                    f"{type(e).__name__}: {e}")
+            except Exception:
+                pass
+            _restore_idle()
 
     def _on_seedance_btn(self):
         """Клик по кнопке «🎬 Промпт Seedance» на текущем блоке.
