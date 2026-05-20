@@ -12443,8 +12443,8 @@ class MainWindow(QMainWindow):
         # 4. Голосовые профили — из корня проекта (как в episode_chat)
         voices_text = ""
         try:
-            voices_path = (self._project_root / "instructions"
-                           / "ГОЛОСОВЫЕ_ПРОФИЛИ_ПЕРСОНАЖЕЙ.txt")
+            voices_path = (self._project_root / "shows"
+                           / self._current_show / "voices.txt")
             if voices_path.exists():
                 voices_text = voices_path.read_text(encoding="utf-8")
         except Exception:

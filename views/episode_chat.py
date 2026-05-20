@@ -3898,8 +3898,7 @@ class EpisodeChatView(QWidget):
             bible_text = ""
 
         # Голосовые профили — единый файл для всех сериалов.
-        voices_path = (project_root / "instructions"
-                       / "ГОЛОСОВЫЕ_ПРОФИЛИ_ПЕРСОНАЖЕЙ.txt")
+        voices_path = (project_root / "shows" / cur_show / "voices.txt")
         voices_text = ""
         try:
             if voices_path.exists():
