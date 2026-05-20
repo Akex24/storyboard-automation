@@ -55,7 +55,7 @@ class SeedancePipelineThread(QThread):
                            (`shows/<show>/output/seedance/`)
       • bible_text       — содержимое `shows/<slug>/bible.txt`
       • voice_profiles_text — содержимое
-                           `instructions/ГОЛОСОВЫЕ_ПРОФИЛИ_ПЕРСОНАЖЕЙ.txt`
+                           `shows/<slug>/voices.txt` (per-show)
       • storyboard_prompts_dir — Path с уже-готовыми сториборд промптами
                            (`shows/<slug>/output/prompts/`) — читаем
                            `<ep>_block_N.txt` для каждого блока, передаём

@@ -12365,8 +12365,8 @@ class MainWindow(QMainWindow):
           • refs_summary — из `episodes.json[ep].refs_decisions` (по той
             же логике что у `_build_refs_summary_for_orchestrator`).
           • Bible — `shows/<slug>/bible.txt`.
-          • Голосовые профили — `instructions/ГОЛОСОВЫЕ_ПРОФИЛИ_…txt` из
-            корня проекта (через `self._project_root`).
+          • Голосовые профили — `shows/<slug>/voices.txt` активного
+            сериала (per-show).
           • claude CLI — через глобальный `find_claude_cli()`.
           • Модель — Opus 4.7 (как и массовый Seedance pipeline).
 

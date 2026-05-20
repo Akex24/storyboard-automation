@@ -545,13 +545,14 @@ storyboard-automation/
 │   ├── PIPELINE_RULES.txt
 │   ├── Инструкция nano banana claude.txt
 │   ├── ИНСТРУКЦИЯ_ИДЕАЛЬНЫЙ_ПРОМПТ_SEEDANCE 2.0.txt
-│   ├── ГОЛОСОВЫЕ_ПРОФИЛИ_ПЕРСОНАЖЕЙ.txt
 │   ├── АНТИТЕАТРАЛЬНЫЙ СЛОВАРЬ — ЗАМЕНЫ EMOJI-ЭМОЦИЙ НА МИКРОМИМИКУ.txt
 │   └── БИБЛИЯ СЕРИАЛА (СЮЖЕТ И ПЕРСОНАЖИ).txt
 ├── current_show.json             ← {"current": "<slug активного сериала>"}
 └── shows/                        ← ВСЕ сериалы (gitignored, локальные)
     └── <slug>/                   ← один сериал (например the_last_plan)
         ├── episodes.json         ← названия эпизодов и блоков
+        ├── bible.txt             ← библия сериала
+        ├── voices.txt            ← голосовые профили персонажей (per-show)
         ├── scenarios/
         │   └── scenario.txt      ← текущий эпизод
         ├── refs/

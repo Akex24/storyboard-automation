@@ -3897,7 +3897,7 @@ class EpisodeChatView(QWidget):
         except Exception:
             bible_text = ""
 
-        # Голосовые профили — единый файл для всех сериалов.
+        # Голосовые профили — per-show: shows/<slug>/voices.txt активного сериала.
         voices_path = (project_root / "shows" / cur_show / "voices.txt")
         voices_text = ""
         try:
