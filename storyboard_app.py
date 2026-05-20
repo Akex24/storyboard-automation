@@ -12881,10 +12881,16 @@ class MainWindow(QMainWindow):
         """v1.0.88 (2026-05-17): прямой save в папку блока без QFileDialog.
         Раньше открывался системный «Сохранить как» — юзер сам выбирал
         путь. Теперь файл сразу копируется в .cache/_block_view/<ep>_block<N>/
-        с именем `<ep>_block<N>.jpg`. На повторных кликах добавляется
-        суффикс `_2`, `_3` и т.д. — старые файлы не перезаписываются.
+        с именем `<ep>_block<N>.jpg`. На повторных кликах файл
+        перезаписывается. Один блок = один файл.
+
+        2026-05-20: убрана логика суффикса `_2`, `_3` (было «collision-free
+        накопление»). Юзер хочет перезапись, а не историю — иначе
+        накапливаются десятки версий, и «Собрать серию» не знает какую
+        брать. Дополнительно при каждом save'е чистим legacy-файлы
+        `<base>_<digit>.jpg` от прошлых версий Studio.
         Папка та же, что у кнопки «🗂 Рефы блока», но без rmtree —
-        накопление, не очистка.
+        cleanup только legacy-суффиксов.
         """
         if not self.current_block:
             return
@@ -12911,14 +12917,26 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Ошибка экспорта", str(e))
             return
-        # Collision-free имя: base.jpg → base_2.jpg → base_3.jpg ...
+        # Один блок = один файл (без суффиксов _2/_3). Image.save в
+        # stitch_shots_to_landscape молча перезаписывает существующий.
         base = f"{ep_id}_block{block_n}"
         ext = ".jpg"
         candidate = dest_dir / f"{base}{ext}"
-        n = 2
-        while candidate.exists():
-            candidate = dest_dir / f"{base}_{n}{ext}"
-            n += 1
+        # Cleanup legacy `<base>_<digit>.jpg` от прошлых версий Studio
+        # (когда работала collision-free логика и накапливались
+        # _2/_3/.../_10). После первого save'а с новым кодом папка
+        # очищается до единственного актуального файла.
+        legacy_pat = re.compile(
+            rf'^{re.escape(base)}_\d+\.(jpg|jpeg|png)$', re.IGNORECASE)
+        try:
+            for f in dest_dir.iterdir():
+                if f.is_file() and legacy_pat.match(f.name):
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass  # locked / permission — не валим pipeline
+        except Exception:
+            pass
         try:
             stitch_shots_to_landscape(self.current_block, candidate)
             self.status_bar.showMessage(

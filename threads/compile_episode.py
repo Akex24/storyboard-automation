@@ -188,25 +188,29 @@ class CompileEpisodeThread(QThread):
 
     def _copy_storyboards(self, show_root: Path, n: int,
                            dest_dir: Path) -> None:
-        """Копирует все сторибоарды блока: ep<X>_block<n>(_<X>).(jpg|jpeg|png)
-        из shows/<show>/output/storyboards/."""
-        sb_dir = show_root / "output" / "storyboards"
-        if not sb_dir.is_dir():
+        """Копирует ОДИН landscape-лист блока из
+        shows/<show>/.cache/_block_view/<ep>_block<n>/<ep>_block<n>.jpg
+        (создаётся кнопкой «Сохранить сториборд» в редакторе блока).
+
+        2026-05-20: один блок = один файл. Раньше искали в
+        output/storyboards/ с regex по версиям — это была неправильная
+        папка (там лежат отдельные шоты `_shot<M>`, не landscape-листы).
+        Если файла нет (юзер не нажимал «Сохранить сториборд» для этого
+        блока) — пропускаем без error, log в stderr. Confirm-dialog
+        перед сборкой с чекбоксом «Все сториборды сохранены» защищает
+        юзера от случайных пропусков.
+        """
+        src = (show_root / ".cache" / "_block_view"
+               / f"{self.ep_id}_block{n}"
+               / f"{self.ep_id}_block{n}.jpg")
+        if not src.is_file():
+            self._log(f"no saved storyboard for block {n} "
+                      f"(user did not press «Сохранить сториборд»)")
             return
-        pat = re.compile(
-            rf'^{re.escape(self.ep_id)}_block{n}(_\d+)?\.(jpg|jpeg|png)$',
-            re.IGNORECASE
-        )
         try:
-            for f in sb_dir.iterdir():
-                if f.is_file() and pat.match(f.name):
-                    try:
-                        shutil.copy2(f, dest_dir / f.name)
-                    except Exception as e:
-                        self._log(f"storyboard copy failed {f.name}: "
-                                  f"{type(e).__name__}: {e}")
+            shutil.copy2(src, dest_dir / src.name)
         except Exception as e:
-            self._log(f"storyboards listdir failed: "
+            self._log(f"storyboard copy failed {src.name}: "
                       f"{type(e).__name__}: {e}")
 
     def _copy_seedance_txt(self, show_root: Path, n: int,
