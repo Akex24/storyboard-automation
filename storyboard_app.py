@@ -11568,6 +11568,13 @@ class MainWindow(QMainWindow):
         # Защита от двойного клика — пока поток жив, кнопка disabled.
         if getattr(self, '_compile_thread', None) is not None:
             return
+        # 2026-05-20: confirm-dialog с 2 чекбоксами (сториборды + Seedance).
+        # Защищает от случайной сборки серии до того как контент готов.
+        # ESC / крестик / «Отмена» → reject → return без старта потока.
+        from widgets.compile_confirm_dialog import CompileConfirmDialog
+        dlg = CompileConfirmDialog(parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
         from threads.compile_episode import CompileEpisodeThread
 
         btn = self.compile_ep_btn
