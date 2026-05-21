@@ -30,6 +30,9 @@ a = Analysis(
         # seedance инструкции). На Mac: Contents/Resources/instructions/;
         # на Win onedir: _internal/instructions/.
         ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md', 'instructions'),
+        ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ_b.md', 'instructions'),
+        ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ_c.md', 'instructions'),
+        ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ_d.md', 'instructions'),
     ],
     hiddenimports=[
         'PIL._tkinter_finder',
@@ -52,9 +55,14 @@ a = Analysis(
         # эти модули НЕ попадают в bundle (даже режим A) и .app падает
         # на старте с ModuleNotFoundError. Хинты должны перечислять все
         # режимы которые могут быть выбраны в Settings.
-        # B/C/D модули добавятся в коммите 4 вместе с UI переключателя.
         'agents.montage_rules',
         'agents.validator_prefilter',
+        'agents.montage_rules_b',
+        'agents.montage_rules_c',
+        'agents.montage_rules_d',
+        'agents.validator_prefilter_b',
+        'agents.validator_prefilter_c',
+        'agents.validator_prefilter_d',
     ],
     hookspath=[],
     hooksconfig={},
