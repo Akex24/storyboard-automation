@@ -344,6 +344,20 @@ def build_scriptwriter_user_prompt(scenario_text: str,
     refs_json = json.dumps(refs_summary, ensure_ascii=False, indent=2)
     ctx = _format_show_context(show_context)
     ctx_block = (ctx + "\n") if ctx else ""
+    mode = _mode_loader.get_current_mode()
+    if mode == 'a':
+        timing_block = (
+            "Составь монтажную карту в JSON. Финальный хронометраж 60–80 секунд —\n"
+            "ЖЁСТКИЕ границы (не «допустимо 50-90», не «мягкий ориентир»). Карта\n"
+            "должна укладываться в 60–80 включительно. КАЖДЫЙ значимый драматический\n"
+            "beat = ОТДЕЛЬНЫЙ блок (см. COMMON_RULES «РАЗБИВКА НА БЛОКИ»). Целевое\n"
+            "количество блоков 5-6."
+        )
+    else:
+        timing_block = (
+            "Составь монтажную карту в JSON. КАЖДЫЙ значимый драматический\n"
+            "beat = ОТДЕЛЬНЫЙ блок (см. COMMON_RULES «РАЗБИВКА НА БЛОКИ»)."
+        )
     return f"""{ctx_block}Сценарий эпизода (текущий):
 \"\"\"
 {scenario_text}
@@ -352,11 +366,7 @@ def build_scriptwriter_user_prompt(scenario_text: str,
 Доступные рефы (используй ТОЛЬКО эти slug'и):
 {refs_json}
 
-Составь монтажную карту в JSON. Финальный хронометраж 60–80 секунд —
-ЖЁСТКИЕ границы (не «допустимо 50-90», не «мягкий ориентир»). Карта
-должна укладываться в 60–80 включительно. КАЖДЫЙ значимый драматический
-beat = ОТДЕЛЬНЫЙ блок (см. COMMON_RULES «РАЗБИВКА НА БЛОКИ»). Целевое
-количество блоков 5-6.
+{timing_block}
 Если есть Bible сериала — учитывай характер персонажа при выборе
 тона реплик.
 """
