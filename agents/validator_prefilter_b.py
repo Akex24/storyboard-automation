@@ -20,12 +20,11 @@ from typing import Tuple, List, Set, Dict, Any
 VALID_SPEECH_TYPES: Set[str] = {"fast", "normal", "emotional", "slow"}
 MAX_SHOTS_PER_BLOCK = 4
 MAX_BLOCK_DURATION = 15
-MAX_BLOCKS = 7
 
 
 PREFILTER_RULES: Set[str] = {
     "rule_1", "rule_2", "rule_3", "rule_4", "rule_5",
-    "rule_7", "rule_8", "rule_10", "rule_11", "rule_13",
+    "rule_7", "rule_8", "rule_10", "rule_11",
 }
 
 
@@ -35,29 +34,6 @@ def _err(code: str, where: str, details: str) -> Dict[str, str]:
 
 def _block_total(b: Dict[str, Any]) -> int:
     return sum(int(s.get("duration_sec") or 0) for s in (b.get("shots") or []))
-
-
-def _check_block_count(card: Dict[str, Any]) -> List[Dict[str, str]]:
-    """#13 — Количество блоков 4-7 (целевое 5-6). Если >7 — "too_many_blocks".
-
-    Цитата из _VALIDATOR_JSON_TAIL пункт 13:
-      "Количество блоков 4-7 (целевое 5-6). Если >7 блоков — ошибка
-       \"too_many_blocks: <N> блоков, дроби beats слишком мелко\""
-
-    По решению Алекса (2026-05-14): нижнюю границу <4 НЕ ловим
-    (в исходной инструкции нет явной ошибки про мало блоков).
-    """
-    blocks = card.get("blocks") or []
-    n = len(blocks)
-    if n > MAX_BLOCKS:
-        return [_err(
-            "too_many_blocks",
-            "card.blocks",
-            f"{n} блоков, дроби beats слишком мелко. Объедини "
-            f"соседние блоки в один beat — описания блоков ниже "
-            f"подскажут какие слить.",
-        )]
-    return []
 
 
 def _check_block_shot_count(card: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -290,7 +266,6 @@ def prefilter_check(card: Dict[str, Any],
     characters = {c.get("slug") for c in (refs.get("characters") or []) if c.get("slug")}
 
     errors: List[Dict[str, str]] = []
-    errors += _check_block_count(card)
     errors += _check_block_shot_count(card)
     errors += _check_block_duration(card)
     errors += _check_shot_numbering(card)
