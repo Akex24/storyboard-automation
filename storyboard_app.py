@@ -3244,9 +3244,48 @@ def load_api_key() -> str:
 
 
 def save_api_key(key: str) -> None:
-    """Сохраняет API-ключ Fast Gen в QSettings (системное хранилище)."""
+    """Сохраняет API-ключ Fast Gen в QSettings + синхронизирует в `.env`
+    project root'а (bridge для pipeline.py, который читает только из .env)."""
+    key = (key or "").strip()
     try:
-        QSettings(APP_ORG, APP_NAME).setValue("fastgen_api_key", (key or "").strip())
+        QSettings(APP_ORG, APP_NAME).setValue("fastgen_api_key", key)
+    except Exception:
+        traceback.print_exc()
+    try:
+        project_root = _project_root_for_provider_sync()
+        if project_root is not None:
+            sync_api_key_to_env(project_root, key)
+    except Exception:
+        traceback.print_exc()
+
+
+def sync_api_key_to_env(project_root: Path, key: str) -> None:
+    """Bridge для pipeline.py: обновляет первую строку .env свежим
+    Fast Gen API ключом. Сохраняет остальные строки (Anthropic ключ
+    и т.д.) и trailing newline. Идемпотентно: если первая строка
+    уже равна key — возвращает без записи (не дёргает mtime)."""
+    try:
+        key = (key or "").strip()
+        if not key:
+            return
+        dst = Path(project_root) / ".env"
+        if dst.exists():
+            try:
+                content = dst.read_text(encoding="utf-8")
+                lines = content.splitlines()
+                if lines and lines[0].strip() == key:
+                    return  # ключ не изменился
+                if lines:
+                    lines[0] = key
+                else:
+                    lines = [key]
+                ending = "\n" if content.endswith("\n") else ""
+                dst.write_text("\n".join(lines) + ending, encoding="utf-8")
+            except Exception:
+                traceback.print_exc()
+        else:
+            # .env нет — создаём с одной строкой
+            dst.write_text(key + "\n", encoding="utf-8")
     except Exception:
         traceback.print_exc()
 
@@ -4792,6 +4831,12 @@ class MainWindow(QMainWindow):
         # (pipeline.py) всегда шли через OpenAI flow.
         try:
             sync_image_provider_to_project(project_root, image_provider())
+        except Exception:
+            traceback.print_exc()
+        # 2026-05-21: bridge для pipeline.py — синхронизация Fast Gen ключа в .env
+        # при старте Studio (на случай если ключ обновлён в QSettings но .env устарел).
+        try:
+            sync_api_key_to_env(project_root, load_api_key())
         except Exception:
             traceback.print_exc()
         # Активный сериал и эпизод
