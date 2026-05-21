@@ -43,6 +43,7 @@ import show_manager
 # scenario_parser — разбор документа со сценариями (библия + эпизоды).
 # Чистый Python без Qt, юниты в tests/test_scenario_parser.py.
 import scenario_parser
+from agents import mode_loader
 
 # threads — фоновые QThread классы. В подмодулях threads/*.py используется
 # lazy proxy `_sa = _AppProxy()` для доступа к storyboard_app — это решает
@@ -7511,6 +7512,43 @@ class MainWindow(QMainWindow):
             ai.addWidget(self.stats_label)
             lay.addWidget(admin_frame)
 
+        # ── 🎬 РЕЖИМ МОНТАЖНОЙ КАРТЫ — переключатель A/B/C/D (виден всем) ──
+        self.sec_montage_mode_lbl = QLabel(tr('sec_montage_mode'))
+        self.sec_montage_mode_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_montage_mode_lbl)
+
+        mm_frame = QFrame()
+        mm_frame.setObjectName("settings-group")
+        mmf = QVBoxLayout(mm_frame)
+        mmf.setSpacing(0)
+        mmf.setContentsMargins(18, 14, 18, 14)
+
+        self.montage_mode_hint_lbl = QLabel(tr('montage_mode_hint'))
+        self.montage_mode_hint_lbl.setWordWrap(True)
+        self.montage_mode_hint_lbl.setStyleSheet(
+            "color:#aaa; font-size:12px; padding-bottom:10px;")
+        mmf.addWidget(self.montage_mode_hint_lbl)
+
+        mm_row = QHBoxLayout()
+        mm_row.setSpacing(12)
+        self.montage_mode_label_lbl = QLabel(tr('montage_mode_label'))
+        self.montage_mode_label_lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
+        mm_row.addWidget(self.montage_mode_label_lbl)
+
+        self.montage_mode_combo = QComboBox()
+        for _m in mode_loader.VALID_MODES:
+            self.montage_mode_combo.addItem(f"Mode {_m.upper()}", _m)
+        _cur_mode = mode_loader.get_current_mode()
+        _idx = self.montage_mode_combo.findData(_cur_mode)
+        if _idx >= 0:
+            self.montage_mode_combo.setCurrentIndex(_idx)
+        self.montage_mode_combo.activated.connect(self._on_montage_mode_changed)
+        block_wheel_event(self.montage_mode_combo)
+        mm_row.addWidget(self.montage_mode_combo, stretch=1)
+        mmf.addLayout(mm_row)
+
+        lay.addWidget(mm_frame)
+
         lay.addStretch()
         self._refresh_settings_versions()
         scroll.setWidget(w)
@@ -12760,6 +12798,43 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self, tr('sec_proxy'),
                     tr('proxy_save_no_restart_notice'))
+        except Exception:
+            traceback.print_exc()
+
+    def _on_montage_mode_changed(self, idx: int):
+        """Обработчик QComboBox.activated. Если режим действительно меняется —
+        показывает диалог рестарта с двумя кнопками. ESC/крестик откатывает
+        выбор в combobox обратно на текущий режим без записи в QSettings."""
+        try:
+            new_mode = self.montage_mode_combo.itemData(idx)
+            cur_mode = mode_loader.get_current_mode()
+            if not new_mode or new_mode == cur_mode:
+                return  # тот же режим — ничего не делаем
+            m = QMessageBox(self)
+            m.setIcon(QMessageBox.Icon.Information)
+            m.setWindowTitle(tr('montage_mode_changed_title'))
+            m.setText(tr('montage_mode_changed_text'))
+            now_btn = m.addButton(tr('montage_mode_restart_now'),
+                                  QMessageBox.ButtonRole.AcceptRole)
+            later_btn = m.addButton(tr('montage_mode_restart_later'),
+                                    QMessageBox.ButtonRole.RejectRole)
+            m.setDefaultButton(later_btn)
+            m.exec()
+            clicked = m.clickedButton()
+            if clicked is None:
+                # ESC / крестик — юзер передумал, откатываем combobox
+                _idx_cur = self.montage_mode_combo.findData(cur_mode)
+                if _idx_cur >= 0:
+                    self.montage_mode_combo.setCurrentIndex(_idx_cur)
+                return
+            # юзер нажал одну из кнопок — сохраняем выбор
+            mode_loader.set_current_mode(new_mode)
+            if clicked is now_btn:
+                QTimer.singleShot(0, QApplication.quit)
+            else:
+                QMessageBox.information(
+                    self, tr('sec_montage_mode'),
+                    tr('montage_mode_restart_later_notice'))
         except Exception:
             traceback.print_exc()
 
