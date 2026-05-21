@@ -46,6 +46,15 @@ a = Analysis(
         'encodings',
         'encodings.idna',
         'encodings.utf_8',
+        # 2026-05-21: модули правил монтажной карты загружаются динамически
+        # через `agents/mode_loader.py` (`importlib.import_module`).
+        # PyInstaller static analyzer не видит importlib — без явных хинтов
+        # эти модули НЕ попадают в bundle (даже режим A) и .app падает
+        # на старте с ModuleNotFoundError. Хинты должны перечислять все
+        # режимы которые могут быть выбраны в Settings.
+        # B/C/D модули добавятся в коммите 4 вместе с UI переключателя.
+        'agents.montage_rules',
+        'agents.validator_prefilter',
     ],
     hookspath=[],
     hooksconfig={},
