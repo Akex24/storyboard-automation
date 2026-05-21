@@ -43,7 +43,13 @@ from agents.montage_prompts import (
     get_geometry_editor_system,
     build_geometry_editor_user_prompt,
 )
-from agents.validator_prefilter import prefilter_check
+# validator_prefilter теперь подгружается через mode_loader в
+# зависимости от выбранного режима монтажной карты (A/B/C/D).
+# prefilter_check — module-level переменная, остальной код в этом
+# файле обращается к ней как раньше (см. _call_validator ниже).
+from agents import mode_loader as _mode_loader
+_prefilter_module = _mode_loader.import_validator_prefilter()
+prefilter_check = _prefilter_module.prefilter_check
 from agents.timing_post_check import apply_timing_post_check
 
 

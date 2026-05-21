@@ -39,14 +39,39 @@ Mac и Win одинаково.
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
-# Имя по умолчанию — главная инструкция. Лежит в bundle через
-# StoryboardStudio.spec datas (v1.0.66) как
-# `instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md` относительно sys._MEIPASS.
-DEFAULT_INSTRUCTION_FILE = "ГЛАВНАЯ_ИНСТРУКЦИЯ.md"
+# Имя файла главной инструкции — динамически выбирается через
+# mode_loader в зависимости от выбранного режима монтажной карты
+# (A/B/C/D). По умолчанию режим A → `ГЛАВНАЯ_ИНСТРУКЦИЯ.md`.
+# Импорт lazy (внутри функции) чтобы избежать circular dependencies:
+# storyboard_app импортирует agents/, mode_loader использует QSettings
+# которые в свою очередь требуют QApplication из storyboard_app.
 INSTRUCTIONS_DIR = "instructions"
+
+
+def _get_default_instruction_file() -> str:
+    """Возвращает имя файла главной инструкции для текущего режима.
+
+    Читает QSettings через `mode_loader.get_instruction_filename()`.
+    При любой ошибке (QSettings недоступен, mode_loader не импортируется
+    и т.п.) — фолбэк на режим A.
+    """
+    try:
+        from agents import mode_loader
+        return mode_loader.get_instruction_filename()
+    except Exception:
+        return "ГЛАВНАЯ_ИНСТРУКЦИЯ.md"
+
+
+# Бэк-совместимость для модульного уровня — на случай если кто-то
+# импортирует DEFAULT_INSTRUCTION_FILE напрямую как раньше.
+# ВНИМАНИЕ: значение здесь "снимается" при import модуля. Если режим
+# меняется в runtime — функции load_instruction_md / load_sections /
+# load_subsection берут актуальное значение через `_get_default_instruction_file()`
+# при каждом вызове (см. их сигнатуры: filename: Optional[str] = None).
+DEFAULT_INSTRUCTION_FILE = _get_default_instruction_file()
 
 # Кэш: ключ = (filename, sections_tuple), value = склеенный текст.
 # Заполняется при первом вызове `load_sections`, освобождается при
@@ -71,15 +96,18 @@ def _resolve_reader():
         return lambda _rp, default="": default
 
 
-def load_instruction_md(filename: str = DEFAULT_INSTRUCTION_FILE) -> str:
+def load_instruction_md(filename: Optional[str] = None) -> str:
     """Загружает полный текст файла-инструкции из bundle.
 
     Args:
-        filename: имя файла в `instructions/`. По умолчанию
-                  ГЛАВНАЯ_ИНСТРУКЦИЯ.md.
+        filename: имя файла в `instructions/`. Если `None` —
+                  выбирается через `_get_default_instruction_file()`
+                  по текущему режиму монтажной карты.
     Returns:
         Содержимое файла или "" если не найден (silent fallback).
     """
+    if filename is None:
+        filename = _get_default_instruction_file()
     reader = _resolve_reader()
     rel_path = f"{INSTRUCTIONS_DIR}/{filename}"
     return reader(rel_path, default="")
@@ -135,7 +163,7 @@ def extract_md_sections(text: str, sections: List[int]) -> str:
 
 def load_sections(
     sections: List[int],
-    filename: str = DEFAULT_INSTRUCTION_FILE,
+    filename: Optional[str] = None,
 ) -> str:
     """Combo: load_instruction_md + extract_md_sections + cache.
 
@@ -144,10 +172,14 @@ def load_sections(
 
     Args:
         sections: номера разделов, например [1, 3, 4, 6, 8].
-        filename: имя файла-инструкции (default — ГЛАВНАЯ_ИНСТРУКЦИЯ.md).
+        filename: имя файла-инструкции. Если `None` — выбирается
+                  через `_get_default_instruction_file()` по текущему
+                  режиму монтажной карты.
     Returns:
         Селективно склеенный markdown или "" при ошибке/отсутствии.
     """
+    if filename is None:
+        filename = _get_default_instruction_file()
     key: Tuple[str, Tuple[int, ...]] = (filename, tuple(sorted(sections)))
     if key in _CACHE:
         return _CACHE[key]
@@ -225,7 +257,7 @@ def extract_md_subsection(text: str, section_num: int, anchor: str) -> str:
 def load_subsection(
     section_num: int,
     anchor: str,
-    filename: str = DEFAULT_INSTRUCTION_FILE,
+    filename: Optional[str] = None,
 ) -> str:
     """Combo: load_instruction_md + extract_md_subsection + cache.
 
@@ -236,10 +268,14 @@ def load_subsection(
     Args:
         section_num: номер раздела верхнего уровня.
         anchor:      подстрока заголовка `### ...` для поиска.
-        filename:    имя файла-инструкции (default ГЛАВНАЯ_ИНСТРУКЦИЯ.md).
+        filename:    имя файла-инструкции. Если `None` — выбирается
+                     через `_get_default_instruction_file()` по
+                     текущему режиму монтажной карты.
     Returns:
         Текст подсекции или "" если не найдено / файл пуст.
     """
+    if filename is None:
+        filename = _get_default_instruction_file()
     key = (filename, 'sub', section_num, anchor)
     if key in _CACHE:
         return _CACHE[key]
