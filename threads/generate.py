@@ -1053,6 +1053,113 @@ class RunEpisodeThread(QThread):
             self.error.emit(str(e)[:500])
 
 
+# ─── Детективное логирование актёрской генерации (v1.0.78) ────────
+
+def _log_actor_ref_event(project_root, session_id: str, stage: str,
+                          include_stack: bool = False, **kwargs) -> None:
+    """v1.0.78: детективное логирование GenerateActorRefThread в
+    `actors/actor_ref_changes.log` для диагностики «лицо непохоже»
+    на 3-4-й повторной генерации.
+
+    Парные с _log_actor_role_call (storyboard_app.py:_log_actor_role_call):
+    одна сессия генерации = один session_id, несколько ENTRY/END секций
+    в логе. Чтобы при следующей плохой генерации видеть точную цепочку:
+    что улетело в API → какие fh пришли → что вернул /generate → какой
+    uri отдал polling → размер сохранённого файла.
+
+    Никогда не бросает исключения — вся запись wrapped в try/except.
+    Ротация при > 1 MB → .log.old (с перезаписью старого .old).
+
+    Cross-platform: pathlib.Path + open(encoding='utf-8'). Никаких
+    subprocess/shell. datetime/traceback/json импортируются локально
+    (стиль файла threads/generate.py — все эти модули используются
+    inline, не module-level).
+
+    Args:
+        project_root: Path к корню проекта (там создаётся actors/).
+        session_id:   уникальный ID одной генерации (timestamp с usec).
+        stage:        'entry_start' | 'photos_uploaded' |
+                       'generate_response' | 'result_saved' | 'end'.
+        include_stack: True ТОЛЬКО для entry_start (экономия места).
+        **kwargs:     поля стадии (см. примеры в caller'ах).
+    """
+    try:
+        if project_root is None:
+            return
+        import datetime as _dt
+        import json as _json
+        actors_root = Path(project_root) / "actors"
+        try:
+            actors_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        log_path = actors_root / "actor_ref_changes.log"
+        # Ротация при > 1 MB
+        try:
+            if log_path.exists() and log_path.stat().st_size > 1_000_000:
+                old_path = log_path.with_suffix(".log.old")
+                try:
+                    if old_path.exists():
+                        old_path.unlink()
+                except Exception:
+                    pass
+                try:
+                    log_path.rename(old_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lines = []
+        lines.append(f"--- ENTRY session_id={session_id} stage={stage} ---")
+        lines.append(f"{ts}")
+        # Форматируем kwargs построчно. Списки/dict через json для читаемости.
+        for k, v in kwargs.items():
+            try:
+                if isinstance(v, (list, tuple)):
+                    lines.append(f"{k}:")
+                    for item in v:
+                        if isinstance(item, (list, tuple)) and len(item) == 2:
+                            lines.append(f"  - {item[0]} -> {item[1]}")
+                        else:
+                            lines.append(f"  - {item}")
+                elif isinstance(v, dict):
+                    lines.append(
+                        f"{k}: {_json.dumps(v, ensure_ascii=False)}")
+                elif isinstance(v, str) and "\n" in v:
+                    # Многострочные значения — отдельным блоком
+                    lines.append(f"{k}: <<<")
+                    for line in v.splitlines():
+                        lines.append(f"  {line}")
+                    lines.append(">>>")
+                else:
+                    lines.append(f"{k}: {v}")
+            except Exception:
+                lines.append(f"{k}: <unrepr>")
+
+        if include_stack:
+            try:
+                import traceback as _tb
+                frames = _tb.extract_stack()[-12:-2]
+                lines.append("caller_stack:")
+                for fr in frames:
+                    lines.append(
+                        f'  File "{fr.filename}", line {fr.lineno}, '
+                        f"in {fr.name}")
+            except Exception:
+                pass
+
+        lines.append("--- END ---")
+        lines.append("")  # разделитель
+
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        # Никогда не падать из-за логирования
+        pass
+
+
 # ─── Поток генерации character-рефа актёра ───────────────────────
 
 class GenerateActorRefThread(QThread):
@@ -1104,6 +1211,32 @@ class GenerateActorRefThread(QThread):
                 pass
 
     def run(self):
+        # 2026-05-22 (v1.0.78): детективное логирование в
+        # actors/actor_ref_changes.log. См. _log_actor_ref_event выше.
+        # Никогда не ломает основной flow (try/except внутри функции).
+        import datetime as _dt_ref
+        _session_id = _dt_ref.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        _last_stage = "init"
+        _error_msg = None
+        try:
+            _project_root = self.target_dir.parents[4]
+        except Exception:
+            _project_root = None
+        try:
+            _log_actor_ref_event(
+                _project_root, _session_id, "entry_start",
+                include_stack=True,
+                actor_slug=self.actor_slug,
+                target_dir=str(self.target_dir),
+                output_filename=self.output_filename,
+                prompt_text=self.prompt_text,
+                photo_paths=[
+                    f"{p} ({(p.stat().st_size if p.exists() else 0)} bytes)"
+                    for p in self.photo_paths
+                ])
+            _last_stage = "entry_start"
+        except Exception:
+            pass
         try:
             key = _sa.load_api_key()
             if not key:
@@ -1136,6 +1269,18 @@ class GenerateActorRefThread(QThread):
                 if not fh:
                     raise RuntimeError(f"upload missing hash: {data}")
                 ref_hashes.append(fh)
+
+            # 2026-05-22 (v1.0.78): лог photos_uploaded — какие фото
+            # реально улетели в Fast Gen и с какими fh ответил сервер.
+            try:
+                _log_actor_ref_event(
+                    _project_root, _session_id, "photos_uploaded",
+                    uploaded=list(zip(
+                        [str(p) for p in self.photo_paths[:10]],
+                        ref_hashes)))
+                _last_stage = "photos_uploaded"
+            except Exception:
+                pass
 
             # Целевая директория — задана caller'ом (обычно
             # shows/<show>/refs/characters/<character>/). Создаём если нет.
@@ -1186,6 +1331,19 @@ class GenerateActorRefThread(QThread):
             if not op_id:
                 self.error.emit(f"No operation_id: {data}")
                 return
+            # 2026-05-22 (v1.0.78): лог generate_response — что именно
+            # ушло в /generate (prompt + ref_hashes + endpoint) и какой
+            # operation_id вернул сервер.
+            try:
+                _log_actor_ref_event(
+                    _project_root, _session_id, "generate_response",
+                    operation_id=op_id,
+                    endpoint=endpoint,
+                    ref_hashes=ref_hashes,
+                    prompt_text=self.prompt_text)
+                _last_stage = "generate_response"
+            except Exception:
+                pass
             # 2026-05-17: diag-лог в `shows/<show>/_studio_diag.log` —
             # видимость в чате при отладке (раньше actor-flow не писал
             # вообще ничего, симптомы «лицо непохоже» были без следов).
@@ -1261,6 +1419,22 @@ class GenerateActorRefThread(QThread):
                         r2.raise_for_status()
                         image_bytes = r2.content
                     target.write_bytes(image_bytes)
+                    # 2026-05-22 (v1.0.78): лог result_saved — какой uri
+                    # отдал polling и какой реально файл сохранили.
+                    # Если uri указывает на чужой fh — поймаем тут.
+                    try:
+                        try:
+                            _result_size = target.stat().st_size
+                        except Exception:
+                            _result_size = 0
+                        _log_actor_ref_event(
+                            _project_root, _session_id, "result_saved",
+                            result_uri=uri,
+                            target_path=str(target),
+                            target_size=_result_size)
+                        _last_stage = "result_saved"
+                    except Exception:
+                        pass
                     self.finished.emit(str(target))
                     return
                 if status == "error":
@@ -1275,7 +1449,20 @@ class GenerateActorRefThread(QThread):
                        status=status or 'pending', sec=elapsed))
 
         except Exception as e:
-            self.error.emit(str(e))
+            _error_msg = str(e)
+            self.error.emit(_error_msg)
+        finally:
+            # 2026-05-22 (v1.0.78): финальный лог end — закрывает сессию.
+            # last_stage показывает на какой стадии завершилось (полезно
+            # для return-путей которые не доходят до result_saved).
+            try:
+                _log_actor_ref_event(
+                    _project_root, _session_id, "end",
+                    status=("error" if _error_msg else "success"),
+                    last_stage=_last_stage,
+                    error=_error_msg)
+            except Exception:
+                pass
 
 
 class EditActorRefThread(QThread):
