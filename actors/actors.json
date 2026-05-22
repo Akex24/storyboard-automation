@@ -110,9 +110,24 @@
     }
   },
   "aktrisa_1": {
-    "display_name": "Актриса 1"
+    "display_name": "Актриса 1",
+    "roles": {
+      "audit_na_vyzhivanie": "donna"
+    }
   },
   "maks": {
-    "display_name": "Макс"
+    "display_name": "Макс",
+    "roles": {
+      "audit_na_vyzhivanie": "foreman"
+    }
+  },
+  "alina": {
+    "display_name": "Алiна"
+  },
+  "viktoriya": {
+    "display_name": "Вiкторiя"
+  },
+  "valeriya": {
+    "display_name": "Валерiя"
   }
 }
