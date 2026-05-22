@@ -120,6 +120,7 @@ class StoryboardPipelineThread(QThread):
         blocks = list(self._card.get('blocks') or [])
         success = 0
         fail = 0
+        skipped = 0
         # 2026-05-09: PW timing инструментация. Печатается в stderr
         # (видно в Console.app для собранной .app или в терминале для
         # dev-режима). Греп по `[PW_TIMING]`.
@@ -131,6 +132,21 @@ class StoryboardPipelineThread(QThread):
             n = int(b.get('n') or 0)
             if n <= 0:
                 continue
+            filename = f"{self._ep_id}_block_{n}.txt"
+            out_path = self._prompts_dir / filename
+            # 9g: idempotent skip — если .txt уже на диске и
+            # содержательный (>100 байт защищает от пустых файлов
+            # после прошлого крэша), не дёргаем Opus впустую.
+            # Сигнал block_prompt_ready всё равно эмитим — MainWindow
+            # слушает его чтобы запустить GenerateThread по шотам этого
+            # блока (он сам пропустит уже-готовые .jpg по shot_path().exists()).
+            try:
+                if out_path.exists() and out_path.stat().st_size > 100:
+                    skipped += 1
+                    self.block_prompt_ready.emit(n, out_path.stem)
+                    continue
+            except Exception:
+                pass
             self.block_started.emit(n)
             try:
                 t0 = time.time()
@@ -139,8 +155,6 @@ class StoryboardPipelineThread(QThread):
                 self._log_pw_timing(
                     f"[PW_TIMING] block {n} PW elapsed {elapsed:.1f}s")
                 txt = self._sanitize(txt, n)
-                filename = f"{self._ep_id}_block_{n}.txt"
-                out_path = self._prompts_dir / filename
                 out_path.write_text(txt, encoding='utf-8')
                 # Имя БЕЗ расширения — то что ждёт GenerateThread
                 # (он сам прибавит .txt в `PROMPTS_DIR / f"{block_name}.txt"`).
@@ -156,6 +170,10 @@ class StoryboardPipelineThread(QThread):
         total = time.time() - t_pipeline_start
         self._log_pw_timing(
             f"[PW_TIMING] total {total:.1f}s for {success} OK / {fail} fail")
+        if skipped:
+            sys.stderr.write(
+                f"[storyboard] skipped {skipped} already-done block(s) "
+                f"for {self._ep_id}\n")
         self.all_done.emit(success, fail)
 
     # ──────────────────────────────────────────────────────────────────
