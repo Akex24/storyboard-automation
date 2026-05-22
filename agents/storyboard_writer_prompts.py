@@ -244,30 +244,67 @@ Nano Banana либо проигнорирует реф (нарисовав по 
    к рисованию элементы. Замени на одно упоминание `from [@]img2`.
 
 ──────────────────────────────────────────────────────────────────
-ВАЖНО — ИГНОРИРУЙ СЛОВА В ИМЕНИ FILENAME РЕФА
+ВАЖНО — ИГНОРИРУЙ СЛОВА В ИМЕНИ FILENAME РЕФА (но сам filename целиком — обязателен)
 Если в `refs_summary` filename = `muzh_olivkovaya_rabochaya_kurtka.jpg` —
-slug содержит «олива/рабочая/куртка», но ЭТИ СЛОВА НЕ ДОЛЖНЫ ПОПАСТЬ
-В ТВОЙ ТЕКСТ. Не вытаскивай описания одежды из имени файла. Filename
-используется ТОЛЬКО для шапки `# [@]imgX = filename.jpg` (чтобы
-generate_storyboards.py нашёл файл на диске). Тело промпта filename НЕ
-УПОМИНАЕТ.
+slug содержит «олива/рабочая/куртка», но ЭТИ СЛОВА (по отдельности) НЕ ДОЛЖНЫ ПОПАСТЬ
+В ТВОЙ ТЕКСТ. Не вытаскивай описания одежды из имени файла.
+
+ВАЖНО: filename ЦЕЛИКОМ (с расширением .jpg или .png) — это идентификатор тега,
+а НЕ описание одежды. Если в тексте присутствует строка вида `filename.jpg` или
+`filename.png` — это identifier, не одежда, не material, не описание. Только
+отдельные слова без расширения являются нарушением (это значит ты выдрал
+описание из имени).
+
+Filename целиком (с .jpg/.png) используется:
+1. В шапке `# [@]imgX = filename.jpg`.
+2. В теле панели рядом с тегом — см. новое правило формата ниже.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ПРАВИЛО 6в — ФОРМАТ ТЕГА В ТЕЛЕ ПАНЕЛИ (КРИТИЧЕСКИ ВАЖНО)
+
+Каждое упоминание тега в теле панели ОБЯЗАНО включать filename
+целиком (с расширением .jpg или .png) сразу после номера тега.
+
+Формат: [@]imgN filename.jpg (Name)
+
+Применяется ко ВСЕМ тегам — локации, объекты, персонажи.
+Применяется при КАЖДОМ упоминании тега, не только при первом.
+
+ПРИЧИНА: Nano Banana 2 без явного filename рядом с тегом
+смешивает признаки разных референсов (подмешивает чужое лицо,
+чужую одежду, чужую локацию в кадр). Filename в тексте — это
+сильный текстовый якорь, который привязывает тег к нужному рефу.
+
+✓ ПРАВИЛЬНО:
+'Tight close-up of [@]img2 jagger_chernyy_dvubortnyy_kostyum.jpg
+(Jagger) standing in [@]img1 corporate_hall.jpg, holding
+[@]img3 red_roses_bouquet.jpg (bouquet) in his right hand.'
+
+✗ НЕПРАВИЛЬНО (старый формат без filename):
+'Tight close-up of [@]img2 (Jagger) standing in [@]img1,
+holding [@]img3 (bouquet)...'
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ──────────────────────────────────────────────────────────────────
 ПРИМЕРЫ — ИЗУЧИ ИХ ВНИМАТЕЛЬНО
 
 ✓ ПРАВИЛЬНО:
-  «David from [@]img3 stands in the centre of [@]img1, the shotgun
-   from [@]img2 lowered along his thigh. Eyes locked on the door at
-   the end of the corridor in [@]img1. Jaw tightened, slight asymmetric
+  «David from [@]img3 david_temno_seraya_kurtka.jpg stands in the
+   centre of [@]img1 yuridicheskiy_kabinet.jpg, the shotgun from
+   [@]img2 dvustvolnyy_obrez.jpg lowered along his thigh. Eyes locked
+   on the door at the end of the corridor in [@]img1
+   yuridicheskiy_kabinet.jpg. Jaw tightened, slight asymmetric
    tension in the brow.»
 
   → Nano Banana увидит David'а из рефа [@]img3 — в той одежде что
     на рефе, с теми чертами лица. Действие/поза/взгляд — из текста.
 
 ✗ НЕПРАВИЛЬНО:
-  «David from [@]img3, his ribcage slightly expanded under the olive
-   jacket from [@]img3, stands in the centre. The forearm muscles
-   softly defined under the olive sleeve, his short brown hair...»
+  «David from [@]img3 david_temno_seraya_kurtka.jpg, his ribcage
+   slightly expanded under the olive jacket from [@]img3
+   david_temno_seraya_kurtka.jpg, stands in the centre. The forearm
+   muscles softly defined under the olive sleeve, his short brown
+   hair...»
 
   → Слова "olive jacket" / "olive sleeve" / "short brown hair" —
     дублируют то что уже на рефе. Nano Banana начнёт галлюцинировать
@@ -282,11 +319,15 @@ generate_storyboards.py нашёл файл на диске). Тело пром�
 действие/положение должно явно связываться с тегом:
 
 ✓ ПРАВИЛЬНО (2 персонажа):
-  «[@]img3 (David) stands left foreground, shotgun [@]img2 raised,
-   body squared toward the bed. [@]img4 (Laura) on the bed in the
-   right midground, body twisted toward [@]img3, one arm extended
-   forward. Eyes of [@]img3 locked on [@]img5 (Mark). Eyes of [@]img4
-   locked on [@]img3.»
+  «[@]img3 david_temno_seraya_kurtka.jpg (David) stands left
+   foreground, shotgun [@]img2 dvustvolnyy_obrez.jpg raised, body
+   squared toward the bed. [@]img4 laura_temno_zelenoe_plate.jpg
+   (Laura) on the bed in the right midground, body twisted toward
+   [@]img3 david_temno_seraya_kurtka.jpg, one arm extended forward.
+   Eyes of [@]img3 david_temno_seraya_kurtka.jpg locked on [@]img5
+   mark_chernyy_kostyum.jpg (Mark). Eyes of [@]img4
+   laura_temno_zelenoe_plate.jpg locked on [@]img3
+   david_temno_seraya_kurtka.jpg.»
 
   → Каждое действие привязано к конкретному [@]imgN. Nano Banana
     точно знает кто где.
@@ -334,15 +375,18 @@ generate_storyboards.py нашёл файл на диске). Тело пром�
 тексте → ref не уходит в Nano Banana → персонаж не нарисуется.
 
 ✓ ПРАВИЛЬНО (Close-up Дэвида, Виктор говорит off-frame):
-"Panel 2: Close-up shot. [@]img2 (David) seated in the
-client chair of [@]img1, body squared toward the desk,
+"Panel 2: Close-up shot. [@]img2 david_temno_seraya_kurtka.jpg
+(David) seated in the client chair of [@]img1
+yuridicheskiy_kabinet.jpg, body squared toward the desk,
 head tilted slightly downward. Eyes narrowed, gaze locked
 on a point to the right where Viktor sits off-frame.
-Bookshelves of [@]img1 as soft out-of-focus background."
+Bookshelves of [@]img1 yuridicheskiy_kabinet.jpg as soft
+out-of-focus background."
 
 ✗ НЕПРАВИЛЬНО (тег Виктора лишний, его не должно быть в шоте):
-"Panel 2: Close-up shot. [@]img2 (David) seated... locked
-on [@]img3 (Viktor) off-frame to the right."
+"Panel 2: Close-up shot. [@]img2 david_temno_seraya_kurtka.jpg
+(David) seated... locked on [@]img3 viktor_chernyy_kostyum.jpg
+(Viktor) off-frame to the right."
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
