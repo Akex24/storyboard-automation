@@ -6728,9 +6728,12 @@ class MainWindow(QMainWindow):
         # (Блок 1-N, Референсы, Чат) прижаты друг к другу. 2026-05-08.
         self.block_pills_container = QWidget()
         self.block_pills_container.setObjectName("blocks-bar")
-        self.block_pills_layout = QHBoxLayout(self.block_pills_container)
+        # 2026-05-22: контейнер строк (VBox). Внутри — несколько HBoxLayout
+        # по 10 блок-пилюль в каждой. Refs/Chat пилюли всегда в первой строке
+        # (напротив блоков 1-10). _clear_layout рекурсивный — чистит вложенные.
+        self.block_pills_layout = QVBoxLayout(self.block_pills_container)
         self.block_pills_layout.setContentsMargins(5, 5, 5, 5)
-        self.block_pills_layout.setSpacing(2)
+        self.block_pills_layout.setSpacing(4)
         blk_row = QHBoxLayout()
         blk_row.addWidget(self.block_pills_container)
         blk_row.addStretch()
@@ -8900,8 +8903,33 @@ class MainWindow(QMainWindow):
             self.save_btn.setEnabled(False)
             return
 
+        # 2026-05-22: сетка по 10 блок-пилюль в строке. Refs/Chat пилюли
+        # ВСЕГДА остаются в первой строке (напротив блоков 1-10).
+        # Последующие строки содержат только продолжение блоков (11-20, ...).
+        # Паттерн взят из _populate_episodes (см. EPS_PER_ROW=10).
+        BLOCKS_PER_ROW = 10
+
+        def _make_block_row():
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(2)
+            row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            return row
+
         blocks = list_blocks_for_episode(self._current_episode)
+
+        current_row = _make_block_row()
+        first_row = current_row  # запомнили — туда пойдут Refs/Chat в конце
+        self.block_pills_layout.addLayout(current_row)
+        items_in_row = 0
+
         for blk in blocks:
+            # Перенос: новую строку создаём ТОЛЬКО когда есть следующий блок
+            # для неё (иначе при N кратном 10 появлялась бы пустая строка).
+            if items_in_row >= BLOCKS_PER_ROW:
+                current_row = _make_block_row()
+                self.block_pills_layout.addLayout(current_row)
+                items_in_row = 0
             btn = QPushButton(self._format_block_label(blk))
             btn.setObjectName("pill-block")
             btn.setFixedHeight(28)   # 2026-05-08 редизайн: компактнее (было 34)
@@ -8910,20 +8938,23 @@ class MainWindow(QMainWindow):
             has_unseen = (not has_active) and any(b == blk for (b, _) in self._unseen_shots)
             btn.setProperty("unseen", has_unseen)
             btn.clicked.connect(lambda _, b=blk: self._select_block(b))
-            self.block_pills_layout.addWidget(btn)
+            current_row.addWidget(btn)
             self._block_pills[blk] = btn
+            items_in_row += 1
 
         # Пилюля «Референсы» — показывается ВСЕГДА когда есть current_episode.
         # Если блоков нет — это единственная пилюля, и refs-view подгружается
         # автоматически. Если блоки есть — между ними и refs стоит разделитель.
+        # 2026-05-22: separator/Refs/Chat добавляются в ПЕРВУЮ строку
+        # (напротив блоков 1-10), не плавают за последним блоком.
         if blocks:
             # 2026-05-08 редизайн: разделитель тоньше и короче (1×18px).
-            self.block_pills_layout.addSpacing(8)
+            first_row.addSpacing(8)
             sep = QFrame()
             sep.setObjectName("pills-vsep")
             sep.setFixedSize(1, 18)
-            self.block_pills_layout.addWidget(sep, alignment=Qt.AlignmentFlag.AlignVCenter)
-            self.block_pills_layout.addSpacing(8)
+            first_row.addWidget(sep, alignment=Qt.AlignmentFlag.AlignVCenter)
+            first_row.addSpacing(8)
 
         self._refs_pill = QPushButton(tr('refs'))
         self._refs_pill.setObjectName("pill-refs")
@@ -8932,20 +8963,20 @@ class MainWindow(QMainWindow):
         self._refs_pill.setProperty("has_notice", False)
         self._refs_pill.setProperty("pulse_on", False)
         self._refs_pill.clicked.connect(self._show_refs_view)
-        self.block_pills_layout.addWidget(self._refs_pill)
+        first_row.addWidget(self._refs_pill)
         if self._pending_ref_notices:
             self._set_refs_pill_notice(True)
 
         # Пилюля «Чат» — для просмотра/продолжения переписки с Claude
         # по этому конкретному эпизоду. История хранится в
         # `shows/<slug>/chats/<ep_id>.jsonl`, переживает перезапуск .app.
-        self.block_pills_layout.addSpacing(8)
+        first_row.addSpacing(8)
         self._chat_pill = QPushButton(tr('chat_pill'))
         self._chat_pill.setObjectName("pill-chat")
         self._chat_pill.setFixedHeight(28)  # 2026-05-08 редизайн
         self._chat_pill.setProperty("active", False)
         self._chat_pill.clicked.connect(self._show_chat_view)
-        self.block_pills_layout.addWidget(self._chat_pill)
+        first_row.addWidget(self._chat_pill)
 
         if blocks:
             prev = self.current_block if self.current_block in blocks else blocks[0]
