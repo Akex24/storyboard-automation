@@ -6729,8 +6729,8 @@ class MainWindow(QMainWindow):
         self.block_pills_container = QWidget()
         self.block_pills_container.setObjectName("blocks-bar")
         # 2026-05-22: контейнер строк (VBox). Внутри — несколько HBoxLayout
-        # по 10 блок-пилюль в каждой. Refs/Chat пилюли всегда в первой строке
-        # (напротив блоков 1-10). _clear_layout рекурсивный — чистит вложенные.
+        # по 9 блок-пилюль в каждой. Refs/Chat пилюли всегда в первой строке
+        # (напротив блоков 1-9). _clear_layout рекурсивный — чистит вложенные.
         self.block_pills_layout = QVBoxLayout(self.block_pills_container)
         self.block_pills_layout.setContentsMargins(5, 5, 5, 5)
         self.block_pills_layout.setSpacing(4)
@@ -8903,11 +8903,13 @@ class MainWindow(QMainWindow):
             self.save_btn.setEnabled(False)
             return
 
-        # 2026-05-22: сетка по 10 блок-пилюль в строке. Refs/Chat пилюли
-        # ВСЕГДА остаются в первой строке (напротив блоков 1-10).
-        # Последующие строки содержат только продолжение блоков (11-20, ...).
+        # 2026-05-22: сетка по 9 блок-пилюль в строке. Refs/Chat пилюли
+        # ВСЕГДА остаются в первой строке (напротив блоков 1-9).
+        # Последующие строки содержат только продолжение блоков (10-18, ...).
         # Паттерн взят из _populate_episodes (см. EPS_PER_ROW=10).
-        BLOCKS_PER_ROW = 10
+        # 9 (не 10) — иначе при 10 блоках + Refs + Chat первая строка не
+        # помещается по ширине окна и «Референсы» обрезается.
+        BLOCKS_PER_ROW = 9
 
         def _make_block_row():
             row = QHBoxLayout()
@@ -8946,7 +8948,7 @@ class MainWindow(QMainWindow):
         # Если блоков нет — это единственная пилюля, и refs-view подгружается
         # автоматически. Если блоки есть — между ними и refs стоит разделитель.
         # 2026-05-22: separator/Refs/Chat добавляются в ПЕРВУЮ строку
-        # (напротив блоков 1-10), не плавают за последним блоком.
+        # (напротив блоков 1-9), не плавают за последним блоком.
         if blocks:
             # 2026-05-08 редизайн: разделитель тоньше и короче (1×18px).
             first_row.addSpacing(8)
