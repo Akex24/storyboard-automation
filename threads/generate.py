@@ -1427,9 +1427,18 @@ class GenerateActorRefThread(QThread):
                             _result_size = target.stat().st_size
                         except Exception:
                             _result_size = 0
+                        # 9f: uri может быть data:base64,<огромная картинка>
+                        # на ~1 MB. Обрезаем для лога — оставляем тип uri
+                        # (data:/file:/http) и первые 200 символов + длина
+                        # оригинала. Само uri выше уже использовано для
+                        # скачивания, изменение не влияет.
+                        _uri_for_log = uri
+                        if isinstance(uri, str) and len(uri) > 200:
+                            _uri_for_log = (uri[:200]
+                                + f"... (truncated, total {len(uri)} chars)")
                         _log_actor_ref_event(
                             _project_root, _session_id, "result_saved",
-                            result_uri=uri,
+                            result_uri=_uri_for_log,
                             target_path=str(target),
                             target_size=_result_size)
                         _last_stage = "result_saved"
