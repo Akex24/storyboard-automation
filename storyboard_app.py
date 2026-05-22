@@ -7448,7 +7448,6 @@ class MainWindow(QMainWindow):
             self.image_provider_label_lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
             provider_row.addWidget(self.image_provider_label_lbl)
 
-            from PyQt6.QtWidgets import QComboBox
             self.image_provider_combo = QComboBox()
             self.image_provider_combo.addItem(
                 tr('image_provider_narwhal'), IMAGE_PROVIDER_NARWHAL)
