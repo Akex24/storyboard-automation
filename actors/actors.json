@@ -14,7 +14,8 @@
       "nazvanie_seriyala_1": "david",
       "nazvanie_seriala_2": "david",
       "finalnyy_raschet": "david",
-      "finalnyy_raschet_2": "david"
+      "finalnyy_raschet_2": "david",
+      "taynyy_investor": "jagger"
     }
   },
   "zhenya": {
@@ -24,7 +25,8 @@
       "finalnyy_raschet": "viktor",
       "testovyy_serial": "peter",
       "finalnyy_raschet_2": "politseyskiy",
-      "audit_na_vyzhivanie": "hale"
+      "audit_na_vyzhivanie": "hale",
+      "taynyy_investor": "caleb"
     }
   },
   "vova": {
@@ -112,7 +114,8 @@
   "aktrisa_1": {
     "display_name": "Актриса 1",
     "roles": {
-      "audit_na_vyzhivanie": "donna"
+      "audit_na_vyzhivanie": "donna",
+      "taynyy_investor": "sierra"
     }
   },
   "maks": {
@@ -128,6 +131,9 @@
     "display_name": "Вiкторiя"
   },
   "valeriya": {
-    "display_name": "Валерiя"
+    "display_name": "Валерiя",
+    "roles": {
+      "taynyy_investor": "bianca"
+    }
   }
 }
