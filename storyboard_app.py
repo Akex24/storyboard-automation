@@ -347,6 +347,12 @@ def set_actor_role(project_root: Path, actor_slug: str, show_slug: str,
         return
     try:
         meta = read_actors_meta(project_root)
+        # 2026-05-22 (v1.0.77): детективное логирование коллизий двойных
+        # привязок (Артём+Женя на Caleb и т.п.). before_meta снимается
+        # ДО изменений, лог пишется в actors/actors_changes.log.
+        # Никогда не ломает основную функцию (отдельный try/except внутри).
+        _log_actor_role_call(project_root, actor_slug, show_slug,
+                              character_slug, meta)
         actor = meta.get(actor_slug)
         if not isinstance(actor, dict):
             actor = {}
@@ -359,6 +365,111 @@ def set_actor_role(project_root: Path, actor_slug: str, show_slug: str,
         write_actors_meta(project_root, meta)
     except Exception:
         traceback.print_exc()
+
+
+def _log_actor_role_call(project_root: Path, actor_slug: str, show_slug: str,
+                           character_slug: str, before_meta: Dict) -> None:
+    """v1.0.77: детективное логирование вызовов set_actor_role в
+    `actors/actors_changes.log` для диагностики двойных привязок актёров
+    к одному персонажу.
+
+    Параметр `before_meta` — снимок read_actors_meta() ДО записи (для
+    отображения before_roles и поиска коллизий). after_roles вычисляется
+    из before_meta + новое назначение (актуальное состояние).
+
+    Никогда не бросает исключения — вся запись wrapped в try/except.
+    Если файл недоступен / диск полный / любая другая ошибка — логирование
+    тихо пропускается, set_actor_role продолжает работу.
+
+    Ротация: при размере > 1 MB файл переименовывается в .log.old (с
+    перезаписью старого .old) и начинается новый. Один бэкап на ступень.
+
+    Cross-platform: Path + open(encoding='utf-8'). Никаких subprocess/shell.
+    """
+    try:
+        log_path = actors_dir(project_root) / "actors_changes.log"
+        # Ротация при > 1 MB
+        try:
+            if log_path.exists() and log_path.stat().st_size > 1_000_000:
+                old_path = log_path.with_suffix(".log.old")
+                try:
+                    if old_path.exists():
+                        old_path.unlink()
+                except Exception:
+                    pass
+                try:
+                    log_path.rename(old_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        before_actor = before_meta.get(actor_slug) or {}
+        before_roles = before_actor.get("roles") if isinstance(
+            before_actor, dict) else None
+        if not isinstance(before_roles, dict):
+            before_roles = {}
+        # after_roles = before_roles + новое назначение
+        after_roles = dict(before_roles)
+        after_roles[show_slug] = character_slug
+
+        # Поиск коллизии: другой актёр уже играет этого character в этом show
+        collision_actor = None
+        try:
+            for other_slug, other_data in (before_meta or {}).items():
+                if other_slug == actor_slug:
+                    continue
+                if not isinstance(other_data, dict):
+                    continue
+                other_roles = other_data.get("roles")
+                if not isinstance(other_roles, dict):
+                    continue
+                if other_roles.get(show_slug) == character_slug:
+                    collision_actor = other_slug
+                    break
+        except Exception:
+            pass
+
+        # Stack trace (последние 10 фреймов до этого вызова)
+        try:
+            # extract_stack() возвращает фреймы от старейшего к текущему.
+            # Берём срез [-12:-2]: убираем 2 последних (этот логгер и
+            # set_actor_role) и оставляем максимум 10 предков.
+            frames = traceback.extract_stack()[-12:-2]
+            stack_lines = []
+            for fr in frames:
+                stack_lines.append(
+                    f'  File "{fr.filename}", line {fr.lineno}, in {fr.name}')
+            stack_text = "\n".join(stack_lines) if stack_lines else "  (empty)"
+        except Exception:
+            stack_text = "  (stack unavailable)"
+
+        # Сборка лога
+        lines = []
+        lines.append("--- ENTRY START ---")
+        lines.append(
+            f"{ts} [set_actor_role] actor={actor_slug} "
+            f"show={show_slug} character={character_slug}")
+        lines.append(
+            f"before_roles: {json.dumps(before_roles, ensure_ascii=False)}")
+        lines.append(
+            f"after_roles:  {json.dumps(after_roles, ensure_ascii=False)}")
+        if collision_actor:
+            lines.append(
+                f"[COLLISION DETECTED] character={character_slug} "
+                f"уже привязан к актёру: {collision_actor}")
+        lines.append("caller_stack:")
+        lines.append(stack_text)
+        lines.append("--- ENTRY END ---")
+        lines.append("")  # пустая строка-разделитель
+
+        # Запись
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        # Никогда не падать из-за логирования
+        pass
 
 
 def get_actor_generated_refs_paths(slug: str) -> List[Path]:
