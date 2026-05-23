@@ -6786,6 +6786,28 @@ class MainWindow(QMainWindow):
                     1, tr('image_provider_openai'))
             except Exception:
                 traceback.print_exc()
+        # Секция «Скорость речи актёров» (только режим B)
+        if hasattr(self, 'sec_speech_speed_b_lbl'):
+            try:
+                self.sec_speech_speed_b_lbl.setText(tr('sec_speech_speed_b'))
+                self.speech_speed_b_hint_lbl.setText(tr('speech_speed_b_hint'))
+                self.speech_speed_b_fast_label_lbl.setText(
+                    tr('speech_speed_b_fast_label'))
+                self.speech_speed_b_normal_label_lbl.setText(
+                    tr('speech_speed_b_normal_label'))
+                self.speech_speed_b_slow_label_lbl.setText(
+                    tr('speech_speed_b_slow_label'))
+                self.speech_speed_b_fast_reset_btn.setText(
+                    tr('speech_speed_b_reset'))
+                self.speech_speed_b_normal_reset_btn.setText(
+                    tr('speech_speed_b_reset'))
+                self.speech_speed_b_slow_reset_btn.setText(
+                    tr('speech_speed_b_reset'))
+                self._refresh_speech_speed_b_fast_value()
+                self._refresh_speech_speed_b_normal_value()
+                self._refresh_speech_speed_b_slow_value()
+            except Exception:
+                traceback.print_exc()
         # Админ-разделитель + секция «АНИМАЦИИ» (только если админ)
         if hasattr(self, 'sec_admin_div_lbl'):
             try:
@@ -7952,6 +7974,144 @@ class MainWindow(QMainWindow):
         mmf.addLayout(mm_row)
 
         lay.addWidget(mm_frame)
+
+        # ── 🎙 СКОРОСТЬ РЕЧИ АКТЁРОВ — слайдеры (только для режима B) ─────
+        # 2026-05-23 (Этап 3.2): live-крутка fast/normal/slow для речи
+        # в режиме B. Значения пишутся в QSettings через
+        # set_speech_speed_b_* (Этап 3.1). Подключение к SPEECH_CONFIG —
+        # Этап 3.3. Гейтинг через mode_loader.get_current_mode(): в A/C/D
+        # секция вообще не создаётся (атрибутов self.* нет — retranslate
+        # пропускает блок через hasattr).
+        if mode_loader.get_current_mode() == 'b':
+            from PyQt6.QtWidgets import QSlider
+
+            self.sec_speech_speed_b_lbl = QLabel(tr('sec_speech_speed_b'))
+            self.sec_speech_speed_b_lbl.setObjectName("settings-section")
+            lay.addWidget(self.sec_speech_speed_b_lbl)
+
+            speech_speed_b_frame = QFrame()
+            speech_speed_b_frame.setObjectName("settings-group")
+            ssb_lay = QVBoxLayout(speech_speed_b_frame)
+            ssb_lay.setContentsMargins(18, 14, 18, 14)
+            ssb_lay.setSpacing(10)
+
+            self.speech_speed_b_hint_lbl = QLabel(tr('speech_speed_b_hint'))
+            self.speech_speed_b_hint_lbl.setWordWrap(True)
+            self.speech_speed_b_hint_lbl.setStyleSheet(
+                "color:#aaa; font-size:12px; padding-bottom:10px;")
+            ssb_lay.addWidget(self.speech_speed_b_hint_lbl)
+
+            # Row Fast (3.0–6.0, default 4.0)
+            fast_row = QHBoxLayout()
+            fast_row.setSpacing(12)
+            self.speech_speed_b_fast_label_lbl = QLabel(
+                tr('speech_speed_b_fast_label'))
+            self.speech_speed_b_fast_label_lbl.setMinimumWidth(220)
+            self.speech_speed_b_fast_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            fast_row.addWidget(self.speech_speed_b_fast_label_lbl)
+
+            self.speech_speed_b_fast_slider = QSlider(Qt.Orientation.Horizontal)
+            self.speech_speed_b_fast_slider.setRange(30, 60)
+            self.speech_speed_b_fast_slider.setSingleStep(1)
+            self.speech_speed_b_fast_slider.setPageStep(5)
+            self.speech_speed_b_fast_slider.setValue(
+                int(round(speech_speed_b_fast() * 10)))
+            block_wheel_event(self.speech_speed_b_fast_slider)
+            self.speech_speed_b_fast_slider.valueChanged.connect(
+                self._on_speech_speed_b_fast_changed)
+            fast_row.addWidget(self.speech_speed_b_fast_slider, stretch=1)
+
+            self.speech_speed_b_fast_value_lbl = QLabel("")
+            self.speech_speed_b_fast_value_lbl.setStyleSheet(
+                "color:#ffd24d; font-size:13px; font-weight:600; "
+                "min-width:170px;")
+            fast_row.addWidget(self.speech_speed_b_fast_value_lbl)
+
+            self.speech_speed_b_fast_reset_btn = QPushButton(
+                tr('speech_speed_b_reset'))
+            self.speech_speed_b_fast_reset_btn.setFixedHeight(30)
+            self.speech_speed_b_fast_reset_btn.clicked.connect(
+                self._on_speech_speed_b_fast_reset)
+            fast_row.addWidget(self.speech_speed_b_fast_reset_btn)
+            ssb_lay.addLayout(fast_row)
+
+            # Row Normal (2.0–5.0, default 3.5)
+            normal_row = QHBoxLayout()
+            normal_row.setSpacing(12)
+            self.speech_speed_b_normal_label_lbl = QLabel(
+                tr('speech_speed_b_normal_label'))
+            self.speech_speed_b_normal_label_lbl.setMinimumWidth(220)
+            self.speech_speed_b_normal_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            normal_row.addWidget(self.speech_speed_b_normal_label_lbl)
+
+            self.speech_speed_b_normal_slider = QSlider(Qt.Orientation.Horizontal)
+            self.speech_speed_b_normal_slider.setRange(20, 50)
+            self.speech_speed_b_normal_slider.setSingleStep(1)
+            self.speech_speed_b_normal_slider.setPageStep(5)
+            self.speech_speed_b_normal_slider.setValue(
+                int(round(speech_speed_b_normal() * 10)))
+            block_wheel_event(self.speech_speed_b_normal_slider)
+            self.speech_speed_b_normal_slider.valueChanged.connect(
+                self._on_speech_speed_b_normal_changed)
+            normal_row.addWidget(self.speech_speed_b_normal_slider, stretch=1)
+
+            self.speech_speed_b_normal_value_lbl = QLabel("")
+            self.speech_speed_b_normal_value_lbl.setStyleSheet(
+                "color:#ffd24d; font-size:13px; font-weight:600; "
+                "min-width:170px;")
+            normal_row.addWidget(self.speech_speed_b_normal_value_lbl)
+
+            self.speech_speed_b_normal_reset_btn = QPushButton(
+                tr('speech_speed_b_reset'))
+            self.speech_speed_b_normal_reset_btn.setFixedHeight(30)
+            self.speech_speed_b_normal_reset_btn.clicked.connect(
+                self._on_speech_speed_b_normal_reset)
+            normal_row.addWidget(self.speech_speed_b_normal_reset_btn)
+            ssb_lay.addLayout(normal_row)
+
+            # Row Slow (1.0–4.0, default 2.3)
+            slow_row = QHBoxLayout()
+            slow_row.setSpacing(12)
+            self.speech_speed_b_slow_label_lbl = QLabel(
+                tr('speech_speed_b_slow_label'))
+            self.speech_speed_b_slow_label_lbl.setMinimumWidth(220)
+            self.speech_speed_b_slow_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            slow_row.addWidget(self.speech_speed_b_slow_label_lbl)
+
+            self.speech_speed_b_slow_slider = QSlider(Qt.Orientation.Horizontal)
+            self.speech_speed_b_slow_slider.setRange(10, 40)
+            self.speech_speed_b_slow_slider.setSingleStep(1)
+            self.speech_speed_b_slow_slider.setPageStep(5)
+            self.speech_speed_b_slow_slider.setValue(
+                int(round(speech_speed_b_slow() * 10)))
+            block_wheel_event(self.speech_speed_b_slow_slider)
+            self.speech_speed_b_slow_slider.valueChanged.connect(
+                self._on_speech_speed_b_slow_changed)
+            slow_row.addWidget(self.speech_speed_b_slow_slider, stretch=1)
+
+            self.speech_speed_b_slow_value_lbl = QLabel("")
+            self.speech_speed_b_slow_value_lbl.setStyleSheet(
+                "color:#ffd24d; font-size:13px; font-weight:600; "
+                "min-width:170px;")
+            slow_row.addWidget(self.speech_speed_b_slow_value_lbl)
+
+            self.speech_speed_b_slow_reset_btn = QPushButton(
+                tr('speech_speed_b_reset'))
+            self.speech_speed_b_slow_reset_btn.setFixedHeight(30)
+            self.speech_speed_b_slow_reset_btn.clicked.connect(
+                self._on_speech_speed_b_slow_reset)
+            slow_row.addWidget(self.speech_speed_b_slow_reset_btn)
+            ssb_lay.addLayout(slow_row)
+
+            lay.addWidget(speech_speed_b_frame)
+
+            # Инициализация подписей значений
+            self._refresh_speech_speed_b_fast_value()
+            self._refresh_speech_speed_b_normal_value()
+            self._refresh_speech_speed_b_slow_value()
 
         lay.addStretch()
         self._refresh_settings_versions()
@@ -13073,6 +13233,54 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
+    def _on_speech_speed_b_fast_changed(self, slider_value: int):
+        """Слайдер fast: 30..60 → 3.0..6.0 wps. Сохраняет в QSettings."""
+        try:
+            wps = round(slider_value / 10.0, 2)
+            set_speech_speed_b_fast(wps)
+            self._refresh_speech_speed_b_fast_value()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_speech_speed_b_fast_reset(self):
+        """Сброс fast к дефолту 4.0 (slider value 40)."""
+        try:
+            self.speech_speed_b_fast_slider.setValue(40)
+        except Exception:
+            traceback.print_exc()
+
+    def _on_speech_speed_b_normal_changed(self, slider_value: int):
+        """Слайдер normal: 20..50 → 2.0..5.0 wps. Сохраняет в QSettings."""
+        try:
+            wps = round(slider_value / 10.0, 2)
+            set_speech_speed_b_normal(wps)
+            self._refresh_speech_speed_b_normal_value()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_speech_speed_b_normal_reset(self):
+        """Сброс normal к дефолту 3.5 (slider value 35)."""
+        try:
+            self.speech_speed_b_normal_slider.setValue(35)
+        except Exception:
+            traceback.print_exc()
+
+    def _on_speech_speed_b_slow_changed(self, slider_value: int):
+        """Слайдер slow: 10..40 → 1.0..4.0 wps. Сохраняет в QSettings."""
+        try:
+            wps = round(slider_value / 10.0, 2)
+            set_speech_speed_b_slow(wps)
+            self._refresh_speech_speed_b_slow_value()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_speech_speed_b_slow_reset(self):
+        """Сброс slow к дефолту 2.3 (slider value 23)."""
+        try:
+            self.speech_speed_b_slow_slider.setValue(23)
+        except Exception:
+            traceback.print_exc()
+
     # ── v1.0.65: proxy settings handlers ─────────────────────────────────
     def _on_proxy_checkbox_toggled(self, checked: bool):
         """Чекбокс «Использовать прокси» → enable/disable 4 поля ввода.
@@ -13351,6 +13559,43 @@ class MainWindow(QMainWindow):
             tab_ms = int(280 * mult)
             self.anim_speed_value_lbl.setText(
                 tr('anim_speed_value', x=f"{mult:g}", ms=tab_ms))
+        except Exception:
+            traceback.print_exc()
+
+    def _refresh_speech_speed_b_fast_value(self):
+        """Обновляет подпись «4.0 слов/сек (≈2.5с на 10 слов)» рядом
+        со слайдером fast. Вызывается из valueChanged-слота, при
+        инициализации и при смене языка. Пример «10 слов» — иллюстрация
+        для юзера, не реальный duration_sec (без округления вверх и
+        без буфера, в отличие от формулы Validator'а)."""
+        try:
+            wps = round(self.speech_speed_b_fast_slider.value() / 10.0, 2)
+            example_sec = round(10 / wps, 1) if wps > 0 else 0
+            self.speech_speed_b_fast_value_lbl.setText(
+                tr('speech_speed_b_value',
+                   wps=f"{wps:g}", ex=f"{example_sec:g}"))
+        except Exception:
+            traceback.print_exc()
+
+    def _refresh_speech_speed_b_normal_value(self):
+        """Обновляет подпись рядом со слайдером normal. См. fast выше."""
+        try:
+            wps = round(self.speech_speed_b_normal_slider.value() / 10.0, 2)
+            example_sec = round(10 / wps, 1) if wps > 0 else 0
+            self.speech_speed_b_normal_value_lbl.setText(
+                tr('speech_speed_b_value',
+                   wps=f"{wps:g}", ex=f"{example_sec:g}"))
+        except Exception:
+            traceback.print_exc()
+
+    def _refresh_speech_speed_b_slow_value(self):
+        """Обновляет подпись рядом со слайдером slow. См. fast выше."""
+        try:
+            wps = round(self.speech_speed_b_slow_slider.value() / 10.0, 2)
+            example_sec = round(10 / wps, 1) if wps > 0 else 0
+            self.speech_speed_b_slow_value_lbl.setText(
+                tr('speech_speed_b_value',
+                   wps=f"{wps:g}", ex=f"{example_sec:g}"))
         except Exception:
             traceback.print_exc()
 
