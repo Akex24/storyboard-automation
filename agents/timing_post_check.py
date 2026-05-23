@@ -19,9 +19,21 @@ Opus иногда забывал правило или менял speech_type б
 независимые значения: fast=4.0, normal=3.5, emotional=3.5 (алиас на
 normal), slow=2.3, buffer=0. Режимы A/C/D со старыми значениями.
 
-Speed по speech_type (слова/сек):
+Этап 3.3: для режима B значения speeds читаются ДИНАМИЧЕСКИ из
+QSettings через `_speeds_for_mode("b")` (lazy import getter'ов
+`storyboard_app.speech_speed_b_fast/normal/slow` из Этапа 3.1 + UI
+слайдеры Этапа 3.2). Юзер крутит слайдер в Settings → значение
+применяется к следующей сгенерированной монтажке без рестарта Studio.
+SPEECH_CONFIG["b"]["speeds"] остаётся источником fallback'а — те же
+значения (4.0/3.5/2.3) на случай если lazy import упал (batch без
+Qt, partially initialized цикл импортов). A/C/D — без runtime
+override, всегда из SPEECH_CONFIG.
+
+Speed по speech_type (слова/сек) — дефолты:
     A/C/D:  fast=3.0, normal=2.75, emotional=2.25, slow=1.75
     B:      fast=4.0, normal=3.5,  emotional=3.5,  slow=2.3
+            (B-значения юзер может менять в Settings → секция
+             «Скорость речи актёров (режим B)»)
 
 Reserve по числу слов:
     A/C/D:  <=5: 0.5  |  6-15: 1.0  |  >=16: 1.5
@@ -30,7 +42,9 @@ Reserve по числу слов:
 Cross-platform: чистый Python + math.ceil + dict-логика. Mac=Win.
 Lazy import `agents.mode_loader` для авто-резолва режима — обёрнут
 в try/except, чтобы модуль импортировался и без Qt (юнит-тесты,
-batch-скрипты).
+batch-скрипты). Lazy import `storyboard_app.speech_speed_b_*` тоже
+через try/except + sys.modules['__main__'] — тот же паттерн что в
+agents/instruction_loader.py:_resolve_reader.
 """
 from __future__ import annotations
 
@@ -110,6 +124,57 @@ def _resolve_mode(mode: Optional[str]) -> str:
         return "a"
 
 
+def _speeds_for_mode(mode: str) -> Dict[str, float]:
+    """Возвращает словарь speeds для режима mode.
+
+    Для режимов 'a' / 'c' / 'd' — отдаёт SPEECH_CONFIG[mode]["speeds"]
+    как есть (hardcoded дефолты, без runtime override).
+
+    Для режима 'b' — подтягивает значения из QSettings через lazy
+    import `storyboard_app.speech_speed_b_fast/normal/slow` (settings
+    layer Этапа 3.1, UI слайдеры Этапа 3.2). `emotional` остаётся
+    алиасом на `normal` (см. Этап 2.1 — совместимость старых монтажек,
+    новые карты в режиме B emotional не используют).
+
+    При любой ошибке lazy import'а (storyboard_app недоступен — batch
+    без Qt; partially initialized модуль во время цикла импортов;
+    QSettings.value() упал) — fallback на SPEECH_CONFIG["b"]["speeds"]
+    (значения 4.0/3.5/2.3 идентичны default'ам getter'ов из Этапа 3.1,
+    так что поведение совпадает).
+
+    Lazy через sys.modules['__main__'] — паттерн скопирован из
+    agents/instruction_loader.py:_resolve_reader. В PyInstaller-frozen
+    .app `__main__` = `storyboard_app`, в dev-mode (python storyboard_app.py)
+    тоже. Fallback на прямой import — для юнит-тестов.
+    """
+    if mode != "b":
+        return SPEECH_CONFIG[mode]["speeds"]
+    try:
+        import sys as _sys
+        main_mod = _sys.modules.get('__main__')
+        if main_mod is not None and hasattr(main_mod, 'speech_speed_b_fast'):
+            fast   = float(main_mod.speech_speed_b_fast())
+            normal = float(main_mod.speech_speed_b_normal())
+            slow   = float(main_mod.speech_speed_b_slow())
+        else:
+            from storyboard_app import (   # lazy
+                speech_speed_b_fast,
+                speech_speed_b_normal,
+                speech_speed_b_slow,
+            )
+            fast   = float(speech_speed_b_fast())
+            normal = float(speech_speed_b_normal())
+            slow   = float(speech_speed_b_slow())
+        return {
+            "fast":      fast,
+            "normal":    normal,
+            "emotional": normal,
+            "slow":      slow,
+        }
+    except Exception:
+        return SPEECH_CONFIG["b"]["speeds"]
+
+
 def _reserve_for_words(words: int, mode: Optional[str] = None) -> float:
     """Запас (сек) по числу слов EN.
 
@@ -154,7 +219,7 @@ def min_duration_sec(
         Целое число секунд (округление ВВЕРХ через math.ceil).
     """
     m = _resolve_mode(mode)
-    speeds = SPEECH_CONFIG[m]["speeds"]
+    speeds = _speeds_for_mode(m)
     speed = speeds.get(speech_type, speeds["normal"])
     raw = words / speed + _reserve_for_words(words, m)
     return math.ceil(raw)
@@ -193,7 +258,7 @@ def apply_timing_post_check(
                 mode:                 str — фактически применённый режим
     """
     m = _resolve_mode(mode)
-    speeds = SPEECH_CONFIG[m]["speeds"]
+    speeds = _speeds_for_mode(m)
 
     fixes: List[Dict[str, Any]] = []
     checked = 0
