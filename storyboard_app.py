@@ -4562,7 +4562,7 @@ Create one single clean technical identity reference sheet for the same exact pe
 This must be a single composite image with a custom asymmetric layout.
 
 Important identity-source rule:
-All facial detail panels on the right side must be derived directly from the attached reference images. {identity_anchor}
+All facial detail panels on the right side must be derived directly from the attached reference image or attached reference images of the same person.
 Do not invent new facial anatomy. Do not redesign the features. Do not reinterpret accessories. Do not substitute jewelry.
 If multiple reference images are attached, use them together to preserve the exact same identity, exact same feature shapes, exact same accessories, and exact same facial structure.
 
@@ -4623,7 +4623,7 @@ Global detail-panel rules:
 - do not airbrush, smooth pores, or add beauty retouching
 
 Identity preservation:
-Preserve the exact same person from the attached reference images. {identity_anchor}
+Preserve the exact same person from the attached reference images.
 Same facial identity, age, head shape, hairstyle, hairline, eyebrow shape, eye shape, nose, lips, jawline, ears, skin tone, neck and body proportions.
 Preserve any visible accessories exactly as shown.
 Maintain high identity consistency across all 14 panels.
@@ -4671,7 +4671,7 @@ Composition rules:
 - clean technical organized layout
 
 Identity preservation:
-Preserve the exact same person from the reference image. {identity_anchor}
+Preserve the exact same person from the reference image.
 Same facial identity, age, head shape, hairstyle, hairline, eyebrow shape, eye shape, nose, lips, jawline, ears, skin tone, neck and body proportions.
 Do not redesign or beautify the face.
 High identity consistency across all panels.
