@@ -3469,7 +3469,9 @@ def sync_image_provider_to_project(project_root: Path, value: str) -> None:
 
     Это bridge для pipeline.py — он запускается AI-агентом в отдельном
     subprocess'е и не имеет доступа к QSettings. Вызывается:
-    (1) из `set_image_provider` при изменении настройки юзером;
+    (1) из `set_image_provider_admin` при изменении настройки юзером
+        (т.к. pipeline.py делает локации/объекты/сториборды — это
+        админский контекст);
     (2) при старте Studio рядом с `sync_pipeline_py_to_project`, чтобы
         файл существовал даже если юзер ни разу не открывал Settings
         после установки.
@@ -3489,6 +3491,95 @@ def sync_image_provider_to_project(project_root: Path, value: str) -> None:
         except Exception:
             pass
         dst.write_text(value, encoding="utf-8")
+    except Exception:
+        traceback.print_exc()
+
+
+# 2026-05-23: разделение единого `image_provider` на два независимых:
+#  • `image_provider_actors` — для актёрских референсов (видим ВСЕМ).
+#    Влияет на GenerateActorRefThread, EditActorRefThread, и
+#    RefGenerateThread когда путь содержит /characters/.
+#  • `image_provider_admin` — для шотов/локаций/объектов (видим только
+#    админу). Влияет на GenerateThread, RefGenerateThread когда путь
+#    /locations/ или /objects/, и pipeline.py/generate_storyboards.py
+#    через bridge-файл `image_provider.txt`.
+# Старые `image_provider()` / `set_image_provider()` оставлены как dead
+# code до отдельной задачи вычистки. Новые getter'ы при первом чтении
+# мигрируют значение из старого ключа `image_provider`.
+
+
+def image_provider_actors() -> str:
+    """Провайдер для актёрских референсов (видим всем юзерам).
+
+    Default: 'narwhal' (Nano Banana 2). При первом чтении мигрирует
+    значение из старого общего ключа `image_provider` если новый ключ
+    ещё не задан. Читается на каждый запуск actor-ref треда —
+    переключатель работает без перезапуска Studio.
+    """
+    try:
+        s = QSettings(APP_ORG, APP_NAME)
+        v = s.value("image_provider_actors", None, type=str)
+        if not v:
+            # Миграция со старого общего ключа при первом чтении.
+            old = s.value("image_provider", IMAGE_PROVIDER_NARWHAL, type=str)
+            v = old if old in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
+                else IMAGE_PROVIDER_NARWHAL
+            s.setValue("image_provider_actors", v)
+        return v if v in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
+            else IMAGE_PROVIDER_NARWHAL
+    except Exception:
+        return IMAGE_PROVIDER_NARWHAL
+
+
+def set_image_provider_actors(value: str) -> None:
+    """Сохраняет провайдер актёров. В `image_provider.txt` НЕ пишет —
+    batch-скрипты (pipeline.py / generate_storyboards.py) актёрские
+    рефы не генерят, они работают только через Studio thread'ы
+    (GenerateActorRefThread / EditActorRefThread).
+    """
+    try:
+        if value not in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI):
+            value = IMAGE_PROVIDER_NARWHAL
+        QSettings(APP_ORG, APP_NAME).setValue("image_provider_actors", value)
+    except Exception:
+        traceback.print_exc()
+
+
+def image_provider_admin() -> str:
+    """Провайдер для шотов сторибордов + рефов локаций/объектов
+    (видим только админу). Default: 'narwhal'. Миграция аналогична
+    `image_provider_actors`.
+    """
+    try:
+        s = QSettings(APP_ORG, APP_NAME)
+        v = s.value("image_provider_admin", None, type=str)
+        if not v:
+            old = s.value("image_provider", IMAGE_PROVIDER_NARWHAL, type=str)
+            v = old if old in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
+                else IMAGE_PROVIDER_NARWHAL
+            s.setValue("image_provider_admin", v)
+        return v if v in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
+            else IMAGE_PROVIDER_NARWHAL
+    except Exception:
+        return IMAGE_PROVIDER_NARWHAL
+
+
+def set_image_provider_admin(value: str) -> None:
+    """Сохраняет провайдер для админского контекста + синхронизирует
+    в `image_provider.txt` (bridge-файл для pipeline.py и
+    generate_storyboards.py — они делают локации/объекты/сториборды,
+    т.е. админский контекст).
+    """
+    try:
+        if value not in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI):
+            value = IMAGE_PROVIDER_NARWHAL
+        QSettings(APP_ORG, APP_NAME).setValue("image_provider_admin", value)
+        try:
+            project_root = _project_root_for_provider_sync()
+            if project_root is not None:
+                sync_image_provider_to_project(project_root, value)
+        except Exception:
+            traceback.print_exc()
     except Exception:
         traceback.print_exc()
 
@@ -4945,8 +5036,11 @@ class MainWindow(QMainWindow):
         # Без этого настройка «Nano Banana 2 / OpenAI» в GUI влияла
         # только на шоты (`GenerateThread`), а локации/объекты
         # (pipeline.py) всегда шли через OpenAI flow.
+        # 2026-05-23: после разделения провайдеров pipeline.py делает
+        # локации/объекты/сториборды — это админский контекст. Берём
+        # значение из `image_provider_admin()`.
         try:
-            sync_image_provider_to_project(project_root, image_provider())
+            sync_image_provider_to_project(project_root, image_provider_admin())
         except Exception:
             traceback.print_exc()
         # 2026-05-21: bridge для pipeline.py — синхронизация Fast Gen ключа в .env
@@ -6604,16 +6698,36 @@ class MainWindow(QMainWindow):
                     tr('settings_context_reviewer_hint'))
             except Exception:
                 traceback.print_exc()
+        # Секция «Провайдер для референсов персонажей» (видна всем)
+        if hasattr(self, 'sec_image_provider_actors_lbl'):
+            try:
+                self.sec_image_provider_actors_lbl.setText(
+                    tr('sec_image_provider_actors'))
+                self.image_provider_actors_hint_lbl.setText(
+                    tr('image_provider_actors_hint'))
+                self.image_provider_actors_label_lbl.setText(
+                    tr('image_provider_label'))
+                self.image_provider_actors_combo.setItemText(
+                    0, tr('image_provider_narwhal'))
+                self.image_provider_actors_combo.setItemText(
+                    1, tr('image_provider_openai'))
+            except Exception:
+                traceback.print_exc()
         # Админ-разделитель + секция «АНИМАЦИИ» (только если админ)
         if hasattr(self, 'sec_admin_div_lbl'):
             try:
                 self.sec_admin_div_lbl.setText(tr('sec_admin_divider'))
-                self.sec_image_provider_lbl.setText(tr('sec_image_provider'))
-                self.image_provider_hint_lbl.setText(tr('image_provider_hint'))
-                self.image_provider_label_lbl.setText(tr('image_provider_label'))
+                self.sec_image_provider_admin_lbl.setText(
+                    tr('sec_image_provider_admin'))
+                self.image_provider_admin_hint_lbl.setText(
+                    tr('image_provider_admin_hint'))
+                self.image_provider_admin_label_lbl.setText(
+                    tr('image_provider_label'))
                 # Items в QComboBox: пересоздать тексты с сохранением data
-                self.image_provider_combo.setItemText(0, tr('image_provider_narwhal'))
-                self.image_provider_combo.setItemText(1, tr('image_provider_openai'))
+                self.image_provider_admin_combo.setItemText(
+                    0, tr('image_provider_narwhal'))
+                self.image_provider_admin_combo.setItemText(
+                    1, tr('image_provider_openai'))
                 self.sec_anim_lbl.setText(tr('sec_anim'))
                 self.anim_hint_lbl.setText(tr('anim_speed_hint'))
                 self.anim_speed_label_lbl.setText(tr('anim_speed_label'))
@@ -7388,6 +7502,53 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(montage_frame)
 
+        # ── ПРОВАЙДЕР ДЛЯ РЕФЕРЕНСОВ ПЕРСОНАЖЕЙ (виден всем юзерам) ─────────
+        # 2026-05-23: разделение из единого `image_provider` (см. settings
+        # layer). Влияет на: GenerateActorRefThread, EditActorRefThread,
+        # и RefGenerateThread когда путь содержит /characters/.
+        self.sec_image_provider_actors_lbl = QLabel(
+            tr('sec_image_provider_actors'))
+        self.sec_image_provider_actors_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_image_provider_actors_lbl)
+
+        provider_actors_frame = QFrame()
+        provider_actors_frame.setObjectName("settings-group")
+        paf = QVBoxLayout(provider_actors_frame)
+        paf.setSpacing(0)
+        paf.setContentsMargins(18, 14, 18, 14)
+
+        self.image_provider_actors_hint_lbl = QLabel(
+            tr('image_provider_actors_hint'))
+        self.image_provider_actors_hint_lbl.setWordWrap(True)
+        self.image_provider_actors_hint_lbl.setStyleSheet(
+            "color:#aaa; font-size:12px; padding-bottom:10px;")
+        paf.addWidget(self.image_provider_actors_hint_lbl)
+
+        provider_actors_row = QHBoxLayout()
+        provider_actors_row.setSpacing(12)
+        self.image_provider_actors_label_lbl = QLabel(tr('image_provider_label'))
+        self.image_provider_actors_label_lbl.setStyleSheet(
+            "color:#cfcfcf; font-size:13px;")
+        provider_actors_row.addWidget(self.image_provider_actors_label_lbl)
+
+        self.image_provider_actors_combo = QComboBox()
+        self.image_provider_actors_combo.addItem(
+            tr('image_provider_narwhal'), IMAGE_PROVIDER_NARWHAL)
+        self.image_provider_actors_combo.addItem(
+            tr('image_provider_openai'), IMAGE_PROVIDER_OPENAI)
+        cur_provider_actors = image_provider_actors()
+        idx = self.image_provider_actors_combo.findData(cur_provider_actors)
+        if idx >= 0:
+            self.image_provider_actors_combo.setCurrentIndex(idx)
+        self.image_provider_actors_combo.currentIndexChanged.connect(
+            self._on_image_provider_actors_changed)
+        # КРИТИЧНО: блокируем колесо мыши (см. CRITICAL_RULES.md).
+        block_wheel_event(self.image_provider_actors_combo)
+        provider_actors_row.addWidget(self.image_provider_actors_combo, stretch=1)
+        paf.addLayout(provider_actors_row)
+
+        lay.addWidget(provider_actors_frame)
+
         # ── АДМИН-СЕКЦИИ: видны только админу (`_is_admin`) ─────────────────
         # Большая визуальная разделительная плашка чтобы юзер сразу понимал
         # что ниже — настройки которые НЕ уйдут к коллегам (у них этих
@@ -7541,50 +7702,57 @@ class MainWindow(QMainWindow):
 
             lay.addWidget(montage_rt_frame)
 
-            # ── ПРОВАЙДЕР КАРТИНОК — переключатель NARWHAL / OpenAI ───────
-            # Влияет на массовую генерацию шотов. Fallback когда NARWHAL
-            # captcha-сервис у Fast Gen лежит. Сохраняется в QSettings
-            # ключ "image_provider", читается на каждый запуск GenerateThread.
-            self.sec_image_provider_lbl = QLabel(tr('sec_image_provider'))
-            self.sec_image_provider_lbl.setObjectName("settings-section")
-            lay.addWidget(self.sec_image_provider_lbl)
+            # ── ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ (только админ) ──
+            # 2026-05-23: разделение из единого `image_provider`. Влияет на:
+            # GenerateThread (шоты), RefGenerateThread (когда путь
+            # /locations/ или /objects/), + bridge-файл `image_provider.txt`
+            # для batch-скриптов pipeline.py / generate_storyboards.py.
+            # На рефы актёров НЕ влияет — для них отдельный переключатель
+            # выше (виден всем).
+            self.sec_image_provider_admin_lbl = QLabel(
+                tr('sec_image_provider_admin'))
+            self.sec_image_provider_admin_lbl.setObjectName("settings-section")
+            lay.addWidget(self.sec_image_provider_admin_lbl)
 
-            provider_frame = QFrame()
-            provider_frame.setObjectName("settings-group")
-            pf = QVBoxLayout(provider_frame)
+            provider_admin_frame = QFrame()
+            provider_admin_frame.setObjectName("settings-group")
+            pf = QVBoxLayout(provider_admin_frame)
             pf.setSpacing(0)
             pf.setContentsMargins(18, 14, 18, 14)
 
-            self.image_provider_hint_lbl = QLabel(tr('image_provider_hint'))
-            self.image_provider_hint_lbl.setWordWrap(True)
-            self.image_provider_hint_lbl.setStyleSheet(
+            self.image_provider_admin_hint_lbl = QLabel(
+                tr('image_provider_admin_hint'))
+            self.image_provider_admin_hint_lbl.setWordWrap(True)
+            self.image_provider_admin_hint_lbl.setStyleSheet(
                 "color:#aaa; font-size:12px; padding-bottom:10px;")
-            pf.addWidget(self.image_provider_hint_lbl)
+            pf.addWidget(self.image_provider_admin_hint_lbl)
 
-            provider_row = QHBoxLayout()
-            provider_row.setSpacing(12)
-            self.image_provider_label_lbl = QLabel(tr('image_provider_label'))
-            self.image_provider_label_lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
-            provider_row.addWidget(self.image_provider_label_lbl)
+            provider_admin_row = QHBoxLayout()
+            provider_admin_row.setSpacing(12)
+            self.image_provider_admin_label_lbl = QLabel(
+                tr('image_provider_label'))
+            self.image_provider_admin_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            provider_admin_row.addWidget(self.image_provider_admin_label_lbl)
 
-            self.image_provider_combo = QComboBox()
-            self.image_provider_combo.addItem(
+            self.image_provider_admin_combo = QComboBox()
+            self.image_provider_admin_combo.addItem(
                 tr('image_provider_narwhal'), IMAGE_PROVIDER_NARWHAL)
-            self.image_provider_combo.addItem(
+            self.image_provider_admin_combo.addItem(
                 tr('image_provider_openai'), IMAGE_PROVIDER_OPENAI)
-            cur_provider = image_provider()
-            idx = self.image_provider_combo.findData(cur_provider)
+            cur_provider_admin = image_provider_admin()
+            idx = self.image_provider_admin_combo.findData(cur_provider_admin)
             if idx >= 0:
-                self.image_provider_combo.setCurrentIndex(idx)
-            self.image_provider_combo.currentIndexChanged.connect(
-                self._on_image_provider_changed)
+                self.image_provider_admin_combo.setCurrentIndex(idx)
+            self.image_provider_admin_combo.currentIndexChanged.connect(
+                self._on_image_provider_admin_changed)
             # КРИТИЧНО: блокируем колесо мыши, иначе прокрутка страницы
             # курсором над комбобоксом МЕНЯЕТ провайдера случайно.
-            block_wheel_event(self.image_provider_combo)
-            provider_row.addWidget(self.image_provider_combo, stretch=1)
-            pf.addLayout(provider_row)
+            block_wheel_event(self.image_provider_admin_combo)
+            provider_admin_row.addWidget(self.image_provider_admin_combo, stretch=1)
+            pf.addLayout(provider_admin_row)
 
-            lay.addWidget(provider_frame)
+            lay.addWidget(provider_admin_frame)
 
             # ── АНИМАЦИИ — слайдер скорости fade-переходов ─────────────────
             self.sec_anim_lbl = QLabel(tr('sec_anim'))
@@ -12782,13 +12950,36 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
-    def _on_image_provider_changed(self, idx: int):
-        """Сохраняет выбранного провайдера в QSettings.
-        GenerateThread читает значение на каждый запуск — изменение
-        применяется к следующему сгенерированному шоту, перезапуск не нужен."""
+    def _on_image_provider_actors_changed(self, idx: int):
+        """Слот переключателя «Провайдер для референсов персонажей»
+        (виден всем). Сохраняет в QSettings ключ `image_provider_actors`.
+        GenerateActorRefThread / EditActorRefThread / RefGenerateThread
+        (когда путь содержит /characters/) читают значение на каждый
+        запуск — изменение применяется к следующей генерации, перезапуск
+        не нужен.
+        """
         try:
-            value = self.image_provider_combo.itemData(idx)
-            set_image_provider(value or IMAGE_PROVIDER_NARWHAL)
+            if idx < 0:
+                return
+            value = self.image_provider_actors_combo.itemData(idx)
+            set_image_provider_actors(value or IMAGE_PROVIDER_NARWHAL)
+        except Exception:
+            traceback.print_exc()
+
+    def _on_image_provider_admin_changed(self, idx: int):
+        """Слот переключателя «Провайдер для сторибордов, локаций и
+        объектов» (только админ). Сохраняет в QSettings ключ
+        `image_provider_admin` + синхронизирует bridge-файл
+        `image_provider.txt` для batch-скриптов pipeline.py /
+        generate_storyboards.py. GenerateThread читает значение на каждый
+        запуск — изменение применяется к следующему шоту, перезапуск
+        не нужен.
+        """
+        try:
+            if idx < 0:
+                return
+            value = self.image_provider_admin_combo.itemData(idx)
+            set_image_provider_admin(value or IMAGE_PROVIDER_NARWHAL)
         except Exception:
             traceback.print_exc()
 

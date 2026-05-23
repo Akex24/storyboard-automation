@@ -513,7 +513,9 @@ class GenerateThread(QThread):
             #     для криминальных/драматических сцен не работает.
             #   • Используется когда NARWHAL captcha-сервис у Fast Gen
             #     лежит и нужен fallback.
-            provider = _sa.image_provider()
+            # 2026-05-23: разделение провайдеров — шоты идут через
+            # админский переключатель (`image_provider_admin`).
+            provider = _sa.image_provider_admin()
             payload: Dict = {
                 "prompt":       clean,
                 "aspect_ratio": "9:16",   # отдельный шот — портрет
@@ -800,7 +802,20 @@ class RefGenerateThread(QThread):
             # Локации/объекты — 16:9 landscape. Поля `model`/`resolution`
             # не передаём (NARWHAL flow маршрутизирует обратно в OpenAI
             # если есть `model` → ломается тот же pydantic).
-            provider = _sa.image_provider()
+            # 2026-05-23: разделение провайдеров. RefGenerateThread —
+            # мульти-kind (локация / объект / персонаж сериала). Определяем
+            # kind по пути (`Path.parts`, кроссплатформенно):
+            #   • characters/<slug>/<file>.jpg → провайдер актёров
+            #   • locations/ или objects/ → админский провайдер
+            # Утилита `_ref_kind_from_path` живёт в storyboard_app.py, не
+            # тянем её сюда — мини-версия (только проверка наличия
+            # 'characters' в path.parts).
+            parts_lower = {p.lower() for p in self.image_path.parts}
+            if 'characters' in parts_lower:
+                provider = _sa.image_provider_actors()
+            else:
+                # 'locations', 'objects', либо неожиданный путь → админский
+                provider = _sa.image_provider_admin()
             payload: Dict = {
                 "prompt":       prompt_text,
                 "aspect_ratio": "16:9",
@@ -1309,7 +1324,10 @@ class GenerateActorRefThread(QThread):
             #     cost=4. НЕ передавать `model`.
             #   OpenAI `/api/v4/openai/image/generate` — ломается на 3+
             #     refs (pydantic), режется до 2; cost=1.
-            provider = _sa.image_provider()
+            # 2026-05-23: разделение провайдеров — актёрские рефы идут
+            # через `image_provider_actors` (виден всем юзерам, не
+            # только админу).
+            provider = _sa.image_provider_actors()
             payload = {
                 "prompt": self.prompt_text,
                 "aspect_ratio": "16:9",
@@ -1592,10 +1610,12 @@ class EditActorRefThread(QThread):
 
             # 3. Промпт + payload + endpoint (та же логика что в
             #    GenerateActorRefThread, без model field).
+            # 2026-05-23: разделение провайдеров — edit актёрского рефа
+            # идёт через `image_provider_actors` (виден всем юзерам).
             self.progress.emit(tr('create_ref_generating'))
             prompt_text = self._EDIT_PROMPT_TEMPLATE.format(
                 instruction=self.instruction)
-            provider = _sa.image_provider()
+            provider = _sa.image_provider_actors()
             payload = {
                 "prompt": prompt_text,
                 "aspect_ratio": "16:9",
