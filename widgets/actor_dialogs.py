@@ -1240,7 +1240,14 @@ class CreateActorRefDialog(QDialog):
             tmpl = (_sa.ACTOR_REF_PROMPT_DETAILED
                     if self._selected_variant == "detailed"
                     else _sa.ACTOR_REF_PROMPT_SIMPLE)
-            prompt = tmpl.format(outfit=outfit_text)
+            filenames = ", ".join(p.name for p in self.photos)
+            identity_anchor = (
+                f"All {len(self.photos)} attached reference image(s) show "
+                f"the same person — {self.display_name}. "
+                f"Files: {filenames}."
+            )
+            prompt = tmpl.format(outfit=outfit_text,
+                                 identity_anchor=identity_anchor)
 
             if self.owner_view is None:
                 self.status_lbl.setText(tr('create_ref_failed'))
@@ -1634,7 +1641,14 @@ class RefResultDialog(QDialog):
             tmpl = (_sa.ACTOR_REF_PROMPT_DETAILED
                     if self._variant_id == "detailed"
                     else _sa.ACTOR_REF_PROMPT_SIMPLE)
-            prompt = tmpl.format(outfit=outfit_text)
+            filenames = ", ".join(p.name for p in self.photos)
+            identity_anchor = (
+                f"All {len(self.photos)} attached reference image(s) show "
+                f"the same person — {self.display_name}. "
+                f"Files: {filenames}."
+            )
+            prompt = tmpl.format(outfit=outfit_text,
+                                 identity_anchor=identity_anchor)
 
             self._sync_pending_to_owner()
             # Регенерация в ту же папку что у уже существующих вариантов —
