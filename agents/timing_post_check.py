@@ -15,17 +15,17 @@ Opus иногда забывал правило или менял speech_type б
     min_duration = ceil(words_en / speed + reserve)
 
 2026-05-23 (Этап 1 переключателя режимов A/B/C/D): константы скоростей
-и буферов вынесены в `SPEECH_CONFIG[mode]`. На этом этапе значения для
-всех 4 режимов идентичны текущим — поведение не меняется. На Этапах 2/3
-значения B/C/D могут быть скорректированы независимо от A.
+и буферов вынесены в `SPEECH_CONFIG[mode]`. С Этапа 2.1 режим B имеет
+независимые значения: fast=4.0, normal=3.5, emotional=3.5 (алиас на
+normal), slow=2.3, buffer=0. Режимы A/C/D со старыми значениями.
 
-Speed по speech_type (слова/сек) — одинаково для A/B/C/D:
-    fast=3.0, normal=2.75, emotional=2.25, slow=1.75
+Speed по speech_type (слова/сек):
+    A/C/D:  fast=3.0, normal=2.75, emotional=2.25, slow=1.75
+    B:      fast=4.0, normal=3.5,  emotional=3.5,  slow=2.3
 
-Reserve по числу слов — одинаково для A/B/C/D:
-    <=5 слов: 0.5
-    6-15:    1.0
-    >=16:    1.5
+Reserve по числу слов:
+    A/C/D:  <=5: 0.5  |  6-15: 1.0  |  >=16: 1.5
+    B:      <=5: 0.0  |  6-15: 0.0  |  >=16: 0.0  (без буфера)
 
 Cross-platform: чистый Python + math.ceil + dict-логика. Mac=Win.
 Lazy import `agents.mode_loader` для авто-резолва режима — обёрнут
@@ -57,7 +57,23 @@ _DEFAULT_BUFFER: Dict[str, float] = {
 
 SPEECH_CONFIG: Dict[str, Dict[str, Dict[str, float]]] = {
     "a": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
-    "b": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
+    "b": {
+        # 2026-05-23 (Этап 2.1): режим B — быстрая речь без буфера
+        # (короткие шоты без воздуха). emotional → алиас на normal
+        # для совместимости со старыми монтажками; новые карты в
+        # режиме B emotional не используют.
+        "speeds": {
+            "fast":      4.0,
+            "normal":    3.5,
+            "emotional": 3.5,
+            "slow":      2.3,
+        },
+        "buffer": {
+            "<=5":  0.0,
+            "<=15": 0.0,
+            ">15":  0.0,
+        },
+    },
     "c": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
     "d": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
 }
