@@ -14,39 +14,101 @@ Opus иногда забывал правило или менял speech_type б
 ГИ), реализованная в Python:
     min_duration = ceil(words_en / speed + reserve)
 
-Speed по speech_type (слова/сек):
+2026-05-23 (Этап 1 переключателя режимов A/B/C/D): константы скоростей
+и буферов вынесены в `SPEECH_CONFIG[mode]`. На этом этапе значения для
+всех 4 режимов идентичны текущим — поведение не меняется. На Этапах 2/3
+значения B/C/D могут быть скорректированы независимо от A.
+
+Speed по speech_type (слова/сек) — одинаково для A/B/C/D:
     fast=3.0, normal=2.75, emotional=2.25, slow=1.75
 
-Reserve по числу слов:
+Reserve по числу слов — одинаково для A/B/C/D:
     <=5 слов: 0.5
     6-15:    1.0
     >=16:    1.5
 
 Cross-platform: чистый Python + math.ceil + dict-логика. Mac=Win.
+Lazy import `agents.mode_loader` для авто-резолва режима — обёрнут
+в try/except, чтобы модуль импортировался и без Qt (юнит-тесты,
+batch-скрипты).
 """
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# Скорости речи (слова в секунду) — те же что использует AI Validator
-# в правиле #6 (раздел 4 ГИ).
-SPEED_MAP: Dict[str, float] = {
+# 2026-05-23: SPEECH_CONFIG — конфиг по режимам. На Этапе 1 значения
+# идентичны для всех режимов. Структура:
+#   SPEECH_CONFIG[mode]["speeds"][speech_type] -> float (слов/сек)
+#   SPEECH_CONFIG[mode]["buffer"][bucket]      -> float (сек)
+#     bucket: "<=5" | "<=15" | ">15"
+_DEFAULT_SPEEDS: Dict[str, float] = {
     "fast":      3.0,
     "normal":    2.75,
     "emotional": 2.25,
     "slow":      1.75,
 }
+_DEFAULT_BUFFER: Dict[str, float] = {
+    "<=5":  0.5,
+    "<=15": 1.0,
+    ">15":  1.5,
+}
+
+SPEECH_CONFIG: Dict[str, Dict[str, Dict[str, float]]] = {
+    "a": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
+    "b": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
+    "c": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
+    "d": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
+}
+
+# Legacy: используется внешними импортами (agents/__init__.py реэкспортит
+# SPEED_MAP? — нет, только функции; но оставим для прямой совместимости
+# если кто-то импортирует константу). Содержит «дефолтные» значения =
+# режим A. На Этапе вычистки можно будет удалить вместе с проверкой что
+# никто не ссылается.
+SPEED_MAP: Dict[str, float] = dict(_DEFAULT_SPEEDS)
 
 
-def _reserve_for_words(words: int) -> float:
-    """Запас (сек) по числу слов EN."""
+def _resolve_mode(mode: Optional[str]) -> str:
+    """Нормализует переданный mode или достаёт текущий из mode_loader.
+
+    Сценарии:
+      • mode явно передан как строка → lower, проверка enum, fallback 'a'.
+      • mode is None → lazy import `agents.mode_loader.get_current_mode()`.
+        get_current_mode() уже возвращает валидированную строку из
+        {'a','b','c','d'} — берём её. При недоступности (нет Qt event
+        loop / тесты / batch-скрипты без QApplication) — fallback 'a'.
+
+    Lazy import нужен чтобы `timing_post_check.py` сохранял
+    нулевые зависимости от PyQt6 на import time.
+    """
+    if mode is not None:
+        m = str(mode).lower()
+        return m if m in SPEECH_CONFIG else "a"
+    try:
+        from agents.mode_loader import get_current_mode  # lazy
+        m = (get_current_mode() or "a").lower()
+        return m if m in SPEECH_CONFIG else "a"
+    except Exception:
+        return "a"
+
+
+def _reserve_for_words(words: int, mode: Optional[str] = None) -> float:
+    """Запас (сек) по числу слов EN.
+
+    Args:
+        words: число слов EN (по пробелам).
+        mode: один из {'a','b','c','d'}. По умолчанию резолвится через
+              `_resolve_mode(None)` — либо текущий режим из QSettings
+              (через mode_loader), либо fallback на 'a'.
+    """
+    buf = SPEECH_CONFIG[_resolve_mode(mode)]["buffer"]
     if words <= 5:
-        return 0.5
+        return buf["<=5"]
     if words <= 15:
-        return 1.0
-    return 1.5
+        return buf["<=15"]
+    return buf[">15"]
 
 
 def _words_en(dialog: Dict[str, Any]) -> int:
@@ -57,23 +119,34 @@ def _words_en(dialog: Dict[str, Any]) -> int:
     return len(en.split())
 
 
-def min_duration_sec(words: int, speech_type: str) -> int:
+def min_duration_sec(
+    words: int,
+    speech_type: str,
+    mode: Optional[str] = None,
+) -> int:
     """Минимальная duration_sec шота с репликой.
 
     Args:
         words: число слов EN (по пробелам).
         speech_type: один из {fast, normal, emotional, slow}.
-                     Если не в enum — fallback на normal (2.75 сл/сек).
+                     Если не в enum для выбранного режима — fallback
+                     на normal-скорость этого режима.
+        mode: один из {'a','b','c','d'} или None (= текущий режим из
+              mode_loader, fallback на 'a'). Старая сигнатура без mode
+              продолжает работать.
     Returns:
         Целое число секунд (округление ВВЕРХ через math.ceil).
     """
-    speed = SPEED_MAP.get(speech_type, SPEED_MAP["normal"])
-    raw = words / speed + _reserve_for_words(words)
+    m = _resolve_mode(mode)
+    speeds = SPEECH_CONFIG[m]["speeds"]
+    speed = speeds.get(speech_type, speeds["normal"])
+    raw = words / speed + _reserve_for_words(words, m)
     return math.ceil(raw)
 
 
 def apply_timing_post_check(
     card: Dict[str, Any],
+    mode: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Поднимает `duration_sec` шотов с репликой до min_duration_sec
     (если меньше). Пересчитывает `card['total_seconds']`.
@@ -83,10 +156,14 @@ def apply_timing_post_check(
     Пропускает шот если:
         - `dialog` is None / отсутствует
         - `dialog.en` пустой
-        - `speech_type` не в SPEED_MAP (валидатор поймает rule #7)
+        - `speech_type` не в SPEECH_CONFIG[mode]["speeds"] (валидатор
+          поймает rule #7)
 
     Args:
         card: монтажная карта (формат от Scriptwriter / Editor).
+        mode: один из {'a','b','c','d'} или None (= текущий из
+              mode_loader, fallback 'a'). Старая сигнатура без mode
+              продолжает работать.
     Returns:
         (card, summary):
             card — обновлённая карта (тот же dict).
@@ -97,7 +174,11 @@ def apply_timing_post_check(
                 old_total_seconds:    int — поле total_seconds ДО
                 new_total_seconds:    int — сумма после пересчёта
                 delta_total_seconds:  int — new - old
+                mode:                 str — фактически применённый режим
     """
+    m = _resolve_mode(mode)
+    speeds = SPEECH_CONFIG[m]["speeds"]
+
     fixes: List[Dict[str, Any]] = []
     checked = 0
     for b in card.get("blocks") or []:
@@ -110,11 +191,11 @@ def apply_timing_post_check(
             if not en:
                 continue
             sp = d.get("speech_type")
-            if sp not in SPEED_MAP:
+            if sp not in speeds:
                 continue
             checked += 1
             words = _words_en(d)
-            min_d = min_duration_sec(words, sp)
+            min_d = min_duration_sec(words, sp, m)
             cur = int(s.get("duration_sec") or 0)
             if cur < min_d:
                 fixes.append({
@@ -146,4 +227,5 @@ def apply_timing_post_check(
         "old_total_seconds":   old_total,
         "new_total_seconds":   new_total,
         "delta_total_seconds": new_total - old_total,
+        "mode":                m,
     }
