@@ -3584,6 +3584,79 @@ def set_image_provider_admin(value: str) -> None:
         traceback.print_exc()
 
 
+# 2026-05-23 (Этап 3.1): settings layer для скоростей речи актёров
+# в режиме B. Три параметра — fast / normal / slow, в словах/сек.
+# Дефолты (4.0 / 3.5 / 2.3) дублируют значения из
+# agents/timing_post_check.py:66-69 (SPEECH_CONFIG["b"]["speeds"]).
+# В подэтапе 3.3 SPEECH_CONFIG будет ЧИТАТЬ из этих функций —
+# settings станет единым source of truth. UI слайдеры — 3.2.
+
+
+def speech_speed_b_fast() -> float:
+    """Скорость речи 'fast' для режима B (слов/сек).
+    Default: 4.0. Используется в SPEECH_CONFIG["b"]["speeds"]["fast"]
+    (подключение — Этап 3.3). Кламп 1.0–10.0 — защита от кривых
+    значений в QSettings.
+    """
+    try:
+        v = QSettings(APP_ORG, APP_NAME).value("speech_speed_b_fast", 4.0)
+        m = float(v)
+        return max(1.0, min(10.0, m))
+    except Exception:
+        return 4.0
+
+
+def set_speech_speed_b_fast(value: float) -> None:
+    """Сохраняет скорость 'fast' для режима B. Кламп 1.0–10.0."""
+    try:
+        v = max(1.0, min(10.0, float(value)))
+        QSettings(APP_ORG, APP_NAME).setValue("speech_speed_b_fast", v)
+    except Exception:
+        traceback.print_exc()
+
+
+def speech_speed_b_normal() -> float:
+    """Скорость речи 'normal' для режима B (слов/сек).
+    Default: 3.5. Кламп 1.0–10.0.
+    """
+    try:
+        v = QSettings(APP_ORG, APP_NAME).value("speech_speed_b_normal", 3.5)
+        m = float(v)
+        return max(1.0, min(10.0, m))
+    except Exception:
+        return 3.5
+
+
+def set_speech_speed_b_normal(value: float) -> None:
+    """Сохраняет скорость 'normal' для режима B. Кламп 1.0–10.0."""
+    try:
+        v = max(1.0, min(10.0, float(value)))
+        QSettings(APP_ORG, APP_NAME).setValue("speech_speed_b_normal", v)
+    except Exception:
+        traceback.print_exc()
+
+
+def speech_speed_b_slow() -> float:
+    """Скорость речи 'slow' для режима B (слов/сек).
+    Default: 2.3. Кламп 1.0–10.0.
+    """
+    try:
+        v = QSettings(APP_ORG, APP_NAME).value("speech_speed_b_slow", 2.3)
+        m = float(v)
+        return max(1.0, min(10.0, m))
+    except Exception:
+        return 2.3
+
+
+def set_speech_speed_b_slow(value: float) -> None:
+    """Сохраняет скорость 'slow' для режима B. Кламп 1.0–10.0."""
+    try:
+        v = max(1.0, min(10.0, float(value)))
+        QSettings(APP_ORG, APP_NAME).setValue("speech_speed_b_slow", v)
+    except Exception:
+        traceback.print_exc()
+
+
 def find_ref_image(filename: str) -> Optional[Path]:
     """Резолвит имя файла рефа в физический путь на диске.
 
