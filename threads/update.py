@@ -32,6 +32,7 @@ import io
 import os
 import sys
 import json
+import stat
 import time
 import datetime
 import subprocess
@@ -1636,10 +1637,27 @@ class SendUpdateThread(QThread):
                 zip_path = self.root / "dist" / zip_name
                 if zip_path.exists():
                     zip_path.unlink()
+                # 2026-05-25: stdlib `zipfile.ZipFile.write()` НЕ сохраняет
+                # symlinks как symlinks — open() следует по link и пишет в zip
+                # содержимое target'а. Для Mac .app это убивает Apple framework
+                # version-chain (Python.framework/Versions/Current → 3.9,
+                # libpng16.16 → libpng16.16.49.0.dylib и т.д.) → у коллеги
+                # `import _struct` падает с ModuleNotFoundError. Поэтому
+                # symlinks обрабатываем вручную через ZipInfo с mode S_IFLNK
+                # и data = os.readlink(). Проверка is_symlink() ПЕРЕД is_file()
+                # обязательна: Path.is_file() follows symlinks, поэтому
+                # symlink-к-файлу вернёт True и попадёт в неправильную ветку.
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
                     for f in app_path.rglob("*"):
-                        if f.is_file() or f.is_symlink():
-                            zf.write(f, f.relative_to(app_path.parent))
+                        arcname = f.relative_to(app_path.parent).as_posix()
+                        if f.is_symlink():
+                            link_target = os.readlink(f)
+                            zi = zipfile.ZipInfo(arcname)
+                            zi.create_system = 3  # Unix — иначе external_attr игнорится
+                            zi.external_attr = (stat.S_IFLNK | 0o755) << 16
+                            zf.writestr(zi, link_target)
+                        elif f.is_file():
+                            zf.write(f, arcname)
 
                 self.progress.emit("Создаю GitHub Release…")
                 tag = f"app-v{new_app_version}"
