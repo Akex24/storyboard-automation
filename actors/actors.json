@@ -45,7 +45,8 @@
       "nazvanie_seriala_2": "mark",
       "finalnyy_raschet": "mark",
       "finalnyy_raschet_2": "policeman",
-      "audit_na_vyzhivanie": "cole"
+      "audit_na_vyzhivanie": "cole",
+      "taynyy_investor": "kristian"
     }
   },
   "akter_4": {
@@ -88,13 +89,15 @@
     "display_name": "Временный актер 1",
     "roles": {
       "finalnyy_raschet_2": "worker",
-      "testovyy_serial_2": "guard"
+      "testovyy_serial_2": "guard",
+      "taynyy_investor": "bank_rep_1"
     }
   },
   "vremennyi_akter_2": {
     "display_name": "Временный актер 2",
     "roles": {
-      "finalnyy_raschet_2": "judge"
+      "finalnyy_raschet_2": "judge",
+      "taynyy_investor": "bill"
     }
   },
   "akter_7": {
@@ -109,7 +112,8 @@
   "vremennyi_akter_3": {
     "display_name": "Временный актер 3",
     "roles": {
-      "finalnyy_raschet_2": "worker"
+      "finalnyy_raschet_2": "worker",
+      "taynyy_investor": "harold"
     }
   },
   "aktrisa_1": {
@@ -122,14 +126,21 @@
   "maks": {
     "display_name": "Макс",
     "roles": {
-      "audit_na_vyzhivanie": "foreman"
+      "audit_na_vyzhivanie": "foreman",
+      "taynyy_investor": "trevor"
     }
   },
   "alina": {
-    "display_name": "Алiна"
+    "display_name": "Алiна",
+    "roles": {
+      "taynyy_investor": "gloria"
+    }
   },
   "viktoriya": {
-    "display_name": "Вiкторiя"
+    "display_name": "Вiкторiя",
+    "roles": {
+      "taynyy_investor": "news_anchor"
+    }
   },
   "valeriya": {
     "display_name": "Валерiя",
@@ -138,6 +149,9 @@
     }
   },
   "aleksey": {
-    "display_name": "ALeksey"
+    "display_name": "ALeksey",
+    "roles": {
+      "taynyy_investor": "concierge"
+    }
   }
 }
