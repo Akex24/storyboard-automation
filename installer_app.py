@@ -439,8 +439,29 @@ class DownloadAppExeThread(QThread):
             self.target_root.mkdir(parents=True, exist_ok=True)
 
             with tempfile.TemporaryDirectory() as tmp:
+                # 2026-05-25: Python 3.9 `zipfile.extractall()` НЕ восстанавливает
+                # symlinks — для S_IFLNK entry создаёт обычный файл, в котором
+                # лежит linktarget как text. У нас mac-zip (после фикса pack-
+                # стороны 15e8b12) содержит 117 S_IFLNK entries для Apple
+                # framework chain. Без ручной обработки `Resources/Python3`
+                # становится 38-байтным текстовым файлом → dlopen падает с
+                # «slice is not valid mach-o». stdlib symlink-aware extract
+                # появился только в Python 3.13. На Win symlinks в zip нет,
+                # extractall работает корректно.
                 with zipfile.ZipFile(buf) as z:
-                    z.extractall(tmp)
+                    if IS_MAC:
+                        for info in z.infolist():
+                            extract_path = Path(tmp) / info.filename
+                            if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                                link_target = z.read(info).decode('utf-8')
+                                extract_path.parent.mkdir(parents=True, exist_ok=True)
+                                if extract_path.is_symlink() or extract_path.exists():
+                                    extract_path.unlink()
+                                os.symlink(link_target, extract_path)
+                            else:
+                                z.extract(info, tmp)
+                    else:
+                        z.extractall(tmp)
                 tmp_path = Path(tmp)
 
                 if is_win:

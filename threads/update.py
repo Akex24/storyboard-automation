@@ -646,8 +646,29 @@ class DownloadAppUpdateThread(QThread):
                 return
             self._early_log(f"update_dir created OK")
 
+            # 2026-05-25: Python 3.9 `zipfile.extractall()` НЕ восстанавливает
+            # symlinks из S_IFLNK entry — создаёт regular файл с linktarget'ом
+            # как текстовым содержимым. mac-zip (после фикса pack-стороны
+            # 15e8b12) содержит 117 S_IFLNK entries для Apple framework chain
+            # (Python.framework version-symlinks, libpng/libwebp dylib aliases,
+            # Qt framework Versions/Current → A). Без ручной обработки auto-
+            # update у коллег-маков создаст сломанный bundle → Studio упадёт
+            # с «slice is not valid mach-o». Symlink-aware extract в stdlib
+            # появился только в Python 3.13. На Win symlinks в zip нет.
             with zipfile.ZipFile(buf) as z:
-                z.extractall(update_dir)
+                if sys.platform == 'darwin':
+                    for info in z.infolist():
+                        extract_path = Path(update_dir) / info.filename
+                        if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                            link_target = z.read(info).decode('utf-8')
+                            extract_path.parent.mkdir(parents=True, exist_ok=True)
+                            if extract_path.is_symlink() or extract_path.exists():
+                                extract_path.unlink()
+                            os.symlink(link_target, extract_path)
+                        else:
+                            z.extract(info, update_dir)
+                else:
+                    z.extractall(update_dir)
             self._early_log(f"zip extracted to update_dir")
 
             # На Win ищем папку «Storyboard Studio» (onedir),
