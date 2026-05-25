@@ -665,6 +665,23 @@ class DownloadAppUpdateThread(QThread):
                 return
             new_app_src = candidates[0]
 
+            # 2026-05-25: zipfile.ZipFile.extractall() в Python stdlib НЕ
+            # восстанавливает unix execute-bit из external_attr ZIP-записи
+            # (bpo-15795). После распаковки -mac.zip бинарник в
+            # .app/Contents/MacOS/ получает mode 0o644 → bootstrap скрипт
+            # сделает `cp -R` и Mac откажется запускать обновлённый .app.
+            # Восстанавливаем +x ДО bootstrap'а. Win не трогаем — там
+            # exec-бит не используется (NTFS ACL).
+            if sys.platform == 'darwin':
+                macos_dir = new_app_src / "Contents" / "MacOS"
+                if macos_dir.is_dir():
+                    for binary in macos_dir.iterdir():
+                        if binary.is_file():
+                            binary.chmod(0o755)
+                    self._early_log(
+                        f"chmod +x restored on Contents/MacOS/* "
+                        f"({sum(1 for f in macos_dir.iterdir() if f.is_file())} files)")
+
             # ── Тихий sync actors/ (best-effort, без отдельного UI) ──
             # Качаем actors-snapshot-vX.Y.Z.zip из того же релиза и
             # зеркалим в self.root / "actors". Локальные _textures и

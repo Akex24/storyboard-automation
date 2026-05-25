@@ -471,6 +471,20 @@ class DownloadAppExeThread(QThread):
                     if dst_app.exists():
                         shutil.rmtree(dst_app, ignore_errors=True)
                     shutil.copytree(src_app, dst_app)
+                    # 2026-05-25: zipfile.ZipFile.extractall() в Python stdlib
+                    # НЕ восстанавливает unix execute-bit из external_attr
+                    # ZIP-записи (bpo-15795). После распаковки -mac.zip
+                    # бинарник в .app/Contents/MacOS/ получает mode 0o644 →
+                    # macOS отказывается запускать («Не удаётся открыть
+                    # программу»). Восстанавливаем +x всем файлам в MacOS/
+                    # (не хардкодим имя — бандл может содержать несколько
+                    # Mach-O launcher'ов).
+                    if IS_MAC:
+                        macos_dir = dst_app / "Contents" / "MacOS"
+                        if macos_dir.is_dir():
+                            for binary in macos_dir.iterdir():
+                                if binary.is_file():
+                                    binary.chmod(0o755)
                     final_path = dst_app
 
             self.progress.emit(100, "Готово!")
