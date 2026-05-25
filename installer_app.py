@@ -491,7 +491,23 @@ class DownloadAppExeThread(QThread):
                     dst_app = self.target_root / "Storyboard Studio.app"
                     if dst_app.exists():
                         shutil.rmtree(dst_app, ignore_errors=True)
-                    shutil.copytree(src_app, dst_app)
+                    # 2026-05-25: на Mac обязательно `symlinks=True`. Дефолт
+                    # `symlinks=False` разыменовывает каждый symlink (читает
+                    # содержимое target'а через open() и копирует как regular
+                    # file) — для dir-symlinks типа `Python.framework/Versions/
+                    # Current → 3.9` это превращает symlink в полную копию
+                    # папки с дубликатами всех .so/.dylib. Apple framework
+                    # требует symlink-структуру (CFBundleCopyBundleURL и
+                    # plugin discovery работают через Versions/Current chain),
+                    # иначе Qt падает с SIGSEGV в qdarwinpermissionplugin.
+                    # Без этого фикса даже после правильного extract (фикс
+                    # dcc3fdd) copytree всё равно убивает symlinks → bundle
+                    # снова сломан, файлов 1091 вместо 507. Win ветке symlinks
+                    # не нужны — onedir bundle без Apple framework.
+                    if IS_MAC:
+                        shutil.copytree(src_app, dst_app, symlinks=True)
+                    else:
+                        shutil.copytree(src_app, dst_app)
                     # 2026-05-25: zipfile.ZipFile.extractall() в Python stdlib
                     # НЕ восстанавливает unix execute-bit из external_attr
                     # ZIP-записи (bpo-15795). После распаковки -mac.zip
