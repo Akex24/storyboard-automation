@@ -65,7 +65,8 @@
       "finalnyy_raschet": "laura",
       "testovyy_serial": "eve",
       "finalnyy_raschet_2": "laura",
-      "audit_na_vyzhivanie": "maren"
+      "audit_na_vyzhivanie": "maren",
+      "taynyy_investor": "linda"
     }
   },
   "akter_5": {
@@ -73,7 +74,8 @@
     "roles": {
       "testovyy_serial": "alex",
       "finalnyy_raschet_2": "detective",
-      "testovyy_serial_2": "arthur"
+      "testovyy_serial_2": "arthur",
+      "taynyy_investor": "lobby_concierge"
     }
   },
   "akter_6": {
@@ -82,7 +84,8 @@
       "nazvanie_seriala_2": "policeman",
       "testovyy_serial": "mark",
       "finalnyy_raschet_2": "police_officer",
-      "testovyy_serial_2": "max"
+      "testovyy_serial_2": "max",
+      "taynyy_investor": "derrick"
     }
   },
   "vremennyi_akter_1": {
@@ -127,7 +130,7 @@
     "display_name": "Макс",
     "roles": {
       "audit_na_vyzhivanie": "foreman",
-      "taynyy_investor": "trevor"
+      "taynyy_investor": "waiter"
     }
   },
   "alina": {
@@ -139,7 +142,7 @@
   "viktoriya": {
     "display_name": "Вiкторiя",
     "roles": {
-      "taynyy_investor": "news_anchor"
+      "taynyy_investor": "katherine"
     }
   },
   "valeriya": {
