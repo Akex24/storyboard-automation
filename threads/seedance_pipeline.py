@@ -493,13 +493,23 @@ class SeedanceCompressThread(QThread):
                  target_chars: int,
                  limit_chars: int,
                  model: Optional[str] = None,
-                 parent=None):
+                 parent=None,
+                 ep_id: Optional[str] = None,
+                 block_n: Optional[int] = None):
         super().__init__(parent)
         self._cli = claude_cli_path
         self._current_prompt = current_prompt or ""
         self._target_chars = int(target_chars)
         self._limit_chars = int(limit_chars)
         self._model = model
+        # 2026-05-26: метки для опознания потока при повторном открытии
+        # попапа «Промпт Seedance». _show_seedance_popup сканирует
+        # self._seedance_compress_threads и ищет живой поток по
+        # (ep_id, block_n) — если находит, переподключает done/failed
+        # на свежие callback'и нового окна. В run() эти атрибуты НЕ
+        # используются — чистые метки.
+        self._ep_id = ep_id
+        self._block_n = block_n
 
     def run(self) -> None:
         try:

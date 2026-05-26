@@ -12933,6 +12933,8 @@ class MainWindow(QMainWindow):
                     limit_chars=limit_chars,
                     on_done=lambda new_text: _on_compress_success(new_text),
                     on_failed=lambda msg: _on_compress_error(msg),
+                    ep_id=ep_id,
+                    block_n=block_n,
                 )
                 _lock_ui(compress_btn, tr('compressing'))
             except Exception as e:
@@ -12972,6 +12974,64 @@ class MainWindow(QMainWindow):
         # Initial enabled state regen_btn (нет фидбэка → disabled)
         _on_instr_text_changed()
         _update_compress_btn_state()
+
+        # 2026-05-26: re-attach живого compress-потока этого блока.
+        # При повторном открытии попапа после закрытия крестиком (когда
+        # сжатие ещё идёт): ищем в self._seedance_compress_threads
+        # активный поток с теми же (ep_id, block_n). Если есть —
+        # отрезаем СТАРЫЕ done/failed слоты (они держат closures
+        # закрытого диалога — _on_compress_success там обратится к
+        # уже невидимым виджетам и затрёт tabs.json устаревшим state),
+        # подключаем новые callbacks + _resub_cleanup (он был утрачен
+        # disconnect()'ом), включаем _lock_ui для анимации «Сжимаю...».
+        # Если живого потока нет — окно открывается как обычно.
+        try:
+            existing_threads = getattr(
+                self, '_seedance_compress_threads', None) or []
+            live_thread = None
+            for _t in existing_threads:
+                try:
+                    if (_t.isRunning()
+                            and getattr(_t, '_ep_id', None) == ep_id
+                            and getattr(_t, '_block_n', None) == block_n):
+                        live_thread = _t
+                        break
+                except Exception:
+                    continue
+            if live_thread is not None:
+                # Снять все прежние слоты с обоих сигналов. disconnect()
+                # без аргументов сбрасывает все коннекты сразу. Если
+                # слотов уже нет — Qt бросает TypeError/RuntimeError,
+                # игнорируем.
+                try:
+                    live_thread.done.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                try:
+                    live_thread.failed.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                # Свежие callbacks этого окна.
+                live_thread.done.connect(
+                    lambda new_text: _on_compress_success(new_text))
+                live_thread.failed.connect(
+                    lambda msg: _on_compress_error(msg))
+                # _cleanup был потерян на disconnect() — навешиваем
+                # эквивалент заново, чтобы поток вычистился из реестра
+                # после завершения.
+                def _resub_cleanup(_thr=live_thread):
+                    try:
+                        self._seedance_compress_threads.remove(_thr)
+                    except Exception:
+                        pass
+                live_thread.done.connect(lambda _t: _resub_cleanup())
+                live_thread.failed.connect(lambda _m: _resub_cleanup())
+                # UI: показать «Сжимаю...» с бегущими точками — ровно
+                # как сразу после нажатия «Сократить».
+                _lock_ui(compress_btn, tr('compressing'))
+        except Exception:
+            # Любая ошибка re-attach не должна мешать открытию окна.
+            traceback.print_exc()
 
         btns_row.addWidget(regen_btn)
         btns_row.addWidget(copy_btn)
@@ -13126,7 +13186,9 @@ class MainWindow(QMainWindow):
                                    target_chars: int,
                                    limit_chars: int,
                                    on_done,
-                                   on_failed):
+                                   on_failed,
+                                   ep_id: Optional[str] = None,
+                                   block_n: Optional[int] = None):
         """Запускает `SeedanceCompressThread` — сжимает Seedance промпт
         в коридор [target_chars..limit_chars] через Opus 4.7 + --effort low.
         Если current_prompt уже ≤ limit_chars — Opus вернёт текст 1:1
@@ -13139,6 +13201,12 @@ class MainWindow(QMainWindow):
         Файл `output/seedance/<ep>_block_N.txt` НЕ перезаписывается —
         результат возвращается в попап через callback, юзер сам решит
         копировать или ещё раз сжимать.
+
+        2026-05-26: ep_id/block_n — опциональные метки, прокидываются в
+        thread (атрибуты `_ep_id` / `_block_n`). Используются
+        `_show_seedance_popup` чтобы при повторном открытии попапа найти
+        живой compress-поток ИМЕННО этого блока и переподключить его на
+        новое окно.
         """
         cli = find_claude_cli()
         if not cli:
@@ -13152,6 +13220,8 @@ class MainWindow(QMainWindow):
             limit_chars=int(limit_chars),
             model="claude-opus-4-7",
             parent=self,
+            ep_id=ep_id,
+            block_n=block_n,
         )
         thread.done.connect(on_done)
         thread.failed.connect(on_failed)
