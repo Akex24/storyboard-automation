@@ -13028,7 +13028,14 @@ class MainWindow(QMainWindow):
                 live_thread.failed.connect(lambda _m: _resub_cleanup())
                 # UI: показать «Сжимаю...» с бегущими точками — ровно
                 # как сразу после нажатия «Сократить».
-                _lock_ui(compress_btn, tr('compressing'))
+                # 2026-05-26: отложено через QTimer(0) — иначе _lock_ui
+                # → _start_btn_animation фиксирует compress_btn.width()
+                # ДО прохода Qt layout'а (на момент сборки окна ширина
+                # аномально большая), и setMinimumWidth растягивает
+                # кнопку на всю строку. После layout'а width() уже
+                # корректный — кнопка остаётся компактной.
+                QTimer.singleShot(
+                    0, lambda: _lock_ui(compress_btn, tr('compressing')))
         except Exception:
             # Любая ошибка re-attach не должна мешать открытию окна.
             traceback.print_exc()
