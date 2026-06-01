@@ -16,7 +16,8 @@
       "finalnyy_raschet": "david",
       "finalnyy_raschet_2": "david",
       "taynyy_investor": "jagger",
-      "taynyy_investor_2": "jagger"
+      "taynyy_investor_2": "jagger",
+      "eshche_odin_muzh": "david"
     }
   },
   "zhenya": {
@@ -48,7 +49,8 @@
       "finalnyy_raschet": "mark",
       "finalnyy_raschet_2": "policeman",
       "audit_na_vyzhivanie": "cole",
-      "taynyy_investor": "kristian"
+      "taynyy_investor": "kristian",
+      "eshche_odin_muzh": "mark"
     }
   },
   "akter_4": {
@@ -68,7 +70,8 @@
       "testovyy_serial": "eve",
       "finalnyy_raschet_2": "laura",
       "audit_na_vyzhivanie": "maren",
-      "taynyy_investor": "linda"
+      "taynyy_investor": "linda",
+      "eshche_odin_muzh": "jennifer"
     }
   },
   "akter_5": {
@@ -77,7 +80,8 @@
       "testovyy_serial": "alex",
       "finalnyy_raschet_2": "detective",
       "testovyy_serial_2": "arthur",
-      "taynyy_investor": "lobby_concierge"
+      "taynyy_investor": "lobby_concierge",
+      "eshche_odin_muzh": "barlow"
     }
   },
   "akter_6": {
@@ -127,7 +131,8 @@
     "roles": {
       "audit_na_vyzhivanie": "donna",
       "taynyy_investor": "sierra",
-      "taynyy_investor_2": "sierra"
+      "taynyy_investor_2": "sierra",
+      "eshche_odin_muzh": "receptionist"
     }
   },
   "maks": {
@@ -159,7 +164,8 @@
   "aleksey": {
     "display_name": "ALeksey",
     "roles": {
-      "taynyy_investor": "concierge"
+      "taynyy_investor": "concierge",
+      "eshche_odin_muzh": "eric"
     }
   }
 }
