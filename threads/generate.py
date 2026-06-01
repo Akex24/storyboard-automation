@@ -266,12 +266,17 @@ class GenerateThread(QThread):
                                  sorted_tags: List[str]) -> str:
         """Строит промпт для realistic-режима (2026-06-01).
 
-        Берёт текущий сториборд-кадр [@]img0 как БАЗУ и просит
-        ре-рендер в ФОТОРЕАЛИЗМ, сохраняя композицию/позы/ракурс/объекты
-        один в один. В отличие от `_build_edit_prompt` — НЕ содержит
-        «pencil sketch / black and white» (наоборот, явно запрещает их).
-        Пользовательской инструкции нет: правка не запрашивается, меняется
-        только стиль рендера.
+        Берёт текущий сториборд-кадр как БАЗУ и просит ре-рендер в
+        ФОТОРЕАЛИЗМ, сохраняя композицию/позы/ракурс/объекты один в один.
+        В отличие от `_build_edit_prompt` — НЕ содержит «pencil sketch /
+        black and white» (наоборот, явно запрещает их). Пользовательской
+        инструкции нет: правка не запрашивается, меняется только стиль рендера.
+
+        2026-06-01 (фикс нумерации): база-эскиз в realistic кладётся
+        ПОСЛЕДНЕЙ в reference_images (см. run()), поэтому её тег —
+        `[@]img(N+1)`, где N = число рефов шота (len(sorted_tags)). Рефы
+        шота остаются на тегах [@]img1..imgN (как в рабочем regen). Раньше
+        база была [@]img0 первой и сдвигала позиции всех рефов на 1.
 
         Легенда рефов собирается так же как в `_build_edit_prompt`: из
         CHARACTERS-блока source-prompt'а извлекаются имена ([@]imgN <Name>),
@@ -301,14 +306,18 @@ class GenerateThread(QThread):
             legend_lines.append(f"{tag} = {label}")
         legend = ("\n".join(legend_lines) if legend_lines
                   else "(no additional references for this shot)")
+        # База-эскиз идёт ПОСЛЕДНЕЙ в reference_images (run()), её позиция =
+        # len(sorted_tags) → тег по позиции = [@]img(N+1). Если рефов шота нет
+        # (sorted_tags пуст), база одна → [@]img1.
+        base_tag = f"[@]img{len(sorted_tags) + 1}"
         return (
-            "[@]img0 is the CURRENT storyboard panel drawn as a pencil "
+            f"{base_tag} is the CURRENT storyboard panel drawn as a pencil "
             "sketch. Your task is to CONVERT THE ENTIRE IMAGE into a single "
             "fully PHOTOREALISTIC cinematic film frame — a real photograph "
             "shot on a camera.\n\n"
             "REFERENCE LEGEND (match these faces/objects when rendering):\n"
             f"{legend}\n\n"
-            "KEEP IDENTICAL to [@]img0 (do NOT add, remove, move or "
+            f"KEEP IDENTICAL to {base_tag} (do NOT add, remove, move or "
             "rearrange anything): composition, framing, camera angle, every "
             "character's pose and position, gaze direction, facial "
             "expression, all objects and their placement, the setting and "
@@ -560,15 +569,25 @@ class GenerateThread(QThread):
                 (shot_hashes, filtered_refs, sorted_tags, _body, prompt_text
                  ) = self._collect_shot_refs(
                     session, apply_panel_filter=False)
-                # Текущий шот ПЕРВЫЙ → ему достанется [@]img0 в payload;
-                # затем рефы по возрастанию N из source-шапки.
-                ref_hashes = [base_hash] + shot_hashes
                 if self.realistic:
                     # 2026-06-01: фотореалистичный ре-рендер — отдельный
                     # билдер без pencil sketch. edit_instruction тут None.
+                    # 2026-06-01 (фикс нумерации): база-эскиз идёт ПОСЛЕДНЕЙ
+                    # в reference_images, а рефы шота остаются на своих
+                    # позициях 0..N-1 (= теги [@]img1..imgN, как в рабочем
+                    # regen). Провайдер маппит реф по ПОЗИЦИИ (первый реф =
+                    # [@]img1), поэтому база получает следующий свободный
+                    # номер [@]img(N+1) — см. _build_realistic_prompt.
+                    # Раньше база стояла ПЕРВОЙ ([@]img0) и сдвигала все
+                    # рефы шота на 1 → эскиз читался как локация, реф
+                    # персонажа уезжал за пределы описанных тегов.
+                    ref_hashes = shot_hashes + [base_hash]
                     clean = self._build_realistic_prompt(
                         prompt_text, filtered_refs, sorted_tags)
                 else:
+                    # EDIT-режим — порядок БЕЗ ИЗМЕНЕНИЙ: текущий шот ПЕРВЫЙ
+                    # ([@]img0 в _build_edit_prompt), затем рефы шапки.
+                    ref_hashes = [base_hash] + shot_hashes
                     clean = self._build_edit_prompt(
                         self.edit_instruction, prompt_text,
                         filtered_refs, sorted_tags)
