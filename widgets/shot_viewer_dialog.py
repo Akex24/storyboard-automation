@@ -181,7 +181,6 @@ class ShotViewerDialog(QDialog):
             + lumz_button_qss('subtle', 'btn_edit')
             + lumz_button_qss('primary', 'btn_regen')
             + lumz_button_qss('secondary', 'btn_realistic')
-            + lumz_button_qss('secondary', 'btn_use')
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -270,8 +269,12 @@ class ShotViewerDialog(QDialog):
         self.btn_edit.setObjectName("btn_edit")
         self.btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_edit.setMinimumWidth(130)
-        self.btn_edit.clicked.connect(
-            lambda: self.edit_requested.emit(self.panel_idx))
+        # 2026-06-01: перед редактированием выделенная версия становится
+        # активной (см. _activate_selected_version) — редактируется именно она.
+        def _on_edit_clicked():
+            self._activate_selected_version()
+            self.edit_requested.emit(self.panel_idx)
+        self.btn_edit.clicked.connect(_on_edit_clicked)
         actions.addWidget(self.btn_edit)
 
         self.btn_regen = QPushButton(tr('shot_viewer_btn_regen'))
@@ -280,7 +283,10 @@ class ShotViewerDialog(QDialog):
         self.btn_regen.setMinimumWidth(155)
         # 2026-05-17: клик «Перегенерировать» закрывает попап (юзер просил —
         # не нужно вручную крестить после клика).
+        # 2026-06-01: перед regen выделенная версия становится активной →
+        # генерация идёт от неё (для regen это смена «текущей» перед новой).
         def _on_regen_clicked():
+            self._activate_selected_version()
             self.regen_requested.emit(self.panel_idx)
             self.close()
         self.btn_regen.clicked.connect(_on_regen_clicked)
@@ -295,32 +301,45 @@ class ShotViewerDialog(QDialog):
         self.btn_realistic.setObjectName("btn_realistic")
         self.btn_realistic.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_realistic.setMinimumWidth(200)
+        # 2026-06-01: перед realistic выделенная версия становится активной →
+        # фотореалистичный ре-рендер идёт именно от неё (база = активный файл).
         def _on_realistic_clicked():
+            self._activate_selected_version()
             self.realistic_requested.emit(self.panel_idx)
             self.close()
         self.btn_realistic.clicked.connect(_on_realistic_clicked)
         actions.addWidget(self.btn_realistic)
 
-        self.btn_use = QPushButton(tr('shot_viewer_btn_use'))
-        self.btn_use.setObjectName("btn_use")
-        self.btn_use.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_use.setMinimumWidth(150)
-        self.btn_use.setEnabled(False)
-        self.btn_use.clicked.connect(self._on_use_clicked)
-        actions.addWidget(self.btn_use)
-
-        # 2026-06-01: хвостовой stretch прижимает 4 кнопки влево (кнопку
-        # «Закрыть» убрали — окно закрывается системным крестиком / Esc).
+        # 2026-06-01: хвостовой stretch прижимает кнопки влево. Кнопку
+        # «Использовать эту» убрали — теперь выделенная версия становится
+        # активной автоматически при действии (edit/regen/realistic) или
+        # при закрытии попапа (см. _activate_selected_version / closeEvent).
         actions.addStretch()
 
         lay.addLayout(actions)
 
-    def _on_use_clicked(self):
-        if self._selected_version <= 0:
-            return
-        if self._selected_version == self._active_version:
-            return
-        self.version_use_requested.emit(self.panel_idx, self._selected_version)
+    def _activate_selected_version(self):
+        """Делает ВЫДЕЛЕННУЮ версию активной (копия vN→активный файл шота +
+        active.txt) через сигнал version_use_requested → MW._on_shot_version_use.
+        Вызывается ПЕРЕД действием (edit/regen/realistic) и из closeEvent.
+        No-op если выделенная и так активна (guard) — лишнего disk-IO нет.
+
+        ⚠️ КРИТИЧНО: version_use_requested ДОЛЖНА оставаться DirectConnection
+        (она же AutoConnection в пределах одного GUI-потока). Тогда
+        _on_shot_version_use (shutil.copy2 + set_active_version) отрабатывает
+        СИНХРОННО и ПОЛНОСТЬЮ до того, как следующий эмит (regen/realistic/
+        edit) стартует GenerateThread, который читает активный файл шота как
+        базу. Если связь перевести в Qt.QueuedConnection — слот отложится в
+        event loop, порядок сломается, и генерация возьмёт СТАРУЮ версию."""
+        if self._selected_version > 0 and self._selected_version != self._active_version:
+            self.version_use_requested.emit(self.panel_idx, self._selected_version)
+
+    def closeEvent(self, ev):
+        """2026-06-01: при закрытии попапа (крестик/Esc) выделенная версия
+        становится активной. Для regen/realistic — no-op: они уже вызвали
+        _activate_selected_version перед self.close() (guard selected==active)."""
+        self._activate_selected_version()
+        super().closeEvent(ev)
 
     def _show_preview(self, image_path: Path):
         """Загружает картинку в большое превью."""
@@ -358,7 +377,8 @@ class ShotViewerDialog(QDialog):
         else:
             self.selected_lbl.setText(
                 tr('shot_viewer_selected_other', n=version_n))
-        self.btn_use.setEnabled(not is_active and version_n > 0)
+        # 2026-06-01: клик по версии — ТОЛЬКО просмотр-превью, без записи на
+        # диск. Активация выделенной происходит при действии или закрытии.
 
     def refresh(self):
         """Перерисовка списка версий и превью. Зовётся:
@@ -412,7 +432,6 @@ class ShotViewerDialog(QDialog):
             self._show_preview(self.active_path if self.active_path.exists()
                                 else Path("/nonexistent"))
             self.selected_lbl.setText(tr('shot_viewer_no_versions'))
-            self.btn_use.setEnabled(False)
             return
 
         self.empty_versions_lbl.hide()
@@ -446,7 +465,6 @@ class ShotViewerDialog(QDialog):
                 tr('shot_viewer_selected_active', n=self._active_version))
         else:
             self.selected_lbl.setText("")
-        self.btn_use.setEnabled(False)
 
     def apply_lang(self):
         self.setWindowTitle(tr('shot_viewer_title', n=self.panel_idx + 1))
