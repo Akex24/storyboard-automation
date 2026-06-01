@@ -118,18 +118,24 @@ class GenerateThread(QThread):
     error    = pyqtSignal(str)
 
     def __init__(self, block_name: str, panel_idx: int,
-                 edit_instruction: Optional[str] = None):
+                 edit_instruction: Optional[str] = None,
+                 realistic: bool = False):
         """
         Если `edit_instruction` задан — режим редактирования:
           • существующий файл шота загружается как ЕДИНСТВЕННЫЙ реф [@]img1
           • генерируется новый промпт «изменить только это, остальное оставить»
           • новая картинка пишется поверх старой
+        Если `realistic=True` (2026-06-01) — режим фотореализма:
+          • та же edit-механика (текущий шот [@]img0 + все рефы шота), но
+            промпт строит `_build_realistic_prompt` (фотореалистичный кадр,
+            без pencil sketch). Пользовательской инструкции нет.
         Иначе — обычная регенерация по промпту блока + рефы локаций/персонажей.
         """
         super().__init__()
         self.block_name       = block_name
         self.panel_idx        = panel_idx
         self.edit_instruction = (edit_instruction or "").strip() or None
+        self.realistic        = bool(realistic)
 
     def _upload_file(self, session: requests.Session, path: Path) -> str:
         """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует
@@ -253,6 +259,66 @@ class GenerateThread(QThread):
             "otherwise\n"
             "Output: single vertical 9:16 panel, same pencil sketch "
             "black and white style as [@]img0."
+        )
+
+    def _build_realistic_prompt(self, source_prompt: str,
+                                 filtered_refs: Dict,
+                                 sorted_tags: List[str]) -> str:
+        """Строит промпт для realistic-режима (2026-06-01).
+
+        Берёт текущий сториборд-кадр [@]img0 как БАЗУ и просит
+        ре-рендер в ФОТОРЕАЛИЗМ, сохраняя композицию/позы/ракурс/объекты
+        один в один. В отличие от `_build_edit_prompt` — НЕ содержит
+        «pencil sketch / black and white» (наоборот, явно запрещает их).
+        Пользовательской инструкции нет: правка не запрашивается, меняется
+        только стиль рендера.
+
+        Легенда рефов собирается так же как в `_build_edit_prompt`: из
+        CHARACTERS-блока source-prompt'а извлекаются имена ([@]imgN <Name>),
+        для локаций/объектов fallback на `Path.stem`. Это нужно чтобы модель
+        сопоставляла лица с фото актёров по имени, а не рисовала случайные.
+        """
+        char_block = ""
+        m_block = re.search(
+            r'CHARACTERS:\s*\n(.+?)(?:\n\s*\n|Panel\s+\d)',
+            source_prompt, re.DOTALL)
+        if m_block:
+            char_block = m_block.group(1)
+        legend_lines = []
+        for tag in sorted_tags:
+            p = filtered_refs.get(tag)
+            if p is None:
+                continue
+            n = tag.split("img")[-1]
+            label = None
+            if char_block:
+                nm = re.search(
+                    rf'\[@\]img{n}\s+([A-Za-z][\w-]*)', char_block)
+                if nm:
+                    label = nm.group(1)
+            if label is None:
+                label = p.stem  # для локации / объектов
+            legend_lines.append(f"{tag} = {label}")
+        legend = ("\n".join(legend_lines) if legend_lines
+                  else "(no additional references for this shot)")
+        return (
+            "[@]img0 is the CURRENT storyboard panel (a pencil sketch). "
+            "Recreate the EXACT SAME scene as a PHOTOREALISTIC cinematic "
+            "film frame.\n\n"
+            "REFERENCE LEGEND (match these faces/objects when rendering):\n"
+            f"{legend}\n\n"
+            "Keep IDENTICAL to [@]img0: composition, framing, camera angle, "
+            "every character's pose and position, gaze direction, facial "
+            "expression, all objects and their placement, the setting and "
+            "background layout. Do NOT add, remove or move anything.\n"
+            "Render the result as: photorealistic, real lighting and "
+            "shadows, natural skin texture, realistic materials and fabrics, "
+            "cinematic color grading, true-to-life depth. Match every "
+            "character's face to their reference image by the name in the "
+            "legend above.\n"
+            "This is NOT a sketch — do NOT output pencil drawing, line art, "
+            "hatching, or black-and-white. Output a single full-color "
+            "photorealistic vertical 9:16 frame."
         )
 
     def _collect_shot_refs(
@@ -451,7 +517,7 @@ class GenerateThread(QThread):
             sorted_tags: List[str] = []
             existing_path = None  # путь к текущему сториборду в edit-mode
 
-            if self.edit_instruction:
+            if self.edit_instruction or self.realistic:
                 # ── EDIT-режим ─────────────────────────────────────────────
                 # Текущий файл шота — БАЗА ([@]img0). К нему теперь добавляем
                 # ВСЕ рефы шота (актёры/объекты/локация) — те же что в regen.
@@ -478,9 +544,15 @@ class GenerateThread(QThread):
                 # Текущий шот ПЕРВЫЙ → ему достанется [@]img0 в payload;
                 # затем рефы по возрастанию N из source-шапки.
                 ref_hashes = [base_hash] + shot_hashes
-                clean = self._build_edit_prompt(
-                    self.edit_instruction, prompt_text,
-                    filtered_refs, sorted_tags)
+                if self.realistic:
+                    # 2026-06-01: фотореалистичный ре-рендер — отдельный
+                    # билдер без pencil sketch. edit_instruction тут None.
+                    clean = self._build_realistic_prompt(
+                        prompt_text, filtered_refs, sorted_tags)
+                else:
+                    clean = self._build_edit_prompt(
+                        self.edit_instruction, prompt_text,
+                        filtered_refs, sorted_tags)
             else:
                 # ── Обычная регенерация ───────────────────────────────────
                 prompt_file = _sa.PROMPTS_DIR / f"{self.block_name}.txt"

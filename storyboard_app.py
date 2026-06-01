@@ -10503,6 +10503,7 @@ class MainWindow(QMainWindow):
             # Edit/regen — те же handlers что hover-overlay имели раньше.
             dlg.edit_requested.connect(self._on_edit_shot)
             dlg.regen_requested.connect(self._on_regen)
+            dlg.realistic_requested.connect(self._on_make_realistic)
             dlg.version_use_requested.connect(self._on_shot_version_use)
             # Регистрируем чтобы можно было закрыть/обновить позже.
             self._open_shot_viewers.append((self.current_block, panel_idx, dlg))
@@ -11530,6 +11531,41 @@ class MainWindow(QMainWindow):
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
         # Показать ⋯ возле блока в списке (идёт регенерация)
+        self._refresh_block_indicator(target_block)
+        self.status_bar.showMessage(tr('status_regenerating', n=panel_idx + 1, block=target_block))
+
+    def _on_make_realistic(self, panel_idx: int):
+        """2026-06-01: «🎬 Сделать реалистичным» из ShotViewerDialog.
+        Фотореалистичный ре-рендер текущей активной версии шота. Логика
+        идентична `_on_regen`, отличие одно — поток стартует с realistic=True
+        (внутри GenerateThread это edit-механика + фотореалистичный промпт).
+        Переиспользует тот же реестр `_active_regens` и те же callback'и
+        `_on_regen_step / _on_regen_done / _on_regen_error`."""
+        if not self.current_block:
+            return
+
+        target_block = self.current_block
+        key = (target_block, panel_idx)
+
+        # Защита от двойного клика (та же блокировка что у обычного regen —
+        # один шот не может генериться дважды параллельно).
+        if key in self._active_regens:
+            self.status_bar.showMessage(tr('status_already_genning', n=panel_idx + 1))
+            return
+
+        card = self.shot_cards[panel_idx]
+        card.set_loading(True)
+
+        thread = GenerateThread(target_block, panel_idx, realistic=True)
+        self._active_regens[key] = thread
+        thread.progress.connect(self.status_bar.showMessage)
+        thread.step.connect(
+            lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
+        thread.finished.connect(
+            lambda elapsed: self._on_regen_done(panel_idx, target_block, elapsed))
+        thread.error.connect(
+            lambda msg: self._on_regen_error(msg, target_block, panel_idx))
+        thread.start()
         self._refresh_block_indicator(target_block)
         self.status_bar.showMessage(tr('status_regenerating', n=panel_idx + 1, block=target_block))
 

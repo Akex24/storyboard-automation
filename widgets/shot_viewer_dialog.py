@@ -129,6 +129,10 @@ class ShotViewerDialog(QDialog):
 
     edit_requested = pyqtSignal(int)
     regen_requested = pyqtSignal(int)
+    # 2026-06-01: «🎬 Сделать реалистичным» — фотореалистичный ре-рендер
+    # текущей активной версии шота (edit-механизм GenerateThread с
+    # realistic=True). Отдельная кнопка рядом с «Перегенерировать».
+    realistic_requested = pyqtSignal(int)
     version_use_requested = pyqtSignal(int, int)
 
     def __init__(self, panel_idx: int, block_name: str,
@@ -176,6 +180,7 @@ class ShotViewerDialog(QDialog):
             " font-style:italic; font-size:12px; }"
             + lumz_button_qss('subtle', 'btn_edit')
             + lumz_button_qss('primary', 'btn_regen')
+            + lumz_button_qss('secondary', 'btn_realistic')
             + lumz_button_qss('secondary', 'btn_use')
             + lumz_button_qss('subtle', 'btn_close')
         )
@@ -278,6 +283,21 @@ class ShotViewerDialog(QDialog):
             self.close()
         self.btn_regen.clicked.connect(_on_regen_clicked)
         actions.addWidget(self.btn_regen)
+
+        # 2026-06-01: «🎬 Сделать реалистичным» — отдельная кнопка рядом с
+        # regen. Берёт текущую активную версию как базу + те же рефы и
+        # ре-рендерит в фотореализм (GenerateThread realistic=True). Как и
+        # regen — закрывает попап после клика (потом перерисуется через
+        # refresh_open_shot_viewer когда новая версия готова).
+        self.btn_realistic = QPushButton(tr('shot_viewer_btn_realistic'))
+        self.btn_realistic.setObjectName("btn_realistic")
+        self.btn_realistic.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_realistic.setMinimumWidth(210)
+        def _on_realistic_clicked():
+            self.realistic_requested.emit(self.panel_idx)
+            self.close()
+        self.btn_realistic.clicked.connect(_on_realistic_clicked)
+        actions.addWidget(self.btn_realistic)
 
         self.btn_use = QPushButton(tr('shot_viewer_btn_use'))
         self.btn_use.setObjectName("btn_use")
