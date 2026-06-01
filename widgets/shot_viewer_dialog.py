@@ -183,6 +183,14 @@ class ShotViewerDialog(QDialog):
             + lumz_button_qss('secondary', 'btn_realistic')
             + lumz_button_qss('secondary', 'btn_use')
             + lumz_button_qss('subtle', 'btn_close')
+            # 2026-06-01: локальный (только этот попап) override padding+шрифта
+            # для ряда из 5 кнопок — чтобы все влезли в одну строку и текст не
+            # обрезался. theme.py НЕ трогаем (общий на всё приложение). Цвета/
+            # варианты/min-height от lumz_button_qss остаются — переопределяем
+            # лишь padding (14px→10px) и font-size (12px→11px).
+            + ("QPushButton#btn_edit, QPushButton#btn_regen,"
+               " QPushButton#btn_realistic, QPushButton#btn_use,"
+               " QPushButton#btn_close { padding:5px 10px; font-size:11px; }")
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -257,17 +265,20 @@ class ShotViewerDialog(QDialog):
 
         # Действия
         actions = QHBoxLayout()
-        actions.setSpacing(10)
+        actions.setSpacing(8)
 
         # 2026-05-07 (UI fix): кнопки имеют sizeHint по тексту, и при
         # длинных русских надписях («Перегенерировать», «Использовать эту»)
         # обрезаются в узком окне. Ставим minimumWidth по чуть-чуть
         # больше fontMetrics, плюс делаем общий min width диалога
-        # достаточным чтобы помещались все 4 кнопки в одну строку.
+        # достаточным чтобы помещались все 5 кнопок в одну строку.
+        # 2026-06-01: после добавления «Сделать реалистичным» (5-я кнопка)
+        # ужали minimumWidth + padding/шрифт (см. qss-override выше), чтобы
+        # ряд влезал по ширине и тексты не наезжали.
         self.btn_edit = QPushButton(tr('shot_viewer_btn_edit'))
         self.btn_edit.setObjectName("btn_edit")
         self.btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_edit.setMinimumWidth(150)
+        self.btn_edit.setMinimumWidth(115)
         self.btn_edit.clicked.connect(
             lambda: self.edit_requested.emit(self.panel_idx))
         actions.addWidget(self.btn_edit)
@@ -275,7 +286,7 @@ class ShotViewerDialog(QDialog):
         self.btn_regen = QPushButton(tr('shot_viewer_btn_regen'))
         self.btn_regen.setObjectName("btn_regen")
         self.btn_regen.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_regen.setMinimumWidth(170)
+        self.btn_regen.setMinimumWidth(135)
         # 2026-05-17: клик «Перегенерировать» закрывает попап (юзер просил —
         # не нужно вручную крестить после клика).
         def _on_regen_clicked():
@@ -292,7 +303,7 @@ class ShotViewerDialog(QDialog):
         self.btn_realistic = QPushButton(tr('shot_viewer_btn_realistic'))
         self.btn_realistic.setObjectName("btn_realistic")
         self.btn_realistic.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_realistic.setMinimumWidth(210)
+        self.btn_realistic.setMinimumWidth(170)
         def _on_realistic_clicked():
             self.realistic_requested.emit(self.panel_idx)
             self.close()
@@ -302,7 +313,7 @@ class ShotViewerDialog(QDialog):
         self.btn_use = QPushButton(tr('shot_viewer_btn_use'))
         self.btn_use.setObjectName("btn_use")
         self.btn_use.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_use.setMinimumWidth(180)
+        self.btn_use.setMinimumWidth(130)
         self.btn_use.setEnabled(False)
         self.btn_use.clicked.connect(self._on_use_clicked)
         actions.addWidget(self.btn_use)
@@ -312,7 +323,7 @@ class ShotViewerDialog(QDialog):
         self.btn_close = QPushButton(tr('shot_viewer_btn_close'))
         self.btn_close.setObjectName("btn_close")
         self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_close.setMinimumWidth(110)
+        self.btn_close.setMinimumWidth(80)
         self.btn_close.clicked.connect(self.close)
         actions.addWidget(self.btn_close)
 
