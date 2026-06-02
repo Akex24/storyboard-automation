@@ -132,6 +132,11 @@ class ShotCard(QFrame):
     # историей версий + большим превью). Edit/regen теперь живут внутри
     # этого попапа, в hover-overlay карточки иконки убраны.
     image_clicked = pyqtSignal(int)
+    # 2026-06-02: копирование активной картинки шота между шотами/блоками
+    # через угловые кнопки overlay. copy → активные байты в буфер MainWindow,
+    # paste → буфер добавляется новой версией в шот-назначение.
+    copy_requested  = pyqtSignal(int)
+    paste_requested = pyqtSignal(int)
     # Ширина подобрана так, чтобы ряд из 4 карточек занимал РОВНО ширину
     # кнопки «Сохранить стриборд как PNG» (которая стретчится на всю ширину
     # контентной области): 4×(CARD_W+20 padding QFrame) + 3×12 spacing = 944,
@@ -220,6 +225,59 @@ class ShotCard(QFrame):
         hint_lbl.setObjectName("shot-overlay-hint")
         hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sh.addWidget(hint_lbl, stretch=1)
+
+        # 2026-06-02: угловые кнопки Copy/Paste (правый верхний угол overlay).
+        # Дети regen_overlay → появляются/прячутся вместе с overlay по hover,
+        # т.е. ТОЛЬКО на заполненной карточке (overlay подавлен для blank и при
+        # loading — eventFilter/set_loading/set_shot_info). Абсолютный
+        # setGeometry (не layout) — как у strip, чтобы не было lazy-layout
+        # «прыжка» при первом fade_in.
+        #
+        # QPushButton НАТИВНО потребляет клик и НЕ пропускает его к родителю
+        # (img_container._img_click), поэтому клик по кнопке НЕ открывает попап
+        # ShotViewerDialog — отдельный accept() не нужен.
+        #
+        # Иконки — Lucide SVG через _sa.get_icon (ленивый импорт из
+        # storyboard_app, чтобы не плодить circular import в этом модуле).
+        BTN = 28
+        self.btn_copy = QPushButton(self.regen_overlay)
+        self.btn_copy.setObjectName("shot-corner-btn")
+        self.btn_copy.setGeometry(self.CARD_W - BTN - 6, 6, BTN, BTN)
+        self.btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy.setToolTip(tr('shot_copy'))
+        self.btn_paste = QPushButton(self.regen_overlay)
+        self.btn_paste.setObjectName("shot-corner-btn")
+        self.btn_paste.setGeometry(self.CARD_W - 2 * BTN - 12, 6, BTN, BTN)
+        self.btn_paste.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_paste.setToolTip(tr('shot_paste'))
+        self.btn_paste.setEnabled(False)  # активна когда буфер не пуст
+        try:
+            self.btn_copy.setIcon(_sa.get_icon('copy'))
+            self.btn_copy.setIconSize(QSize(16, 16))
+            self.btn_paste.setIcon(_sa.get_icon('clipboard-paste'))
+            self.btn_paste.setIconSize(QSize(16, 16))
+        except Exception:
+            traceback.print_exc()
+        # Инлайн-стиль (НЕ через theme.py — общий не ломаем): полупрозрачный
+        # тёмный фон чтобы иконка читалась поверх светлой картинки, скругление,
+        # hover — фиолетовый акцент поярче, disabled («Вставить» без буфера) —
+        # приглушённый фон, видно что неактивна.
+        corner_qss = (
+            "QPushButton#shot-corner-btn {"
+            " background:rgba(10,10,13,0.55); border:none; border-radius:6px; }"
+            "QPushButton#shot-corner-btn:hover {"
+            " background:rgba(110,76,196,0.85); }"
+            "QPushButton#shot-corner-btn:pressed {"
+            " background:rgba(90,60,170,0.95); }"
+            "QPushButton#shot-corner-btn:disabled {"
+            " background:rgba(10,10,13,0.20); }"
+        )
+        self.btn_copy.setStyleSheet(corner_qss)
+        self.btn_paste.setStyleSheet(corner_qss)
+        self.btn_copy.clicked.connect(
+            lambda: self.copy_requested.emit(self.panel_idx))
+        self.btn_paste.clicked.connect(
+            lambda: self.paste_requested.emit(self.panel_idx))
 
         # Скрытые legacy-объекты для обратной совместимости с set_loading
         # / тестами / проверками. Сигналы edit_requested/regen_requested
@@ -438,6 +496,15 @@ class ShotCard(QFrame):
             self.progress_bar.hide()
             self.step_label.hide()
             self.progress_bar.setValue(0)
+
+    def set_paste_available(self, available: bool):
+        """2026-06-02: MainWindow зовёт это у всех карточек когда в буфере
+        появляется скопированная картинка — кнопка «Вставить» становится
+        активной. До первого Copy буфер пуст → кнопка disabled."""
+        try:
+            self.btn_paste.setEnabled(bool(available))
+        except Exception:
+            pass
 
 
 # ─── Превью со скруглёнными верхними углами ──────────────────────

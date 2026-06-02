@@ -4220,6 +4220,43 @@ def set_active_version(history_dir: Path, n: int) -> None:
         pass
 
 
+def add_shot_version_from_bytes(block_name: str, shot_idx: int,
+                                image_bytes: bytes) -> int:
+    """2026-06-02: добавляет картинку (bytes) НОВОЙ версией в историю шота и
+    делает её активной. Используется кнопкой «Вставить» (копирование шотов
+    между блоками). Возвращает номер новой версии (vN).
+
+    Логика — копия save-паттерна из GenerateThread (threads/generate.py):
+      • если history пуста, а активный файл шота есть — мигрируем его в v1
+        (чтобы не потерять текущую активную версию);
+      • пишем картинку в новый vN.jpg (ресайз 384×688, как у генерации);
+      • копируем vN.jpg в активный файл шота ({block}_shot{N}.jpg);
+      • помечаем active.txt = N.
+    Старые версии не трогаются.
+
+    Cross-platform: только pathlib.Path + PIL + shutil + io.BytesIO,
+    без subprocess/shell. GenerateThread НЕ трогается (осознанное
+    дублирование, чтобы не рефакторить рабочий генератор)."""
+    history_dir = shot_history_dir(block_name, shot_idx)
+    history_dir.mkdir(parents=True, exist_ok=True)
+    shot_file = shot_path(block_name, shot_idx)
+    if not list_shot_versions(history_dir) and shot_file.exists():
+        try:
+            shutil.copy2(str(shot_file), str(history_dir / "v1.jpg"))
+        except Exception:
+            pass  # миграция фейл — продолжаем
+    next_n = next_history_index(history_dir)
+    new_version_path = history_dir / f"v{next_n}.jpg"
+    with PILImage.open(io.BytesIO(image_bytes)) as img:
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        img_small = img.resize((384, 688), PILImage.Resampling.LANCZOS)
+        img_small.save(str(new_version_path), 'JPEG', quality=85, optimize=True)
+    shutil.copy2(str(new_version_path), str(shot_file))
+    set_active_version(history_dir, next_n)
+    return next_n
+
+
 def format_gen_duration(seconds: int) -> str:
     """Форматирует длительность генерации в человекочитаемый вид.
 
@@ -5177,6 +5214,10 @@ class MainWindow(QMainWindow):
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
         self._active_regens: Dict[tuple, GenerateThread] = {}
+        # 2026-06-02: буфер копирования картинки шота между шотами/блоками.
+        # Храним БАЙТЫ (снимок активной картинки на момент Copy), не путь —
+        # чтобы вставка не зависела от последующих изменений источника.
+        self._shot_clipboard: Optional[bytes] = None
         # 2026-05-07: глобальный реестр параллельных генераций
         # location/object из чата эпизода (`AutonomousGenThread`). Ключ —
         # f"{ep_id}:{gen_type}:{name}". Значение — dict с полями:
@@ -7172,6 +7213,9 @@ class MainWindow(QMainWindow):
             # 2026-05-07: клик по картинке → попап ShotViewerDialog с
             # большим превью + историей версий + edit/regen внутри.
             card.image_clicked.connect(self._on_shot_image_clicked)
+            # 2026-06-02: копирование активной картинки между шотами/блоками.
+            card.copy_requested.connect(self._on_copy_shot)
+            card.paste_requested.connect(self._on_paste_shot)
             self.shot_cards.append(card)
             self.cards_row.addWidget(card)
         self.cards_row.addStretch()
@@ -10577,6 +10621,55 @@ class MainWindow(QMainWindow):
         except Exception:
             import traceback
             traceback.print_exc()
+
+    def _on_copy_shot(self, panel_idx: int):
+        """2026-06-02: «Копировать» в углу карточки. Кладём БАЙТЫ активной
+        картинки шота в буфер MainWindow (снимок), включаем «Вставить» у всех
+        карточек. Копируется только активная картинка."""
+        if not self.current_block:
+            return
+        src = shot_path(self.current_block, panel_idx)
+        if not src.exists():
+            self.status_bar.showMessage(tr('status_no_shots'))
+            return
+        try:
+            self._shot_clipboard = src.read_bytes()
+        except Exception:
+            traceback.print_exc()
+            return
+        for c in self.shot_cards:
+            c.set_paste_available(True)
+        self.status_bar.showMessage(tr('status_shot_copied', n=panel_idx + 1))
+
+    def _on_paste_shot(self, panel_idx: int):
+        """2026-06-02: «Вставить» в углу карточки. Картинка из буфера
+        добавляется НОВОЙ версией в историю шота-назначения и становится
+        активной (старые версии сохраняются). Источник мог быть в другом
+        блоке — буфер хранит байты, привязки к блоку нет."""
+        if not self.current_block:
+            return
+        if not self._shot_clipboard:
+            self.status_bar.showMessage(tr('status_clipboard_empty'))
+            return
+        try:
+            add_shot_version_from_bytes(
+                self.current_block, panel_idx, self._shot_clipboard)
+        except Exception:
+            traceback.print_exc()
+            self.status_bar.showMessage(tr('status_clipboard_empty'))
+            return
+        # Перерисовываем карточку грида новой активной картинкой.
+        try:
+            active = shot_path(self.current_block, panel_idx)
+            if 0 <= panel_idx < len(self.shot_cards):
+                self.shot_cards[panel_idx].set_image(
+                    active.read_bytes() if active.exists() else None)
+        except Exception:
+            traceback.print_exc()
+        # Индикатор блока (шот стал «готовым») + попап если открыт.
+        self._refresh_block_indicator(self.current_block)
+        self.refresh_open_shot_viewer(self.current_block, panel_idx)
+        self.status_bar.showMessage(tr('status_shot_pasted', n=panel_idx + 1))
 
     def _on_edit_shot(self, panel_idx: int):
         """2026-05-06: Поведение полностью перепроектировано.
