@@ -519,7 +519,6 @@ class GridDialog(QDialog):
         # оригинала (= координаты сцены). Этап 6 сделает их movable/resizable,
         # Этап 7 впечатает по pos/scale. Single source of truth — сами элементы.
         self._grid_items = []   # list[QGraphicsPixmapItem] — наложенные сетки
-        self._face_boxes = []   # list[QGraphicsRectItem] — рамки подсветки лиц
 
         # ── Хинт-строка: подсказка управления + фидбэк заглушек ──
         self.hint_lbl = QLabel(tr('grid_view_hint'))
@@ -621,24 +620,23 @@ class GridDialog(QDialog):
 
     # ── Наложение сеток (Этап 5) ────────────────────────────────────────
     def _clear_overlays(self):
-        """Убрать прошлые наложенные сетки и рамки лиц из сцены."""
+        """Убрать прошлые наложенные сетки из сцены."""
         if self.view is None:
             return
         scene = self.view._scene
         for it in self._grid_items:
             it._on_delete = None   # разрываем item→dialog перед удалением
-        for it in self._grid_items + self._face_boxes:
+        for it in self._grid_items:
             try:
                 scene.removeItem(it)
             except Exception:
                 pass
         self._grid_items = []
-        self._face_boxes = []
 
     def _on_apply(self):
         """«🔲 Наложить»: найти лица (YuNet) → на каждое положить активную
-        сетку с запасом FACE_GRID_SCALE + рамка подсветки. Повторный клик
-        очищает прошлые наложения и кладёт заново."""
+        сетку с запасом FACE_GRID_SCALE. Повторный клик очищает прошлые
+        наложения и кладёт заново."""
         if self.view is None:
             return
         grid_path = library.get_active_grid()
@@ -664,15 +662,7 @@ class GridDialog(QDialog):
 
         scene = self.view._scene
         grid_pix = QPixmap(str(grid_path))
-        pen = QPen(QColor(228, 52, 74, 180))   # полупрозрачная рамка лица
-        pen.setWidth(2)
-        pen.setCosmetic(True)                  # толщина не зависит от зума
         for (x, y, w, h) in boxes:
-            # Рамка подсветки найденного лица (для оценки детекции глазами).
-            rect = scene.addRect(float(x), float(y), float(w), float(h), pen)
-            rect.setZValue(20)
-            self._face_boxes.append(rect)
-
             if grid_pix.isNull():
                 continue
             # Сетка с запасом: расширяем бокс на FACE_GRID_SCALE, вписываем
