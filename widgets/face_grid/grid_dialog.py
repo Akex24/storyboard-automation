@@ -29,6 +29,7 @@ Cross-platform: только PyQt6 + QPixmap(str(path)). Без subprocess/shell
 
 from __future__ import annotations
 
+import json
 import math
 import traceback
 from pathlib import Path
@@ -57,6 +58,13 @@ FACE_GRID_SCALE = 1.4
 # порог «не меньше ~16 px по большей стороне» считается динамически в ручке.
 MIN_GRID_SCALE = 0.05
 MAX_GRID_SCALE = 20.0
+
+# 2026-06-02 (Этап 8): персист состояния наложенных сеток рядом со сторибордом
+# в .cache/_block_view/<ep>_block<N>/grids.json (имя PNG + pos + scale). Имя
+# файла продублировано литералом в storyboard_app._on_block_refs_btn (keep-
+# условие cleanup'а) — при переименовании менять В ОБОИХ местах.
+GRIDS_JSON_NAME = "grids.json"
+GRIDS_JSON_SCHEMA = 1
 
 
 class StoryboardView(QGraphicsView):
@@ -557,6 +565,9 @@ class GridDialog(QDialog):
 
         # Первичное наполнение ленты сеток из библиотеки.
         self._refresh_grids()
+        # Восстановить ранее сохранённые сетки (Этап 8) — живыми GridItem
+        # поверх ЧИСТОЙ базы (stitch пересобрал jpg до попапа → задвоения нет).
+        self._restore_grids()
 
     # ── Лента сеток (Этап 4) ────────────────────────────────────────────
     def _refresh_grids(self):
@@ -750,6 +761,124 @@ class GridDialog(QDialog):
             return
         super().keyPressEvent(e)
 
+    # ── Персист состояния сеток (Этап 8) ────────────────────────────────
+    def _restore_grids(self):
+        """Восстановить ранее сохранённые сетки живыми GridItem поверх ЧИСТОГО
+        сториборда. Источник — dest_dir/grids.json. PNG резолвится по ИМЕНИ
+        через library (переживает смену машины). Нет PNG в библиотеке / битый
+        pixmap → пропуск + счётчик, не падаем. Отсутствующий/битый json →
+        старт с чистого листа. board_w/h → sanity-check (хинт при расхождении)."""
+        if self.view is None:
+            return
+        path = self.dest_dir / GRIDS_JSON_NAME
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            traceback.print_exc()
+            return
+        grids = data.get("grids") if isinstance(data, dict) else None
+        if not isinstance(grids, list) or not grids:
+            return
+
+        scene = self.view._scene
+        restored = 0
+        skipped = 0
+        for g in grids:
+            if not isinstance(g, dict):
+                skipped += 1
+                continue
+            src = library.get_grid_path(g.get("png") or "")
+            if src is None:                 # PNG удалён из библиотеки
+                skipped += 1
+                continue
+            pix = QPixmap(str(src))
+            if pix.isNull():
+                skipped += 1
+                continue
+            try:
+                cx = float(g.get("cx"))
+                cy = float(g.get("cy"))
+                s = float(g.get("scale", 1.0))
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+            item = GridItem(pix, on_delete=self._remove_grid_item, src_path=src)
+            item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+            item.setScale(s)
+            item.setPos(cx, cy)
+            item.setZValue(30)
+            scene.addItem(item)
+            self._grid_items.append(item)
+            restored += 1
+
+        if not restored and not skipped:
+            return
+        # Sanity-check размера листа: координаты абсолютные, при смене размера
+        # (шот пересоздан в другом разрешении) могли уехать — восстанавливаем,
+        # но предупреждаем. Приоритет хинта: размер > пропуски > обычный.
+        size_warn = False
+        try:
+            bw, bh = data.get("board_w"), data.get("board_h")
+            rect = scene.sceneRect()
+            if (bw and bh and (int(bw) != int(round(rect.width()))
+                               or int(bh) != int(round(rect.height())))):
+                size_warn = True
+        except Exception:
+            pass
+
+        if size_warn:
+            self.hint_lbl.setText(tr('grid_restored_resized', n=restored))
+        elif skipped:
+            self.hint_lbl.setText(
+                tr('grid_restored_skipped', n=restored, m=skipped))
+        else:
+            self.hint_lbl.setText(tr('grid_restored', n=restored))
+
+    def _write_grids_json(self):
+        """Сохранить состояние наложенных сеток в dest_dir/grids.json (Этап 8):
+        имя PNG (не путь) + центр (пиксели оригинала = pos) + scale; board_w/h
+        для sanity-check. Не-фатально: ошибка json НЕ отменяет уже записанный
+        jpg (лог в stderr). Только сетки с валидным _src_path (как в композите)."""
+        if self.view is None:
+            return
+        rect = self.view._scene.sceneRect()
+        grids = []
+        for item in self._grid_items:
+            src = getattr(item, "_src_path", None)
+            if not src:
+                continue
+            pos = item.pos()
+            grids.append({
+                "png": Path(src).name,
+                "cx": round(pos.x(), 2),
+                "cy": round(pos.y(), 2),
+                "scale": round(item.scale(), 4),
+            })
+        data = {
+            "schema": GRIDS_JSON_SCHEMA,
+            "board_w": int(round(rect.width())),
+            "board_h": int(round(rect.height())),
+            "grids": grids,
+        }
+        try:
+            (self.dest_dir / GRIDS_JSON_NAME).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except Exception:
+            traceback.print_exc()
+
+    def _delete_grids_json(self):
+        """Удалить grids.json — ноль сеток при сохранении, чтобы повторное
+        открытие не восстановило устаревшее состояние. Не падаем если нет."""
+        try:
+            p = self.dest_dir / GRIDS_JSON_NAME
+            if p.exists():
+                p.unlink()
+        except Exception:
+            traceback.print_exc()
+
     # ── Сохранение композита в рефы блока (Этап 7) ──────────────────────
     def _on_save(self):
         """«💾 Сохранить в рефы блока»: впечатать наложенные сетки в чистый
@@ -768,6 +897,7 @@ class GridDialog(QDialog):
             self.reject()
             return
         if not self._grid_items:
+            self._delete_grids_json()   # ноль сеток → убрать устаревшее состояние
             self.hint_lbl.setText(tr('grid_save_empty'))
             self.accept()
             return
@@ -802,6 +932,9 @@ class GridDialog(QDialog):
             self.hint_lbl.setText(tr('grid_save_error', err=str(e)))
             QMessageBox.warning(self, tr('grid_btn_save'), str(e))
             return          # НЕ закрываем — юзер не теряет наложенные сетки
+        # Композит записан → персист состояния (Этап 8). Отдельный не-фатальный
+        # путь: упавший json не маскирует успешно сохранённый jpg.
+        self._write_grids_json()
         self.hint_lbl.setText(tr('grid_saved', n=painted))
         self.accept()
 

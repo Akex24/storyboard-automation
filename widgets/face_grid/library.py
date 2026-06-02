@@ -146,6 +146,18 @@ def get_active_grid() -> Optional[Path]:
     return None
 
 
+def get_grid_path(name: Union[str, Path]) -> Optional[Path]:
+    """Путь к сетке по ИМЕНИ файла, если она реально лежит в библиотеке
+    (иначе None). Для восстановления состояния (Этап 8): grids.json хранит
+    имя PNG, путь выводится из grids_dir() — переживает смену машины/папки.
+    Зеркало валидации get_active_grid (существование + .png)."""
+    fname = Path(name).name
+    p = grids_dir() / fname
+    if p.exists() and p.suffix.lower() == ".png":
+        return p
+    return None
+
+
 def set_active_grid(name_or_path: Union[str, Path]) -> None:
     """Делает сетку активной (хранит её ИМЯ в QSettings). Принимает имя файла
     или путь; берёт basename. Без проверки существования — UI выбирает из

@@ -12165,9 +12165,15 @@ class MainWindow(QMainWindow):
             try:
                 if dest_dir.exists():
                     for item in dest_dir.iterdir():
+                        # 2026-06-02 (Этап 8): grids.json — состояние наложенных
+                        # сеток лица (имя PNG + pos + scale), пишется попапом
+                        # GridDialog (widgets/face_grid, const GRIDS_JSON_NAME)
+                        # рядом со сторибордом. Сохраняем при cleanup'е — иначе
+                        # повторное открытие попапа потеряет расстановку сеток.
                         if item.is_file() and (
                                 storyboard_pattern.match(item.name)
-                                or seedance_artifact_pattern.match(item.name)):
+                                or seedance_artifact_pattern.match(item.name)
+                                or item.name == "grids.json"):
                             continue
                         if item.is_dir():
                             shutil.rmtree(item)
