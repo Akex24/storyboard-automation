@@ -67,7 +67,9 @@ jobs:
           else
             # workflow_dispatch: релиза нет — берём версию из version.json,
             # тег помечаем как manual (в Release ничего не публикуется).
-            VERSION=$(python -c "import json;print(json.load(open('version.json')).get('app_version','0.0.0'))")
+            # encoding='utf-8' ОБЯЗАТЕЛЕН: на Windows open() по умолчанию cp1252
+            # и падает UnicodeDecodeError на не-ASCII байтах в version.json.
+            VERSION=$(python -c "import json;print(json.load(open('version.json', encoding='utf-8')).get('app_version','0.0.0'))")
             TAG="manual"
           fi
           echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
