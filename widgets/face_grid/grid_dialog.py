@@ -29,15 +29,16 @@ Cross-platform: только PyQt6 + QPixmap(str(path)). Без subprocess/shell
 
 from __future__ import annotations
 
+import math
 import traceback
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QBrush, QPainterPath
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QGraphicsItem, QStyle,
+    QGraphicsItem, QGraphicsRectItem, QStyle,
     QScrollArea, QWidget, QFrame, QFileDialog, QMessageBox,
 )
 
@@ -50,6 +51,12 @@ from widgets.face_grid import library
 # подбородок/уши за рамкой). 1.4 = +40% — сетка центрируется на лице и
 # покрывает его с запасом. Подбирается на глаз — менять ОДНОЙ цифрой здесь.
 FACE_GRID_SCALE = 1.4
+
+# 2026-06-02 (Этап 6b): пределы scale сетки при ручном ресайзе за угол.
+# Абсолютные множители относительно натурального размера PNG. Доп. нижний
+# порог «не меньше ~16 px по большей стороне» считается динамически в ручке.
+MIN_GRID_SCALE = 0.05
+MAX_GRID_SCALE = 20.0
 
 
 class StoryboardView(QGraphicsView):
@@ -132,7 +139,9 @@ class StoryboardView(QGraphicsView):
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             item = self.itemAt(e.position().toPoint())
-            if isinstance(item, GridItem):
+            # GridItem → двигаем сетку; _ResizeHandle → ресайз (ручка сама
+            # ловит drag). И то и другое = NoDrag (вид не панорамим).
+            if isinstance(item, (GridItem, _ResizeHandle)):
                 self.setDragMode(QGraphicsView.DragMode.NoDrag)
             else:
                 self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -143,15 +152,70 @@ class StoryboardView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
 
-class GridItem(QGraphicsPixmapItem):
-    """Наложенная сетка на лице (Этап 6a). Перетаскиваемая (ItemIsMovable),
-    с hover-подсветкой рамкой.
+class _ResizeHandle(QGraphicsRectItem):
+    """Угловая ручка ресайза (Этап 6b) — дочерний item у GridItem в правом-
+    нижнем углу. ItemIgnoresTransformations → постоянный экранный размер (~16px),
+    не растёт при зуме вида / scale родителя. Тянем ручку → пересчитываем
+    scale родителя ОТ ЦЕНТРА (pos родителя не трогаем → центр на лице стоит).
+    Не движется сама и не двигает тело сетки — только меняет scale.
+    """
 
-    Лежит в ТОЙ ЖЕ сцене что и сториборд → зум колесом и панорама вида двигают
-    её ВМЕСТЕ с картинкой (сетка приклеена к лицу). Перетаскивание мышью меняет
-    только её pos внутри сцены (в координатах = пикселях оригинала) — это и
-    есть ручная корректировка положения. Этапы 6b/6c добавят сюда ручку
-    ресайза и крестик удаления.
+    SIZE = 16     # экранный размер ручки (px)
+    INSET = 3     # отступ от угла ВНУТРЬ сетки (px)
+
+    def __init__(self, parent):
+        # Якорь ручки (pos) ставится в правый-нижний угол сетки (pw/2, ph/2)
+        # в GridItem. Сам прямоугольник рисуем в ВЕРХНЕ-ЛЕВОМ квадранте от
+        # якоря (отрицательные координаты) + INSET → ручка целиком ВНУТРИ
+        # квадрата сетки у внутреннего угла. Координаты прямоугольника — в
+        # ЭКРАННЫХ px (ItemIgnoresTransformations), поэтому отступ не уедет
+        # при зуме. Логика ресайза (от центра по scenePos) этим не затронута.
+        super().__init__(-(self.SIZE + self.INSET), -(self.SIZE + self.INSET),
+                         self.SIZE, self.SIZE, parent)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setBrush(QBrush(QColor(110, 76, 196)))
+        pen = QPen(QColor(255, 255, 255))
+        pen.setWidth(1)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        self.setZValue(40)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+
+    def mousePressEvent(self, e):
+        p = self.parentItem()
+        if p is not None:
+            p.setSelected(True)   # держим ручку видимой во время ресайза
+        e.accept()
+
+    def mouseMoveEvent(self, e):
+        p = self.parentItem()
+        if p is None:
+            return
+        center = p.pos()          # scene-координаты центра (offset центрирует origin)
+        cur = e.scenePos()
+        dist = math.hypot(cur.x() - center.x(), cur.y() - center.y())
+        hd = getattr(p, "_half_diag", 0.0) or 1.0
+        s = dist / hd
+        pm = p.pixmap()
+        mx = max(pm.width(), pm.height()) or 1
+        s_min = max(MIN_GRID_SCALE, 16.0 / mx)   # не мельче ~16px по большей стороне
+        s = max(s_min, min(s, MAX_GRID_SCALE))
+        p.setScale(s)             # pos НЕ трогаем → центр не уезжает
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        e.accept()
+
+
+class GridItem(QGraphicsPixmapItem):
+    """Наложенная сетка на лице. Перетаскиваемая (6a) + ручка ресайза в углу (6b).
+
+    Само-центрирование: origin = центр pixmap (setOffset), поэтому setScale
+    масштабирует ВОКРУГ ЦЕНТРА (центр на лице не уезжает ни при drag, ни при
+    ресайзе). Лежит в той же сцене что сториборд → зум/панорама вида двигают
+    её вместе с картинкой. Координаты pos/scale — в пикселях оригинала (для
+    Этапа 7 композита).
     """
 
     def __init__(self, pixmap, parent=None):
@@ -162,15 +226,48 @@ class GridItem(QGraphicsPixmapItem):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._hover = False
 
+        pm = self.pixmap()
+        pw, ph = pm.width(), pm.height()
+        # Центр pixmap = origin (0,0) → setScale вокруг центра.
+        self.setOffset(-pw / 2.0, -ph / 2.0)
+        self._half_diag = math.hypot(pw / 2.0, ph / 2.0)
+
+        # Ручка ресайза в правом-нижнем углу (в local-координатах = bottomRight).
+        # При scale родителя её local-pos неизменна, а scene-позиция следует за
+        # углом автоматически (ItemIgnoresTransformations держит размер на экране).
+        self._handle = _ResizeHandle(self)
+        self._handle.setPos(pw / 2.0, ph / 2.0)
+        self._handle.setVisible(False)
+
+    def shape(self):
+        """2026-06-02 (6b-fix): хитбокс = ВЕСЬ прямоугольник pixmap, а не контур
+        по альфа-каналу (дефолт QGraphicsPixmapItem). Иначе hover/drag сетки
+        ловятся только на непрозрачных линиях PNG, а в прозрачных клетках
+        событие проваливается на фон. boundingRect() уже учитывает setOffset
+        (центрирование), поэтому хитбокс совпадает с видимым квадратом 1:1."""
+        path = QPainterPath()
+        path.addRect(self.boundingRect())
+        return path
+
+    def _sync_handle(self):
+        self._handle.setVisible(self._hover or self.isSelected())
+
     def hoverEnterEvent(self, e):
         self._hover = True
         self.update()
+        self._sync_handle()
         super().hoverEnterEvent(e)
 
     def hoverLeaveEvent(self, e):
         self._hover = False
         self.update()
+        self._sync_handle()
         super().hoverLeaveEvent(e)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            self._sync_handle()
+        return super().itemChange(change, value)
 
     def paint(self, painter, option, widget=None):
         # Гасим дефолтную пунктирную рамку выделения Qt — рисуем свою.
@@ -508,9 +605,8 @@ class GridDialog(QDialog):
             if pw <= 0 or ph <= 0:
                 continue
             s = max(tw / pw, th / ph)
-            item = GridItem(grid_pix)   # перетаскиваемая + hover-подсветка (6a)
+            item = GridItem(grid_pix)   # drag (6a) + ручка ресайза (6b); сам центрирует
             item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
-            item.setOffset(-pw / 2.0, -ph / 2.0)   # origin = центр pixmap
             item.setScale(s)
             item.setPos(cx, cy)                    # центр сетки = центр лица
             item.setZValue(30)                     # поверх рамок
