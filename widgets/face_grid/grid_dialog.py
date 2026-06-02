@@ -29,19 +29,26 @@ Cross-platform: только PyQt6 + QPixmap(str(path)). Без subprocess/shell
 
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QPixmap, QPainter
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QApplication, QGraphicsView, QGraphicsScene,
+    QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QScrollArea, QWidget, QFrame, QFileDialog, QMessageBox,
 )
 
 from i18n import tr
 from views.theme import lumz_button_qss
 from widgets.face_grid import library
+
+# 2026-06-02 (Этап 5): запас наложения сетки относительно бокса лица YuNet.
+# YuNet даёт бокс по «ядру» лица (глаза-нос-рот), он уже самого лица (лоб/
+# подбородок/уши за рамкой). 1.4 = +40% — сетка центрируется на лице и
+# покрывает его с запасом. Подбирается на глаз — менять ОДНОЙ цифрой здесь.
+FACE_GRID_SCALE = 1.4
 
 
 class StoryboardView(QGraphicsView):
@@ -274,6 +281,11 @@ class GridDialog(QDialog):
         grids_row.addWidget(self._grids_scroll, stretch=1)
         lay.addLayout(grids_row)
         self._thumbs = []
+        # Наложенные элементы поверх сцены (Этап 5). Координаты — в пикселях
+        # оригинала (= координаты сцены). Этап 6 сделает их movable/resizable,
+        # Этап 7 впечатает по pos/scale. Single source of truth — сами элементы.
+        self._grid_items = []   # list[QGraphicsPixmapItem] — наложенные сетки
+        self._face_boxes = []   # list[QGraphicsRectItem] — рамки подсветки лиц
 
         # ── Хинт-строка: подсказка управления + фидбэк заглушек ──
         self.hint_lbl = QLabel(tr('grid_view_hint'))
@@ -287,7 +299,7 @@ class GridDialog(QDialog):
         self.btn_apply = QPushButton(tr('grid_btn_apply'))
         self.btn_apply.setObjectName("grid_btn_apply")
         self.btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_apply.clicked.connect(self._stub)
+        self.btn_apply.clicked.connect(self._on_apply)
         actions.addWidget(self.btn_apply)
 
         self.btn_save = QPushButton(tr('grid_btn_save'))
@@ -373,6 +385,80 @@ class GridDialog(QDialog):
         library.delete_grid(name)
         self._refresh_grids()
 
+    # ── Наложение сеток (Этап 5) ────────────────────────────────────────
+    def _clear_overlays(self):
+        """Убрать прошлые наложенные сетки и рамки лиц из сцены."""
+        if self.view is None:
+            return
+        scene = self.view._scene
+        for it in self._grid_items + self._face_boxes:
+            try:
+                scene.removeItem(it)
+            except Exception:
+                pass
+        self._grid_items = []
+        self._face_boxes = []
+
+    def _on_apply(self):
+        """«🔲 Наложить»: найти лица (YuNet) → на каждое положить активную
+        сетку с запасом FACE_GRID_SCALE + рамка подсветки. Повторный клик
+        очищает прошлые наложения и кладёт заново."""
+        if self.view is None:
+            return
+        grid_path = library.get_active_grid()
+        if not grid_path:
+            self.hint_lbl.setText(tr('grid_no_active'))
+            return
+
+        # Индикатор: детекция (особенно первый вызов — загрузка модели) может
+        # занять доли секунды. Показываем «Ищу лица…» и сразу перерисовываем.
+        self.hint_lbl.setText(tr('grid_searching'))
+        QApplication.processEvents()
+        try:
+            from widgets.face_grid.detector import detect_faces
+            boxes = detect_faces(self.stitched_path)
+        except Exception:
+            traceback.print_exc()
+            boxes = []
+
+        self._clear_overlays()
+        if not boxes:
+            self.hint_lbl.setText(tr('grid_no_faces'))
+            return
+
+        scene = self.view._scene
+        grid_pix = QPixmap(str(grid_path))
+        pen = QPen(QColor(228, 52, 74, 180))   # полупрозрачная рамка лица
+        pen.setWidth(2)
+        pen.setCosmetic(True)                  # толщина не зависит от зума
+        for (x, y, w, h) in boxes:
+            # Рамка подсветки найденного лица (для оценки детекции глазами).
+            rect = scene.addRect(float(x), float(y), float(w), float(h), pen)
+            rect.setZValue(20)
+            self._face_boxes.append(rect)
+
+            if grid_pix.isNull():
+                continue
+            # Сетка с запасом: расширяем бокс на FACE_GRID_SCALE, вписываем
+            # PNG так чтобы ПОКРЫТЬ расширенный бокс (max-ratio), центрируем
+            # на центре лица. Пропорции PNG сохраняются (uniform scale).
+            cx, cy = x + w / 2.0, y + h / 2.0
+            tw, th = w * FACE_GRID_SCALE, h * FACE_GRID_SCALE
+            pw, ph = grid_pix.width(), grid_pix.height()
+            if pw <= 0 or ph <= 0:
+                continue
+            s = max(tw / pw, th / ph)
+            item = QGraphicsPixmapItem(grid_pix)
+            item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+            item.setOffset(-pw / 2.0, -ph / 2.0)   # origin = центр pixmap
+            item.setScale(s)
+            item.setPos(cx, cy)                    # центр сетки = центр лица
+            item.setZValue(30)                     # поверх рамок
+            scene.addItem(item)
+            self._grid_items.append(item)
+
+        self.hint_lbl.setText(tr('grid_applied', n=len(boxes)))
+
     def _stub(self):
-        """Заглушка кнопок Наложить/Сохранить — логика на Этапах 5/7."""
+        """Заглушка кнопки «Сохранить» — логика на Этапе 7."""
         self.hint_lbl.setText(tr('grid_stub_hint'))
