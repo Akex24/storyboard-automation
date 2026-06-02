@@ -33,7 +33,7 @@ import math
 import traceback
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QPointF, pyqtSignal
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QBrush, QPainterPath
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -139,9 +139,9 @@ class StoryboardView(QGraphicsView):
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             item = self.itemAt(e.position().toPoint())
-            # GridItem → двигаем сетку; _ResizeHandle → ресайз (ручка сама
-            # ловит drag). И то и другое = NoDrag (вид не панорамим).
-            if isinstance(item, (GridItem, _ResizeHandle)):
+            # GridItem → двигаем сетку; _ResizeHandle → ресайз; _DeleteHandle →
+            # удаление (ловят клик сами). Всё это = NoDrag (вид не панорамим).
+            if isinstance(item, (GridItem, _ResizeHandle, _DeleteHandle)):
                 self.setDragMode(QGraphicsView.DragMode.NoDrag)
             else:
                 self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -208,6 +208,49 @@ class _ResizeHandle(QGraphicsRectItem):
         e.accept()
 
 
+class _DeleteHandle(QGraphicsRectItem):
+    """Крестик удаления (Этап 6c) — дочерний item у GridItem в ЛЕВОМ-ВЕРХНЕМ
+    углу (зеркально ручке ресайза). ItemIgnoresTransformations → постоянный
+    экранный размер. Красный (чтобы не путать с фиолетовой ручкой). Клик →
+    parent._request_delete() (убрать эту сетку). Drag/ресайз не трогает.
+    """
+
+    SIZE = 16     # экранный размер (px)
+    INSET = 3     # отступ от угла ВНУТРЬ сетки (px)
+
+    def __init__(self, parent):
+        # Якорь (pos) — левый-верхний угол сетки (-pw/2, -ph/2) в GridItem.
+        # Прямоугольник в ПРАВОМ-НИЖНЕМ квадранте от якоря (+INSET) → крестик
+        # целиком ВНУТРИ квадрата у внутреннего угла. Координаты — экранные px.
+        super().__init__(self.INSET, self.INSET, self.SIZE, self.SIZE, parent)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setBrush(QBrush(QColor(228, 52, 74)))   # LUMZ red
+        self.setPen(QPen(Qt.PenStyle.NoPen))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setZValue(41)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setToolTip(tr('grid_del_tooltip'))
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)   # красный фон
+        r = self.rect()
+        pen = QPen(QColor(255, 255, 255))
+        pen.setWidth(2)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        m = 4
+        painter.drawLine(QPointF(r.left() + m, r.top() + m),
+                         QPointF(r.right() - m, r.bottom() - m))
+        painter.drawLine(QPointF(r.left() + m, r.bottom() - m),
+                         QPointF(r.right() - m, r.top() + m))
+
+    def mousePressEvent(self, e):
+        p = self.parentItem()
+        if p is not None and hasattr(p, "_request_delete"):
+            p._request_delete()
+        e.accept()
+
+
 class GridItem(QGraphicsPixmapItem):
     """Наложенная сетка на лице. Перетаскиваемая (6a) + ручка ресайза в углу (6b).
 
@@ -218,13 +261,17 @@ class GridItem(QGraphicsPixmapItem):
     Этапа 7 композита).
     """
 
-    def __init__(self, pixmap, parent=None):
+    def __init__(self, pixmap, parent=None, on_delete=None):
         super().__init__(pixmap, parent)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._hover = False
+        # Коллбэк удаления (bound-метод диалога). Обнуляется в
+        # GridDialog._remove_grid_item при удалении → ссылка item→dialog
+        # разрывается, item освобождается (без висячего цикла).
+        self._on_delete = on_delete
 
         pm = self.pixmap()
         pw, ph = pm.width(), pm.height()
@@ -232,12 +279,15 @@ class GridItem(QGraphicsPixmapItem):
         self.setOffset(-pw / 2.0, -ph / 2.0)
         self._half_diag = math.hypot(pw / 2.0, ph / 2.0)
 
-        # Ручка ресайза в правом-нижнем углу (в local-координатах = bottomRight).
-        # При scale родителя её local-pos неизменна, а scene-позиция следует за
-        # углом автоматически (ItemIgnoresTransformations держит размер на экране).
+        # Ручка ресайза — правый-нижний угол; крестик удаления — левый-верхний.
+        # При scale родителя их local-pos неизменна, scene-позиция следует за
+        # углом (ItemIgnoresTransformations держит экранный размер).
         self._handle = _ResizeHandle(self)
         self._handle.setPos(pw / 2.0, ph / 2.0)
         self._handle.setVisible(False)
+        self._del = _DeleteHandle(self)
+        self._del.setPos(-pw / 2.0, -ph / 2.0)
+        self._del.setVisible(False)
 
     def shape(self):
         """2026-06-02 (6b-fix): хитбокс = ВЕСЬ прямоугольник pixmap, а не контур
@@ -249,24 +299,32 @@ class GridItem(QGraphicsPixmapItem):
         path.addRect(self.boundingRect())
         return path
 
-    def _sync_handle(self):
-        self._handle.setVisible(self._hover or self.isSelected())
+    def _sync_overlays(self):
+        """Показ/скрытие ручки ресайза И крестика удаления (вместе)."""
+        vis = self._hover or self.isSelected()
+        self._handle.setVisible(vis)
+        self._del.setVisible(vis)
+
+    def _request_delete(self):
+        """Зов из крестика — попросить диалог удалить эту сетку."""
+        if self._on_delete is not None:
+            self._on_delete(self)
 
     def hoverEnterEvent(self, e):
         self._hover = True
         self.update()
-        self._sync_handle()
+        self._sync_overlays()
         super().hoverEnterEvent(e)
 
     def hoverLeaveEvent(self, e):
         self._hover = False
         self.update()
-        self._sync_handle()
+        self._sync_overlays()
         super().hoverLeaveEvent(e)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
-            self._sync_handle()
+            self._sync_overlays()
         return super().itemChange(change, value)
 
     def paint(self, painter, option, widget=None):
@@ -548,6 +606,8 @@ class GridDialog(QDialog):
         if self.view is None:
             return
         scene = self.view._scene
+        for it in self._grid_items:
+            it._on_delete = None   # разрываем item→dialog перед удалением
         for it in self._grid_items + self._face_boxes:
             try:
                 scene.removeItem(it)
@@ -605,7 +665,7 @@ class GridDialog(QDialog):
             if pw <= 0 or ph <= 0:
                 continue
             s = max(tw / pw, th / ph)
-            item = GridItem(grid_pix)   # drag (6a) + ручка ресайза (6b); сам центрирует
+            item = GridItem(grid_pix, on_delete=self._remove_grid_item)
             item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
             item.setScale(s)
             item.setPos(cx, cy)                    # центр сетки = центр лица
@@ -614,6 +674,30 @@ class GridDialog(QDialog):
             self._grid_items.append(item)
 
         self.hint_lbl.setText(tr('grid_applied', n=len(boxes)))
+
+    def _remove_grid_item(self, item):
+        """Удалить ОДНУ сетку: из сцены + из списка + разорвать ссылку
+        item→dialog (обнулить _on_delete), чтобы объект освободился без цикла.
+        Зовётся из крестика (_DeleteHandle) и по Delete/Backspace."""
+        try:
+            if self.view is not None and item.scene() is not None:
+                self.view._scene.removeItem(item)
+        except Exception:
+            traceback.print_exc()
+        if item in self._grid_items:
+            self._grid_items.remove(item)
+        item._on_delete = None   # разрываем item→dialog (нет висячего цикла)
+
+    def keyPressEvent(self, e):
+        """Delete/Backspace — удалить выделенные сетки (бонус Этапа 6c)."""
+        if (e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace)
+                and self.view is not None):
+            for it in list(self.view._scene.selectedItems()):
+                if isinstance(it, GridItem):
+                    self._remove_grid_item(it)
+            e.accept()
+            return
+        super().keyPressEvent(e)
 
     def _stub(self):
         """Заглушка кнопки «Сохранить» — логика на Этапе 7."""
