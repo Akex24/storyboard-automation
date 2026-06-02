@@ -73,8 +73,11 @@ class StoryboardView(QGraphicsView):
     MIN_REL = 1.0   # не мельче «вписано в окно» (картинка впритык, не меньше)
     MAX_REL = 8.0   # не крупнее 8× от «вписано»
 
-    def __init__(self, pixmap: QPixmap, parent=None):
+    def __init__(self, pixmap: QPixmap, parent=None, on_double_click=None):
         super().__init__(parent)
+        # 2026-06-02 (Этап 6d): коллбэк «двойной клик по пустому месту» →
+        # GridDialog._add_grid_at(scene_pos). None = ничего не делаем.
+        self._on_double_add = on_double_click
         self._scene = QGraphicsScene(self)
         # pixmap_item — публичный: Этап 6 добавит сетки в self._scene поверх.
         self.pixmap_item = self._scene.addPixmap(pixmap)
@@ -150,6 +153,22 @@ class StoryboardView(QGraphicsView):
     def mouseReleaseEvent(self, e):
         super().mouseReleaseEvent(e)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+
+    # 2026-06-02 (Этап 6d): двойной клик по ПУСТОМУ месту → поставить активную
+    # сетку (для крупных планов, где YuNet лицо не нашёл). Двойной клик по уже
+    # наложенной сетке / её ручке / крестику новую НЕ плодит. Базовый
+    # pixmap_item (сам сториборд) — QGraphicsPixmapItem, но НЕ GridItem →
+    # считается «пустым местом», сетка ставится поверх кадра.
+    def mouseDoubleClickEvent(self, e):
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self._on_double_add is not None):
+            item = self.itemAt(e.position().toPoint())
+            if not isinstance(item, (GridItem, _ResizeHandle, _DeleteHandle)):
+                scene_pos = self.mapToScene(e.position().toPoint())
+                self._on_double_add(scene_pos)
+                e.accept()
+                return
+        super().mouseDoubleClickEvent(e)
 
 
 class _ResizeHandle(QGraphicsRectItem):
@@ -457,7 +476,7 @@ class GridDialog(QDialog):
         pix = QPixmap(str(self.stitched_path))
         self.view = None
         if not pix.isNull():
-            self.view = StoryboardView(pix)
+            self.view = StoryboardView(pix, on_double_click=self._add_grid_at)
             lay.addWidget(self.view, stretch=1)
         else:
             empty = QLabel(tr('grid_no_image'))
@@ -674,6 +693,42 @@ class GridDialog(QDialog):
             self._grid_items.append(item)
 
         self.hint_lbl.setText(tr('grid_applied', n=len(boxes)))
+
+    # ── Ручная установка сетки двойным кликом (Этап 6d) ──────────────────
+    def _add_grid_at(self, scene_pos):
+        """Положить активную сетку центром в точку scene_pos (зов из
+        StoryboardView.mouseDoubleClickEvent по пустому месту). Стартовый
+        масштаб: большая сторона ≈ 1/6 ширины сториборда (бокса лица нет —
+        ориентируемся на кадр), затем clamp в [MIN_GRID_SCALE, MAX_GRID_SCALE].
+        Юзер подгонит ручкой ресайза (6b). Ставится выделенной — ручка и
+        крестик видны сразу."""
+        if self.view is None:
+            return
+        grid_path = library.get_active_grid()
+        if not grid_path:
+            self.hint_lbl.setText(tr('grid_no_active'))
+            return
+        grid_pix = QPixmap(str(grid_path))
+        if grid_pix.isNull():
+            return
+
+        pw, ph = grid_pix.width(), grid_pix.height()
+        larger = max(pw, ph)
+        if larger <= 0:
+            return
+        target = self.view._scene.sceneRect().width() / 6.0
+        s = target / larger
+        s = max(MIN_GRID_SCALE, min(s, MAX_GRID_SCALE))
+
+        item = GridItem(grid_pix, on_delete=self._remove_grid_item)
+        item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        item.setScale(s)
+        item.setPos(scene_pos)          # центр сетки = точка клика (offset центрирует)
+        item.setZValue(30)
+        self.view._scene.addItem(item)
+        self._grid_items.append(item)
+        item.setSelected(True)          # сразу показать ручку ресайза + крестик
+        self.hint_lbl.setText(tr('grid_applied', n=len(self._grid_items)))
 
     def _remove_grid_item(self, item):
         """Удалить ОДНУ сетку: из сцены + из списка + разорвать ссылку
