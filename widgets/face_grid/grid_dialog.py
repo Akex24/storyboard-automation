@@ -37,6 +37,7 @@ from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+    QGraphicsItem, QStyle,
     QScrollArea, QWidget, QFrame, QFileDialog, QMessageBox,
 )
 
@@ -123,6 +124,65 @@ class StoryboardView(QGraphicsView):
             return
         self._user_zoomed = True
         self.scale(step, step)
+
+    # 2026-06-02 (Этап 6a): развести «тащу сетку» от «тащу фон».
+    # ЛКМ по GridItem → NoDrag (Qt сам двигает movable-сетку);
+    # ЛКМ по фону/сториборду → ScrollHandDrag (панорама вида).
+    # На release всегда возвращаем ScrollHandDrag (дефолт = панорама).
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            item = self.itemAt(e.position().toPoint())
+            if isinstance(item, GridItem):
+                self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            else:
+                self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        super().mouseReleaseEvent(e)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+
+
+class GridItem(QGraphicsPixmapItem):
+    """Наложенная сетка на лице (Этап 6a). Перетаскиваемая (ItemIsMovable),
+    с hover-подсветкой рамкой.
+
+    Лежит в ТОЙ ЖЕ сцене что и сториборд → зум колесом и панорама вида двигают
+    её ВМЕСТЕ с картинкой (сетка приклеена к лицу). Перетаскивание мышью меняет
+    только её pos внутри сцены (в координатах = пикселях оригинала) — это и
+    есть ручная корректировка положения. Этапы 6b/6c добавят сюда ручку
+    ресайза и крестик удаления.
+    """
+
+    def __init__(self, pixmap, parent=None):
+        super().__init__(pixmap, parent)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._hover = False
+
+    def hoverEnterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().hoverEnterEvent(e)
+
+    def hoverLeaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().hoverLeaveEvent(e)
+
+    def paint(self, painter, option, widget=None):
+        # Гасим дефолтную пунктирную рамку выделения Qt — рисуем свою.
+        option.state &= ~QStyle.StateFlag.State_Selected
+        super().paint(painter, option, widget)
+        if self._hover or self.isSelected():
+            pen = QPen(QColor(110, 76, 196))   # LUMZ accent
+            pen.setWidth(2)
+            pen.setCosmetic(True)              # постоянная толщина при зуме
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self.boundingRect())
 
 
 class _GridThumb(QFrame):
@@ -448,7 +508,7 @@ class GridDialog(QDialog):
             if pw <= 0 or ph <= 0:
                 continue
             s = max(tw / pw, th / ph)
-            item = QGraphicsPixmapItem(grid_pix)
+            item = GridItem(grid_pix)   # перетаскиваемая + hover-подсветка (6a)
             item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
             item.setOffset(-pw / 2.0, -ph / 2.0)   # origin = центр pixmap
             item.setScale(s)
