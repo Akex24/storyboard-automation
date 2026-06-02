@@ -31,15 +31,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QPixmap, QPainter
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QApplication, QGraphicsView, QGraphicsScene,
+    QScrollArea, QWidget, QFrame, QFileDialog, QMessageBox,
 )
 
 from i18n import tr
 from views.theme import lumz_button_qss
+from widgets.face_grid import library
 
 
 class StoryboardView(QGraphicsView):
@@ -116,8 +118,73 @@ class StoryboardView(QGraphicsView):
         self.scale(step, step)
 
 
+class _GridThumb(QFrame):
+    """Кликабельная миниатюра PNG-сетки в ленте (Этап 4). Клик = выбрать
+    активной; маленький «×» в углу = удалить из библиотеки."""
+
+    clicked = pyqtSignal(str)           # имя файла сетки
+    delete_requested = pyqtSignal(str)  # имя файла сетки
+    THUMB = 48
+
+    def __init__(self, path: Path, is_active: bool, parent=None):
+        super().__init__(parent)
+        self.name = path.name
+        self._active = is_active
+        self.setObjectName("GridThumb")
+        self.setFixedSize(self.THUMB + 10, self.THUMB + 10)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(self.name)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        img = QLabel()
+        img.setFixedSize(self.THUMB, self.THUMB)
+        img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pix = QPixmap(str(path))
+        if not pix.isNull():
+            img.setPixmap(pix.scaled(
+                QSize(self.THUMB, self.THUMB),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+        lay.addWidget(img, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # «×» удаления — дочерний QPushButton (нативно потребляет клик, не
+        # триггерит выбор миниатюры). Позиционируем абсолютно в правый угол.
+        self.del_btn = QPushButton("×", self)
+        self.del_btn.setObjectName("grid-thumb-del")
+        self.del_btn.setFixedSize(16, 16)
+        self.del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.del_btn.setToolTip(tr('grid_del_tooltip'))
+        self.del_btn.move(self.width() - 18, 2)
+        self.del_btn.clicked.connect(
+            lambda: self.delete_requested.emit(self.name))
+
+        self._refresh_style()
+
+    def set_active(self, active: bool):
+        self._active = active
+        self._refresh_style()
+
+    def _refresh_style(self):
+        border = ("2px solid #e4344a" if self._active
+                  else "1px solid #322545")
+        bg = "#231840" if self._active else "transparent"
+        self.setStyleSheet(
+            f"#GridThumb {{ background:{bg}; border:{border};"
+            f" border-radius:6px; }}"
+            "QPushButton#grid-thumb-del {"
+            " background:rgba(10,10,13,0.7); color:#fff; border:none;"
+            " border-radius:8px; font-size:12px; font-weight:600; }"
+            "QPushButton#grid-thumb-del:hover { background:#e4344a; }")
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.name)
+        super().mousePressEvent(ev)
+
+
 class GridDialog(QDialog):
-    """Попап наложения сеток на лица (скелет — Этап 3)."""
+    """Попап наложения сеток на лица (Этапы 3/3.5/4)."""
 
     def __init__(self, stitched_path, ep_id: str, block_n: int,
                  dest_dir, parent=None):
@@ -153,7 +220,7 @@ class GridDialog(QDialog):
             "QLabel#hint { color:rgba(255,255,255,0.55); font-size:11px; }"
             "QLabel#empty { color:rgba(255,255,255,0.40);"
             " font-style:italic; font-size:13px; }"
-            + lumz_button_qss('subtle', 'grid_btn_pick')
+            + lumz_button_qss('subtle', 'grid_btn_add')
             + lumz_button_qss('primary', 'grid_btn_apply')
             + lumz_button_qss('secondary', 'grid_btn_save')
             + lumz_button_qss('subtle', 'grid_btn_close')
@@ -176,6 +243,38 @@ class GridDialog(QDialog):
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lay.addWidget(empty, stretch=1)
 
+        # ── Лента сеток (Этап 4): «+ Добавить» + горизонтальный скролл миниатюр ──
+        grids_row = QHBoxLayout()
+        grids_row.setSpacing(8)
+        self.btn_add = QPushButton(tr('grid_btn_add'))
+        self.btn_add.setObjectName("grid_btn_add")
+        self.btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add.clicked.connect(self._on_add_grid)
+        grids_row.addWidget(self.btn_add, alignment=Qt.AlignmentFlag.AlignTop)
+
+        self._grids_scroll = QScrollArea()
+        self._grids_scroll.setWidgetResizable(True)
+        self._grids_scroll.setFixedHeight(_GridThumb.THUMB + 16)
+        self._grids_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._grids_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._grids_scroll.setStyleSheet(
+            "QScrollArea { border:1px solid #25193a; border-radius:6px;"
+            " background:#0a0612; }")
+        strip = QWidget()
+        self._grids_strip = QHBoxLayout(strip)
+        self._grids_strip.setContentsMargins(6, 2, 6, 2)
+        self._grids_strip.setSpacing(8)
+        self._grids_empty_lbl = QLabel(tr('grid_empty_hint'))
+        self._grids_empty_lbl.setObjectName("empty")
+        self._grids_strip.addWidget(self._grids_empty_lbl)
+        self._grids_strip.addStretch()
+        self._grids_scroll.setWidget(strip)
+        grids_row.addWidget(self._grids_scroll, stretch=1)
+        lay.addLayout(grids_row)
+        self._thumbs = []
+
         # ── Хинт-строка: подсказка управления + фидбэк заглушек ──
         self.hint_lbl = QLabel(tr('grid_view_hint'))
         self.hint_lbl.setObjectName("hint")
@@ -184,13 +283,6 @@ class GridDialog(QDialog):
         # ── Кнопки ──
         actions = QHBoxLayout()
         actions.setSpacing(10)
-
-        # Заглушки (логика — Этапы 4/5/7). Клик → хинт, без действия.
-        self.btn_pick = QPushButton(tr('grid_btn_pick'))
-        self.btn_pick.setObjectName("grid_btn_pick")
-        self.btn_pick.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_pick.clicked.connect(self._stub)
-        actions.addWidget(self.btn_pick)
 
         self.btn_apply = QPushButton(tr('grid_btn_apply'))
         self.btn_apply.setObjectName("grid_btn_apply")
@@ -214,6 +306,73 @@ class GridDialog(QDialog):
 
         lay.addLayout(actions)
 
+        # Первичное наполнение ленты сеток из библиотеки.
+        self._refresh_grids()
+
+    # ── Лента сеток (Этап 4) ────────────────────────────────────────────
+    def _refresh_grids(self):
+        """Перерисовать ленту из library.list_grids(); подсветить активную."""
+        # Снять старые миниатюры.
+        for t in getattr(self, '_thumbs', []):
+            try:
+                t.setParent(None)
+                t.deleteLater()
+            except Exception:
+                pass
+        self._thumbs = []
+
+        grids = library.list_grids()
+        active = library.get_active_grid_name()
+        self._grids_empty_lbl.setVisible(not grids)
+
+        # Вставляем миниатюры ПЕРЕД stretch (последний элемент layout).
+        insert_at = self._grids_strip.count() - 1
+        for p in grids:
+            thumb = _GridThumb(p, is_active=(p.name == active))
+            thumb.clicked.connect(self._on_pick_grid)
+            thumb.delete_requested.connect(self._on_delete_grid)
+            self._grids_strip.insertWidget(insert_at, thumb)
+            insert_at += 1
+            self._thumbs.append(thumb)
+
+        # Хинт: активная сетка или подсказка управления.
+        if active:
+            self.hint_lbl.setText(tr('grid_active_lbl', name=active))
+        else:
+            self.hint_lbl.setText(tr('grid_view_hint'))
+
+    def _on_pick_grid(self, name: str):
+        """Клик по миниатюре — сделать активной."""
+        library.set_active_grid(name)
+        for t in self._thumbs:
+            t.set_active(t.name == name)
+        self.hint_lbl.setText(tr('grid_active_lbl', name=name))
+
+    def _on_add_grid(self):
+        """«+ Добавить» — выбрать PNG (любая папка) → скопировать в библиотеку,
+        сделать активной, обновить ленту."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr('grid_picker_caption'), "", "PNG (*.png)")
+        if not path:
+            return
+        try:
+            dest = library.add_grid(path)
+        except Exception as e:
+            QMessageBox.warning(self, tr('grid_btn_add'), str(e))
+            return
+        library.set_active_grid(dest.name)
+        self._refresh_grids()
+
+    def _on_delete_grid(self, name: str):
+        """«×» на миниатюре — удалить из библиотеки (с подтверждением)."""
+        if QMessageBox.question(
+                self, tr('grid_del_tooltip'),
+                tr('grid_delete_confirm', name=name)
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        library.delete_grid(name)
+        self._refresh_grids()
+
     def _stub(self):
-        """Заглушка кнопок Этапа 3 — логика появится на Этапах 4/5/7."""
+        """Заглушка кнопок Наложить/Сохранить — логика на Этапах 5/7."""
         self.hint_lbl.setText(tr('grid_stub_hint'))
