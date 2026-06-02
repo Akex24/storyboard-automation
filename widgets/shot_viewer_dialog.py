@@ -335,11 +335,26 @@ class ShotViewerDialog(QDialog):
             self.version_use_requested.emit(self.panel_idx, self._selected_version)
 
     def closeEvent(self, ev):
-        """2026-06-01: при закрытии попапа (крестик/Esc) выделенная версия
-        становится активной. Для regen/realistic — no-op: они уже вызвали
-        _activate_selected_version перед self.close() (guard selected==active)."""
+        """2026-06-01: при закрытии попапа КРЕСТИКОМ окна (или self.close()
+        из regen/realistic) выделенная версия становится активной. Для
+        regen/realistic — no-op: они уже вызвали _activate_selected_version
+        перед self.close() (guard selected==active).
+
+        ВАЖНО: Escape сюда НЕ заходит — QDialog ловит Escape и зовёт reject()
+        → done() → hide(), что НЕ шлёт QCloseEvent. Поэтому активация на Escape
+        делается в переопределённом reject() ниже (а не здесь)."""
         self._activate_selected_version()
         super().closeEvent(ev)
+
+    def reject(self):
+        """2026-06-01: закрытие по Escape идёт через QDialog.reject() (а не
+        через closeEvent — hide() не шлёт QCloseEvent). Активируем выделенную
+        версию здесь, чтобы Esc вёл себя так же как крестик окна.
+        Двойной активации с closeEvent нет: крестик/self.close() идут через
+        QCloseEvent (reject не вызывают), Escape — через reject (closeEvent не
+        вызывают). Guard в _activate_selected_version страхует в любом случае."""
+        self._activate_selected_version()
+        super().reject()
 
     def _show_preview(self, image_path: Path):
         """Загружает картинку в большое превью."""
