@@ -11,6 +11,11 @@ name: Build Windows .exe
 on:
   release:
     types: [published]
+  # 2026-06-02: ручной запуск из вкладки Actions — собирает .exe/zip и кладёт
+  # как downloadable artifact прогона, НЕ публикуя Release. Нужно для теста
+  # Windows-сборки (opencv+numpy+YuNet) без раздачи коллегам. Выбираешь ветку
+  # в «Run workflow» — собирается её содержимое.
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -23,10 +28,10 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          # При release event default ref = тег. Для checkout берём
-          # содержимое тега (там же лежит обновлённый version.json и
-          # .spec файлы текущего релиза).
-          ref: ${{ github.event.release.tag_name }}
+          # При release event ref = тег (там обновлённый version.json/.spec).
+          # При ручном workflow_dispatch release пустой → fallback на github.ref
+          # (выбранная в «Run workflow» ветка, по умолчанию main).
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -56,11 +61,18 @@ jobs:
           # GITHUB_REF — `release: published` устанавливает event payload).
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
-          TAG="$TAG_NAME"                          # app-v1.0.14
-          VERSION="${TAG#app-v}"                   # 1.0.14
+          if [ -n "$TAG_NAME" ]; then
+            TAG="$TAG_NAME"                         # app-v1.0.14 (release event)
+            VERSION="${TAG#app-v}"                  # 1.0.14
+          else
+            # workflow_dispatch: релиза нет — берём версию из version.json,
+            # тег помечаем как manual (в Release ничего не публикуется).
+            VERSION=$(python -c "import json;print(json.load(open('version.json')).get('app_version','0.0.0'))")
+            TAG="manual"
+          fi
           echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
-          echo "Building Storyboard Studio v$VERSION for Windows"
+          echo "Building Storyboard Studio v$VERSION for Windows (event=${{ github.event_name }})"
 
       - name: Build .exe with PyInstaller
         run: pyinstaller StoryboardStudio.spec --noconfirm
@@ -117,8 +129,10 @@ jobs:
               | Select-Object FullName, Length
 
       - name: Upload assets to existing Release
-        # Тег уже создан админом локально через SendUpdateThread (вместе с
-        # Mac-zip). Этот шаг прикрепляет ОБА Win-asset'а к Release.
+        # ТОЛЬКО при release event. Тег уже создан админом локально через
+        # SendUpdateThread (вместе с Mac-zip). Прикрепляет ОБА Win-asset'а
+        # к Release → коллеги получают авто-апдейт.
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
@@ -129,3 +143,17 @@ jobs:
           $installerPath = "dist/Storyboard Studio Installer v$version.exe"
           gh release upload "$tag" "$zipPath" --clobber
           gh release upload "$tag" "$installerPath" --clobber
+
+      - name: Upload as workflow artifact (manual run, NO release)
+        # ТОЛЬКО при ручном workflow_dispatch. Кладёт .exe/zip как artifact
+        # прогона — скачивается со страницы запуска, Release НЕ создаётся,
+        # коллеги ничего не получают. Для теста Windows-сборки.
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: storyboard-studio-win-test-v${{ steps.version.outputs.version }}
+          path: |
+            dist/Storyboard Studio v${{ steps.version.outputs.version }}-win.zip
+            dist/Storyboard Studio Installer v${{ steps.version.outputs.version }}.exe
+          retention-days: 7
+          if-no-files-found: error
