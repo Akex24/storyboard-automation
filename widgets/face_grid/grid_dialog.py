@@ -280,7 +280,7 @@ class GridItem(QGraphicsPixmapItem):
     Этапа 7 композита).
     """
 
-    def __init__(self, pixmap, parent=None, on_delete=None):
+    def __init__(self, pixmap, parent=None, on_delete=None, src_path=None):
         super().__init__(pixmap, parent)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
@@ -291,6 +291,10 @@ class GridItem(QGraphicsPixmapItem):
         # GridDialog._remove_grid_item при удалении → ссылка item→dialog
         # разрывается, item освобождается (без висячего цикла).
         self._on_delete = on_delete
+        # 2026-06-02 (Этап 7): путь к PNG-сетке в библиотеке. При сохранении
+        # композит читает альфу из ЭТОГО файла (полное разрешение), а не из
+        # экранного QPixmap. None → сетка пропускается при впечатывании.
+        self._src_path = src_path
 
         pm = self.pixmap()
         pw, ph = pm.width(), pm.height()
@@ -538,7 +542,7 @@ class GridDialog(QDialog):
         self.btn_save = QPushButton(tr('grid_btn_save'))
         self.btn_save.setObjectName("grid_btn_save")
         self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_save.clicked.connect(self._stub)
+        self.btn_save.clicked.connect(self._on_save)
         actions.addWidget(self.btn_save)
 
         actions.addStretch()
@@ -674,7 +678,8 @@ class GridDialog(QDialog):
             if pw <= 0 or ph <= 0:
                 continue
             s = max(tw / pw, th / ph)
-            item = GridItem(grid_pix, on_delete=self._remove_grid_item)
+            item = GridItem(grid_pix, on_delete=self._remove_grid_item,
+                            src_path=grid_path)
             item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
             item.setScale(s)
             item.setPos(cx, cy)                    # центр сетки = центр лица
@@ -710,7 +715,8 @@ class GridDialog(QDialog):
         s = target / larger
         s = max(MIN_GRID_SCALE, min(s, MAX_GRID_SCALE))
 
-        item = GridItem(grid_pix, on_delete=self._remove_grid_item)
+        item = GridItem(grid_pix, on_delete=self._remove_grid_item,
+                        src_path=grid_path)
         item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         item.setScale(s)
         item.setPos(scene_pos)          # центр сетки = точка клика (offset центрирует)
@@ -743,6 +749,61 @@ class GridDialog(QDialog):
             e.accept()
             return
         super().keyPressEvent(e)
+
+    # ── Сохранение композита в рефы блока (Этап 7) ──────────────────────
+    def _on_save(self):
+        """«💾 Сохранить в рефы блока»: впечатать наложенные сетки в чистый
+        сториборд и перезаписать <ep>_block<N>.jpg (вариант A — тот же файл
+        читают «Рефы блока» и «Собрать серию»).
+
+        Координаты: сцена = пиксели оригинала 1:1; origin GridItem = центр
+        (setOffset) → левый-верхний угол = центр − (pw·scale/2, ph·scale/2).
+        Источник каждой сетки — её PNG из библиотеки (`_src_path`, полная
+        альфа), НЕ экранный QPixmap. Края клипаются paste'ом (не падает).
+        Декод/энкод через PIL (str-пути) — cv2 упал бы на русских путях.
+
+        Ноль сеток → файл НЕ трогаем (он уже чистый: stitch отработал перед
+        попапом), просто закрываем. Ошибка записи → попап НЕ закрываем."""
+        if self.view is None:
+            self.reject()
+            return
+        if not self._grid_items:
+            self.hint_lbl.setText(tr('grid_save_empty'))
+            self.accept()
+            return
+
+        self.hint_lbl.setText(tr('grid_saving'))
+        QApplication.processEvents()
+        try:
+            from PIL import Image as PILImage
+            base = PILImage.open(str(self.stitched_path)).convert("RGBA")
+            layer = PILImage.new("RGBA", base.size, (0, 0, 0, 0))
+            painted = 0
+            for item in self._grid_items:
+                src = getattr(item, "_src_path", None)
+                if not src:
+                    continue
+                pm = item.pixmap()
+                pw, ph = pm.width(), pm.height()
+                s = item.scale()
+                tw, th = max(1, round(pw * s)), max(1, round(ph * s))
+                center = item.pos()
+                left = round(center.x() - pw * s / 2.0)
+                top = round(center.y() - ph * s / 2.0)
+                grid = PILImage.open(str(src)).convert("RGBA")
+                grid = grid.resize((tw, th), PILImage.LANCZOS)
+                # paste молча клипает отрицательные / выходящие за холст края.
+                layer.paste(grid, (left, top), grid)
+                painted += 1
+            out = PILImage.alpha_composite(base, layer).convert("RGB")
+            out.save(str(self.stitched_path), format="JPEG", quality=95)
+        except Exception as e:
+            traceback.print_exc()
+            self.hint_lbl.setText(tr('grid_save_error', err=str(e)))
+            QMessageBox.warning(self, tr('grid_btn_save'), str(e))
+            return          # НЕ закрываем — юзер не теряет наложенные сетки
+        self.hint_lbl.setText(tr('grid_saved', n=painted))
+        self.accept()
 
     def _stub(self):
         """Заглушка кнопки «Сохранить» — логика на Этапе 7."""

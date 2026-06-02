@@ -36,6 +36,51 @@
     на следующий рестарт Windows. Studio показывает inline-баннер «нужна
     перезагрузка» вместо popup ошибки. См. секцию «Failure mode B».
 
+## Face-grid pipeline (PNG-сетки на лица, 2026-06-02)
+
+Фича модерации Seedance: при «Сохранить сториборд» поверх записи чистого
+склеенного листа открывается попап наложения PNG-сеток на лица.
+
+**Точка входа:** `MainWindow._save_png` ([storyboard_app.py:13890](storyboard_app.py:13890))
+сначала пишет чистый `<ep>_block<N>.jpg` через `stitch_shots_to_landscape`
+(JPEG quality=95), ЗАТЕМ открывает `GridDialog(candidate, ep_id, block_n,
+dest_dir).exec()` (модальный, ленивый импорт — без circular import). Вариант A:
+чистый лист сохраняется как раньше (нужен «Собрать серию»), попап — надстройка.
+
+**Файлы фичи** (`widgets/face_grid/`):
+- `detector.py` — YuNet (opencv), `detect_faces(path)` → `[(x,y,w,h), …]`.
+  Декод изображения через PIL→numpy (cv2.imread падает на не-ASCII путях).
+- `library.py` — персистентная библиотека PNG-сеток + активная сетка.
+- `grid_dialog.py` — попап. Классы:
+  - `StoryboardView(QGraphicsView)` — зум колесом + панорама; картинка в сцену в
+    ПОЛНОМ разрешении → **координаты сцены = пиксели оригинала 1:1**.
+    `mouseDoubleClickEvent` по пустому месту → `_add_grid_at` (ручная установка).
+  - `GridItem(QGraphicsPixmapItem)` — наложенная сетка. `setOffset(-pw/2,-ph/2)`
+    → origin = ЦЕНТР, `setScale` масштабирует вокруг центра. Хранит `_src_path`
+    (PNG в библиотеке — источник альфы при композите), `_on_delete` (коллбэк).
+    `shape()` = весь прямоугольник (хитбокс ловит и прозрачные клетки).
+  - `_ResizeHandle` (правый-низ, ресайз от центра) / `_DeleteHandle` (лево-верх,
+    крестик) — `ItemIgnoresTransformations` (постоянный экранный размер).
+
+**Ключевой инвариант координат:** сцена = пиксели чистого jpg 1:1. `GridItem`
+origin = центр → при сохранении угол для Pillow = `pos − (pw·scale/2, ph·scale/2)`.
+
+**Сохранение (Этап 7, `GridDialog._on_save`):** композит через PIL — база
+`<ep>_block<N>.jpg` (та же, что на диске) → RGBA, прозрачный layer размера базы,
+каждая сетка читается из `_src_path` (полная альфа) → resize LANCZOS → `layer.paste`
+(клипает off-canvas) → `alpha_composite` → RGB → `save(JPEG q=95)` поверх ТОГО ЖЕ
+файла. Ноль сеток → файл не трогаем (он уже чистый). Ошибка → попап не закрываем.
+Перезаписанный файл читают и «🗂 Рефы блока», и `compile_episode._copy_storyboards`
+([compile_episode.py:203](threads/compile_episode.py:203)) — то есть сетки попадают
+в «Собрать серию» автоматически, `compile_episode` не трогается.
+
+**Cross-platform:** только PyQt6 + PIL через `str(Path)`. Без subprocess/shell/cv2-imread.
+
+**Сборка:** opencv + numpy + YuNet-модель добавлены в `StoryboardStudio.spec` (Этап 0).
+
+**Долг:** при закрытии попапа состояние сеток (имя/pos/scale) НЕ сохраняется —
+повторное открытие начинается с чистого листа (Этап 8 — персист + восстановление).
+
 ## Архитектурные решения которые легко забыть
 
 - **Anthropic API напрямую НЕ вызывается.** `pipeline.py` использует только
