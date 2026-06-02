@@ -1342,12 +1342,31 @@ datas=[
     (certifi.where(), 'certifi'),
     ('assets/icons', 'assets/icons'),
     ('pipeline.py', '.'),       # 2026-05-09: для self-healing sync в project_root
+    ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ*.md', 'instructions'),  # v1.0.66
+    ('assets/models/face_detection_yunet_2023mar.onnx', 'assets/models'),  # 2026-06-02
 ],
 ```
 Плюс автоматически — все импортируемые .py модули (включая `agents/*.py`).
-**НЕ зашиваются:** `instructions/*.txt`, `*.md`, `_session_log.md`. Если
-будущий feature потребует читать `instructions/*` в runtime — нужно
+**НЕ зашиваются:** `instructions/*.txt`, `_session_log.md`. Если
+будущий feature потребует читать файлы в runtime — нужно
 явно добавить в `datas` spec.
+
+**2026-06-02 — opencv + YuNet (фича наложения PNG-сеток на лица сториборда):**
+- Зависимости сборки: **`opencv-python-headless` + `numpy`** (numpy УБРАН из
+  `excludes` в spec; `cv2` добавлен в `hiddenimports`). Только `-headless` —
+  полный `opencv-python` тянет свой Qt и конфликтует с PyQt6 в бандле.
+- `numpy` тянется как транзитивная зависимость cv2.
+- Win-сборка ([.github/workflows/build-windows.yml](.github/workflows/build-windows.yml)):
+  `pip install … opencv-python-headless numpy` добавлено.
+- Модель YuNet (`assets/models/face_detection_yunet_2023mar.onnx`, ~232КБ,
+  из OpenCV Zoo, git-LFS-media) бандлится через `datas`.
+- Резолвер пути к модели — **`get_model_path(name)`**
+  ([storyboard_app.py](storyboard_app.py), рядом с `get_icon`), `_MEIPASS`-aware
+  (Mac `Contents/Resources/assets/models/`, Win onedir `_internal/assets/models/`),
+  фолбэк на project_root из QSettings.
+- ⚠️ **Win-сборка с opencv+numpy на момент Этапа 0 НЕ проверена** — обязательно
+  обкатать на Windows до раздачи (cross-platform gate). Mac-фундамент рабочий.
+- ⚠️ Бандл вырос (+opencv+numpy ~60-80МБ) → больше вес авто-апдейта коллегам.
 
 `pipeline.py` после распаковки находится через `sys._MEIPASS` (на Mac
 .app `Contents/Resources/pipeline.py`, на Win onedir `_internal/pipeline.py`).

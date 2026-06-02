@@ -1090,6 +1090,49 @@ def test_helpers() -> None:
         fail("slugify_actor_name", f"вернул {slug!r}")
 
 
+def test_face_detector() -> None:
+    """2026-06-02 (Этап 0): opencv (cv2) + YuNet модель доступны и грузятся.
+    Проверяет, что фундамент фичи наложения PNG-сеток на лица собираем:
+      • cv2 импортируется, есть FaceDetectorYN;
+      • numpy импортируется (транзитивная зависимость cv2);
+      • storyboard_app.get_model_path находит бандл-модель;
+      • FaceDetectorYN_create успешно создаётся с этой моделью."""
+    section("8. Face detector (cv2 + YuNet)")
+    try:
+        import cv2
+        import numpy  # noqa: F401
+    except Exception as e:
+        fail("импорт cv2/numpy", f"{e.__class__.__name__}: {e}")
+        return
+    ok(f"cv2 {cv2.__version__} / numpy импортируются")
+
+    if not hasattr(cv2, "FaceDetectorYN"):
+        fail("cv2.FaceDetectorYN", "нет в этой сборке opencv (нужен >=4.5.4)")
+        return
+    ok("cv2.FaceDetectorYN присутствует")
+
+    try:
+        from storyboard_app import get_model_path
+    except Exception as e:
+        fail("импорт get_model_path", f"{e.__class__.__name__}: {e}")
+        return
+
+    mp = get_model_path("face_detection_yunet_2023mar.onnx")
+    if not mp or not mp.exists():
+        fail("get_model_path(YuNet)", f"модель не найдена: {mp}")
+        return
+    ok(f"YuNet модель найдена: {mp.name}")
+
+    try:
+        det = cv2.FaceDetectorYN_create(str(mp), "", (320, 320))
+        if det is not None:
+            ok("FaceDetectorYN_create OK (модель грузится)")
+        else:
+            fail("FaceDetectorYN_create", "вернул None")
+    except Exception as e:
+        fail("FaceDetectorYN_create", f"{e.__class__.__name__}: {e}")
+
+
 # ─── Запуск ──────────────────────────────────────────────────────
 def main() -> int:
     print(f"\n{YELLOW}╔══════════════════════════════════════════════════╗{RESET}")
@@ -1118,6 +1161,7 @@ def main() -> int:
     test_session_log_markers()
     test_main_window()
     test_helpers()
+    test_face_detector()
 
     # ─── Итог ───
     total = len(PASSED) + len(FAILED)

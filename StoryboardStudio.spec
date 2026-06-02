@@ -33,9 +33,18 @@ a = Analysis(
         ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ_b.md', 'instructions'),
         ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ_c.md', 'instructions'),
         ('instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ_d.md', 'instructions'),
+        # 2026-06-02: YuNet face-detection модель для попапа наложения
+        # PNG-сеток на лица сториборда (cv2.FaceDetectorYN). На Mac →
+        # Contents/Resources/assets/models/, на Win onedir → _internal/assets/models/.
+        # Путь резолвится через storyboard_app.get_model_path (_MEIPASS-aware).
+        ('assets/models/face_detection_yunet_2023mar.onnx', 'assets/models'),
     ],
     hiddenimports=[
         'PIL._tkinter_finder',
+        # 2026-06-02: opencv (cv2) для детекции лиц YuNet. PyInstaller обычно
+        # подхватывает cv2 сам, но явный хинт страхует Win-сборку. numpy —
+        # транзитивная зависимость cv2 (убран из excludes ниже).
+        'cv2',
         'PyQt6.QtPrintSupport',
         'PyQt6.QtSvg',          # Для рендера SVG-иконок табов
         'PyQt6.QtSvgWidgets',
@@ -67,7 +76,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'matplotlib', 'numpy', 'scipy'],
+    # 2026-06-02: numpy УБРАН из excludes — он нужен cv2 (YuNet face-detection).
+    excludes=['tkinter', 'matplotlib', 'scipy'],
     noarchive=False,
 )
 

@@ -910,6 +910,33 @@ def get_icon(name: str) -> QIcon:
     return ic
 
 
+def get_model_path(name: str) -> Optional[Path]:
+    """2026-06-02: путь к бандлованной ML-модели `assets/models/<name>`.
+    _MEIPASS-aware (как get_icon): работает из исходников (Path(__file__).parent)
+    и из PyInstaller-бандла (sys._MEIPASS → Mac Contents/Resources, Win _internal).
+    Фолбэк на project_root из QSettings. Возвращает Path если файл есть, иначе None.
+
+    Используется детектором лиц YuNet (cv2.FaceDetectorYN) для попапа наложения
+    сеток на сториборд. Модель — assets/models/face_detection_yunet_2023mar.onnx,
+    бандлится через StoryboardStudio.spec datas."""
+    try:
+        base = Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else Path(__file__).parent
+        p = base / "assets" / "models" / name
+        if p.exists():
+            return p
+        try:
+            stored = get_stored_root()
+            if stored:
+                alt = stored / "assets" / "models" / name
+                if alt.exists():
+                    return alt
+        except Exception:
+            pass
+        return p if p.exists() else None
+    except Exception:
+        return None
+
+
 class _SceneHighlighter:
     """2026-05-07: подсветка «СЦЕНА N:» / «SCENE N:» / «Сцена N:» в попапе
     оригинального сценария эпизода. Юзер хочет глазом мгновенно ловить
