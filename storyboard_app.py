@@ -13951,6 +13951,17 @@ class MainWindow(QMainWindow):
             stitch_shots_to_landscape(self.current_block, candidate)
             self.status_bar.showMessage(
                 tr('status_saved', path=str(candidate)), 6000)
+            # 2026-06-02 (вариант A): чистый <base>.jpg сохранён как раньше
+            # (нужен «Собрать серию»). Поверх открываем попап наложения
+            # PNG-сеток на лица. Отдельный try — чтобы ошибка попапа НЕ
+            # маскировалась под «Ошибка экспорта». Импорт ленивый (без
+            # circular import). Модальный (.exec()).
+            try:
+                from widgets.face_grid.grid_dialog import GridDialog
+                GridDialog(candidate, ep_id, int(block_n),
+                           dest_dir, parent=self).exec()
+            except Exception:
+                traceback.print_exc()
         except Exception as e:
             QMessageBox.warning(self, "Ошибка экспорта", str(e))
 
