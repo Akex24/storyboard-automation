@@ -34,7 +34,7 @@ import math
 import traceback
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize, QPointF, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QPoint, QPointF, QEvent, pyqtSignal
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QBrush, QPainterPath
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -476,6 +476,7 @@ class GridDialog(QDialog):
             + lumz_button_qss('subtle', 'grid_btn_add')
             + lumz_button_qss('primary', 'grid_btn_apply')
             + lumz_button_qss('secondary', 'grid_btn_save')
+            + lumz_button_qss('subtle', 'grid_btn_help')
             + lumz_button_qss('subtle', 'grid_btn_close')
         )
         lay = QVBoxLayout(self)
@@ -532,8 +533,10 @@ class GridDialog(QDialog):
         # Этап 7 впечатает по pos/scale. Single source of truth — сами элементы.
         self._grid_items = []   # list[QGraphicsPixmapItem] — наложенные сетки
 
-        # ── Хинт-строка: подсказка управления + фидбэк заглушек ──
-        self.hint_lbl = QLabel(tr('grid_view_hint'))
+        # ── Хинт-строка: ДИНАМИЧЕСКИЙ статус (active grid / наложено /
+        # сохранено / восстановлено / ошибка). Жесты — в панели по кнопке
+        # «Как управлять» (_build_help_panel); здесь стартуем пустой. ──
+        self.hint_lbl = QLabel("")
         self.hint_lbl.setObjectName("hint")
         lay.addWidget(self.hint_lbl)
 
@@ -555,6 +558,15 @@ class GridDialog(QDialog):
 
         actions.addStretch()
 
+        # Кнопка «❓ Как управлять» — раскрывает компактную панель жестов
+        # (_build_help_panel / _toggle_help). Эмодзи — для консистентности
+        # с соседними кнопками этого попапа (🔲/💾/✕).
+        self.btn_help = QPushButton(tr('grid_help_btn'))
+        self.btn_help.setObjectName("grid_btn_help")
+        self.btn_help.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_help.clicked.connect(self._toggle_help)
+        actions.addWidget(self.btn_help)
+
         self.btn_close = QPushButton(tr('grid_btn_close'))
         self.btn_close.setObjectName("grid_btn_close")
         self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -568,6 +580,8 @@ class GridDialog(QDialog):
         # Восстановить ранее сохранённые сетки (Этап 8) — живыми GridItem
         # поверх ЧИСТОЙ базы (stitch пересобрал jpg до попапа → задвоения нет).
         self._restore_grids()
+        # Панель-поповер со списком жестов (скрыта; кнопка «Как управлять»).
+        self._help_panel = self._build_help_panel()
 
     # ── Лента сеток (Этап 4) ────────────────────────────────────────────
     def _refresh_grids(self):
@@ -595,11 +609,11 @@ class GridDialog(QDialog):
             insert_at += 1
             self._thumbs.append(thumb)
 
-        # Хинт: активная сетка или подсказка управления.
+        # Статус: активная сетка (жесты — в help-панели по кнопке).
         if active:
             self.hint_lbl.setText(tr('grid_active_lbl', name=active))
         else:
-            self.hint_lbl.setText(tr('grid_view_hint'))
+            self.hint_lbl.setText("")
 
     def _on_pick_grid(self, name: str):
         """Клик по миниатюре — сделать активной."""
@@ -937,6 +951,121 @@ class GridDialog(QDialog):
         self._write_grids_json()
         self.hint_lbl.setText(tr('grid_saved', n=painted))
         self.accept()
+
+    # ── Панель-подсказка по жестам (поповер) ────────────────────────────
+    def _build_help_panel(self):
+        """Компактная панель-поповер со списком жестов (скрыта по умолчанию).
+        Child диалога (НЕ модальная, НЕ Popup-флаг) — toggle по кнопке «Как
+        управлять», закрытие кликом мимо (eventFilter на QApplication). Иконки
+        — Lucide через get_icon (ленивый импорт из storyboard_app)."""
+        panel = QFrame(self)
+        panel.setObjectName("GridHelpPanel")
+        panel.setStyleSheet(
+            "QFrame#GridHelpPanel { background:#15101f; border:1px solid #322545;"
+            " border-radius:10px; }"
+            "QLabel#help-title { color:rgba(255,255,255,0.92); font-size:13px;"
+            " font-weight:600; }"
+            "QLabel#help-name { color:rgba(255,255,255,0.92); font-size:12px;"
+            " font-weight:600; }"
+            "QLabel#help-desc { color:rgba(255,255,255,0.50); font-size:12px; }")
+        pl = QVBoxLayout(panel)
+        pl.setContentsMargins(16, 14, 16, 14)
+        pl.setSpacing(10)
+
+        title = QLabel(tr('grid_help_title'))
+        title.setObjectName("help-title")
+        pl.addWidget(title)
+
+        try:
+            from storyboard_app import get_icon
+        except Exception:
+            get_icon = None
+
+        rows = [
+            ('mouse', 'grid_help_wheel'),
+            ('hand', 'grid_help_pan'),
+            ('move', 'grid_help_move'),
+            ('maximize-2', 'grid_help_resize'),
+            ('x', 'grid_help_delete'),
+            ('mouse-pointer-click', 'grid_help_place'),
+        ]
+        for icon_name, key in rows:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            ic = QLabel()
+            ic.setFixedSize(20, 20)
+            ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if get_icon is not None:
+                pm = get_icon(icon_name).pixmap(QSize(18, 18))
+                if not pm.isNull():
+                    ic.setPixmap(pm)
+            row.addWidget(ic)
+            name, _, desc = tr(key).partition('|')
+            name_lbl = QLabel(name)
+            name_lbl.setObjectName("help-name")
+            row.addWidget(name_lbl)
+            if desc:
+                desc_lbl = QLabel("— " + desc)
+                desc_lbl.setObjectName("help-desc")
+                row.addWidget(desc_lbl)
+            row.addStretch()
+            pl.addLayout(row)
+
+        panel.adjustSize()
+        panel.hide()
+        return panel
+
+    def _toggle_help(self):
+        if self._help_panel.isVisible():
+            self._hide_help()
+        else:
+            self._show_help()
+
+    def _show_help(self):
+        """Показать панель НАД кнопкой, выровняв по её правому краю; клампим
+        в границы диалога. Ставим eventFilter на QApplication для «клика мимо»."""
+        panel = self._help_panel
+        panel.adjustSize()
+        btn_tl = self.btn_help.mapTo(self, QPoint(0, 0))
+        x = btn_tl.x() + self.btn_help.width() - panel.width()
+        y = btn_tl.y() - panel.height() - 8
+        x = max(8, min(x, self.width() - panel.width() - 8))
+        y = max(8, y)
+        panel.move(x, y)
+        panel.show()
+        panel.raise_()
+        QApplication.instance().installEventFilter(self)
+
+    def _hide_help(self):
+        panel = getattr(self, "_help_panel", None)
+        if panel is not None and panel.isVisible():
+            panel.hide()
+        try:
+            QApplication.instance().removeEventFilter(self)
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        """Клик мимо панели И мимо кнопки «Как управлять» → скрыть панель.
+        Фильтр на уровне QApplication: ловит клики и по QGraphicsView (он сам
+        ест мышь). События не потребляем (super возвращает False)."""
+        if (event.type() == QEvent.Type.MouseButtonPress
+                and getattr(self, "_help_panel", None) is not None
+                and self._help_panel.isVisible()):
+            gp = event.globalPosition().toPoint()
+            in_panel = self._help_panel.rect().contains(
+                self._help_panel.mapFromGlobal(gp))
+            in_btn = self.btn_help.rect().contains(
+                self.btn_help.mapFromGlobal(gp))
+            if not in_panel and not in_btn:
+                self._hide_help()
+        return super().eventFilter(obj, event)
+
+    def hideEvent(self, e):
+        """Дополнительно снять eventFilter при закрытии диалога (accept/reject/
+        close → hideEvent), чтобы фильтр не висел на QApplication."""
+        self._hide_help()
+        super().hideEvent(e)
 
     def _stub(self):
         """Заглушка кнопки «Сохранить» — логика на Этапе 7."""
