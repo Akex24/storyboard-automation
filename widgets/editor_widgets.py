@@ -31,10 +31,10 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QFrame, QLabel, QPushButton, QWidget, QProgressBar,
-    QVBoxLayout, QHBoxLayout,
+    QVBoxLayout, QHBoxLayout, QApplication,
 )
 
-from i18n import tr
+from i18n import tr, get_lang
 
 
 class _AppProxy:
@@ -137,6 +137,10 @@ class ShotCard(QFrame):
     # paste → буфер добавляется новой версией в шот-назначение.
     copy_requested  = pyqtSignal(int)
     paste_requested = pyqtSignal(int)
+    # 2026-06-03 (Этап 2): запрос перевода реплики на язык интерфейса.
+    # (panel_idx, en_text). Эмитится ТОЛЬКО для uk (ru/en карточка показывает
+    # сама из данных). MainWindow дёргает Haiku async + кэш → set_translation_result.
+    translate_requested = pyqtSignal(int, str)
     # Ширина подобрана так, чтобы ряд из 4 карточек занимал РОВНО ширину
     # кнопки «Сохранить стриборд как PNG» (которая стретчится на всю ширину
     # контентной области): 4×(CARD_W+20 padding QFrame) + 3×12 spacing = 944,
@@ -149,6 +153,10 @@ class ShotCard(QFrame):
         # Запоминаем что шот пустой/blank — чтобы overlay не показывался
         self._is_blank = False
         self._is_loading = False
+        # 2026-06-03 (Этап 2): тексты реплики для перевода + поповер.
+        self._dlg_en = ""
+        self._dlg_ru = ""
+        self._tr_popup = None
         # Текущее состояние overlay — для защиты от повторных fade_in
         # при многократных Enter событиях (Qt может слать их при разных
         # переходах внутри карточки)
@@ -335,15 +343,38 @@ class ShotCard(QFrame):
         lay.addWidget(self.desc_label)
 
         # 2026-06-03 (Этап 1): реплика шота (dialog.en из монтажной карты) —
-        # ВМЕСТЕ с описанием, отдельной строкой ниже, в кавычках, своим цветом
-        # (QSS #shot-dialog). Заполняется в set_shot_info из shot["dialog_en"];
-        # нет реплики → hide(). wordWrap без обрезки — места под описанием много.
+        # ВМЕСТЕ с описанием, в кавычках, своим цветом (QSS #shot-dialog).
+        # 2026-06-03 (Этап 2): рядом — кнопка перевода (Lucide languages) →
+        # поповер с переводом на язык интерфейса. Строка прячется целиком
+        # когда реплики нет. wordWrap без обрезки — места под описанием много.
+        self.dialog_row = QWidget()
+        drow = QHBoxLayout(self.dialog_row)
+        drow.setContentsMargins(0, 0, 0, 0)
+        drow.setSpacing(4)
         self.dialog_label = QLabel("")
         self.dialog_label.setObjectName("shot-dialog")
         self.dialog_label.setWordWrap(True)
-        self.dialog_label.setMaximumWidth(self.CARD_W + 20)
-        self.dialog_label.hide()
-        lay.addWidget(self.dialog_label)
+        self.dialog_label.setMaximumWidth(self.CARD_W - 24)
+        drow.addWidget(self.dialog_label, stretch=1)
+        self.btn_translate = QPushButton()
+        self.btn_translate.setObjectName("shot-translate-btn")
+        self.btn_translate.setFixedSize(20, 20)
+        self.btn_translate.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_translate.setToolTip(tr('shot_translate_tooltip'))
+        self.btn_translate.setStyleSheet(
+            "QPushButton#shot-translate-btn {"
+            " background:transparent; border:none; border-radius:4px; }"
+            "QPushButton#shot-translate-btn:hover {"
+            " background:rgba(110,76,196,0.30); }")
+        try:
+            self.btn_translate.setIcon(_sa.get_icon('languages'))
+            self.btn_translate.setIconSize(QSize(14, 14))
+        except Exception:
+            traceback.print_exc()
+        self.btn_translate.clicked.connect(self._on_translate_clicked)
+        drow.addWidget(self.btn_translate, alignment=Qt.AlignmentFlag.AlignTop)
+        self.dialog_row.hide()
+        lay.addWidget(self.dialog_row)
 
         lay.addStretch()
 
@@ -369,6 +400,17 @@ class ShotCard(QFrame):
         исключение из eventFilter в qFatal()→abort() (краш всего приложения).
         """
         try:
+            # 2026-06-03 (Этап 2): клик мимо поповера перевода (и мимо кнопки)
+            # → закрыть. Фильтр на QApplication ловит клики где угодно.
+            if (self._tr_popup is not None and self._tr_popup.isVisible()
+                    and event.type() == QEvent.Type.MouseButtonPress):
+                gp = event.globalPosition().toPoint()
+                in_popup = self._tr_popup.rect().contains(
+                    self._tr_popup.mapFromGlobal(gp))
+                in_btn = self.btn_translate.rect().contains(
+                    self.btn_translate.mapFromGlobal(gp))
+                if not in_popup and not in_btn:
+                    self._hide_tr_popup()
             if watched is self.img_container:
                 if event.type() == QEvent.Type.Enter:
                     # Защита от повторных Enter (Qt может слать несколько при
@@ -441,12 +483,16 @@ class ShotCard(QFrame):
 
     def set_shot_info(self, shot: Dict):
         self._is_blank = bool(shot.get("is_blank"))
+        # Смена шота/блока → закрыть открытый поповер перевода и сбросить тексты.
+        self._hide_tr_popup()
+        self._dlg_en = ""
+        self._dlg_ru = ""
         if self._is_blank:
             self.num_label.setText(tr('empty_shot'))
             self.dur_label.setText("")
             self.desc_label.setText("")
             self.dialog_label.clear()
-            self.dialog_label.hide()
+            self.dialog_row.hide()
             self.new_badge.hide()  # для пустого шота нечего быть «новым»
             self.gen_time_label.hide()
             # Пустые шоты не дают hover-overlay — мгновенно скрываем
@@ -457,14 +503,87 @@ class ShotCard(QFrame):
             self.num_label.setText(f"SHOT {shot['shot_num']}")
             self.dur_label.setText(shot["duration"])
             self.desc_label.setText(shot["description"])
-            # Реплика (dialog.en) — в кавычках под описанием; нет → скрыть.
-            en = (shot.get("dialog_en") or "").strip()
-            if en:
-                self.dialog_label.setText(f'"{en}"')
-                self.dialog_label.show()
+            # Реплика (dialog.en) — в кавычках под описанием; нет → скрыть строку
+            # вместе с кнопкой перевода. ru — для мгновенного перевода (Этап 2).
+            self._dlg_en = (shot.get("dialog_en") or "").strip()
+            self._dlg_ru = (shot.get("dialog_ru") or "").strip()
+            if self._dlg_en:
+                self.dialog_label.setText(f'"{self._dlg_en}"')
+                self.dialog_row.show()
             else:
                 self.dialog_label.clear()
-                self.dialog_label.hide()
+                self.dialog_row.hide()
+
+    # ── Перевод реплики (Этап 2) ────────────────────────────────────────
+    def _on_translate_clicked(self):
+        """Toggle поповера перевода. ru → готовый dialog.ru; en → оригинал
+        (мгновенно из данных); uk → «Перевожу…» + запрос Haiku у MainWindow."""
+        if self._tr_popup is not None and self._tr_popup.isVisible():
+            self._hide_tr_popup()
+            return
+        lang = get_lang()
+        if lang == 'en':
+            self._show_tr_popup(self._dlg_en)
+        elif lang == 'ru':
+            self._show_tr_popup(self._dlg_ru or self._dlg_en)
+        else:  # uk и прочие — готового перевода в данных нет
+            self._show_tr_popup(tr('translating'))
+            self.translate_requested.emit(self.panel_idx, self._dlg_en)
+
+    def _show_tr_popup(self, text: str):
+        """Показать поповер у кнопки перевода. Parented к window() — чтобы не
+        обрезался скроллом блока. Клик мимо закрывает (eventFilter на QApp)."""
+        win = self.window()
+        if self._tr_popup is None:
+            self._tr_popup = QFrame(win)
+            self._tr_popup.setObjectName("tr-popup")
+            self._tr_popup.setStyleSheet(
+                "QFrame#tr-popup { background:#15101f;"
+                " border:1px solid #322545; border-radius:8px; }"
+                "QLabel#tr-popup-text { color:#e8e0f5; font-size:12px; }")
+            pl = QVBoxLayout(self._tr_popup)
+            pl.setContentsMargins(12, 10, 12, 10)
+            self._tr_popup_lbl = QLabel("", self._tr_popup)
+            self._tr_popup_lbl.setObjectName("tr-popup-text")
+            self._tr_popup_lbl.setWordWrap(True)
+            self._tr_popup_lbl.setMaximumWidth(260)
+            pl.addWidget(self._tr_popup_lbl)
+        self._tr_popup_lbl.setText(text or "—")
+        self._tr_popup.adjustSize()
+        # Позиция: под кнопкой, правый край у кнопки, клампим в окно.
+        btn_bl = self.btn_translate.mapTo(
+            win, QPoint(0, self.btn_translate.height()))
+        x = btn_bl.x() + self.btn_translate.width() - self._tr_popup.width()
+        y = btn_bl.y() + 4
+        x = max(8, min(x, win.width() - self._tr_popup.width() - 8))
+        y = max(8, min(y, win.height() - self._tr_popup.height() - 8))
+        self._tr_popup.move(x, y)
+        self._tr_popup.show()
+        self._tr_popup.raise_()
+        # Снимаем ПЕРЕД установкой → гарантированно ОДИН экземпляр фильтра на
+        # QApplication (повторные показы не накапливают фильтры; remove без
+        # предварительной установки — no-op). Фильтр на img_container — на
+        # другом мониторируемом объекте, этим не затрагивается.
+        app = QApplication.instance()
+        app.removeEventFilter(self)
+        app.installEventFilter(self)
+
+    def set_translation_result(self, text: str):
+        """Зов из MainWindow когда uk-перевод готов (или ошибка) — обновляет
+        текст поповера, если он ещё открыт. Для ru/en не используется."""
+        if (self._tr_popup is not None and self._tr_popup.isVisible()
+                and getattr(self, "_tr_popup_lbl", None) is not None):
+            self._tr_popup_lbl.setText(text or "—")
+            self._tr_popup.adjustSize()
+
+    def _hide_tr_popup(self):
+        """Скрыть поповер перевода и снять eventFilter с QApplication."""
+        if self._tr_popup is not None and self._tr_popup.isVisible():
+            self._tr_popup.hide()
+        try:
+            QApplication.instance().removeEventFilter(self)
+        except Exception:
+            pass
 
     def apply_lang(self):
         """Перевести тексты overlay-кнопок и плейсхолдер «ПУСТО» на текущий язык."""
@@ -480,6 +599,9 @@ class ShotCard(QFrame):
             self.overlay_edit_btn.setToolTip(tr('overlay_edit').split('\n')[-1])
         if hasattr(self, 'overlay_regen_btn'):
             self.overlay_regen_btn.setToolTip(tr('overlay_regen').split('\n')[-1])
+        # Tooltip кнопки перевода — языкозависим (сама реплика английская).
+        if hasattr(self, 'btn_translate'):
+            self.btn_translate.setToolTip(tr('shot_translate_tooltip'))
 
     def set_new_badge(self, visible: bool):
         """Показ/скрытие бейджа NEW (только для НЕ-пустых шотов)."""

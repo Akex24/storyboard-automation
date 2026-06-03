@@ -2480,12 +2480,13 @@ def get_block_shot_durations(ep_id: str, block_n: int) -> Dict[int, int]:
     return out
 
 
-def get_block_shot_dialogs(ep_id: str, block_n: int) -> Dict[int, str]:
-    """Возвращает словарь `{shot_n: dialog.en}` для блока эпизода — только
-    шоты с НЕПУСТОЙ репликой. Источник — `_agent_log_<ep>.json` (тот же
-    первоисточник, что у Seedance-промпта). Пусто если данных/реплик нет.
-    Зеркало get_block_shot_durations (Этап 1 — реплика под карточкой шота)."""
-    out: Dict[int, str] = {}
+def get_block_shot_dialogs(ep_id: str, block_n: int) -> Dict[int, Dict[str, str]]:
+    """Возвращает `{shot_n: {"en": ..., "ru": ...}}` для блока эпизода —
+    только шоты с НЕПУСТОЙ репликой (дискриминатор — en). Источник —
+    `_agent_log_<ep>.json` (тот же первоисточник, что у Seedance-промпта).
+    Пусто если данных/реплик нет. Зеркало get_block_shot_durations.
+    Этап 1 — реплика (en) под карточкой; Этап 2 — ru для перевода."""
+    out: Dict[int, Dict[str, str]] = {}
     card = _load_montage_card(ep_id)
     if not card:
         return out
@@ -2499,10 +2500,74 @@ def get_block_shot_dialogs(ep_id: str, block_n: int) -> Dict[int, str]:
                     en = (d.get("en") or "").strip()
                     if en:
                         try:
-                            out[int(s.get("n", 0))] = en
+                            out[int(s.get("n", 0))] = {
+                                "en": en,
+                                "ru": (d.get("ru") or "").strip(),
+                            }
                         except Exception:
                             pass
             break
+    except Exception:
+        pass
+    return out
+
+
+def _uk_tr_path(ep_id: str) -> Path:
+    """Путь файла украинских переводов реплик эпизода (per-episode). Лежит в
+    output/ рядом с _agent_log_<ep>.json — НЕ в .cache/ (не под выборочной
+    чисткой _on_block_refs_btn); удаляется явно при «Удалить эпизод»."""
+    return SHOW_ROOT / "output" / f"_translations_uk_{ep_id}.json"
+
+
+def load_uk_translations(ep_id: str) -> Dict[str, str]:
+    """Читает {en: uk} из файла эпизода. Нет файла / битый / не dict → {}.
+    Только валидные непустые строковые пары."""
+    out: Dict[str, str] = {}
+    try:
+        p = _uk_tr_path(ep_id)
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(k, str) and isinstance(v, str) and k and v:
+                        out[k] = v
+    except Exception:
+        pass
+    return out
+
+
+def save_uk_translations(ep_id: str, mapping: Dict[str, str]) -> None:
+    """Атомарно (temp + os.replace) пишет {en: uk} в файл эпизода. mapping —
+    полный словарь для записи (caller формирует подмножество реплик этого
+    эпизода). Ошибки молча игнорим — перевод не критичен для работы."""
+    try:
+        p = _uk_tr_path(ep_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(mapping, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(str(tmp), str(p))
+    except Exception:
+        traceback.print_exc()
+
+
+def collect_episode_dialogs_en(ep_id: str) -> List[str]:
+    """Уникальные непустые dialog.en по ВСЕМ блокам монтажки эпизода (тот же
+    источник, что реплики под карточками). Пусто если карты нет."""
+    out: List[str] = []
+    seen = set()
+    card = _load_montage_card(ep_id)
+    if not card:
+        return out
+    try:
+        for b in (card.get("blocks") or []):
+            for s in (b.get("shots") or []):
+                d = s.get("dialog")
+                if isinstance(d, dict):
+                    en = (d.get("en") or "").strip()
+                    if en and en not in seen:
+                        seen.add(en)
+                        out.append(en)
     except Exception:
         pass
     return out
@@ -5270,6 +5335,15 @@ class MainWindow(QMainWindow):
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
         self._active_regens: Dict[tuple, GenerateThread] = {}
+        # 2026-06-03 (Этап 2): перевод реплик на uk через Haiku. Кэш {en→uk}
+        # (повторный клик не дёргает модель) + список живых тредов (чтобы их
+        # не собрал GC до завершения).
+        self._uk_tr_cache: Dict[str, str] = {}
+        self._translate_threads: list = []
+        # Эпизоды, чей файл переводов уже подгружен в кэш (ленивая загрузка).
+        self._uk_tr_loaded_eps: set = set()
+        # Эпизоды с идущим батч-переводом — гард от дубля при кликах подряд.
+        self._uk_tr_busy_eps: set = set()
         # 2026-06-02: буфер копирования картинки шота между шотами/блоками.
         # Храним БАЙТЫ (снимок активной картинки на момент Copy), не путь —
         # чтобы вставка не зависела от последующих изменений источника.
@@ -7272,6 +7346,8 @@ class MainWindow(QMainWindow):
             # 2026-06-02: копирование активной картинки между шотами/блоками.
             card.copy_requested.connect(self._on_copy_shot)
             card.paste_requested.connect(self._on_paste_shot)
+            # 2026-06-03 (Этап 2): перевод реплики (uk) через Haiku.
+            card.translate_requested.connect(self._on_translate_shot)
             self.shot_cards.append(card)
             self.cards_row.addWidget(card)
         self.cards_row.addStretch()
@@ -9457,6 +9533,19 @@ class MainWindow(QMainWindow):
                 agent_log.unlink()
         except Exception as ex:
             errors.append(f"agent_log: {ex}")
+        # 6b. Украинские переводы реплик `output/_translations_uk_<ep>.json`
+        # (Этап 2). Файл в output/ (не .cache/) → чистим явно, как _agent_log.
+        try:
+            uk_tr = _uk_tr_path(ep_id)
+            if uk_tr.exists():
+                uk_tr.unlink()
+        except Exception as ex:
+            errors.append(f"translations_uk: {ex}")
+        # Сброс флага загрузки кэша эпизода (на случай пересоздания с тем же id).
+        try:
+            self._uk_tr_loaded_eps.discard(ep_id)
+        except Exception:
+            pass
 
         # Сбрасываем кэш unseen/active по этому эпизоду — чтобы счётчики
         # не показывали NEW для удалённых блоков
@@ -10494,17 +10583,19 @@ class MainWindow(QMainWindow):
             except Exception:
                 traceback.print_exc()
 
-            # 2026-06-03 (Этап 1): реплика под карточкой шота — патчим
-            # s["dialog_en"] из монтажки (первоисточник), симметрично
-            # длительностям. Нет монтажки/реплики → ключ не добавится →
-            # ShotCard.set_shot_info спрячет dialog_label.
+            # 2026-06-03 (Этап 1/2): реплика под карточкой шота — патчим
+            # s["dialog_en"] (+ "dialog_ru" для перевода) из монтажки
+            # (первоисточник), симметрично длительностям. Нет монтажки/реплики
+            # → ключи не добавятся → ShotCard.set_shot_info спрячет строку.
             try:
                 dialogs = get_block_shot_dialogs(ep, int(blk_n))
                 if dialogs:
                     for s in shots:
-                        en = dialogs.get(int(s.get("shot_num", 0)))
-                        if en:
-                            s["dialog_en"] = en
+                        dd = dialogs.get(int(s.get("shot_num", 0)))
+                        if dd:
+                            s["dialog_en"] = dd.get("en", "")
+                            if dd.get("ru"):
+                                s["dialog_ru"] = dd["ru"]
             except Exception:
                 traceback.print_exc()
 
@@ -10740,6 +10831,101 @@ class MainWindow(QMainWindow):
         self._refresh_block_indicator(self.current_block)
         self.refresh_open_shot_viewer(self.current_block, panel_idx)
         self.status_bar.showMessage(tr('status_shot_pasted', n=panel_idx + 1))
+
+    def _on_translate_shot(self, panel_idx: int, en_text: str):
+        """2026-06-03 (Этап 2): перевод реплик эпизода на украинский через
+        Haiku ОДНИМ батчем + персист (output/_translations_uk_<ep>.json).
+        Клик переводит не одну реплику, а ВСЕ непереведённые реплики эпизода —
+        старт CLI (~8с) платится один раз. Кэш {en→uk} (память + файл) →
+        повторные клики мгновенные. Гард _uk_tr_busy_eps от дубля батча."""
+        en = (en_text or "").strip()
+        ep = self._current_episode
+        if not en or not ep:
+            return
+        card = (self.shot_cards[panel_idx]
+                if 0 <= panel_idx < len(self.shot_cards) else None)
+        if card is None:
+            return
+        # Ленивая подгрузка файла эпизода в кэш (поверх памяти, не затирая).
+        if ep not in self._uk_tr_loaded_eps:
+            self._uk_tr_cache.update(load_uk_translations(ep))
+            self._uk_tr_loaded_eps.add(ep)
+        # Кэш-хит → мгновенно, без модели.
+        cached = self._uk_tr_cache.get(en)
+        if cached:
+            card.set_translation_result(cached)
+            return
+        # Гард: батч по эпизоду уже идёт — оставляем «Перекладаю…», карточка
+        # возьмёт перевод из кэша по готовности первого батча (_apply_uk_batch_result).
+        if ep in self._uk_tr_busy_eps:
+            return
+        cli = find_claude_cli()
+        if not cli:
+            card.set_translation_result(tr('translate_error'))
+            return
+        pending = [e for e in collect_episode_dialogs_en(ep)
+                   if e not in self._uk_tr_cache]
+        if not pending:
+            card.set_translation_result(tr('translate_error'))
+            return
+        try:
+            from threads.translate import TranslateThread
+        except Exception:
+            traceback.print_exc()
+            card.set_translation_result(tr('translate_error'))
+            return
+        th = TranslateThread(self._project_root, cli, pending, "uk",
+                             model="claude-haiku-4-5")
+        self._translate_threads.append(th)
+        self._uk_tr_busy_eps.add(ep)
+
+        def _done(mapping: dict):
+            self._uk_tr_busy_eps.discard(ep)
+            try:
+                if mapping:
+                    self._uk_tr_cache.update(mapping)
+                    # Файл = только реплики ЭТОГО эпизода, что есть в кэше.
+                    ep_en = collect_episode_dialogs_en(ep)
+                    file_map = {e: self._uk_tr_cache[e] for e in ep_en
+                                if e in self._uk_tr_cache}
+                    save_uk_translations(ep, file_map)
+            except Exception:
+                traceback.print_exc()
+            # Обновить открытые поповеры из кэша (ожидавшая карточка покажет перевод).
+            self._apply_uk_batch_result()
+            # Кликнутую реплику модель могла пропустить → явная ошибка.
+            if en not in self._uk_tr_cache:
+                card.set_translation_result(tr('translate_error'))
+            try:
+                self._translate_threads.remove(th)
+            except ValueError:
+                pass
+
+        def _err(_msg: str):
+            self._uk_tr_busy_eps.discard(ep)
+            card.set_translation_result(tr('translate_error'))
+            try:
+                self._translate_threads.remove(th)
+            except ValueError:
+                pass
+
+        th.result_ready.connect(_done)
+        th.failed.connect(_err)
+        th.start()
+
+    def _apply_uk_batch_result(self):
+        """После батча обновить ОТКРЫТЫЕ поповеры перевода на карточках из
+        кэша. set_translation_result сам no-op'ит если поповер скрыт, поэтому
+        безопасно пройтись по всем; обновятся только видимые с готовым uk
+        (ru/en-поповеры не трогаем — для них en→uk в кэше нет)."""
+        for c in self.shot_cards:
+            try:
+                en = (getattr(c, "_dlg_en", "") or "").strip()
+                uk = self._uk_tr_cache.get(en)
+                if uk:
+                    c.set_translation_result(uk)
+            except Exception:
+                pass
 
     def _on_edit_shot(self, panel_idx: int):
         """2026-05-06: Поведение полностью перепроектировано.
