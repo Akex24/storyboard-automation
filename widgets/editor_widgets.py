@@ -334,6 +334,17 @@ class ShotCard(QFrame):
         self.desc_label.setMaximumWidth(self.CARD_W + 20)
         lay.addWidget(self.desc_label)
 
+        # 2026-06-03 (Этап 1): реплика шота (dialog.en из монтажной карты) —
+        # ВМЕСТЕ с описанием, отдельной строкой ниже, в кавычках, своим цветом
+        # (QSS #shot-dialog). Заполняется в set_shot_info из shot["dialog_en"];
+        # нет реплики → hide(). wordWrap без обрезки — места под описанием много.
+        self.dialog_label = QLabel("")
+        self.dialog_label.setObjectName("shot-dialog")
+        self.dialog_label.setWordWrap(True)
+        self.dialog_label.setMaximumWidth(self.CARD_W + 20)
+        self.dialog_label.hide()
+        lay.addWidget(self.dialog_label)
+
         lay.addStretch()
 
         # Скрытые кнопки для обратной совместимости с set_loading логикой —
@@ -434,6 +445,8 @@ class ShotCard(QFrame):
             self.num_label.setText(tr('empty_shot'))
             self.dur_label.setText("")
             self.desc_label.setText("")
+            self.dialog_label.clear()
+            self.dialog_label.hide()
             self.new_badge.hide()  # для пустого шота нечего быть «новым»
             self.gen_time_label.hide()
             # Пустые шоты не дают hover-overlay — мгновенно скрываем
@@ -444,6 +457,14 @@ class ShotCard(QFrame):
             self.num_label.setText(f"SHOT {shot['shot_num']}")
             self.dur_label.setText(shot["duration"])
             self.desc_label.setText(shot["description"])
+            # Реплика (dialog.en) — в кавычках под описанием; нет → скрыть.
+            en = (shot.get("dialog_en") or "").strip()
+            if en:
+                self.dialog_label.setText(f'"{en}"')
+                self.dialog_label.show()
+            else:
+                self.dialog_label.clear()
+                self.dialog_label.hide()
 
     def apply_lang(self):
         """Перевести тексты overlay-кнопок и плейсхолдер «ПУСТО» на текущий язык."""

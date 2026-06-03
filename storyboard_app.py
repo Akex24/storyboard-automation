@@ -2480,6 +2480,34 @@ def get_block_shot_durations(ep_id: str, block_n: int) -> Dict[int, int]:
     return out
 
 
+def get_block_shot_dialogs(ep_id: str, block_n: int) -> Dict[int, str]:
+    """Возвращает словарь `{shot_n: dialog.en}` для блока эпизода — только
+    шоты с НЕПУСТОЙ репликой. Источник — `_agent_log_<ep>.json` (тот же
+    первоисточник, что у Seedance-промпта). Пусто если данных/реплик нет.
+    Зеркало get_block_shot_durations (Этап 1 — реплика под карточкой шота)."""
+    out: Dict[int, str] = {}
+    card = _load_montage_card(ep_id)
+    if not card:
+        return out
+    try:
+        for b in (card.get("blocks") or []):
+            if int(b.get("n", 0)) != int(block_n):
+                continue
+            for s in (b.get("shots") or []):
+                d = s.get("dialog")
+                if isinstance(d, dict):
+                    en = (d.get("en") or "").strip()
+                    if en:
+                        try:
+                            out[int(s.get("n", 0))] = en
+                        except Exception:
+                            pass
+            break
+    except Exception:
+        pass
+    return out
+
+
 def block_total_duration(block_name: str) -> int:
     """Сумма длительностей шотов блока. Сначала пробуем `_agent_log_<ep>.json`
     (надёжный JSON источник), потом fallback на парсинг annotation
@@ -3198,6 +3226,7 @@ QLabel#block-title      { font-size: 14px; color: #ffffff; font-weight: 500; let
 QLabel#shot-num         { font-size: 13px; font-weight: 600; color: #fff; }
 QLabel#shot-dur         { font-size: 11px; color: #666; }
 QLabel#shot-desc        { font-size: 11px; color: #888; }
+QLabel#shot-dialog      { font-size: 11px; color: #b9a7e6; font-style: italic; }
 QLabel#step-label       { font-size: 11px; color: #5a8a5a; }
 QLabel#new-badge {
     color: #ffaa44; font-size: 10px; font-weight: bold;
@@ -10462,6 +10491,20 @@ class MainWindow(QMainWindow):
                         d = durations.get(int(s.get("shot_num", 0)))
                         if d:
                             s["duration"] = f"{d}с"
+            except Exception:
+                traceback.print_exc()
+
+            # 2026-06-03 (Этап 1): реплика под карточкой шота — патчим
+            # s["dialog_en"] из монтажки (первоисточник), симметрично
+            # длительностям. Нет монтажки/реплики → ключ не добавится →
+            # ShotCard.set_shot_info спрячет dialog_label.
+            try:
+                dialogs = get_block_shot_dialogs(ep, int(blk_n))
+                if dialogs:
+                    for s in shots:
+                        en = dialogs.get(int(s.get("shot_num", 0)))
+                        if en:
+                            s["dialog_en"] = en
             except Exception:
                 traceback.print_exc()
 
