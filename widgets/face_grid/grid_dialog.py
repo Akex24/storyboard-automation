@@ -129,7 +129,7 @@ class StoryboardView(QGraphicsView):
     def wheelEvent(self, e):
         if self.pixmap_item is None:
             return
-        step = 1.05 if e.angleDelta().y() > 0 else 1.0 / 1.05
+        step = 1.008 if e.angleDelta().y() > 0 else 1.0 / 1.008
         cur_rel = (self.transform().m11() / self._fit_scale
                    if self._fit_scale else 1.0)
         new_rel = cur_rel * step
