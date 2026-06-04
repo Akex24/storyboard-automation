@@ -403,8 +403,11 @@ class _GridThumb(QFrame):
 
         # «×» удаления — дочерний QPushButton (нативно потребляет клик, не
         # триггерит выбор миниатюры). Позиционируем абсолютно в правый угол.
-        self.del_btn = QPushButton("×", self)
+        from storyboard_app import get_icon
+        self.del_btn = QPushButton(self)
         self.del_btn.setObjectName("grid-thumb-del")
+        self.del_btn.setIcon(get_icon('x'))
+        self.del_btn.setIconSize(QSize(12, 12))
         self.del_btn.setFixedSize(16, 16)
         self.del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.del_btn.setToolTip(tr('grid_del_tooltip'))
@@ -426,9 +429,10 @@ class _GridThumb(QFrame):
             f"#GridThumb {{ background:{bg}; border:{border};"
             f" border-radius:6px; }}"
             "QPushButton#grid-thumb-del {"
-            " background:rgba(10,10,13,0.7); color:#fff; border:none;"
-            " border-radius:8px; font-size:12px; font-weight:600; }"
-            "QPushButton#grid-thumb-del:hover { background:#e4344a; }")
+            " background:rgba(10,6,18,0.7); border:none;"
+            " border-radius:8px; }"
+            "QPushButton#grid-thumb-del:hover {"
+            " background:rgba(150,40,40,0.9); }")
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
