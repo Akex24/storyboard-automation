@@ -237,11 +237,14 @@ class GenerateThread(QThread):
         # возвращала картинку почти 1:1 (с шумом, но без перестановки).
         # Новая версия явно РАЗРЕШАЕТ перестановки персонажей и оставляет
         # защищёнными только то что должно быть одинаковым ВСЕГДА:
-        # художественный стиль (pencil sketch), формат (9:16), сеттинг.
+        # художественный стиль = НАСЛЕДУЕТСЯ от [@]img0 (скетч ИЛИ фото —
+        # промпт не форсит pencil sketch, иначе правка реалистичной версии
+        # откатывалась бы в ч-б скетч), формат (9:16), сеттинг.
         return (
-            "[@]img0 is the CURRENT storyboard panel — pencil sketch, "
-            "black and white, vertical 9:16 format. Use it as the BASE "
-            "for modification.\n\n"
+            "[@]img0 is the CURRENT panel, vertical 9:16 format. Use it as "
+            "the BASE for modification and PRESERVE its exact existing art "
+            "style, rendering and color treatment — whether it is a pencil "
+            "sketch or a photorealistic frame.\n\n"
             "REFERENCE LEGEND (use these faces/objects when modifying):\n"
             f"{legend}\n\n"
             f"MODIFICATION REQUESTED: {instruction}\n\n"
@@ -252,13 +255,14 @@ class GenerateThread(QThread):
             "modifying:\n"
             "- Match character faces to their reference images "
             "([@]img5, [@]img6, etc.) by name in the legend above\n"
-            "- Keep the same art style (pencil sketch, black and white, "
-            "clear outlines)\n"
+            "- Keep the EXACT same art style, rendering and color treatment "
+            "as [@]img0 — do NOT convert between sketch and photo, do NOT "
+            "add or remove color, do NOT turn it black-and-white\n"
             "- Keep the same vertical 9:16 format\n"
             "- Use the same setting/location ([@]img1) unless instructed "
             "otherwise\n"
-            "Output: single vertical 9:16 panel, same pencil sketch "
-            "black and white style as [@]img0."
+            "Output: single vertical 9:16 panel in the exact same visual "
+            "style, rendering and color treatment as [@]img0."
         )
 
     def _build_realistic_prompt(self, source_prompt: str,
