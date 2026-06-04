@@ -147,6 +147,14 @@ overlay-кнопка `flip-horizontal-2` (родитель `preview_view`, НЕ 
 `clear`) — иначе отзум на отзеркаленном снёс бы зеркало. mirror=false → пути
 идентичны чистому кропу (байт-в-байт, проверено md5).
 
+**Удаление версий (2026-06-04):** крестик `x` на `VersionThumb` (скрыт на
+минимальной версии и на активной) → `delete_shot_version(history_dir, n,
+active_path)`: удаляет v{N}+orig_v{N}+crop_v{N}.json, перенумеровывает хвост
+m>N вниз на 1 ЛОКСТЕП (v/orig/crop вместе), активная едет по картинке (A>N →
+A-1). Anti-clobber: ascending-порядок + проверка not target.exists() перед
+os.replace. Видимость крестиков — `_refresh_thumb_deletability` (лёгкий, без
+пересоздания ленты) после смены active без refresh (клик/зеркало).
+
 ## Архитектурные решения которые легко забыть
 
 - **Anthropic API напрямую НЕ вызывается.** `pipeline.py` использует только

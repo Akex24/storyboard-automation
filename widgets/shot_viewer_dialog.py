@@ -27,7 +27,7 @@ from PyQt6.QtGui import QPixmap, QTransform
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
-    QStackedWidget
+    QStackedWidget, QMessageBox
 )
 
 from i18n import tr
@@ -50,14 +50,16 @@ class VersionThumb(QFrame):
     """Кликабельная миниатюра версии в ленте."""
 
     clicked = pyqtSignal(int)  # version_n
+    delete_requested = pyqtSignal(int)  # version_n — крестик удаления
 
     def __init__(self, version_n: int, image_path: Path, is_active: bool,
-                 parent=None):
+                 can_delete: bool = False, parent=None):
         super().__init__(parent)
         self.version_n = version_n
         self.image_path = image_path
         self._is_active = is_active
         self._is_selected = is_active  # выбран по умолчанию = активный
+        self._can_delete = can_delete
         self.setObjectName("VersionThumb")
         self.setFixedSize(THUMB_W + 6, THUMB_H + 28)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -86,6 +88,27 @@ class VersionThumb(QFrame):
             pass
         lay.addWidget(self.img_lbl, alignment=Qt.AlignmentFlag.AlignHCenter)
 
+        # 2026-06-04: крестик удаления версии — overlay в top-right превьюшки
+        # (родитель img_lbl, НЕ в layout, thumb фикс-размера → простой move).
+        # Виден только если can_delete (не v1, не активная). Клик съедается
+        # кнопкой → QFrame.mousePressEvent (выбор версии) не сработает.
+        from storyboard_app import get_icon
+        self.btn_del = QPushButton(self.img_lbl)
+        self.btn_del.setObjectName("thumb-del")
+        self.btn_del.setIcon(get_icon('x'))
+        self.btn_del.setIconSize(QSize(12, 12))
+        self.btn_del.setFixedSize(18, 18)
+        self.btn_del.move(THUMB_W - 18 - 2, 2)
+        self.btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_del.setStyleSheet(
+            "QPushButton#thumb-del { background:rgba(10,6,18,0.7);"
+            " border:none; border-radius:9px; }"
+            "QPushButton#thumb-del:hover { background:rgba(150,40,40,0.9); }")
+        self.btn_del.clicked.connect(
+            lambda: self.delete_requested.emit(self.version_n))
+        self.btn_del.setVisible(self._can_delete)
+        self.btn_del.raise_()
+
         active_suffix = "  ✓" if self._is_active else ""
         self.label = QLabel(f"v{self.version_n}{active_suffix}")
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -100,6 +123,12 @@ class VersionThumb(QFrame):
     def set_selected(self, selected: bool):
         self._is_selected = selected
         self._refresh_style()
+
+    def set_deletable(self, ok: bool):
+        """Показывает/прячет крестик удаления (без пересоздания thumb)."""
+        self._can_delete = bool(ok)
+        if hasattr(self, 'btn_del'):
+            self.btn_del.setVisible(self._can_delete)
 
     def _refresh_style(self):
         if self._is_selected:
@@ -485,6 +514,7 @@ class ShotViewerDialog(QDialog):
             cur = read_shot_crop(self.history_dir, self._selected_version)
             self.btn_mirror.setChecked(bool(cur and cur.get('mirror')))
             self.crop_committed.emit(self.panel_idx)
+            self._refresh_thumb_deletability()
         except Exception:
             import sys
             import traceback
@@ -650,6 +680,42 @@ class ShotViewerDialog(QDialog):
                 tr('shot_viewer_selected_other', n=version_n))
         # 2026-06-01: клик по версии — ТОЛЬКО просмотр-превью, без записи на
         # диск. Активация выделенной происходит при действии или закрытии.
+        self._refresh_thumb_deletability()
+
+    def _refresh_thumb_deletability(self):
+        """Лёгкий пересчёт видимости крестиков (без пересоздания ленты).
+        Крестик скрыт на минимальной версии и на ВЫБРАННОЙ (selected). Зовётся
+        после смены selected без полного refresh (клик/зеркало)."""
+        mn = getattr(self, '_min_version', 0)
+        for thumb in self._thumbs:
+            thumb.set_deletable(thumb.version_n != mn
+                                and thumb.version_n != self._selected_version)
+
+    def _on_delete_version(self, version_n: int):
+        """Крестик → подтверждение → delete_shot_version (удаление +
+        перенумерация локстеп на диске) → refresh ленты + рефреш карточки."""
+        ans = QMessageBox.question(
+            self,
+            tr('shot_viewer_delete_title'),
+            tr('shot_viewer_delete_confirm', n=int(version_n)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from storyboard_app import delete_shot_version
+            new_active = delete_shot_version(
+                self.history_dir, int(version_n), self.active_path)
+        except Exception:
+            import sys
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            return
+        if new_active < 1:
+            return  # гард (v1/активная) или ошибка → диск не изменён
+        self.refresh()                            # лента без дырок, крестики ок
+        self.crop_committed.emit(self.panel_idx)  # рефреш карточки грида
 
     def refresh(self):
         """Перерисовка списка версий и превью. Зовётся:
@@ -677,6 +743,13 @@ class ShotViewerDialog(QDialog):
         from storyboard_app import list_shot_versions, read_active_version
         versions = list_shot_versions(self.history_dir)
         self._active_version = read_active_version(self.history_dir)
+        _nums = []
+        for _p in versions:
+            try:
+                _nums.append(int(_p.stem[1:]))
+            except (ValueError, IndexError):
+                continue
+        self._min_version = min(_nums) if _nums else 0
         # Если active не в списке (например 0) — берём максимальный v.
         if not any(p.stem == f"v{self._active_version}" for p in versions):
             if versions:
@@ -707,20 +780,26 @@ class ShotViewerDialog(QDialog):
 
         self.empty_versions_lbl.hide()
         self.strip_scroll.show()
+        # Selected = active по умолчанию, ставим ДО построения thumbs — иначе на
+        # момент цикла _selected_version стейл из прошлого refresh. Так крестик
+        # сразу скрыт на выбранной (= активной при первом построении).
+        self._selected_version = self._active_version
         for p in versions:
             try:
                 n = int(p.stem[1:])
             except (ValueError, IndexError):
                 continue
             is_active = (n == self._active_version)
-            thumb = VersionThumb(n, p, is_active)
+            can_delete = (n != self._min_version
+                          and n != self._selected_version)
+            thumb = VersionThumb(n, p, is_active, can_delete=can_delete)
             thumb.clicked.connect(self._on_thumb_clicked)
+            thumb.delete_requested.connect(self._on_delete_version)
             self.strip_layout.insertWidget(
                 self.strip_layout.count() - 1, thumb)
             self._thumbs.append(thumb)
 
-        # 5) Selected = active (по умолчанию).
-        self._selected_version = self._active_version
+        # 5) Визуальное выделение активной (selected уже = active, см. выше).
         for thumb in self._thumbs:
             thumb.set_selected(thumb.version_n == self._active_version)
         # Превью активной (с учётом сохранённого кропа).
