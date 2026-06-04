@@ -515,12 +515,11 @@ class ActorPhotosDialog(QDialog):
                     lambda _checked=False, path=p: self._on_edit_thumb(path))
                 cell_lay.addWidget(edit_btn)
             if self.enable_texture:
-                # 2026-06-03: текстура выведена из игры — кнопка серая
-                # заглушка (код _on_texture_thumb / сигнал / тред НЕ удаляем).
+                # 2026-06-04: текстура снова активна (была временно
+                # заблокирована в Коммите 2 фичи «сетка на лицо»).
                 texture_btn = QPushButton(tr('actor_photos_texture_btn'))
                 texture_btn.setObjectName("photos-texture")
                 texture_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                texture_btn.setEnabled(False)
                 texture_btn.clicked.connect(
                     lambda _checked=False, path=p: self._on_texture_thumb(path))
                 cell_lay.addWidget(texture_btn)
@@ -545,6 +544,13 @@ class ActorPhotosDialog(QDialog):
         for c in range(cols):
             grid.setColumnStretch(c, 0)
         grid.setColumnStretch(cols, 1)
+        # Фантомная строка-распорка под контентом забирает лишнюю
+        # вертикальную высоту (scroll.setWidgetResizable(True) раздувает
+        # inner). Без неё слабина делится между строками контента →
+        # cell_lay (без trailing stretch) растягивает кнопки по высоте.
+        # Зеркало трюка с фантомной колонкой выше.
+        n_rows = (len(self.photos) - 1) // cols + 1
+        grid.setRowStretch(n_rows, 1)
         scroll.setWidget(inner)
         self._grid_page_lay.addWidget(scroll)
 
