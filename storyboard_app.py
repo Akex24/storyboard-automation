@@ -4378,6 +4378,119 @@ def add_shot_version_from_bytes(block_name: str, shot_idx: int,
     return next_n
 
 
+# 2026-06-04 (C2): ОБРАТИМЫЙ кроп версии шота. Видимый v{N}.jpg = оригинал +
+# применённый кроп (уходит в лист/Seedance/zip). Рядом: ЧИСТЫЙ оригинал
+# orig_v{N}.jpg (снимок до первого кропа, неизменен) + параметры
+# crop_v{N}.json (scene_rect в пикселях оригинала). Префиксы orig_/crop_ НЕ
+# начинаются с "v"+цифра → list_shot_versions/_has_any_versions/лента/stitch/
+# Seedance/zip их НЕ видят. Кроп ВСЕГДА считается от оригинала → полностью
+# обратим, без потери качества при повторном редактировании.
+# Cross-platform: pathlib.Path + PIL + shutil + json, без subprocess/shell.
+CROP_JSON_SCHEMA = 1
+
+
+def shot_orig_path(history_dir: Path, n: int) -> Path:
+    """Чистый оригинал версии v{N} (снимок до кропа). list_shot_versions его
+    игнорит (имя не на 'v'+цифра)."""
+    return Path(history_dir) / f"orig_v{int(n)}.jpg"
+
+
+def shot_crop_json_path(history_dir: Path, n: int) -> Path:
+    """Параметры кропа версии v{N} (scene_rect + размеры оригинала)."""
+    return Path(history_dir) / f"crop_v{int(n)}.json"
+
+
+def read_shot_crop(history_dir: Path, n: int) -> Optional[dict]:
+    """crop_v{N}.json → dict или None. Валидный кроп только если есть И json,
+    И orig_v{N}.jpg, И scene_rect с числовыми x/y/w/h."""
+    jp = shot_crop_json_path(history_dir, n)
+    op = shot_orig_path(history_dir, n)
+    if not jp.exists() or not op.exists():
+        return None
+    try:
+        data = json.loads(jp.read_text(encoding='utf-8'))
+        r = data.get('scene_rect') or {}
+        for k in ('x', 'y', 'w', 'h'):
+            float(r[k])
+        return data
+    except Exception:
+        return None
+
+
+def apply_shot_crop(history_dir: Path, n: int, scene_rect: dict,
+                    active_path: Path, img_w: int = 0, img_h: int = 0) -> bool:
+    """Применяет кроп к версии v{N}. При ПЕРВОМ кропе снимает оригинал
+    (v{N} → orig_v{N}); затем v{N}.jpg = crop(orig, scene_rect) → resize к
+    размеру оригинала; пишет crop_v{N}.json; копирует v{N} → active_path +
+    set_active_version(N). scene_rect = {x,y,w,h} в пикселях оригинала.
+    True при успехе. Вырожденный кроп (<2px) → False, файл не трогаем."""
+    history_dir = Path(history_dir)
+    n = int(n)
+    vpath = history_dir / f"v{n}.jpg"
+    opath = shot_orig_path(history_dir, n)
+    if not vpath.exists() and not opath.exists():
+        return False
+    try:
+        if not opath.exists():
+            shutil.copy2(str(vpath), str(opath))  # снимок оригинала ОДИН раз
+        with PILImage.open(str(opath)) as im:
+            W, H = im.size
+            x, y = float(scene_rect['x']), float(scene_rect['y'])
+            w, h = float(scene_rect['w']), float(scene_rect['h'])
+            left = max(0, min(W, int(round(x))))
+            upper = max(0, min(H, int(round(y))))
+            right = max(0, min(W, int(round(x + w))))
+            lower = max(0, min(H, int(round(y + h))))
+            if right - left < 2 or lower - upper < 2:
+                return False
+            crop = im.crop((left, upper, right, lower))
+            if crop.mode != 'RGB':
+                crop = crop.convert('RGB')
+            crop.resize((W, H), PILImage.Resampling.LANCZOS).save(
+                str(vpath), 'JPEG', quality=95)
+        data = {
+            'schema': CROP_JSON_SCHEMA,
+            'scene_rect': {'x': x, 'y': y, 'w': w, 'h': h},
+            'img_w': int(img_w or W), 'img_h': int(img_h or H),
+        }
+        shot_crop_json_path(history_dir, n).write_text(
+            json.dumps(data), encoding='utf-8')
+        shutil.copy2(str(vpath), str(Path(active_path)))
+        set_active_version(history_dir, n)
+        return True
+    except Exception:
+        return False
+
+
+def clear_shot_crop(history_dir: Path, n: int, active_path: Path) -> bool:
+    """Сброс кропа v{N}: восстанавливает v{N} из orig_v{N}, удаляет
+    orig_v{N}.jpg + crop_v{N}.json, копирует v{N} → active_path + active.txt.
+    No-op (False) если оригинала нет (кроп и так не применён)."""
+    history_dir = Path(history_dir)
+    n = int(n)
+    opath = shot_orig_path(history_dir, n)
+    if not opath.exists():
+        return False
+    try:
+        vpath = history_dir / f"v{n}.jpg"
+        shutil.copy2(str(opath), str(vpath))
+        try:
+            opath.unlink()
+        except Exception:
+            pass
+        jp = shot_crop_json_path(history_dir, n)
+        if jp.exists():
+            try:
+                jp.unlink()
+            except Exception:
+                pass
+        shutil.copy2(str(vpath), str(Path(active_path)))
+        set_active_version(history_dir, n)
+        return True
+    except Exception:
+        return False
+
+
 def format_gen_duration(seconds: int) -> str:
     """Форматирует длительность генерации в человекочитаемый вид.
 
