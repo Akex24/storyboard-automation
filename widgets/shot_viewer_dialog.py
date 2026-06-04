@@ -552,6 +552,10 @@ class ShotViewerDialog(QDialog):
             traceback.print_exc(file=sys.stderr)  # не блокируем закрытие
 
     def _on_thumb_clicked(self, version_n: int):
+        # C2c: перед сменой версии коммитим отложенный кроп ТЕКУЩЕЙ выбранной
+        # (она ещё в self._selected_version) — иначе правка v3 теряется при
+        # переключении v3→v1. Не dirty → _maybe_save_crop выходит сразу.
+        self._maybe_save_crop()
         self._selected_version = version_n
         # Update visual selection
         for thumb in self._thumbs:
