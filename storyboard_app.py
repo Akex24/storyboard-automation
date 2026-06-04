@@ -4401,29 +4401,63 @@ def shot_crop_json_path(history_dir: Path, n: int) -> Path:
 
 
 def read_shot_crop(history_dir: Path, n: int) -> Optional[dict]:
-    """crop_v{N}.json → dict или None. Валидный кроп только если есть И json,
-    И orig_v{N}.jpg, И scene_rect с числовыми x/y/w/h."""
+    """crop_v{N}.json → dict {schema, scene_rect|None, mirror, img_w/h} или None.
+    None если нет json/оригинала или json битый. scene_rect валидируется ЕСЛИ
+    присутствует (может быть null при mirror-only). mirror нормализуется."""
     jp = shot_crop_json_path(history_dir, n)
     op = shot_orig_path(history_dir, n)
     if not jp.exists() or not op.exists():
         return None
     try:
         data = json.loads(jp.read_text(encoding='utf-8'))
-        r = data.get('scene_rect') or {}
-        for k in ('x', 'y', 'w', 'h'):
-            float(r[k])
+        r = data.get('scene_rect')
+        if r is not None:
+            for k in ('x', 'y', 'w', 'h'):
+                float(r[k])
+        data['mirror'] = bool(data.get('mirror', False))
         return data
     except Exception:
         return None
 
 
+def _render_shot_version(opath: Path, vpath: Path, mirror: bool,
+                         scene_rect) -> Optional[tuple]:
+    """Ядро сборки видимого v{N}: orig → [flip-horizontal если mirror] →
+    [crop по scene_rect → resize к размеру оригинала если есть]. Сохраняет в
+    vpath JPEG q95. Возвращает (W,H) или None (вырожденный кроп <2px).
+    Для mirror=False С scene_rect пайплайн ИДЕНТИЧЕН прежнему apply_shot_crop
+    (байт-в-байт). Cross-platform: PIL, без subprocess/shell."""
+    from PIL import ImageOps
+    with PILImage.open(str(opath)) as im:
+        W, H = im.size
+        base = ImageOps.mirror(im) if mirror else im
+        if scene_rect is not None:
+            x, y = float(scene_rect['x']), float(scene_rect['y'])
+            w, h = float(scene_rect['w']), float(scene_rect['h'])
+            left = max(0, min(W, int(round(x))))
+            upper = max(0, min(H, int(round(y))))
+            right = max(0, min(W, int(round(x + w))))
+            lower = max(0, min(H, int(round(y + h))))
+            if right - left < 2 or lower - upper < 2:
+                return None
+            out = base.crop((left, upper, right, lower))
+            if out.mode != 'RGB':
+                out = out.convert('RGB')
+            out = out.resize((W, H), PILImage.Resampling.LANCZOS)
+        else:
+            out = base if base.mode == 'RGB' else base.convert('RGB')
+        out.save(str(vpath), 'JPEG', quality=95)
+        return (W, H)
+
+
 def apply_shot_crop(history_dir: Path, n: int, scene_rect: dict,
                     active_path: Path, img_w: int = 0, img_h: int = 0) -> bool:
     """Применяет кроп к версии v{N}. При ПЕРВОМ кропе снимает оригинал
-    (v{N} → orig_v{N}); затем v{N}.jpg = crop(orig, scene_rect) → resize к
-    размеру оригинала; пишет crop_v{N}.json; копирует v{N} → active_path +
-    set_active_version(N). scene_rect = {x,y,w,h} в пикселях оригинала.
-    True при успехе. Вырожденный кроп (<2px) → False, файл не трогаем."""
+    (v{N} → orig_v{N}); затем v{N} = orig → [flip если mirror из json] →
+    crop(scene_rect) → resize; пишет crop_v{N}.json (сохраняя mirror); копирует
+    v{N} → active_path + set_active_version(N). scene_rect = {x,y,w,h} в
+    пикселях ТЕКУЩЕЙ базы (orig или flip(orig)). True при успехе. Вырожденный
+    кроп (<2px) → False, файл не трогаем."""
     history_dir = Path(history_dir)
     n = int(n)
     vpath = history_dir / f"v{n}.jpg"
@@ -4433,24 +4467,17 @@ def apply_shot_crop(history_dir: Path, n: int, scene_rect: dict,
     try:
         if not opath.exists():
             shutil.copy2(str(vpath), str(opath))  # снимок оригинала ОДИН раз
-        with PILImage.open(str(opath)) as im:
-            W, H = im.size
-            x, y = float(scene_rect['x']), float(scene_rect['y'])
-            w, h = float(scene_rect['w']), float(scene_rect['h'])
-            left = max(0, min(W, int(round(x))))
-            upper = max(0, min(H, int(round(y))))
-            right = max(0, min(W, int(round(x + w))))
-            lower = max(0, min(H, int(round(y + h))))
-            if right - left < 2 or lower - upper < 2:
-                return False
-            crop = im.crop((left, upper, right, lower))
-            if crop.mode != 'RGB':
-                crop = crop.convert('RGB')
-            crop.resize((W, H), PILImage.Resampling.LANCZOS).save(
-                str(vpath), 'JPEG', quality=95)
+        mirror = bool((read_shot_crop(history_dir, n) or {}).get('mirror', False))
+        res = _render_shot_version(opath, vpath, mirror, scene_rect)
+        if res is None:
+            return False
+        W, H = res
+        x, y = float(scene_rect['x']), float(scene_rect['y'])
+        w, h = float(scene_rect['w']), float(scene_rect['h'])
         data = {
             'schema': CROP_JSON_SCHEMA,
             'scene_rect': {'x': x, 'y': y, 'w': w, 'h': h},
+            'mirror': mirror,
             'img_w': int(img_w or W), 'img_h': int(img_h or H),
         }
         shot_crop_json_path(history_dir, n).write_text(
@@ -4484,6 +4511,42 @@ def clear_shot_crop(history_dir: Path, n: int, active_path: Path) -> bool:
                 jp.unlink()
             except Exception:
                 pass
+        shutil.copy2(str(vpath), str(Path(active_path)))
+        set_active_version(history_dir, n)
+        return True
+    except Exception:
+        return False
+
+
+def set_shot_mirror(history_dir: Path, n: int, mirror: bool,
+                    active_path: Path) -> bool:
+    """Тогл горизонтального зеркала версии v{N}. Упрощение (Alex): зеркало
+    СБРАСЫВАЕТ кроп. Снимок оригинала один раз. mirror=False и нет кропа →
+    clear (pristine). mirror=True → рендер flip(orig) (полный кадр) + json
+    {scene_rect:null, mirror:true}. True при успехе."""
+    history_dir = Path(history_dir)
+    n = int(n)
+    vpath = history_dir / f"v{n}.jpg"
+    opath = shot_orig_path(history_dir, n)
+    mirror = bool(mirror)
+    if not vpath.exists() and not opath.exists():
+        return False
+    try:
+        if not mirror:
+            # выключили зеркало; кроп тоже сброшен (упрощение) → версия чистая
+            if opath.exists():
+                return clear_shot_crop(history_dir, n, active_path)
+            return True
+        if not opath.exists():
+            shutil.copy2(str(vpath), str(opath))
+        res = _render_shot_version(opath, vpath, True, None)  # flip, полный кадр
+        if res is None:
+            return False
+        W, H = res
+        data = {'schema': CROP_JSON_SCHEMA, 'scene_rect': None,
+                'mirror': True, 'img_w': W, 'img_h': H}
+        shot_crop_json_path(history_dir, n).write_text(
+            json.dumps(data), encoding='utf-8')
         shutil.copy2(str(vpath), str(Path(active_path)))
         set_active_version(history_dir, n)
         return True
