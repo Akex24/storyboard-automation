@@ -4554,6 +4554,74 @@ def set_shot_mirror(history_dir: Path, n: int, mirror: bool,
         return False
 
 
+def delete_shot_version(history_dir: Path, n: int, active_path: Path) -> int:
+    """Удаляет версию v{N} БЕЗВОЗВРАТНО (v{N}.jpg + orig_v{N}.jpg +
+    crop_v{N}.json если есть) и перенумеровывает хвост без дырок:
+    v{m}→v{m-1} для всех m>N (вместе с orig_/crop_ ЛОКСТЕП). Активная едет по
+    КАРТИНКЕ: active=A, A>N → A-1 (та же картинка, номер на 1 меньше).
+    Возвращает НОВЫЙ номер активной версии, или -1 при отказе/ошибке.
+
+    Гарды (дублируют скрытие крестика в UI): n нет в списке / n == min(«v1») /
+    n == активная → -1, диск НЕ трогаем.
+
+    Безопасность: переименование в ВОЗРАСТАЮЩЕМ порядке (дырка от удаления едет
+    вверх → цель {m-1} всегда свободна) + проверка not target.exists() перед
+    каждым os.replace. Частичный сбой → log в stderr + -1 (без rollback —
+    локальная история; caller делает refresh).
+
+    Cross-platform: pathlib.Path + os.replace + shutil, без subprocess/shell."""
+    history_dir = Path(history_dir)
+    n = int(n)
+    nums = []
+    for p in list_shot_versions(history_dir):
+        try:
+            nums.append(int(p.stem[1:]))
+        except (ValueError, IndexError):
+            continue
+    if not nums or n not in nums:
+        return -1
+    active = read_active_version(history_dir)
+    if n == min(nums) or n == active:
+        return -1  # «v1» (минимальный) и активную удалять нельзя
+
+    def _trio(k):
+        return (history_dir / f"v{int(k)}.jpg",
+                shot_orig_path(history_dir, k),
+                shot_crop_json_path(history_dir, k))
+
+    try:
+        # 1) удалить три файла версии N
+        for f in _trio(n):
+            if f.exists():
+                f.unlink()
+        # 2) перенумерация хвоста m>N в ВОЗРАСТАЮЩЕМ порядке, локстеп v/orig/crop
+        for m in sorted(x for x in nums if x > n):
+            for src, dst in zip(_trio(m), _trio(m - 1)):
+                if not src.exists():
+                    continue
+                if dst.exists():
+                    # цель занята — неконсистентная история, abort без затирания
+                    sys.stderr.write(
+                        f"[del_version] target exists, abort: {dst}\n")
+                    sys.stderr.flush()
+                    return -1
+                os.replace(str(src), str(dst))
+        # 3) пересчёт active.txt — активная едет по картинке
+        new_active = active - 1 if active > n else active
+        set_active_version(history_dir, new_active)
+        # 4) синхронизировать живой файл (shot_path читают stitch/Seedance/zip)
+        new_active_v = history_dir / f"v{new_active}.jpg"
+        if new_active_v.exists():
+            shutil.copy2(str(new_active_v), str(Path(active_path)))
+        return new_active
+    except Exception:
+        import traceback
+        sys.stderr.write(
+            f"[del_version] failed n={n}: {traceback.format_exc()}\n")
+        sys.stderr.flush()
+        return -1
+
+
 def format_gen_duration(seconds: int) -> str:
     """Форматирует длительность генерации в человекочитаемый вид.
 
