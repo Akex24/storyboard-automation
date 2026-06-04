@@ -8,7 +8,9 @@
   • StoryboardView  — зум колесом + панорама + дабл-клик;
   • GridItem        — наложенная сетка (drag/resize/delete, центр-origin);
   • _GridThumb      — миниатюра PNG-сетки в ленте библиотеки;
-  • FACE_GRID_SCALE / MIN_GRID_SCALE / MAX_GRID_SCALE — пределы.
+  • MIN_GRID_SCALE / MAX_GRID_SCALE — пределы ручного ресайза.
+Запас авто-наложения — СВОЙ (ACTOR_FACE_GRID_SCALE, меньше сторибордового
+FACE_GRID_SCALE): на рефе одно лицо крупным планом, большой запас не нужен.
 Плюс `library` (персистентная библиотека PNG-сеток) и `detector.detect_faces`.
 
 ОТЛИЧИЯ от сторибордового GridDialog:
@@ -47,11 +49,17 @@ from widgets.face_grid import library
 # Переиспользуемые кирпичики сторибордового диалога (его самого НЕ трогаем).
 from widgets.face_grid.grid_dialog import (
     StoryboardView, GridItem, _GridThumb,
-    FACE_GRID_SCALE, MIN_GRID_SCALE, MAX_GRID_SCALE,
+    MIN_GRID_SCALE, MAX_GRID_SCALE,
 )
 
 # Версия схемы persist-файла позиций (на будущее, как у сторибордового).
 ACTOR_GRID_JSON_SCHEMA = 1
+
+# Запас авто-наложения сетки относительно бокса лица — СВОЙ, меньше
+# сторибордового FACE_GRID_SCALE (1.4). На рефе актёра одно лицо крупным
+# планом, большой запас перекрывает лицо лишним — 1.2 = сетка лишь немного
+# больше лица. Менять ОДНОЙ цифрой здесь (на сторибордовую фичу не влияет).
+ACTOR_FACE_GRID_SCALE = 1.2
 
 
 class ActorGridDialog(QDialog):
@@ -165,7 +173,7 @@ class ActorGridDialog(QDialog):
         self.btn_apply.clicked.connect(self._on_apply)
         actions.addWidget(self.btn_apply)
 
-        self.btn_save = QPushButton(tr('grid_btn_save'))
+        self.btn_save = QPushButton(tr('actor_grid_btn_save'))
         self.btn_save.setObjectName("grid_btn_save")
         self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_save.clicked.connect(self._on_save)
@@ -268,8 +276,8 @@ class ActorGridDialog(QDialog):
 
     def _on_apply(self):
         """Авто-детект лиц (YuNet) → на каждое лицо активная сетка с запасом
-        FACE_GRID_SCALE. Повторный клик очищает прошлые наложения и кладёт
-        заново. Источник детекции — реф (image_path)."""
+        ACTOR_FACE_GRID_SCALE. Повторный клик очищает прошлые наложения и
+        кладёт заново. Источник детекции — реф (image_path)."""
         if self.view is None:
             return
         grid_path = library.get_active_grid()
@@ -297,7 +305,7 @@ class ActorGridDialog(QDialog):
             if grid_pix.isNull():
                 continue
             cx, cy = x + w / 2.0, y + h / 2.0
-            tw, th = w * FACE_GRID_SCALE, h * FACE_GRID_SCALE
+            tw, th = w * ACTOR_FACE_GRID_SCALE, h * ACTOR_FACE_GRID_SCALE
             pw, ph = grid_pix.width(), grid_pix.height()
             if pw <= 0 or ph <= 0:
                 continue
@@ -505,7 +513,7 @@ class ActorGridDialog(QDialog):
         except Exception as e:
             traceback.print_exc()
             self.hint_lbl.setText(tr('actor_grid_save_error', err=str(e)))
-            QMessageBox.warning(self, tr('grid_btn_save'), str(e))
+            QMessageBox.warning(self, tr('actor_grid_btn_save'), str(e))
             return
         # Композит записан → персист позиций (не-фатально).
         self._write_grid_json()

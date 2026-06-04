@@ -81,6 +81,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # 2026-05-17 (Этап 3): вторая кнопка — папка с результатами
         # наложения текстур (shows/<show>/refs/characters_texture/<character>/).
         'actor_photos_show_texture_folder_btn': '🎨  Папка с текстурами',
+        'actor_photos_show_grid_folder_btn': '🔲  Папка с сетками',
         'actor_photos_delete_btn': '🗑  Удалить',
         'actor_photos_delete_title': 'Удалить реф',
         'actor_photos_delete_confirm': 'Удалить файл «{filename}»?\n\nДействие необратимо — файл будет стёрт с диска.',
@@ -144,6 +145,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'grid_restored_resized': 'Восстановлено сеток: {n} · размер листа изменился — проверь позиции',
         'actor_grid_btn': '🔲  Сетка на лицо',
         'actor_grid_dialog_title': 'Сетка на лица референса: {name}',
+        'actor_grid_btn_save': '💾  Сохранить',
         'actor_grid_saved': 'Сетка сохранена (сеток: {n})',
         'actor_grid_save_empty': 'Сетки не наложены — файл с сеткой не создан',
         'actor_grid_save_error': 'Ошибка сохранения сетки: {err}',
@@ -761,6 +763,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'actor_photos_open_folder': '📂  Показати в папці',
         # 2026-05-17 (Етап 3): друга кнопка — папка з результатами накладання текстур.
         'actor_photos_show_texture_folder_btn': '🎨  Папка з текстурами',
+        'actor_photos_show_grid_folder_btn': '🔲  Папка з сітками',
         'actor_photos_delete_btn': '🗑  Видалити',
         'actor_photos_delete_title': 'Видалити реф',
         'actor_photos_delete_confirm': 'Видалити файл «{filename}»?\n\nДія незворотна — файл буде стертий з диска.',
@@ -824,6 +827,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'grid_restored_resized': 'Відновлено сіток: {n} · розмір аркуша змінився — перевір позиції',
         'actor_grid_btn': '🔲  Сітка на обличчя',
         'actor_grid_dialog_title': 'Сітка на обличчя референсу: {name}',
+        'actor_grid_btn_save': '💾  Зберегти',
         'actor_grid_saved': 'Сітку збережено (сіток: {n})',
         'actor_grid_save_empty': 'Сітки не накладені — файл із сіткою не створено',
         'actor_grid_save_error': 'Помилка збереження сітки: {err}',
@@ -1419,6 +1423,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'actor_photos_open_folder': '📂  Show in folder',
         # 2026-05-17 (Stage 3): second button — texture-result folder.
         'actor_photos_show_texture_folder_btn': '🎨  Texture folder',
+        'actor_photos_show_grid_folder_btn': '🔲  Grid folder',
         'actor_photos_delete_btn': '🗑  Delete',
         'actor_photos_delete_title': 'Delete reference',
         'actor_photos_delete_confirm': 'Delete file «{filename}»?\n\nThis action cannot be undone — the file will be removed from disk.',
@@ -1482,6 +1487,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'grid_restored_resized': 'Grids restored: {n} · sheet size changed — check positions',
         'actor_grid_btn': '🔲  Face grid',
         'actor_grid_dialog_title': 'Face grid on reference: {name}',
+        'actor_grid_btn_save': '💾  Save',
         'actor_grid_saved': 'Grid saved (grids: {n})',
         'actor_grid_save_empty': 'No grids placed — grid file not created',
         'actor_grid_save_error': 'Grid save error: {err}',

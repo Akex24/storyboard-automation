@@ -252,6 +252,10 @@ class ActorPhotosDialog(QDialog):
     # ApplyTextureDialog с выбором текстуры + opacity, и запускает
     # ApplyTextureThread. Здесь только UI-trigger, никаких диалогов.
     apply_texture_requested = pyqtSignal(object)   # Path
+    # 2026-06-03: сигнал «🔲 Сетка на лицо» — клик под thumb-ом. Caller
+    # (ActorsView) открывает ActorGridDialog (детект лиц + наложение сетки),
+    # результат — отдельный файл characters_grid/<slug>/<stem>_grid.jpg.
+    apply_grid_requested = pyqtSignal(object)      # Path
 
     def __init__(self, display_name: str, photos: List[Path], parent=None,
                  folder_path: Optional[Path] = None,
@@ -259,7 +263,8 @@ class ActorPhotosDialog(QDialog):
                  enable_pick_for_ep: bool = False,
                  enable_edit: bool = False,
                  enable_texture: bool = False,
-                 texture_folder_path: Optional[Path] = None):
+                 texture_folder_path: Optional[Path] = None,
+                 grid_folder_path: Optional[Path] = None):
         super().__init__(parent)
         self.photos = list(photos)
         # Включает кнопку «🗑 Удалить» под каждым thumb в сетке. По умолчанию
@@ -290,6 +295,11 @@ class ActorPhotosDialog(QDialog):
         # юзер ещё не накладывал текстуру.
         self._texture_folder_path: Optional[Path] = (
             Path(texture_folder_path) if texture_folder_path else None)
+        # 2026-06-03: папка результатов наложения сеток
+        # (shows/<show>/refs/characters_grid/<character>/). Если задан —
+        # внизу диалога кнопка «🔲 Папка с сетками». Создаётся лениво при клике.
+        self._grid_folder_path: Optional[Path] = (
+            Path(grid_folder_path) if grid_folder_path else None)
         self._display_name = display_name
         self.setWindowTitle(tr('actor_photos_title',
                                name=display_name, n=len(self.photos)))
@@ -330,7 +340,15 @@ class ActorPhotosDialog(QDialog):
             " border-radius:6px; padding:6px 10px; font-size:12px;"
             " font-weight:500; }"
             "QPushButton#photos-texture:hover { background:#2a1f12;"
-            " color:#ffd24d; border-color:#d4a256; }")
+            " color:#ffd24d; border-color:#d4a256; }"
+            # 2026-06-03: кнопка «🔲 Сетка на лицо» — активное действие
+            # (голубой outline, отличается от серой заглушки-текстуры).
+            "QPushButton#photos-grid { background:transparent;"
+            " color:#9fd0ff; border:1px solid #4a7fb0;"
+            " border-radius:6px; padding:6px 10px; font-size:12px;"
+            " font-weight:500; }"
+            "QPushButton#photos-grid:hover { background:#16222e;"
+            " color:#cfe8ff; border-color:#6aa0d8; }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
@@ -415,6 +433,26 @@ class ActorPhotosDialog(QDialog):
         else:
             self.open_texture_folder_btn = None
 
+        # 2026-06-03: «🔲 Папка с сетками» — рядом с «🎨 Папка с текстурами».
+        # Только если caller передал grid_folder_path. Стиль зеркалит кнопку
+        # «🔲 Сетка» под thumb (голубой outline). Папка создаётся лениво.
+        if self._grid_folder_path is not None:
+            self.open_grid_folder_btn = QPushButton(
+                tr('actor_photos_show_grid_folder_btn'))
+            self.open_grid_folder_btn.setStyleSheet(
+                "QPushButton { background:transparent; color:#9fd0ff;"
+                " border:1px solid #4a7fb0; border-radius:6px;"
+                " padding:8px 14px; font-size:12px; font-weight:600; }"
+                "QPushButton:hover { background:#16222e; color:#cfe8ff;"
+                " border-color:#6aa0d8; }")
+            self.open_grid_folder_btn.setCursor(
+                Qt.CursorShape.PointingHandCursor)
+            self.open_grid_folder_btn.clicked.connect(
+                self._on_show_grid_folder)
+            bottom.addWidget(self.open_grid_folder_btn)
+        else:
+            self.open_grid_folder_btn = None
+
         bottom.addStretch()
         self.close_btn = QPushButton(tr('actor_photos_close'))
         self.close_btn.setObjectName("photos-close")
@@ -477,12 +515,23 @@ class ActorPhotosDialog(QDialog):
                     lambda _checked=False, path=p: self._on_edit_thumb(path))
                 cell_lay.addWidget(edit_btn)
             if self.enable_texture:
+                # 2026-06-03: текстура выведена из игры — кнопка серая
+                # заглушка (код _on_texture_thumb / сигнал / тред НЕ удаляем).
                 texture_btn = QPushButton(tr('actor_photos_texture_btn'))
                 texture_btn.setObjectName("photos-texture")
                 texture_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                texture_btn.setEnabled(False)
                 texture_btn.clicked.connect(
                     lambda _checked=False, path=p: self._on_texture_thumb(path))
                 cell_lay.addWidget(texture_btn)
+                # 2026-06-03: «🔲 Сетка на лицо» — открывает ActorGridDialog
+                # (через сигнал apply_grid_requested → ActorsView). Тот же гейт.
+                grid_btn = QPushButton(tr('actor_grid_btn'))
+                grid_btn.setObjectName("photos-grid")
+                grid_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                grid_btn.clicked.connect(
+                    lambda _checked=False, path=p: self._on_grid_thumb(path))
+                cell_lay.addWidget(grid_btn)
             if self.enable_delete:
                 del_btn = QPushButton(tr('actor_photos_delete_btn'))
                 del_btn.setObjectName("photos-delete")
@@ -575,6 +624,15 @@ class ActorPhotosDialog(QDialog):
         except Exception:
             traceback.print_exc()
 
+    def _on_grid_thumb(self, path):
+        """2026-06-03: клик «🔲 Сетка на лицо» под thumb-ом. Эмит сигнала с
+        Path рефа. Caller (ActorsView) откроет ActorGridDialog (детект лиц +
+        наложение сетки), результат — отдельный файл characters_grid/."""
+        try:
+            self.apply_grid_requested.emit(Path(path))
+        except Exception:
+            traceback.print_exc()
+
     def _on_delete_thumb(self, path: Path):
         """Клик «🗑 Удалить» под thumb-ом. Спрашивает подтверждение,
         удаляет файл с диска, перестраивает grid. Это необратимое
@@ -627,6 +685,21 @@ class ActorPhotosDialog(QDialog):
             QDesktopServices.openUrl(
                 QUrl.fromLocalFile(
                     str(self._texture_folder_path.resolve())))
+        except Exception:
+            traceback.print_exc()
+
+    def _on_show_grid_folder(self):
+        """2026-06-03: «🔲 Папка с сетками» — открыть в Finder/Explorer папку
+        результатов наложения сеток (characters_grid/<character>/). Папка
+        создаётся лениво (mkdir parents). Зеркало _on_show_texture_folder —
+        QDesktopServices (cross-platform, без subprocess)."""
+        try:
+            if self._grid_folder_path is None:
+                return
+            self._grid_folder_path.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(
+                    str(self._grid_folder_path.resolve())))
         except Exception:
             traceback.print_exc()
 

@@ -917,13 +917,27 @@ class ActorsView(QWidget):
             # готовый реф вместо генерации нового.
             pick_for_ep_active = bool(
                 self._pending_ep_links.get("__any__"))
+            # 2026-06-03: «🔲 Папка с сетками» — shows/<show>/refs/
+            # characters_grid/<character>/. character_slug = имя папки рефов.
+            grid_folder_path = None
+            if folder_path is not None:
+                try:
+                    cur_show_g = (_sa.get_current_show(self.project_root)
+                                  or "_none_")
+                    grid_folder_path = (
+                        self.project_root / "shows" / cur_show_g
+                        / "refs" / "characters_grid" / folder_path.name)
+                except Exception:
+                    traceback.print_exc()
+                    grid_folder_path = None
             dlg = ActorPhotosDialog(display, refs, parent=self,
                                     folder_path=folder_path,
                                     enable_delete=True,
                                     enable_pick_for_ep=pick_for_ep_active,
                                     enable_edit=True,
                                     enable_texture=True,
-                                    texture_folder_path=texture_folder_path)
+                                    texture_folder_path=texture_folder_path,
+                                    grid_folder_path=grid_folder_path)
             if pick_for_ep_active:
                 dlg.picked_for_ep.connect(self._on_pick_existing_ref_for_ep)
             # 2026-05-17: edit-режим для рефа актёра (попап «Все референсы»).
@@ -933,6 +947,8 @@ class ActorsView(QWidget):
             # 2026-05-17 (Этап 2): «🎨 Текстура» — открыть ApplyTextureDialog
             # → ApplyTextureThread → shows/<show>/refs/characters_texture/.
             dlg.apply_texture_requested.connect(self._on_apply_texture_to_ref)
+            # 2026-06-03: «🔲 Сетка на лицо» — открыть ActorGridDialog.
+            dlg.apply_grid_requested.connect(self._on_apply_grid_to_ref)
             dlg.setWindowTitle(tr('actor_refs_dialog_title',
                                   name=display, n=len(refs)))
             dlg.exec()
@@ -1092,6 +1108,35 @@ class ActorsView(QWidget):
                     tr('create_ref_uploading', n=1))
             except Exception:
                 pass
+        except Exception:
+            traceback.print_exc()
+
+    def _on_apply_grid_to_ref(self, ref_path):
+        """2026-06-03: handler «🔲 Сетка на лицо» из попапа всех рефов.
+
+        Открывает ActorGridDialog для рефа. Результат — ОТДЕЛЬНЫЙ файл
+        shows/<show>/refs/characters_grid/<slug>/<stem>_grid.jpg (оригинал
+        refs/characters/ НЕ трогаем). Persist позиций — <stem>_grid.json рядом.
+
+        Вложенный .exec() поверх модального ActorPhotosDialog — тот же
+        рабочий паттерн, что у «🎨 Текстура» (ApplyTextureDialog.exec()).
+        Cross-platform: Path + mkdir, без subprocess."""
+        try:
+            from pathlib import Path as _Path
+            src = _Path(ref_path)
+            if not src.exists():
+                return
+            character_slug = src.parent.name
+            cur_show = _sa.get_current_show(self.project_root) or "_none_"
+            target_dir = (self.project_root / "shows" / cur_show
+                          / "refs" / "characters_grid" / character_slug)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            save_path = target_dir / f"{src.stem}_grid.jpg"
+            from widgets.face_grid.actor_grid_dialog import ActorGridDialog
+            ActorGridDialog(image_path=src, save_path=save_path,
+                            title=src.stem, parent=self).exec()
+            # Юзер мог сохранить/изменить сетку — обновим карточки.
+            self.refresh()
         except Exception:
             traceback.print_exc()
 
