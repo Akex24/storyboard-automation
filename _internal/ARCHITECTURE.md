@@ -137,6 +137,16 @@ orig+crop). Кроп всегда считается ОТ ОРИГИНАЛА →
 show, когда вьюпорт реальный). Карточку грида обновляет MW-слот
 `_on_shot_crop_committed` по сигналу `crop_committed`.
 
+**Зеркало (M, 2026-06-04):** `crop_v{N}.json` несёт `mirror: bool`. Видимый
+`v{N} = orig → [flip-horizontal если mirror] → [crop если scene_rect]`
+(хелпер `_render_shot_version`). Зеркало СБРАСЫВАЕТ кроп (упрощение). Тогл —
+overlay-кнопка `flip-horizontal-2` (родитель `preview_view`, НЕ в сцене → зум
+её не двигает) → `set_shot_mirror`. Восстановление: при `mirror` грузим
+`flip(orig)` в вид (rect хранится в координатах flip(orig)). В `_maybe_save_crop`
+сброс кропа (≥98% по обеим осям) зовёт `set_shot_mirror(current_mirror)` (НЕ
+`clear`) — иначе отзум на отзеркаленном снёс бы зеркало. mirror=false → пути
+идентичны чистому кропу (байт-в-байт, проверено md5).
+
 ## Архитектурные решения которые легко забыть
 
 - **Anthropic API напрямую НЕ вызывается.** `pipeline.py` использует только

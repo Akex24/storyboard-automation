@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QTransform
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
@@ -247,6 +247,25 @@ class ShotViewerDialog(QDialog):
             self._on_view_scrolled)
         self.preview_view.verticalScrollBar().valueChanged.connect(
             self._on_view_scrolled)
+        # 2026-06-04 (M-b): overlay-кнопка горизонтального зеркала. РОДИТЕЛЬ =
+        # preview_view.viewport() (НЕ в QGraphicsScene) → зум/панорама её не
+        # двигают, и она поверх контента. Позиция — _position_mirror_btn.
+        from storyboard_app import get_icon
+        self.btn_mirror = QPushButton(self.preview_view.viewport())
+        self.btn_mirror.setObjectName("shot-mirror")
+        self.btn_mirror.setIcon(get_icon('flip-horizontal-2'))
+        self.btn_mirror.setIconSize(QSize(16, 16))
+        self.btn_mirror.setFixedSize(28, 28)
+        self.btn_mirror.setCheckable(True)
+        self.btn_mirror.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_mirror.setStyleSheet(
+            "QPushButton#shot-mirror { background:rgba(10,6,18,0.65);"
+            " border:1px solid #322545; border-radius:6px; }"
+            "QPushButton#shot-mirror:hover { background:rgba(40,24,64,0.85); }"
+            "QPushButton#shot-mirror:checked { background:#231840;"
+            " border-color:#6e4cc4; }")
+        self.btn_mirror.clicked.connect(self._on_mirror_clicked)
+        self.btn_mirror.raise_()
 
         # Лента миниатюр (горизонтальный scroll)
         strip_label = QLabel(tr('shot_viewer_versions_label'))
@@ -383,12 +402,16 @@ class ShotViewerDialog(QDialog):
         super().reject()
 
     def eventFilter(self, obj, ev):
-        # Колесо над видом превью = зум → dirty (для C2). Событие пропускаем
-        # дальше (return super) — StoryboardView.wheelEvent сам зумит.
-        if (not self._loading_preview
-                and ev.type() == QEvent.Type.Wheel
-                and obj is self.preview_view.viewport()):
-            self._preview_dirty = True
+        # Колесо над видом = зум → dirty (для C2; пропускаем дальше, зумит
+        # StoryboardView.wheelEvent). Resize viewport → репозиция overlay-кнопки
+        # зеркала РОВНО когда viewport получил реальный размер — детерминированно,
+        # без гонки с layout (одинаково Mac/Win).
+        if obj is self.preview_view.viewport():
+            if (not self._loading_preview
+                    and ev.type() == QEvent.Type.Wheel):
+                self._preview_dirty = True
+            elif ev.type() == QEvent.Type.Resize:
+                self._position_mirror_btn()
         return super().eventFilter(obj, ev)
 
     def _on_view_scrolled(self, _value):
@@ -396,6 +419,9 @@ class ShotViewerDialog(QDialog):
         # программной загрузки версии (_load_into_view / _fit / resize-бокса).
         if not self._loading_preview:
             self._preview_dirty = True
+        # При панораме QGraphicsView скроллит дочерние виджеты viewport (кнопку)
+        # вместе с контентом → возвращаем её в угол на каждый скролл.
+        self._position_mirror_btn()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -423,6 +449,46 @@ class ShotViewerDialog(QDialog):
             finally:
                 self._loading_preview = False
                 self._preview_dirty = False
+        # Основная репозиция — по Resize viewport в eventFilter (детерминирован-
+        # но, любая ОС). Здесь доп. nudge на случай если viewport не ресайзится
+        # (размер не изменился → Resize не придёт). Не рекурсивно: singleShot
+        # планируется в call-site, сам _position_mirror_btn ничего не планирует.
+        QTimer.singleShot(0, self._position_mirror_btn)
+
+    def _position_mirror_btn(self):
+        """Держит overlay-кнопку зеркала в НИЖНЕМ-правом углу viewport вида.
+        Считает от РЕАЛЬНЫХ размеров viewport (родитель кнопки). Зовётся из
+        eventFilter(Resize) И _on_view_scrolled — иначе при панораме
+        (QGraphicsView скроллит дочерние виджеты viewport вместе с контентом)
+        кнопка едет с картинкой."""
+        btn = getattr(self, 'btn_mirror', None)
+        if btn is None:
+            return
+        vp = self.preview_view.viewport()
+        btn.move(max(0, vp.width() - btn.width() - 8),
+                 max(0, vp.height() - btn.height() - 8))
+        btn.raise_()
+
+    def _on_mirror_clicked(self, checked):
+        """M-b: тогл горизонтального зеркала просматриваемой версии. Зеркало
+        СБРАСЫВАЕТ кроп (упрощение). Пишет через set_shot_mirror, перерисовывает
+        вид, обновляет карточку грида."""
+        if self._selected_version <= 0:
+            return
+        self._preview_dirty = False  # незакоммиченный кроп отбрасываем
+        try:
+            from storyboard_app import set_shot_mirror, read_shot_crop
+            set_shot_mirror(self.history_dir, self._selected_version,
+                            bool(checked), self.active_path)
+            self._active_version = self._selected_version
+            self._show_version(self._selected_version)
+            cur = read_shot_crop(self.history_dir, self._selected_version)
+            self.btn_mirror.setChecked(bool(cur and cur.get('mirror')))
+            self.crop_committed.emit(self.panel_idx)
+        except Exception:
+            import sys
+            import traceback
+            traceback.print_exc(file=sys.stderr)
 
     def _load_into_view(self, pix):
         """Кладёт QPixmap в существующий StoryboardView (свап pixmap_item в
@@ -472,17 +538,24 @@ class ShotViewerDialog(QDialog):
             crop = read_shot_crop(self.history_dir, n)
         except Exception:
             crop = None
-        if crop:
+        try:
+            self.btn_mirror.setChecked(bool(crop and crop.get('mirror')))
+        except Exception:
+            pass
+        if crop and crop.get('scene_rect') is not None:
             try:
                 opath = shot_orig_path(self.history_dir, n)
-                r = crop.get('scene_rect') or {}
+                r = crop.get('scene_rect')
                 rect = QRectF(float(r['x']), float(r['y']),
                               float(r['w']), float(r['h']))
                 if opath.exists():
                     pix = QPixmap(str(opath))
+                    if bool(crop.get('mirror')):
+                        # rect сохранён в координатах flip(orig) → база тоже flip
+                        pix = pix.transformed(QTransform().scale(-1, 1))
                     if not pix.isNull():
                         self.preview_stack.setCurrentWidget(self.preview_view)
-                        self._load_into_view(pix)        # грузим оригинал
+                        self._load_into_view(pix)        # грузим оригинал (+flip)
                         self._pending_crop_rect = rect
                         QTimer.singleShot(0, self._apply_pending_crop)
                         return
@@ -535,10 +608,15 @@ class ShotViewerDialog(QDialog):
             ch = max(0.0, min(H, vis.bottom()) - y)
             if cw < 2 or ch < 2:
                 return
-            from storyboard_app import apply_shot_crop, clear_shot_crop
+            from storyboard_app import apply_shot_crop, set_shot_mirror, \
+                read_shot_crop
+            cur = read_shot_crop(self.history_dir, self._selected_version)
+            mirror = bool(cur and cur.get('mirror'))
             if cw >= 0.98 * W and ch >= 0.98 * H:
-                clear_shot_crop(self.history_dir, self._selected_version,
-                                self.active_path)
+                # сброс КРОПА, но зеркало сохраняем: mirror=True → flip(orig)
+                # полный кадр; mirror=False → clear (pristine).
+                set_shot_mirror(self.history_dir, self._selected_version,
+                                mirror, self.active_path)
             else:
                 apply_shot_crop(self.history_dir, self._selected_version,
                                 {'x': x, 'y': y, 'w': cw, 'h': ch},
