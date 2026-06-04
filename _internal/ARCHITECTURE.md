@@ -97,6 +97,46 @@ sanity-check: при смене размера листа восстанавли
 ОБОИХ местах). `_save_png` (legacy-regex `<base>_\d+`) и `_do_save` (Seedance)
 grids.json не трогают.
 
+## Обратимый кроп версии шота (C2, 2026-06-04)
+
+В окне шота (`ShotViewerDialog`, `widgets/shot_viewer_dialog.py`) большое
+превью — зумируемый `StoryboardView` (импорт из `grid_dialog.py`, его НЕ
+трогаем). Юзер зумит/панорамит версию и при закрытии окна (Escape/крестик)
+сохраняет КАДР как кроп. Кроп **обратим**: при повторном открытии отматывается
+от чистого оригинала, не от уже-кропнутого.
+
+**Файлы на версию `v{N}` (в `output/storyboards/_history/<base>/`):**
+- `v{N}.jpg` — видимый/активный результат (оригинал + применённый кроп). Уходит
+  в лист (`stitch` берёт активный `shot_path`), Seedance, zip, «Рефы блока».
+- `orig_v{N}.jpg` — ЧИСТЫЙ оригинал, снимок `v{N}` до ПЕРВОГО кропа, неизменен.
+- `crop_v{N}.json` — `{schema, scene_rect:{x,y,w,h}, img_w, img_h}`; scene_rect в
+  пикселях оригинала.
+
+**КРИТИЧНО:** префиксы `orig_`/`crop_` НЕ начинаются с `v`+цифра → их НЕ видят
+`list_shot_versions`/`_has_any_versions`/лента версий/`stitch`/Seedance/zip
+(фильтр `name.startswith("v") and int(stem[1:])`, [storyboard_app.py:4287](storyboard_app.py:4287)).
+`threads/generate.py` (regen/realistic/edit) тоже фильтрует через
+`list_shot_versions` → новые версии независимы, старые сохраняют свою пару
+orig/crop. Полная чистка — `rmtree _history` при «Удалить эпизод».
+
+**Хелперы** ([storyboard_app.py](storyboard_app.py), рядом с
+`add_shot_version_from_bytes`): `shot_orig_path` / `shot_crop_json_path` /
+`read_shot_crop` / `apply_shot_crop` (снимок оригинала один раз → crop(orig,
+rect) → resize к размеру шота → `v{N}.jpg` q95 → json → копия в active +
+`set_active_version`) / `clear_shot_crop` (восстановить из оригинала, удалить
+orig+crop). Кроп всегда считается ОТ ОРИГИНАЛА → без потери качества.
+
+**Сохранение** (`_maybe_save_crop` в `closeEvent`/`reject`, ПЕРЕД
+`_activate_selected_version`): если `_preview_dirty` — видимый scene-rect
+(`mapToScene(viewport)`); ≥98% по обеим осям → `clear_shot_crop` (сброс), иначе
+`apply_shot_crop`. Сам делает selected активной → `_activate` становится no-op
+(без двойной записи). Не dirty → файл не трогаем.
+
+**Восстановление** (`_show_version`): есть `read_shot_crop` → грузим `orig_v{N}`
+в вид + `fitInView(saved_rect)` отложенно через `QTimer.singleShot(0)` (после
+show, когда вьюпорт реальный). Карточку грида обновляет MW-слот
+`_on_shot_crop_committed` по сигналу `crop_committed`.
+
 ## Архитектурные решения которые легко забыть
 
 - **Anthropic API напрямую НЕ вызывается.** `pipeline.py` использует только

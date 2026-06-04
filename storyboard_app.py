@@ -10823,6 +10823,7 @@ class MainWindow(QMainWindow):
             dlg.regen_requested.connect(self._on_regen)
             dlg.realistic_requested.connect(self._on_make_realistic)
             dlg.version_use_requested.connect(self._on_shot_version_use)
+            dlg.crop_committed.connect(self._on_shot_crop_committed)
             # Регистрируем чтобы можно было закрыть/обновить позже.
             self._open_shot_viewers.append((self.current_block, panel_idx, dlg))
             dlg.finished.connect(
@@ -10894,6 +10895,20 @@ class MainWindow(QMainWindow):
             self.refresh_open_shot_viewer(self.current_block, panel_idx)
         except Exception:
             import traceback
+            traceback.print_exc()
+
+    def _on_shot_crop_committed(self, panel_idx: int):
+        """C2b: попап перезаписал просматриваемую версию кропом (зум при
+        закрытии). Диск уже записан в диалоге — здесь перерисовываем карточку
+        грида из обновлённого активного файла."""
+        if not self.current_block:
+            return
+        try:
+            active = shot_path(self.current_block, panel_idx)
+            if 0 <= panel_idx < len(self.shot_cards):
+                self.shot_cards[panel_idx].set_image(
+                    active.read_bytes() if active.exists() else None)
+        except Exception:
             traceback.print_exc()
 
     def _on_copy_shot(self, panel_idx: int):

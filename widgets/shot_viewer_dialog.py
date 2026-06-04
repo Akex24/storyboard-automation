@@ -22,7 +22,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -135,6 +135,9 @@ class ShotViewerDialog(QDialog):
     # realistic=True). Отдельная кнопка рядом с «Перегенерировать».
     realistic_requested = pyqtSignal(int)
     version_use_requested = pyqtSignal(int, int)
+    # 2026-06-04 (C2b): кроп при закрытии перезаписал просматриваемую версию +
+    # активный файл → MW обновляет карточку грида (panel_idx).
+    crop_committed = pyqtSignal(int)
 
     def __init__(self, panel_idx: int, block_name: str,
                  active_path: Path, history_dir: Path,
@@ -238,6 +241,7 @@ class ShotViewerDialog(QDialog):
         # загрузке версии (_load_into_view) и во время программного _fit.
         self._preview_dirty = False
         self._loading_preview = False
+        self._pending_crop_rect = None  # QRectF для восстановления кропа после show
         self.preview_view.viewport().installEventFilter(self)
         self.preview_view.horizontalScrollBar().valueChanged.connect(
             self._on_view_scrolled)
@@ -363,6 +367,7 @@ class ShotViewerDialog(QDialog):
         ВАЖНО: Escape сюда НЕ заходит — QDialog ловит Escape и зовёт reject()
         → done() → hide(), что НЕ шлёт QCloseEvent. Поэтому активация на Escape
         делается в переопределённом reject() ниже (а не здесь)."""
+        self._maybe_save_crop()
         self._activate_selected_version()
         super().closeEvent(ev)
 
@@ -373,6 +378,7 @@ class ShotViewerDialog(QDialog):
         Двойной активации с closeEvent нет: крестик/self.close() идут через
         QCloseEvent (reject не вызывают), Escape — через reject (closeEvent не
         вызывают). Guard в _activate_selected_version страхует в любом случае."""
+        self._maybe_save_crop()
         self._activate_selected_version()
         super().reject()
 
@@ -454,15 +460,104 @@ class ShotViewerDialog(QDialog):
         self.no_img_lbl.setText(tr('shot_viewer_no_image'))
         self.preview_stack.setCurrentWidget(self.no_img_lbl)
 
+    def _show_version(self, n: int):
+        """Показ версии v{n}. Есть сохранённый кроп (read_shot_crop) → грузим
+        ОРИГИНАЛ orig_v{n} и применяем сохранённый scene_rect (юзер видит кадр,
+        но отматывает от оригинала). Нет → грузим v{n}.jpg как обычно."""
+        n = int(n)
+        self._pending_crop_rect = None
+        crop = None
+        try:
+            from storyboard_app import read_shot_crop, shot_orig_path
+            crop = read_shot_crop(self.history_dir, n)
+        except Exception:
+            crop = None
+        if crop:
+            try:
+                opath = shot_orig_path(self.history_dir, n)
+                r = crop.get('scene_rect') or {}
+                rect = QRectF(float(r['x']), float(r['y']),
+                              float(r['w']), float(r['h']))
+                if opath.exists():
+                    pix = QPixmap(str(opath))
+                    if not pix.isNull():
+                        self.preview_stack.setCurrentWidget(self.preview_view)
+                        self._load_into_view(pix)        # грузим оригинал
+                        self._pending_crop_rect = rect
+                        QTimer.singleShot(0, self._apply_pending_crop)
+                        return
+            except Exception:
+                pass  # упало — обычный путь ниже
+        vpath = self.history_dir / f"v{n}.jpg"
+        if vpath.exists():
+            self._show_preview(vpath)
+        elif self.active_path.exists():
+            self._show_preview(self.active_path)
+
+    def _apply_pending_crop(self):
+        """Ставит вид на сохранённый scene_rect (поверх загруженного оригинала)
+        ПОСЛЕ show, когда вьюпорт реальный. Программно → под _loading_preview
+        (без ложного dirty), _user_zoomed=True чтобы resize не сбросил кадр."""
+        rect = self._pending_crop_rect
+        view = self.preview_view
+        if rect is None or view.pixmap_item is None:
+            return
+        self._loading_preview = True
+        try:
+            view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            view._user_zoomed = True
+            view._fitted = True
+        finally:
+            self._loading_preview = False
+            self._preview_dirty = False
+            self._pending_crop_rect = None
+
+    def _maybe_save_crop(self):
+        """C2b: если юзер зумил/панорамил (_preview_dirty) — сохранить кроп
+        просматриваемой версии. Видимый scene-rect (в пикселях оригинала, т.к.
+        в виде либо v{N}, либо orig_v{N} — оба размер шота). rect ≈ весь кадр
+        (≥98% по обеим осям) → clear_shot_crop (сброс); иначе apply_shot_crop.
+        Сам делает selected активной → _activate_selected_version → no-op."""
+        if not self._preview_dirty or self._selected_version <= 0:
+            return
+        view = self.preview_view
+        if view.pixmap_item is None:
+            return
+        try:
+            sr = view._scene.sceneRect()
+            W, H = sr.width(), sr.height()
+            if W < 2 or H < 2:
+                return
+            vis = view.mapToScene(view.viewport().rect()).boundingRect()
+            x = max(0.0, vis.left())
+            y = max(0.0, vis.top())
+            cw = max(0.0, min(W, vis.right()) - x)
+            ch = max(0.0, min(H, vis.bottom()) - y)
+            if cw < 2 or ch < 2:
+                return
+            from storyboard_app import apply_shot_crop, clear_shot_crop
+            if cw >= 0.98 * W and ch >= 0.98 * H:
+                clear_shot_crop(self.history_dir, self._selected_version,
+                                self.active_path)
+            else:
+                apply_shot_crop(self.history_dir, self._selected_version,
+                                {'x': x, 'y': y, 'w': cw, 'h': ch},
+                                self.active_path, img_w=int(W), img_h=int(H))
+            self._active_version = self._selected_version  # _activate → no-op
+            self._preview_dirty = False
+            self.crop_committed.emit(self.panel_idx)
+        except Exception:
+            import sys
+            import traceback
+            traceback.print_exc(file=sys.stderr)  # не блокируем закрытие
+
     def _on_thumb_clicked(self, version_n: int):
         self._selected_version = version_n
         # Update visual selection
         for thumb in self._thumbs:
             thumb.set_selected(thumb.version_n == version_n)
-        # Show preview of selected
-        version_path = self.history_dir / f"v{version_n}.jpg"
-        if version_path.exists():
-            self._show_preview(version_path)
+        # Показ версии с учётом сохранённого кропа (restore от оригинала).
+        self._show_version(version_n)
         # Update label
         is_active = (version_n == self._active_version)
         if is_active:
@@ -546,13 +641,8 @@ class ShotViewerDialog(QDialog):
         self._selected_version = self._active_version
         for thumb in self._thumbs:
             thumb.set_selected(thumb.version_n == self._active_version)
-        # Превью активной.
-        active_path_in_history = (
-            self.history_dir / f"v{self._active_version}.jpg")
-        if active_path_in_history.exists():
-            self._show_preview(active_path_in_history)
-        elif self.active_path.exists():
-            self._show_preview(self.active_path)
+        # Превью активной (с учётом сохранённого кропа).
+        self._show_version(self._active_version)
 
         if self._active_version > 0:
             self.selected_lbl.setText(
