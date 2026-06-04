@@ -186,6 +186,31 @@ class CompileEpisodeThread(QThread):
                 self._log(f"copy failed for {src}: "
                           f"{type(e).__name__}: {e}")
 
+            # 2026-06-04: для персонажа — дополнительно версия-с-сеткой из
+            # characters_grid/<slug>/. Имя детерминированное: <orig_stem>_grid.jpg
+            # (views/actors.py пишет ровно его). Матчим ТОЧНЫЙ stem, не startswith
+            # — иначе реф «laura» поймал бы сетку рефа «laura_2». В zip уезжает
+            # grid__<slug>__<name> (префикс не конфликтует с оригиналом). Текстуру
+            # в zip НЕ кладём. Зеркало шага 5b-2 в _on_block_refs_btn (Коммит 4).
+            if cat == 'character':
+                grid_dir = refs_root / "characters_grid" / slug
+                target_stem = src.stem + "_grid"
+                try:
+                    grid_cands = [
+                        p for p in grid_dir.iterdir()
+                        if p.is_file()
+                        and p.suffix.lower() in ('.jpg', '.jpeg', '.png')
+                        and p.stem == target_stem
+                    ] if grid_dir.is_dir() else []
+                    if grid_cands:
+                        latest = max(grid_cands,
+                                     key=lambda p: p.stat().st_mtime)
+                        shutil.copy2(
+                            latest, dest_dir / f"grid__{slug}__{latest.name}")
+                except Exception as e:
+                    self._log(f"grid copy failed for {slug}/{src.stem}: "
+                              f"{type(e).__name__}: {e}")
+
     def _copy_storyboards(self, show_root: Path, n: int,
                            dest_dir: Path) -> None:
         """Копирует ОДИН landscape-лист блока из
