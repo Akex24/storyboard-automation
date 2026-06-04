@@ -739,10 +739,9 @@ class GenerateThread(QThread):
             self.step.emit("Сохраняю шот…", 92)
             # Каждый шот — отдельный файл {block}_shot{N}.jpg в формате 9:16
             shot_file = _sa.shot_path(self.block_name, self.panel_idx)
-            # 2026-05-07: уменьшение шотов до 384×688 (50% от исходных
-            # 768×1376) для экономии места. Качества хватает для
-            # storyboard-просмотра. JPEG quality 85 → ~3-4× меньше
-            # вес файла. Pillow ресайз ~100-300 мс — незаметно в потоке.
+            # 2026-06-04: шот сохраняется в ОРИГИНАЛЬНОМ разрешении от Nano
+            # Banana (~768×1376), JPEG q90 — без даунскейла (раньше резали до
+            # 384×688 ради экономии места; теперь нужен полный размер в рефах).
             # 2026-05-07: ИСТОРИЯ ВЕРСИЙ — каждая регенерация копится
             # в _history/<basename>/vN.jpg. ShotViewerDialog показывает
             # все версии и даёт «использовать эту». Существующий шот
@@ -773,11 +772,9 @@ class GenerateThread(QThread):
                 with Image.open(io.BytesIO(image_bytes)) as img:
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
-                    img_small = img.resize(
-                        (384, 688), Image.Resampling.LANCZOS)
-                    img_small.save(
+                    img.save(
                         str(new_version_path), 'JPEG',
-                        quality=85, optimize=True)
+                        quality=90, optimize=True)
                 # Копируем history-версию в основной файл (active).
                 import shutil
                 shutil.copy2(str(new_version_path), str(shot_file))

@@ -4350,7 +4350,7 @@ def add_shot_version_from_bytes(block_name: str, shot_idx: int,
     Логика — копия save-паттерна из GenerateThread (threads/generate.py):
       • если history пуста, а активный файл шота есть — мигрируем его в v1
         (чтобы не потерять текущую активную версию);
-      • пишем картинку в новый vN.jpg (ресайз 384×688, как у генерации);
+      • пишем картинку в новый vN.jpg (ОРИГИНАЛЬНЫЙ размер ~768×1376, q90);
       • копируем vN.jpg в активный файл шота ({block}_shot{N}.jpg);
       • помечаем active.txt = N.
     Старые версии не трогаются.
@@ -4371,8 +4371,7 @@ def add_shot_version_from_bytes(block_name: str, shot_idx: int,
     with PILImage.open(io.BytesIO(image_bytes)) as img:
         if img.mode != 'RGB':
             img = img.convert('RGB')
-        img_small = img.resize((384, 688), PILImage.Resampling.LANCZOS)
-        img_small.save(str(new_version_path), 'JPEG', quality=85, optimize=True)
+        img.save(str(new_version_path), 'JPEG', quality=90, optimize=True)
     shutil.copy2(str(new_version_path), str(shot_file))
     set_active_version(history_dir, next_n)
     return next_n
