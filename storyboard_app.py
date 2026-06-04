@@ -12500,10 +12500,62 @@ class MainWindow(QMainWindow):
                         f"texture copy failed for {latest}: "
                         f"{type(e).__name__}: {e}\n")
 
+            # 5b-2. (2026-06-04) Дополнить версиями-с-сеткой персонажей.
+            #     Зеркало 5b, но источник — characters_grid/<slug>/ и имя
+            #     файла ДЕТЕРМИНИРОВАННОЕ: <orig_stem>_grid.jpg (один файл на
+            #     реф, views/actors.py пишет ровно его). Поэтому матчим ТОЧНЫЙ
+            #     stem (orig_stem + "_grid"), а не startswith — иначе для рефа
+            #     "laura" префикс "laura_" поймал бы и сетку рефа "laura_2".
+            #     .json-сайдкар отсекается allowed_ext. max-by-mtime —
+            #     defensive на случай дублей расширений. Имя dest grid__<slug>__
+            #     не матчит storyboard_pattern → cleanup стирает как кэш.
+            grid_root = show_root / "refs" / "characters_grid"
+            grid_count = 0
+            for char_slug, orig_stem in character_originals:
+                grid_dir = grid_root / char_slug
+                if not grid_dir.exists() or not grid_dir.is_dir():
+                    continue
+                target_stem = orig_stem + "_grid"
+                try:
+                    candidates = [
+                        p for p in grid_dir.iterdir()
+                        if p.is_file()
+                        and p.suffix.lower() in allowed_ext
+                        and p.stem == target_stem
+                    ]
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"failed to list grids for {char_slug}/{orig_stem}: "
+                        f"{type(e).__name__}: {e}\n")
+                    continue
+                if not candidates:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"no grid for {char_slug}/{orig_stem}\n")
+                    continue
+                try:
+                    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"failed to pick latest grid for {char_slug}/{orig_stem}: "
+                        f"{type(e).__name__}: {e}\n")
+                    continue
+                dest_name = f"grid__{char_slug}__{latest.name}"
+                try:
+                    shutil.copy2(latest, dest_dir / dest_name)
+                    grid_count += 1
+                except Exception as e:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: "
+                        f"grid copy failed for {latest}: "
+                        f"{type(e).__name__}: {e}\n")
+
             _sys_log.stderr.write(
                 f"[block_refs] ep={ep_id} block={block_n} "
                 f"found={copied_count} missing={missing_count} "
-                f"textures={texture_count} "
+                f"textures={texture_count} grids={grid_count} "
                 f"dest={dest_dir}\n")
             _sys_log.stderr.flush()
 
