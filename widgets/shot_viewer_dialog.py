@@ -22,11 +22,12 @@ import shutil
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QWidget, QFrame, QSizePolicy, QApplication
+    QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
+    QStackedWidget
 )
 
 from i18n import tr
@@ -201,28 +202,47 @@ class ShotViewerDialog(QDialog):
         header_row.addWidget(self.selected_lbl, stretch=1)
         lay.addLayout(header_row)
 
-        # Большая картинка — обернём в QScrollArea чтобы при сжатом окне
-        # юзер мог проскроллить, а не ужималась через AspectRatio scaling.
-        # При normal-size окне scrollbar не появится (preview помещается).
-        preview_scroll = QScrollArea()
-        preview_scroll.setWidgetResizable(True)
-        preview_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        preview_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        preview_scroll.setStyleSheet("QScrollArea { border:none; }")
-        preview_holder = QWidget()
-        ph = QVBoxLayout(preview_holder)
-        ph.setContentsMargins(0, 0, 0, 0)
-        ph.setSpacing(0)
-        self.preview_lbl = QLabel()
-        self.preview_lbl.setFixedSize(PREVIEW_W, PREVIEW_H)
-        self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_lbl.setStyleSheet(
-            "background:#1a1424; border:1px solid #322545; border-radius:8px;")
-        ph.addWidget(self.preview_lbl, alignment=Qt.AlignmentFlag.AlignHCenter)
-        preview_scroll.setWidget(preview_holder)
-        lay.addWidget(preview_scroll, stretch=1)
+        # 2026-06-04 (C1): большое превью — зумируемый StoryboardView (колесо =
+        # зум к курсору, drag = панорама). Импорт ЛЕНИВЫЙ — иначе `import widgets`
+        # на старте потянет grid_dialog→widgets.face_grid.library до загрузки
+        # storyboard_app (циклический импорт). grid_dialog НЕ трогаем.
+        from widgets.face_grid.grid_dialog import StoryboardView
+        self.preview_view = StoryboardView(QPixmap())
+        # Стек: index0 = вид, index1 = заглушка «нет картинки» (сохраняем
+        # прежний текстовый fallback из _show_preview).
+        self.preview_stack = QStackedWidget()
+        self.preview_stack.addWidget(self.preview_view)
+        self.no_img_lbl = QLabel()
+        self.no_img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.no_img_lbl.setStyleSheet(
+            "background:#1a1424; border:1px solid #322545; border-radius:8px;"
+            " color:#666; font-size:13px;")
+        self.preview_stack.addWidget(self.no_img_lbl)
+        # Контейнер тянется stretch=1 (занимает доступную вертикаль), стек
+        # центрируем внутри. Реальный размер 9:16-рамки считаем императивно в
+        # resizeEvent (_fit_preview_box) — декларативный layout не даёт честный
+        # 9:16-бокс. Так рамка влезает в окно (не обрезается) и не раздувается.
+        self.preview_holder = QWidget()
+        _hl = QVBoxLayout(self.preview_holder)
+        _hl.setContentsMargins(0, 0, 0, 0)
+        _hl.addStretch()
+        _prev_row = QHBoxLayout()
+        _prev_row.addStretch()
+        _prev_row.addWidget(self.preview_stack)
+        _prev_row.addStretch()
+        _hl.addLayout(_prev_row)
+        _hl.addStretch()
+        lay.addWidget(self.preview_holder, stretch=1)
+        # Флаг «юзер реально зумил/панорамил» (для кропа в C2). Заводится в
+        # eventFilter(Wheel) и при сдвиге скроллбаров вида; сбрасывается при
+        # загрузке версии (_load_into_view) и во время программного _fit.
+        self._preview_dirty = False
+        self._loading_preview = False
+        self.preview_view.viewport().installEventFilter(self)
+        self.preview_view.horizontalScrollBar().valueChanged.connect(
+            self._on_view_scrolled)
+        self.preview_view.verticalScrollBar().valueChanged.connect(
+            self._on_view_scrolled)
 
         # Лента миниатюр (горизонтальный scroll)
         strip_label = QLabel(tr('shot_viewer_versions_label'))
@@ -356,24 +376,83 @@ class ShotViewerDialog(QDialog):
         self._activate_selected_version()
         super().reject()
 
-    def _show_preview(self, image_path: Path):
-        """Загружает картинку в большое превью."""
+    def eventFilter(self, obj, ev):
+        # Колесо над видом превью = зум → dirty (для C2). Событие пропускаем
+        # дальше (return super) — StoryboardView.wheelEvent сам зумит.
+        if (not self._loading_preview
+                and ev.type() == QEvent.Type.Wheel
+                and obj is self.preview_view.viewport()):
+            self._preview_dirty = True
+        return super().eventFilter(obj, ev)
+
+    def _on_view_scrolled(self, _value):
+        # Сдвиг скроллбаров вида = панорама/зум → dirty, но НЕ во время
+        # программной загрузки версии (_load_into_view / _fit / resize-бокса).
+        if not self._loading_preview:
+            self._preview_dirty = True
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit_preview_box()
+
+    def _fit_preview_box(self):
+        """Подгоняет 9:16-рамку превью под доступную область контейнера:
+        максимум PREVIEW_W×PREVIEW_H, но сжимается на низких окнах, чтобы
+        рамка (и весь шот) влезала без обрезки. fitInView вида срабатывает
+        сам при ресайзе (StoryboardView.resizeEvent, если не было зума)."""
+        if not hasattr(self, 'preview_holder'):
+            return
+        avail = self.preview_holder.size()
+        aw, ah = max(1, avail.width()), max(1, avail.height())
+        h = min(PREVIEW_H, ah)
+        w = round(h * PREVIEW_W / PREVIEW_H)
+        if w > min(PREVIEW_W, aw):
+            w = min(PREVIEW_W, aw)
+            h = round(w * PREVIEW_H / PREVIEW_W)
+        if (self.preview_stack.width() != int(w)
+                or self.preview_stack.height() != int(h)):
+            self._loading_preview = True
+            try:
+                self.preview_stack.setFixedSize(int(w), int(h))
+            finally:
+                self._loading_preview = False
+                self._preview_dirty = False
+
+    def _load_into_view(self, pix):
+        """Кладёт QPixmap в существующий StoryboardView (свап pixmap_item в
+        view._scene — тот же приём, что в actor_grid_dialog), ре-fit и СБРОС
+        dirty. grid_dialog НЕ трогаем."""
+        self._loading_preview = True
         try:
-            pix = QPixmap(str(image_path))
-            if not pix.isNull():
-                pix = pix.scaled(
-                    QSize(PREVIEW_W, PREVIEW_H),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation)
-                self.preview_lbl.setPixmap(pix)
-                return
-        except Exception:
-            pass
-        self.preview_lbl.clear()
-        self.preview_lbl.setText(tr('shot_viewer_no_image'))
-        self.preview_lbl.setStyleSheet(
-            "background:#1a1424; border:1px solid #322545; border-radius:8px;"
-            " color:#666; font-size:13px;")
+            view = self.preview_view
+            if view.pixmap_item is not None:
+                view._scene.removeItem(view.pixmap_item)
+            view.pixmap_item = view._scene.addPixmap(pix)
+            view._scene.setSceneRect(view.pixmap_item.boundingRect())
+            view._fitted = False
+            view._user_zoomed = False
+            # Фитим СРАЗУ только если вид уже показан (рантайм-переключение
+            # версий). При ПЕРВИЧНОЙ загрузке из __init__→refresh вид ещё не
+            # виден и вьюпорт нулевой → _fit() посчитал бы неверно и закрыл
+            # путь повторному фиту. Оставляем _fitted=False — собственный
+            # showEvent StoryboardView (grid_dialog, НЕ трогаем) впишет
+            # картинку целиком, когда вьюпорт получит реальный размер.
+            if view.isVisible():
+                view._fit()
+        finally:
+            self._loading_preview = False
+            self._preview_dirty = False
+
+    def _show_preview(self, image_path: Path):
+        """Грузит картинку версии в зумируемый вид (полное разрешение, 1:1).
+        Нет картинки → стек на заглушку с прежним текстом."""
+        pix = QPixmap(str(image_path)) if image_path else QPixmap()
+        if pix is not None and not pix.isNull():
+            self.preview_stack.setCurrentWidget(self.preview_view)
+            self._load_into_view(pix)
+            return
+        self.no_img_lbl.setText(tr('shot_viewer_no_image'))
+        self.preview_stack.setCurrentWidget(self.no_img_lbl)
 
     def _on_thumb_clicked(self, version_n: int):
         self._selected_version = version_n
