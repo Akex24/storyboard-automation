@@ -1341,7 +1341,8 @@ class CreateActorRefDialog(QDialog):
                 traceback.print_exc()
             self.owner_view.start_ref_generation(
                 self.actor_slug, self.photos, prompt, filename,
-                self.display_name, target_dir, outfit_text=desc)
+                self.display_name, target_dir, outfit_text=desc,
+                variant_id=self._selected_variant)
             # Закрываем попап — поток живёт в ActorsView, не зависит от диалога
             self.accept()
         except Exception:
@@ -1736,7 +1737,8 @@ class RefResultDialog(QDialog):
                 target_dir = Path()
             self.owner_view.start_ref_generation(
                 self.actor_slug, self.photos, prompt, filename,
-                self.display_name, target_dir, outfit_text=desc)
+                self.display_name, target_dir, outfit_text=desc,
+                variant_id=self._variant_id)
             self.accept()
         except Exception:
             traceback.print_exc()

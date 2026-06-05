@@ -437,6 +437,10 @@ class ActorsView(QWidget):
         # или RefResultDialog._on_regen). Подставляется в попап при клике
         # «🆕 Готов новый референс» — юзер не должен заново писать что было.
         self._last_outfit: Dict[str, str] = {}
+        # 2026-06-05: выбранная раскадровка (detailed/simple) последней
+        # генерации per-slug — чтобы «Создать ещё один референс» повторял
+        # ту же раскладку (14/7 панелей), а не дефолтил в detailed.
+        self._last_variant: Dict[str, str] = {}
         # Долг 13: pending-запрос из чата эпизода. Когда юзер выбрал
         # вариант одежды для character'а в чате — мы переключили вкладку
         # сюда и записали сюда {character, show, description}. При клике
@@ -1506,7 +1510,8 @@ class ActorsView(QWidget):
     def start_ref_generation(self, actor_slug: str, photos: List[Path],
                              prompt_text: str, output_filename: str,
                              display_name: str, target_dir: Path,
-                             outfit_text: str = ""):
+                             outfit_text: str = "", *,
+                             variant_id: str = "detailed"):
         """Стартует GenerateActorRefThread с ActorsView как родителем
         (живёт пока окно открыто) и хранит ссылку в self._ref_threads.
         ВАЖНО: parent=None для QThread — иначе если родитель = QDialog
@@ -1521,6 +1526,7 @@ class ActorsView(QWidget):
         попап показал предыдущее описание, а не пустое поле."""
         if outfit_text:
             self._last_outfit[actor_slug] = outfit_text
+        self._last_variant[actor_slug] = variant_id
         if not hasattr(self, '_ref_threads'):
             self._ref_threads = []
         if not hasattr(self, '_active_generations'):
@@ -1720,6 +1726,7 @@ class ActorsView(QWidget):
                 initial_variants=variants,
                 owner_view=self,
                 initial_outfit=saved_outfit,
+                variant_id=self._last_variant.get(slug, "detailed"),
                 parent=self.window())
             self._open_result_dialogs[slug] = dlg
             # При закрытии любым способом — снять из открытых
