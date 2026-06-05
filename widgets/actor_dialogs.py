@@ -1744,7 +1744,11 @@ class RefResultDialog(QDialog):
 
     def _on_done(self):
         """«✓ Оставить этот, остальные удалить»: удаляет ВСЕ варианты с
-        диска кроме текущего, очищает pending в owner_view, закрывает попап."""
+        диска кроме текущего, очищает pending в owner_view, закрывает попап.
+        После закрытия открывает наложение сетки на сохранённый реф."""
+        # target_path — @property от _variants[_current_idx]; захватываем ДО
+        # accept(), т.к. после закрытия попапа обращение может стать невалидным.
+        kept_path = self.target_path
         try:
             for i, p in enumerate(self._variants):
                 if i == self._current_idx:
@@ -1757,6 +1761,15 @@ class RefResultDialog(QDialog):
                 self.owner_view.confirm_pending_kept(
                     self.actor_slug, self.target_path)
             self.accept()
+        except Exception:
+            traceback.print_exc()
+        # 2026-06-05: после фиксации варианта и закрытия окна — сразу открыть
+        # наложение сетки на сохранённый реф (переиспользуем логику ActorsView,
+        # которая сама считает save_path и открывает ActorGridDialog). Свой
+        # try/except: падение грида не должно ломать уже-сделанный выбор.
+        try:
+            if self.owner_view is not None:
+                self.owner_view._on_apply_grid_to_ref(kept_path)
         except Exception:
             traceback.print_exc()
 
