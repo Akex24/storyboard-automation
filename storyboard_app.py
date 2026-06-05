@@ -5231,14 +5231,14 @@ Create a clean technical identity reference sheet for the same exact person, des
 Create one single image with a custom asymmetric layout based on a 3x3 grid structure.
 
 Layout:
-- top left: 3 small head reference panels in one row:
-  1. front head close-up
-  2. left 3/4 head close-up
-  3. left side profile close-up
-- bottom left: 3 body reference panels in one row:
-  4. front body view, cropped from shoulders to feet
-  5. left side body view, cropped from shoulders to feet
-  6. back body view, cropped from shoulders to feet
+- top left: 3 full-body reference panels in one row:
+  1. front full-body view, full figure from head to feet, including the head
+  2. left side full-body view, full figure from head to feet, including the head
+  3. back full-body view, full figure from head to feet, including the head
+- bottom left: 3 head-and-shoulders reference panels in one row:
+  4. front head-and-shoulders close-up
+  5. left 3/4 head-and-shoulders close-up
+  6. left side profile head-and-shoulders close-up
 - right side: 1 enlarged facial detail panel occupying a strict 2x2 area.
   This enlarged face panel must be much larger than the other panels and must clearly dominate the layout.
   Show the same exact person in an extreme close frontal face crop, looking directly into the camera, with very tight framing so that only the eyes, nose, lips, and nearby cheek area are visible.
@@ -5246,10 +5246,10 @@ Layout:
 
 Composition rules:
 - the large facial panel occupies four standard cells on the right side
-- the 3 small head panels stay in one horizontal row on the upper left
-- the 3 body panels stay in one horizontal row on the lower left
-- panels 1, 2, 3: very tight head crop, head fills most of the panel
-- panels 4, 5, 6: shoulders to feet, no head visible
+- the 3 full-body panels stay in one horizontal row on the upper left
+- the 3 head-and-shoulders panels stay in one horizontal row on the lower left
+- panels 1, 2, 3: full figure from head to feet including the head, natural realistic body proportions, head correctly sized relative to the body
+- panels 4, 5, 6: head and shoulders visible, head fills most of the panel
 - clean technical organized layout
 
 Identity preservation:
@@ -5265,10 +5265,10 @@ Style:
 Realistic studio photography, plain neutral studio background, soft even lighting, natural skin texture, sharp realistic detail, clean presentation, accurate proportions.
 
 Hard constraints:
-- exactly 3 small head panels
-- exactly 3 small body panels
+- exactly 3 full-body panels showing the full figure from head to feet including the head
+- exactly 3 head-and-shoulders panels
 - exactly 1 enlarged facial detail panel occupying a 2x2 area on the right side
-- panels 4, 5, 6 cropped from shoulders to feet, no head visible
+- panels 1, 2, 3 show the complete figure from head to feet with correct natural body proportions
 """
 
 
