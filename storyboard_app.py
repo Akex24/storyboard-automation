@@ -3859,6 +3859,20 @@ def parse_shots(prompt_text: str) -> List[Dict]:
     return shots[:PANELS]
 
 
+# 2026-06-04 — анти-«большая голова»: каждый скетч-шот получает инструкцию
+# про естественные пропорции тела. Вставляется в КОНЕЦ шапки (после всех
+# layout-скрабов) внутри extract_shot_prompt → попадает в скетч/regen payload
+# и на старых, и на новых .txt без перегенерации файлов. Realistic/edit этот
+# вывод отбрасывают (см. _collect_shot_refs), Seedance читает сырой .txt.
+_BODY_PROPORTION_RULE = (
+    "Render all characters with realistic, natural human body proportions — "
+    "head sized correctly relative to the body (an adult head is roughly "
+    "one-seventh to one-eighth of full standing height). Avoid an oversized "
+    "or enlarged head, avoid a bobblehead look, keep the head-to-body ratio "
+    "anatomically correct."
+)
+
+
 def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
     """Извлекает контент одного шота как самостоятельный 9:16 промпт.
 
@@ -3933,7 +3947,10 @@ def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
         return f'[{body}]' if body else ''
     header_new = re.sub(r'\[([^\[\]]*)\]', _scrub_layout_in_brackets, header_new)
 
-    return f"{header_new.strip()}\n\n{panel_body}"
+    header_final = header_new.strip()
+    if "natural human body proportions" not in header_final:
+        header_final = f"{header_final} {_BODY_PROPORTION_RULE}"
+    return f"{header_final}\n\n{panel_body}"
 
 
 # ─────────────────────────────────────────────────────────────────────────
