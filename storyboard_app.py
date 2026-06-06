@@ -3778,6 +3778,43 @@ def set_speech_speed_b_slow(value: float) -> None:
         traceback.print_exc()
 
 
+def mode_c_versions_per_shot() -> int:
+    """Mode C: сколько версий генерить на один шот (1-10, дефолт 1)."""
+    try:
+        v = QSettings(APP_ORG, APP_NAME).value("mode_c/versions_per_shot", 1)
+        return max(1, min(10, int(v)))
+    except Exception:
+        return 1
+
+
+def set_mode_c_versions_per_shot(n: int) -> None:
+    """Mode C: сохраняет число версий на шот. Кламп 1-10."""
+    try:
+        v = max(1, min(10, int(n)))
+        QSettings(APP_ORG, APP_NAME).setValue("mode_c/versions_per_shot", v)
+    except Exception:
+        traceback.print_exc()
+
+
+def mode_c_parallel_blocks() -> int:
+    """Mode C: сколько блоков генерить параллельно (1-10, дефолт 1).
+    Пока только настройка — логика параллельных блоков отдельной задачей."""
+    try:
+        v = QSettings(APP_ORG, APP_NAME).value("mode_c/parallel_blocks", 1)
+        return max(1, min(10, int(v)))
+    except Exception:
+        return 1
+
+
+def set_mode_c_parallel_blocks(n: int) -> None:
+    """Mode C: сохраняет число параллельных блоков. Кламп 1-10."""
+    try:
+        v = max(1, min(10, int(n)))
+        QSettings(APP_ORG, APP_NAME).setValue("mode_c/parallel_blocks", v)
+    except Exception:
+        traceback.print_exc()
+
+
 def find_ref_image(filename: str) -> Optional[Path]:
     """Резолвит имя файла рефа в физический путь на диске.
 
@@ -5643,6 +5680,10 @@ class MainWindow(QMainWindow):
         self._storyboard_blocks_queue: List[List[tuple]] = []
         self._storyboard_active_block: Optional[str] = None
         self._storyboard_active_pending: int = 0
+        # 2026-06-06 (Mode C): отдельный реестр тредов версий шота
+        # (ключ (block, panel_idx, version_index)). Не пересекается с
+        # _active_regens — старые хендлеры его не видят.
+        self._active_mode_c_version_threads: Dict[tuple, GenerateThread] = {}
         self._update_thread:     Optional[QThread]                 = None
         self._app_update_thread: Optional[DownloadAppUpdateThread] = None
         self._stats_thread:      Optional[FetchStatsThread]        = None
@@ -5771,11 +5812,13 @@ class MainWindow(QMainWindow):
         Если ничего не активно — ничего не делает."""
         refs_busy = self._refs_busy()
         active_gens_busy = bool(self._active_gens)
-        if (not self._active_regens and not refs_busy
-                and not active_gens_busy):
+        if (not self._active_regens and not self._active_mode_c_version_threads
+                and not refs_busy and not active_gens_busy):
             return
         self._dot_step = (self._dot_step + 1) % 3
         active_blocks = {b for (b, _) in self._active_regens.keys()}
+        active_blocks |= {
+            b for (b, _p, _v) in self._active_mode_c_version_threads.keys()}
         for b in active_blocks:
             self._refresh_block_indicator(b)
         if refs_busy:
@@ -8549,6 +8592,69 @@ class MainWindow(QMainWindow):
             self._refresh_speech_speed_b_normal_value()
             self._refresh_speech_speed_b_slow_value()
 
+        # 2026-06-06 (Mode C): версий на шот / блоков параллельно.
+        # Секция видна ТОЛЬКО в режиме C (гейт по get_current_mode).
+        if mode_loader.get_current_mode() == 'c':
+            from PyQt6.QtWidgets import QSpinBox as _QSB_C
+
+            self.sec_mode_c_lbl = QLabel(tr('sec_mode_c_settings'))
+            self.sec_mode_c_lbl.setObjectName("settings-section")
+            lay.addWidget(self.sec_mode_c_lbl)
+
+            mode_c_frame = QFrame()
+            mode_c_frame.setObjectName("settings-group")
+            mc_lay = QVBoxLayout(mode_c_frame)
+
+            vps_row = QHBoxLayout()
+            vps_row.setSpacing(12)
+            self.mode_c_versions_label_lbl = QLabel(
+                tr('mode_c_versions_per_shot_label'))
+            self.mode_c_versions_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            vps_row.addWidget(self.mode_c_versions_label_lbl)
+            self.mode_c_versions_spin = _QSB_C()
+            self.mode_c_versions_spin.setMinimum(1)
+            self.mode_c_versions_spin.setMaximum(10)
+            self.mode_c_versions_spin.setSingleStep(1)
+            self.mode_c_versions_spin.setValue(mode_c_versions_per_shot())
+            block_wheel_event(self.mode_c_versions_spin)
+            self.mode_c_versions_spin.valueChanged.connect(
+                set_mode_c_versions_per_shot)
+            vps_row.addWidget(self.mode_c_versions_spin, stretch=1)
+            mc_lay.addLayout(vps_row)
+            self.mode_c_versions_hint_lbl = QLabel(
+                tr('mode_c_versions_per_shot_hint'))
+            self.mode_c_versions_hint_lbl.setWordWrap(True)
+            self.mode_c_versions_hint_lbl.setStyleSheet(
+                "color:rgba(255,255,255,0.45); font-size:11px;")
+            mc_lay.addWidget(self.mode_c_versions_hint_lbl)
+
+            pb_row = QHBoxLayout()
+            pb_row.setSpacing(12)
+            self.mode_c_parallel_label_lbl = QLabel(
+                tr('mode_c_parallel_blocks_label'))
+            self.mode_c_parallel_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            pb_row.addWidget(self.mode_c_parallel_label_lbl)
+            self.mode_c_parallel_spin = _QSB_C()
+            self.mode_c_parallel_spin.setMinimum(1)
+            self.mode_c_parallel_spin.setMaximum(10)
+            self.mode_c_parallel_spin.setSingleStep(1)
+            self.mode_c_parallel_spin.setValue(mode_c_parallel_blocks())
+            block_wheel_event(self.mode_c_parallel_spin)
+            self.mode_c_parallel_spin.valueChanged.connect(
+                set_mode_c_parallel_blocks)
+            pb_row.addWidget(self.mode_c_parallel_spin, stretch=1)
+            mc_lay.addLayout(pb_row)
+            self.mode_c_parallel_hint_lbl = QLabel(
+                tr('mode_c_parallel_blocks_hint'))
+            self.mode_c_parallel_hint_lbl.setWordWrap(True)
+            self.mode_c_parallel_hint_lbl.setStyleSheet(
+                "color:rgba(255,255,255,0.45); font-size:11px;")
+            mc_lay.addWidget(self.mode_c_parallel_hint_lbl)
+
+            lay.addWidget(mode_c_frame)
+
         lay.addStretch()
         self._refresh_settings_versions()
         scroll.setWidget(w)
@@ -9296,9 +9402,12 @@ class MainWindow(QMainWindow):
                   'storyboard': 0, 'montage': 0, 'outfit': 0,
                   'autogen': 0, 'auth': 0}
         try:
-            # Регенерации шотов (GenerateThread)
+            # Регенерации шотов (GenerateThread) + Mode C версии шотов
             counts['shot'] = sum(
                 1 for t in self._active_regens.values()
+                if t is not None and t.isRunning())
+            counts['shot'] += sum(
+                1 for t in self._active_mode_c_version_threads.values()
                 if t is not None and t.isRunning())
 
             # Регенерации рефов (RefGenerateThread)
@@ -9388,6 +9497,7 @@ class MainWindow(QMainWindow):
         threads = []
         try:
             threads.extend(self._active_regens.values())
+            threads.extend(self._active_mode_c_version_threads.values())
             threads.extend(getattr(self, '_ref_threads', []) or [])
             threads.extend(getattr(self, '_geometry_threads', []) or [])
             threads.extend(getattr(self, '_seedance_regen_threads', []) or [])
@@ -10706,7 +10816,10 @@ class MainWindow(QMainWindow):
         """Префикс текста пилюли — анимация точек во время регенерации.
         NEW визуально показывается через property `unseen` и CSS (оранжевый фон),
         а не через эмодзи в тексте."""
-        has_active = any(b == block_name for (b, _) in self._active_regens.keys())
+        has_active = (
+            any(b == block_name for (b, _) in self._active_regens.keys())
+            or any(b == block_name
+                   for (b, _p, _v) in self._active_mode_c_version_threads.keys()))
         if has_active:
             dots_pattern = ["·    ", "· ·  ", "· · ·"]
             return dots_pattern[self._dot_step] + "  "
@@ -10723,7 +10836,10 @@ class MainWindow(QMainWindow):
         btn = self._block_pills.get(block_name)
         if btn is None:
             return
-        has_active = any(b == block_name for (b, _) in self._active_regens.keys())
+        has_active = (
+            any(b == block_name for (b, _) in self._active_regens.keys())
+            or any(b == block_name
+                   for (b, _p, _v) in self._active_mode_c_version_threads.keys()))
         # NEW показывается ТОЛЬКО когда нет активных генераций (взаимоисключающие)
         has_unseen = (not has_active) and any(
             b == block_name for (b, _) in self._unseen_shots)
@@ -12356,6 +12472,13 @@ class MainWindow(QMainWindow):
             return
         block_basename = shots[0][0]
         self._storyboard_active_block = block_basename
+        # 2026-06-06 (Mode C): N версий на шот. Только режим C и N>1 — уходим
+        # в отдельный спавнер; иначе всё ниже работает как раньше (байт-в-байт).
+        if (mode_loader.get_current_mode() == 'c'
+                and mode_c_versions_per_shot() > 1):
+            self._start_storyboard_block_mode_c(
+                shots, mode_c_versions_per_shot())
+            return
         self._storyboard_active_pending = len(shots)
 
         for block_basename, panel_idx in shots:
@@ -12411,6 +12534,106 @@ class MainWindow(QMainWindow):
         # упавший шот не блокирует переход к следующему блоку.
         # Юзер перезапустит вручную через карточку шота.
         self._on_regen_error(msg, block_basename, panel_idx)
+        self._storyboard_active_pending = max(
+            0, self._storyboard_active_pending - 1)
+        if self._storyboard_active_pending == 0:
+            self._maybe_start_next_storyboard_block()
+
+    # ── Mode C: N версий на шот (2026-06-06) ─────────────────────────────
+    def _start_storyboard_block_mode_c(self, shots: List[tuple], n: int):
+        """Mode C batch: на каждый шот спавним N тредов (version_index 1..N)
+        в ОТДЕЛЬНЫЙ реестр _active_mode_c_version_threads. Каждый тред пишет
+        свой v{version_index}.jpg (без next_history_index → без гонки).
+        _active_regens и хендлеры не-C режимов НЕ участвуют."""
+        block_basename = shots[0][0]
+        self._storyboard_active_pending = len(shots) * n
+        for block_basename, panel_idx in shots:
+            if (self.current_block == block_basename
+                    and 0 <= panel_idx < len(self.shot_cards)):
+                try:
+                    self.shot_cards[panel_idx].set_loading(True)
+                except Exception:
+                    pass
+            for v in range(1, n + 1):
+                key = (block_basename, panel_idx, v)
+                thread = GenerateThread(block_basename, panel_idx,
+                                        version_index=v)
+                self._active_mode_c_version_threads[key] = thread
+                thread.progress.connect(self.status_bar.showMessage)
+                thread.step.connect(
+                    lambda lbl, pct, bn=block_basename, pi=panel_idx:
+                        self._on_regen_step(lbl, pct, bn, pi))
+                thread.finished.connect(
+                    lambda elapsed, bn=block_basename, pi=panel_idx, vi=v:
+                        self._on_mode_c_version_finished(bn, pi, vi, elapsed))
+                thread.error.connect(
+                    lambda msg, bn=block_basename, pi=panel_idx, vi=v:
+                        self._on_mode_c_version_error(bn, pi, vi, msg))
+                thread.start()
+        self._refresh_block_indicator(block_basename)
+        self.status_bar.showMessage(
+            f"Сториборды (Mode C): блок {block_basename} → "
+            f"{len(shots)} шот(ов) x {n} версий параллельно…")
+
+    def _on_mode_c_version_finished(self, block_basename: str,
+                                     panel_idx: int, version_index: int,
+                                     elapsed: int = 0):
+        """Одна версия шота Mode C завершилась. pop из нового реестра,
+        декремент общего счётчика, обновление UI (аналог _on_regen_done,
+        но без касания _active_regens)."""
+        self._active_mode_c_version_threads.pop(
+            (block_basename, panel_idx, version_index), None)
+        # gen_time per-shot (без version_index) — последний завершившийся
+        # тред перезапишет своим временем (= самой долгой версии, т.к.
+        # стартовали одновременно). Логика как в _on_regen_done.
+        if elapsed > 0:
+            try:
+                key = f"gen_time_{block_basename}_shot{panel_idx + 1}"
+                QSettings(APP_ORG, APP_NAME).setValue(key, int(elapsed))
+            except Exception:
+                pass
+        self._unseen_shots.add((block_basename, panel_idx))
+        if self.current_block:
+            needs_redraw = (
+                self.current_block == block_basename
+                or any(b == self.current_block
+                       for (b, _p, _v) in self._active_mode_c_version_threads)
+            )
+            if needs_redraw:
+                self._display_block(self.current_block)
+        self._refresh_block_indicator(block_basename)
+        try:
+            self.refresh_open_shot_viewer(block_basename, panel_idx)
+        except Exception:
+            traceback.print_exc()
+        self._storyboard_active_pending = max(
+            0, self._storyboard_active_pending - 1)
+        if self._storyboard_active_pending == 0:
+            self._maybe_start_next_storyboard_block()
+
+    def _on_mode_c_version_error(self, block_basename: str,
+                                  panel_idx: int, version_index: int,
+                                  msg: str):
+        """Одна версия шота Mode C упала. pop из нового реестра, декремент
+        счётчика, уведомление юзера. Не блокирует остальные версии/блоки."""
+        self._active_mode_c_version_threads.pop(
+            (block_basename, panel_idx, version_index), None)
+        if self.current_block:
+            needs_redraw = (
+                self.current_block == block_basename
+                or any(b == self.current_block
+                       for (b, _p, _v) in self._active_mode_c_version_threads)
+            )
+            if needs_redraw:
+                self._display_block(self.current_block)
+        self._refresh_block_indicator(block_basename)
+        try:
+            self._notify_storyboard_failure(
+                block_basename, panel_idx,
+                f"SHOT {panel_idx + 1} v{version_index} блока "
+                f"«{block_basename}»: {msg[:300]}")
+        except Exception:
+            traceback.print_exc()
         self._storyboard_active_pending = max(
             0, self._storyboard_active_pending - 1)
         if self._storyboard_active_pending == 0:

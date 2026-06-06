@@ -119,7 +119,8 @@ class GenerateThread(QThread):
 
     def __init__(self, block_name: str, panel_idx: int,
                  edit_instruction: Optional[str] = None,
-                 realistic: bool = False):
+                 realistic: bool = False,
+                 version_index: Optional[int] = None):
         """
         Если `edit_instruction` задан — режим редактирования:
           • существующий файл шота загружается как ЕДИНСТВЕННЫЙ реф [@]img1
@@ -130,12 +131,18 @@ class GenerateThread(QThread):
             промпт строит `_build_realistic_prompt` (фотореалистичный кадр,
             без pencil sketch). Пользовательской инструкции нет.
         Иначе — обычная регенерация по промпту блока + рефы локаций/персонажей.
+
+        Если `version_index` задан (Mode C batch с N версиями) — сохранять
+        картинку в конкретный v{version_index}.jpg вместо вычисления через
+        next_history_index. Это устраняет гонку при параллельной записи
+        нескольких версий одного шота.
         """
         super().__init__()
         self.block_name       = block_name
         self.panel_idx        = panel_idx
         self.edit_instruction = (edit_instruction or "").strip() or None
         self.realistic        = bool(realistic)
+        self.version_index    = version_index
 
     def _upload_file(self, session: requests.Session, path: Path) -> str:
         """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует
@@ -789,8 +796,14 @@ class GenerateThread(QThread):
                         shutil.copy2(str(shot_file), str(v1_path))
                     except Exception:
                         pass  # миграция фейл — продолжаем с N=1
-                # Новый индекс.
-                next_n = _sa.next_history_index(history_dir)
+                # Новый индекс. Если version_index задан (Mode C batch) —
+                # пишем в конкретный v{version_index}.jpg вместо
+                # next_history_index (устраняет гонку при параллельной
+                # записи N версий одного шота).
+                if self.version_index is not None:
+                    next_n = int(self.version_index)
+                else:
+                    next_n = _sa.next_history_index(history_dir)
                 new_version_path = history_dir / f"v{next_n}.jpg"
                 # Сохраняем новую картинку в history vN.jpg (resized).
                 with Image.open(io.BytesIO(image_bytes)) as img:
