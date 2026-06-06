@@ -18,16 +18,13 @@ from typing import Tuple, List, Set, Dict, Any
 
 
 VALID_SPEECH_TYPES: Set[str] = {"fast", "normal", "emotional", "slow"}
-MAX_TOTAL_SEC = 80
-MIN_TOTAL_SEC = 60
 MAX_SHOTS_PER_BLOCK = 4
 MAX_BLOCK_DURATION = 15
-MAX_BLOCKS = 7
 
 
 PREFILTER_RULES: Set[str] = {
     "rule_1", "rule_2", "rule_3", "rule_4", "rule_5",
-    "rule_7", "rule_8", "rule_10", "rule_11", "rule_13",
+    "rule_7", "rule_8", "rule_10", "rule_11",
 }
 
 
@@ -37,60 +34,6 @@ def _err(code: str, where: str, details: str) -> Dict[str, str]:
 
 def _block_total(b: Dict[str, Any]) -> int:
     return sum(int(s.get("duration_sec") or 0) for s in (b.get("shots") or []))
-
-
-def _check_total_duration(card: Dict[str, Any]) -> List[Dict[str, str]]:
-    """#3 — Итог 60–80 сек — ЖЁСТКИЕ границы. Иначе "total_out_of_range".
-
-    Цитата из _VALIDATOR_JSON_TAIL пункт 3:
-      "Итог 60–80 сек — ЖЁСТКИЕ границы. Иначе \"total_out_of_range\":
-       <60с — добери ТОЛЬКО расширением существующих реплик ...
-       >80с — сократи длительности безголосовых шотов или ужми реплики ..."
-
-    Total считаем сами через sum(shots.duration_sec); поле
-    card['total_seconds'] не доверяем (Scriptwriter может рассинхрониться).
-    """
-    total = sum(_block_total(b) for b in (card.get("blocks") or []))
-    if total < MIN_TOTAL_SEC:
-        return [_err(
-            "total_out_of_range",
-            "card.total_seconds",
-            f"Хронометраж {total}с (<{MIN_TOTAL_SEC}с). Добери ТОЛЬКО "
-            f"расширением существующих реплик смысловыми словами. "
-            f"Не добавляй новые блоки/шоты/реплики.",
-        )]
-    if total > MAX_TOTAL_SEC:
-        return [_err(
-            "total_out_of_range",
-            "card.total_seconds",
-            f"Хронометраж {total}с (>{MAX_TOTAL_SEC}с). Сократи "
-            f"длительности безголосовых шотов или ужми реплики до сути. "
-            f"Структуру блоков/шотов не трогать.",
-        )]
-    return []
-
-
-def _check_block_count(card: Dict[str, Any]) -> List[Dict[str, str]]:
-    """#13 — Количество блоков 4-7 (целевое 5-6). Если >7 — "too_many_blocks".
-
-    Цитата из _VALIDATOR_JSON_TAIL пункт 13:
-      "Количество блоков 4-7 (целевое 5-6). Если >7 блоков — ошибка
-       \"too_many_blocks: <N> блоков, дроби beats слишком мелко\""
-
-    По решению Алекса (2026-05-14): нижнюю границу <4 НЕ ловим
-    (в исходной инструкции нет явной ошибки про мало блоков).
-    """
-    blocks = card.get("blocks") or []
-    n = len(blocks)
-    if n > MAX_BLOCKS:
-        return [_err(
-            "too_many_blocks",
-            "card.blocks",
-            f"{n} блоков, дроби beats слишком мелко. Объедини "
-            f"соседние блоки в один beat — описания блоков ниже "
-            f"подскажут какие слить.",
-        )]
-    return []
 
 
 def _check_block_shot_count(card: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -131,10 +74,9 @@ def _check_block_duration(card: Dict[str, Any]) -> List[Dict[str, str]]:
                 f"Сумма duration_sec блока = {total}с (макс "
                 f"{MAX_BLOCK_DURATION}с). Сократи длительности "
                 f"безголосовых шотов в этом блоке до минимума по "
-                f"ПРАВИЛУ 5 (микрокадр 1-2с, простое действие 2с, "
+                f"ПРАВИЛУ 4 (микрокадр 1-2с, простое действие 2с, "
                 f"эмоция 3с, сложное действие 4-5с). Если безголосовые "
-                f"уже на минимуме — пересмотри тайминг шота с репликой. "
-                f"Реплики НЕ СОКРАЩАТЬ если total карты ≤80с.",
+                f"уже на минимуме — пересмотри тайминг шота с репликой.",
             ))
     return out
 
@@ -324,8 +266,6 @@ def prefilter_check(card: Dict[str, Any],
     characters = {c.get("slug") for c in (refs.get("characters") or []) if c.get("slug")}
 
     errors: List[Dict[str, str]] = []
-    errors += _check_total_duration(card)
-    errors += _check_block_count(card)
     errors += _check_block_shot_count(card)
     errors += _check_block_duration(card)
     errors += _check_shot_numbering(card)
