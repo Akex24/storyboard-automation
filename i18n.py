@@ -376,7 +376,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ',
         'image_provider_admin_hint': 'Какой моделью генерировать шоты сторибордов, рефы локаций и объектов. На референсы актёров НЕ влияет — для них отдельная настройка выше.',
         # 2026-05-23 (Этап 3.2): UI слайдеры скоростей речи для режима B.
-        'sec_speech_speed_b': 'СКОРОСТЬ РЕЧИ АКТЁРОВ (РЕЖИМ B)',
+        'sec_speech_speed_b': 'СКОРОСТЬ РЕЧИ АКТЁРОВ (РЕЖИМ B/C)',
         'speech_speed_b_hint': 'Скорость произнесения реплик актёрами в слов/сек. Применяется со следующей сгенерированной монтажной карты — рестарт программы не нужен.',
         'speech_speed_b_fast_label': 'Быстрая (ссора, паника, крик):',
         'speech_speed_b_normal_label': 'Обычная (default):',
@@ -1059,7 +1059,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДІВ, ЛОКАЦІЙ ТА ОБ\'ЄКТІВ',
         'image_provider_admin_hint': 'Якою моделлю генерувати шоти сторибордів, рефи локацій та об\'єктів. На референси акторів НЕ впливає — для них окреме налаштування вище.',
         # 2026-05-23 (Этап 3.2): UI слайдери швидкостей мовлення для режиму B.
-        'sec_speech_speed_b': 'ШВИДКІСТЬ МОВЛЕННЯ АКТОРІВ (РЕЖИМ B)',
+        'sec_speech_speed_b': 'ШВИДКІСТЬ МОВЛЕННЯ АКТОРІВ (РЕЖИМ B/C)',
         'speech_speed_b_hint': 'Швидкість вимови реплік акторами в слів/сек. Застосовується з наступної згенерованої монтажної карти — перезапуск програми не потрібен.',
         'speech_speed_b_fast_label': 'Швидка (сварка, паніка, крик):',
         'speech_speed_b_normal_label': 'Звичайна (default):',
@@ -1721,7 +1721,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'sec_image_provider_admin': 'IMAGE PROVIDER FOR STORYBOARDS, LOCATIONS & OBJECTS',
         'image_provider_admin_hint': 'Which model renders storyboard shots, location and object refs. Does NOT affect actor refs — they have a separate setting above.',
         # 2026-05-23 (Этап 3.2): UI sliders for speech rate in mode B.
-        'sec_speech_speed_b': 'ACTOR SPEECH RATE (MODE B)',
+        'sec_speech_speed_b': 'ACTOR SPEECH RATE (MODE B/C)',
         'speech_speed_b_hint': 'Speed at which actors deliver lines, in words/sec. Applies to next generated montage card — no restart needed.',
         'speech_speed_b_fast_label': 'Fast (fight, panic, shouting):',
         'speech_speed_b_normal_label': 'Normal (default):',

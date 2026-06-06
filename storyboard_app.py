@@ -8411,14 +8411,14 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(mm_frame)
 
-        # ── 🎙 СКОРОСТЬ РЕЧИ АКТЁРОВ — слайдеры (только для режима B) ─────
+        # ── 🎙 СКОРОСТЬ РЕЧИ АКТЁРОВ — слайдеры (для режимов B и C) ─────
         # 2026-05-23 (Этап 3.2): live-крутка fast/normal/slow для речи
-        # в режиме B. Значения пишутся в QSettings через
+        # в режимах B и C (C — копия B). Значения пишутся в QSettings через
         # set_speech_speed_b_* (Этап 3.1). Подключение к SPEECH_CONFIG —
-        # Этап 3.3. Гейтинг через mode_loader.get_current_mode(): в A/C/D
+        # Этап 3.3. Гейтинг через mode_loader.get_current_mode(): в A/D
         # секция вообще не создаётся (атрибутов self.* нет — retranslate
         # пропускает блок через hasattr).
-        if mode_loader.get_current_mode() == 'b':
+        if mode_loader.get_current_mode() in ('b', 'c'):
             from PyQt6.QtWidgets import QSlider
 
             self.sec_speech_speed_b_lbl = QLabel(tr('sec_speech_speed_b'))

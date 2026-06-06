@@ -88,7 +88,20 @@ SPEECH_CONFIG: Dict[str, Dict[str, Dict[str, float]]] = {
             ">15":  0.0,
         },
     },
-    "c": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
+    "c": {
+        # 2026-06-06: режим C — копия B (быстрая речь без буфера).
+        "speeds": {
+            "fast":      4.0,
+            "normal":    3.5,
+            "emotional": 3.5,
+            "slow":      2.3,
+        },
+        "buffer": {
+            "<=5":  0.0,
+            "<=15": 0.0,
+            ">15":  0.0,
+        },
+    },
     "d": {"speeds": dict(_DEFAULT_SPEEDS), "buffer": dict(_DEFAULT_BUFFER)},
 }
 
@@ -127,10 +140,10 @@ def _resolve_mode(mode: Optional[str]) -> str:
 def _speeds_for_mode(mode: str) -> Dict[str, float]:
     """Возвращает словарь speeds для режима mode.
 
-    Для режимов 'a' / 'c' / 'd' — отдаёт SPEECH_CONFIG[mode]["speeds"]
+    Для режимов 'a' / 'd' — отдаёт SPEECH_CONFIG[mode]["speeds"]
     как есть (hardcoded дефолты, без runtime override).
 
-    Для режима 'b' — подтягивает значения из QSettings через lazy
+    Для режимов 'b' и 'c' — подтягивают значения из QSettings через lazy
     import `storyboard_app.speech_speed_b_fast/normal/slow` (settings
     layer Этапа 3.1, UI слайдеры Этапа 3.2). `emotional` остаётся
     алиасом на `normal` (см. Этап 2.1 — совместимость старых монтажек,
@@ -147,7 +160,7 @@ def _speeds_for_mode(mode: str) -> Dict[str, float]:
     .app `__main__` = `storyboard_app`, в dev-mode (python storyboard_app.py)
     тоже. Fallback на прямой import — для юнит-тестов.
     """
-    if mode != "b":
+    if mode not in ("b", "c"):
         return SPEECH_CONFIG[mode]["speeds"]
     try:
         import sys as _sys
