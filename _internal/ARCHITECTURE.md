@@ -438,6 +438,57 @@ hand-off (`begin_external_thinking`). Оба учитываются в
 ep_id=self._current_ep_id)` — ep_id передаётся явно (раньше fallback на
 `ev._ep_id`).
 
+## Mode C — N версий шота / изолированный реестр тредов (2026-06-06)
+
+**С 2026-06-06:** в Mode C при batch-генерации сториборда из монтажки
+(«Сделать сториборд») на каждый шот спавнится **N параллельных тредов**
+(N задаётся в Settings → «Версий на шот», 1-10, дефолт 1). До фикса этого
+не было: один шот = одна картинка через единственный `GenerateThread`.
+
+**Главная проблема, которую решает фикс — гонка записи в `_history`:**
+если бы N тредов сохраняли версии через `next_history_index`
+([storyboard_app.py:4320](storyboard_app.py:4320)), все читали бы один и тот
+же `next_n` (TOCTOU между листингом и записью) и затирали бы друг другу
+`v{N}.jpg`.
+
+**Решение — заранее назначенный `version_index`:** каждый тред получает свой
+`version_index` (1..N) и пишет напрямую в `v{version_index}.jpg`, **минуя**
+`next_history_index`. Параметр `GenerateThread(..., version_index=None)`
+([threads/generate.py:120](threads/generate.py:120)); при `None` — старое
+поведение (regen/edit/realistic из попапа шота не затронуты). Ветка записи —
+[threads/generate.py:796+](threads/generate.py:796).
+
+**Изолированный реестр живых тредов:**
+`self._active_mode_c_version_threads: Dict[tuple, GenerateThread]` — ключ
+**3-tuple** `(block, panel_idx, version_index)`. НЕ пересекается с
+`_active_regens` (2-tuple `(block, panel_idx)`). Сделано так осознанно: 13
+мест читают `_active_regens` с распаковкой `(b, _)` (6 распаковок → ValueError
+на 3-tuple + 7 membership/pop) и обслуживают Mode A/B. Отдельный реестр
+оставляет их **байт-в-байт**.
+
+Теперь:
+- `_start_storyboard_block_mode_c` ([storyboard_app.py:12476+](storyboard_app.py:12476))
+  — спавнит N тредов на каждый шот, кладёт в новый реестр.
+- `_on_mode_c_version_finished` / `_on_mode_c_version_error` — pop из реестра
+  + декремент общего счётчика `_storyboard_active_pending` (= `len(shots) * N`);
+  при 0 → `_maybe_start_next_storyboard_block`. `_active_regens` НЕ трогают.
+- `_collect_all_threads` ([storyboard_app.py:9497](storyboard_app.py:9497)) —
+  дренаж нового реестра при graceful shutdown (`closeEvent` → stop+wait),
+  иначе SIGABRT от живого QThread на закрытии.
+- `_count_active_operations` — учёт нового реестра в UX-диалоге подтверждения
+  закрытия Studio.
+- `_tick_dots` / `_block_indicator_for` / `_refresh_block_indicator` — точки
+  анимации блоков видят ОБА реестра (`(b, _)` для старого, `(b, _p, _v)` для
+  нового).
+
+**Гейт:** ранний диспатч в `_start_storyboard_block` при `mode == 'c'` **И**
+`N > 1`; иначе старая ветка (не-C режимы, N=1) работает как раньше, без
+сдвига кода.
+
+**gen_time per-shot (не per-version):** ключ QSettings `gen_time_{block}_shot{N}`
+без `version_index` — последний завершившийся тред перезапишет своим временем
+(= самой долгой версии, т.к. стартовали одновременно).
+
 ## Slug collision handling (refs)
 
 **С 2026-05-10 (commit b8b07ec):** «🎨 Сгенерировать» = всегда создаёт
