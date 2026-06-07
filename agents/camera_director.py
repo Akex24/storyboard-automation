@@ -109,7 +109,9 @@ SYSTEM = """\
 # ─────────────────────────────────────────────────────────────────────────
 def propose_cameras(shot_contexts: List[dict],
                     n: int,
-                    cli_path: Optional[str]) -> Dict[Tuple[int, int], str]:
+                    cli_path: Optional[str],
+                    timeout_sec: int = SUBPROCESS_TIMEOUT_SEC,
+                    ) -> Dict[Tuple[int, int], str]:
     """Батч-вызов агента-режиссёра. Возвращает альт-ракурсы для версий v2..vN.
 
     Аргументы:
@@ -136,7 +138,7 @@ def propose_cameras(shot_contexts: List[dict],
         return {}
     try:
         user_prompt = _build_user_prompt(shot_contexts, n)
-        raw = _call_sonnet(SYSTEM, user_prompt, cli_path)
+        raw = _call_sonnet(SYSTEM, user_prompt, cli_path, timeout_sec)
         return _parse_cameras(raw, shot_contexts, n)
     except Exception as e:
         # Режиссёр — улучшение, а не критический путь. Любой сбой = тихий
@@ -207,7 +209,8 @@ def _build_user_prompt(shot_contexts: List[dict], n: int) -> str:
     )
 
 
-def _call_sonnet(system_prompt: str, user_prompt: str, cli_path: str) -> str:
+def _call_sonnet(system_prompt: str, user_prompt: str, cli_path: str,
+                 timeout_sec: int = SUBPROCESS_TIMEOUT_SEC) -> str:
     """Один вызов `claude -p` через subprocess. Паттерн из
     montage_orchestrator._run_claude. На win32 — без консольного окна."""
     cmd = [cli_path, "-p",
@@ -218,7 +221,7 @@ def _call_sonnet(system_prompt: str, user_prompt: str, cli_path: str) -> str:
         "input": user_prompt,
         "capture_output": True,
         "text": True,
-        "timeout": SUBPROCESS_TIMEOUT_SEC,
+        "timeout": timeout_sec,
         "encoding": "utf-8",
     }
     if sys.platform == "win32":

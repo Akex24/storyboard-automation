@@ -5684,6 +5684,9 @@ class MainWindow(QMainWindow):
         # (ключ (block, panel_idx, version_index)). Не пересекается с
         # _active_regens — старые хендлеры его не видят.
         self._active_mode_c_version_threads: Dict[tuple, GenerateThread] = {}
+        # 2026-06-07 (Mode C): реестр фоновых тредов режиссёра камер
+        # (ключ block_basename). Отдельно от версий; нужен для shutdown.
+        self._camera_director_threads: Dict[str, QThread] = {}
         self._update_thread:     Optional[QThread]                 = None
         self._app_update_thread: Optional[DownloadAppUpdateThread] = None
         self._stats_thread:      Optional[FetchStatsThread]        = None
@@ -9498,6 +9501,7 @@ class MainWindow(QMainWindow):
         try:
             threads.extend(self._active_regens.values())
             threads.extend(self._active_mode_c_version_threads.values())
+            threads.extend(getattr(self, '_camera_director_threads', {}).values())
             threads.extend(getattr(self, '_ref_threads', []) or [])
             threads.extend(getattr(self, '_geometry_threads', []) or [])
             threads.extend(getattr(self, '_seedance_regen_threads', []) or [])
@@ -12541,23 +12545,115 @@ class MainWindow(QMainWindow):
 
     # ── Mode C: N версий на шот (2026-06-06) ─────────────────────────────
     def _start_storyboard_block_mode_c(self, shots: List[tuple], n: int):
-        """Mode C batch: на каждый шот спавним N тредов (version_index 1..N)
-        в ОТДЕЛЬНЫЙ реестр _active_mode_c_version_threads. Каждый тред пишет
-        свой v{version_index}.jpg (без next_history_index → без гонки).
-        _active_regens и хендлеры не-C режимов НЕ участвуют."""
+        """Mode C batch (ДИСПЕТЧЕР). Перед спавном версий — фоновый агент-
+        режиссёр камер (camera_director) даёт альт-ракурсы для v2..vN, не
+        морозя UI. По его result_ready спавним версии через
+        _spawn_mode_c_versions. Если режиссёр не нужен/недоступен — спавним
+        сразу с пустым cams (все версии = авторский ракурс, как было)."""
         block_basename = shots[0][0]
-        self._storyboard_active_pending = len(shots) * n
-        for block_basename, panel_idx in shots:
+        # set_loading ДО старта режиссёра — карточки светятся «занято» уже
+        # во время его работы (раньше было внутри цикла спавна).
+        for _b, panel_idx in shots:
             if (self.current_block == block_basename
                     and 0 <= panel_idx < len(self.shot_cards)):
                 try:
                     self.shot_cards[panel_idx].set_loading(True)
                 except Exception:
                     pass
+        # Контекст шотов блока из montage_card (строго по позиции массива).
+        shot_contexts = self._collect_camera_shot_contexts(shots)
+        cli = find_claude_cli()
+        if n > 1 and shot_contexts and cli:
+            try:
+                from threads.camera_director_thread import CameraDirectorThread
+                th = CameraDirectorThread(shot_contexts, n, cli, timeout_sec=120)
+                self._camera_director_threads[block_basename] = th
+                th.result_ready.connect(
+                    lambda cams, s=shots, nn=n, bn=block_basename:
+                        self._on_camera_director_ready(bn, s, nn, cams))
+                th.start()
+                self.status_bar.showMessage(
+                    f"Mode C: подбираю ракурсы для блока {block_basename}…")
+                return
+            except Exception:
+                traceback.print_exc()
+        # Фолбэк: без режиссёра — сразу версии с авторским ракурсом.
+        self._spawn_mode_c_versions(shots, n, {})
+
+    def _collect_camera_shot_contexts(self, shots: List[tuple]) -> List[dict]:
+        """Контекст шотов блока для агента-режиссёра камер: по каждому шоту
+        scene_action / dialog / author_camera (строка CAMERA: из .txt) /
+        characters_count. СТРОГО block["shots"][panel_idx] по позиции массива
+        + sanity n==panel_idx+1. Любой сбой → [] (режиссёр пропускается)."""
+        try:
+            block_basename = shots[0][0]
+            m = re.match(r'(ep\d+)_block_(\d+)', block_basename)
+            if not m or not self._current_show:
+                return []
+            ep_id, block_n = m.group(1), int(m.group(2))
+            show_root = self._project_root / "shows" / self._current_show
+            meta_all = read_episodes_meta(show_root)
+            montage_card = ((meta_all or {}).get(ep_id) or {}).get('montage_card') or {}
+            block = next((b for b in (montage_card.get('blocks') or [])
+                          if b.get('n') == block_n), None)
+            if block is None:
+                return []
+            card_shots = block.get('shots') or []
+            block_chars = block.get('characters') or []
+            try:
+                prompt_text = (PROMPTS_DIR / f"{block_basename}.txt").read_text(
+                    encoding='utf-8')
+            except Exception:
+                prompt_text = ""
+            ctxs: List[dict] = []
+            for _b, panel_idx in shots:
+                if panel_idx >= len(card_shots):       # защита
+                    continue
+                sc = card_shots[panel_idx]             # по ПОЗИЦИИ массива
+                if sc.get('n') != panel_idx + 1:       # sanity-страховка
+                    sys.stderr.write(
+                        f"[camera_director] sanity: {block_basename} idx="
+                        f"{panel_idx} имеет n={sc.get('n')}, ждали "
+                        f"{panel_idx + 1} — пропуск\n")
+                    continue
+                author_camera = ""
+                if prompt_text:
+                    body = _extract_panel_body(prompt_text, panel_idx) or ""
+                    cm = re.search(r'(?im)^CAMERA:\s*(.*)$', body)
+                    if cm:
+                        author_camera = cm.group(1).strip()
+                dlg = sc.get('dialog')
+                ctxs.append({
+                    "panel_idx": panel_idx,
+                    "scene_action": sc.get('scene_action') or "",
+                    "dialog": (dlg.get('en') or "") if isinstance(dlg, dict) else "",
+                    "characters_count": len(block_chars),
+                    "author_camera": author_camera,
+                })
+            return ctxs
+        except Exception:
+            traceback.print_exc()
+            return []
+
+    def _on_camera_director_ready(self, block_basename: str,
+                                  shots: List[tuple], n: int, cams: dict):
+        """Режиссёр вернул ракурсы (или {} при сбое). Убираем тред из реестра
+        и спавним версии с camera_override."""
+        self._camera_director_threads.pop(block_basename, None)
+        self._spawn_mode_c_versions(shots, n, cams or {})
+
+    def _spawn_mode_c_versions(self, shots: List[tuple], n: int, cams: dict):
+        """Спавнит N версий на каждый шот в реестр _active_mode_c_version_threads
+        (как было), подставляя camera_override из cams для v2..vN. cams пустой
+        → camera_override=None для всех → авторский ракурс (текущее поведение)."""
+        block_basename = shots[0][0]
+        self._storyboard_active_pending = len(shots) * n
+        for block_basename, panel_idx in shots:
             for v in range(1, n + 1):
                 key = (block_basename, panel_idx, v)
-                thread = GenerateThread(block_basename, panel_idx,
-                                        version_index=v)
+                thread = GenerateThread(
+                    block_basename, panel_idx, version_index=v,
+                    camera_override=cams.get((panel_idx, v)))
                 self._active_mode_c_version_threads[key] = thread
                 thread.progress.connect(self.status_bar.showMessage)
                 thread.step.connect(
