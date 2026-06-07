@@ -201,11 +201,25 @@ class _MarkerCanvas(QWidget):
             self.unsetCursor()
         self.update()
 
+    def _safe_dpr(self):
+        """device pixel ratio ТОЛЬКО когда виджет реально realized на экране
+        (есть windowHandle). Иначе / при ошибке — 1.0. Защита от SIGSEGV в
+        cocoa-флаше на внешних мониторах с дробным DPR (M4 + Qt 6.10)."""
+        try:
+            wh = self.window().windowHandle() if self.window() else None
+            if wh is None:
+                return 1.0
+            return self.devicePixelRatioF() or 1.0
+        except Exception:
+            return 1.0
+
     def _build_cursor(self):
         """Круглый курсор-кисть для режима маркера. QPixmap с devicePixelRatio
         → одинаковый видимый размер на Retina(Mac)/Windows. Рисуем в логических
-        координатах (pm имеет dpr). Hotspot — центр круга (точка рисования)."""
-        dpr = self.devicePixelRatioF() or 1.0
+        координатах (pm имеет dpr). Hotspot — центр круга (точка рисования).
+        dpr ЦЕЛОЧИСЛЕННЫЙ (round) — дробный pixmap.setDevicePixelRatio роняет
+        cocoa-курсор на нестандартных внешних мониторах."""
+        dpr = max(1, int(round(self._safe_dpr())))
         edge = _MARKER_CURSOR_DIAM + 4           # логический размер pixmap (+поля)
         pm = QPixmap(int(round(edge * dpr)), int(round(edge * dpr)))
         pm.setDevicePixelRatio(dpr)
