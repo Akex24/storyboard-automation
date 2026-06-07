@@ -155,6 +155,41 @@ A-1). Anti-clobber: ascending-порядок + проверка not target.exist
 os.replace. Видимость крестиков — `_refresh_thumb_deletability` (лёгкий, без
 пересоздания ленты) после смены active без refresh (клик/зеркало).
 
+## Маркер на шоте — элемент сцены, НЕ translucent overlay (2026-06-07)
+
+В окне шота (`ShotViewerDialog`) кнопка «карандаш» включает рисование красным
+маркером поверх превью версии. Размеченная картинка уходит в Nano Banana как
+база `[@]img0` при AI-edit (Шаг C, commit 0d711b5) — модель понимает, какой
+объект тронуть. Реализация рисования — `_MarkerItem(QGraphicsItem)` в
+`widgets/shot_viewer_dialog.py`, добавляется в сцену `preview_view` (тот же
+`StoryboardView`, что и кроп) через `_scene.addItem`, поверх `pixmap_item`
+(`setZValue(1000)`).
+
+**КРИТИЧНО — почему ЭЛЕМЕНТ сцены, а НЕ translucent child-виджет:** первая
+реализация (Шаг A) была `_MarkerCanvas(QWidget)` с `WA_TranslucentBackground`
+поверх viewport'а QGraphicsView. На внешних мониторах с дробным DPR (M4 Pro +
+5120×2880, macOS 26.5, Qt 6.10) включение маркера роняло Studio с SIGSEGV:
+`QBackingStore::flush → QPaintDevice::devicePixelRatio()`. Translucent child
+поверх QGraphicsView — известный антипаттерн Qt: его per-widget backing-store
+на cocoa с дробным DPR падает при alpha-композите. Перенос на элемент сцены
+(commit 3916fd3) убрал отдельный translucent-слой — item рендерится в
+backing-store самого view, краш-корень исчез. **Не возвращать translucent
+overlay поверх QGraphicsView.** (Промежуточный курсорный фикс d33b0d3 —
+целочисленный dpr + realized-only `devicePixelRatioF` — корректен и оставлен,
+но краш НЕ закрывал; корень был в оверлее, не в курсоре.)
+
+**Инвариант координат:** `_MarkerItem` и `pixmap_item` сидят в origin сцены
+без `setPos`/трансформа → item-координаты = scene = пиксели картинки 1:1.
+Штрихи (`_strokes: list[list[QPointF]]`) хранятся в scene-координатах →
+привязаны к картинке при любом зуме/панораме (сцена трансформирует сама).
+Перо `setCosmetic(True)` — постоянная экранная толщина независимо от зума.
+Рисование разрешено только внутри `pixmap_item.boundingRect()`. На время
+маркера `preview_view.setDragMode(NoDrag)` (ЛКМ рисует, не панорамит),
+прежний dragMode возвращается на выключении. `_bake_marked_image` запекает
+штрихи в копию pixmap'а версии (НЕ рендер сцены → задвоения нет); base_image
+edit-флоу не зависит от пути записи результата → штрихи в сохранённый
+`v{N}.jpg` не попадают (Nano Banana перерисовывает чистый кадр).
+
 ## Архитектурные решения которые легко забыть
 
 - **Anthropic API напрямую НЕ вызывается.** `pipeline.py` использует только
