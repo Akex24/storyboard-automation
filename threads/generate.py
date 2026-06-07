@@ -120,7 +120,8 @@ class GenerateThread(QThread):
     def __init__(self, block_name: str, panel_idx: int,
                  edit_instruction: Optional[str] = None,
                  realistic: bool = False,
-                 version_index: Optional[int] = None):
+                 version_index: Optional[int] = None,
+                 camera_override: Optional[str] = None):
         """
         Если `edit_instruction` задан — режим редактирования:
           • существующий файл шота загружается как ЕДИНСТВЕННЫЙ реф [@]img1
@@ -136,6 +137,11 @@ class GenerateThread(QThread):
         картинку в конкретный v{version_index}.jpg вместо вычисления через
         next_history_index. Это устраняет гонку при параллельной записи
         нескольких версий одного шота.
+
+        Если `camera_override` задан (Mode C, фича «камеры для версий») —
+        строка CAMERA: в теле панели подменяется на этот ракурс ПЕРЕД
+        генерацией (agents/camera_director.apply_camera). Дефолт None —
+        обычный путь (A/B, реген, edit, realistic) не затрагивается.
         """
         super().__init__()
         self.block_name       = block_name
@@ -143,6 +149,7 @@ class GenerateThread(QThread):
         self.edit_instruction = (edit_instruction or "").strip() or None
         self.realistic        = bool(realistic)
         self.version_index    = version_index
+        self.camera_override  = camera_override
 
     def _upload_file(self, session: requests.Session, path: Path) -> str:
         """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует
@@ -419,6 +426,18 @@ class GenerateThread(QThread):
         if not prompt_file.exists():
             return ([], {}, [], "", "")
         prompt_text = prompt_file.read_text(encoding="utf-8")
+        # Mode C (фича «камеры для версий»): если задан camera_override,
+        # подменяем строку CAMERA: в теле панели НА ПОЛНОМ тексте промпта
+        # ДО извлечения тела (extract_shot_prompt ниже). Lazy-import, чтобы
+        # не тянуть цепочку storyboard_app на уровне модуля (PyInstaller).
+        # Дефолт None → ветка мёртвая, обычный путь не затрагивается.
+        if self.camera_override:
+            try:
+                from agents import camera_director
+                prompt_text = camera_director.apply_camera(
+                    prompt_text, self.panel_idx, self.camera_override)
+            except Exception:
+                pass  # фолбэк: без подмены, авторский ракурс
         refs = _sa.parse_refs(prompt_text)
         # 2026-05-19: для character-тегов перепроверяем актуальный filename
         # в episodes.json.refs_decisions, который обновляется при смене
