@@ -21,6 +21,7 @@ widgets/editor_widgets.py — виджеты для вкладки «Редак�
 
 from __future__ import annotations
 
+import time
 import traceback
 from pathlib import Path
 from typing import Dict, Optional
@@ -298,6 +299,37 @@ class ShotCard(QFrame):
 
         # Плавный fade-in/out overlay вместо мгновенного show/hide
         self._overlay_anim = _sa.setup_fade_overlay(self.regen_overlay)
+
+        # 2026-06-08: busy-overlay генерации (как у ActorCard) — затемнение +
+        # indeterminate-полоса + тикающие секунды, БЕЗ белого текста. Поверх
+        # картинки (child img_container, фикс-геометрия). Показывается
+        # самодостаточно через start_progress (моментально при показе блока).
+        self.gen_overlay = QWidget(self.img_container)
+        self.gen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
+        self.gen_overlay.setStyleSheet(
+            "background: rgba(20, 14, 30, 0.78); border-radius:11px;")
+        _go = QVBoxLayout(self.gen_overlay)
+        _go.setContentsMargins(14, 14, 14, 14)
+        _go.addStretch()
+        self.gen_progress_bar = QProgressBar()
+        self.gen_progress_bar.setRange(0, 0)  # indeterminate (бегущая анимация)
+        self.gen_progress_bar.setTextVisible(False)
+        self.gen_progress_bar.setFixedHeight(6)
+        self.gen_progress_bar.setStyleSheet(
+            "QProgressBar { background:#2a1f3d; border:none; border-radius:3px; }"
+            "QProgressBar::chunk { background:#8e6cd4; border-radius:3px; }")
+        _go.addWidget(self.gen_progress_bar)
+        _go.addSpacing(6)
+        self.gen_seconds_lbl = QLabel("0с")
+        self.gen_seconds_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gen_seconds_lbl.setStyleSheet(
+            "color:#ffd24d; font-size:12px; font-weight:600;"
+            " background: transparent;")
+        _go.addWidget(self.gen_seconds_lbl)
+        _go.addStretch()
+        self.gen_overlay.hide()
+        self._gen_started_at: Optional[float] = None
+        self._gen_timer: Optional[QTimer] = None
 
         lay.addWidget(self.img_container, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -622,7 +654,52 @@ class ShotCard(QFrame):
                 f"⏱ {_sa.format_gen_duration(seconds)}")
             self.gen_time_label.show()
 
+    def start_progress(self, started_at: Optional[float] = None):
+        """Самодостаточный busy-overlay поверх картинки шота (копия механизма
+        ActorCard.start_progress, минус белый текст). Показывает затемнение +
+        indeterminate-полосу + тикающие секунды БЕЗ ожидания сигналов потока —
+        появляется моментально при показе блока с активной генерацией.
+        `started_at` (из реестра _shot_gen_started_at) → секунды не сбрасываются
+        при пересоборе / повторном заходе на блок."""
+        try:
+            self._gen_started_at = started_at or time.time()
+            self.gen_overlay.show()
+            self.gen_overlay.raise_()
+            self._tick_progress()
+            if self._gen_timer is None:
+                self._gen_timer = QTimer(self)
+                self._gen_timer.setInterval(1000)
+                self._gen_timer.timeout.connect(self._tick_progress)
+            self._gen_timer.start()
+        except Exception:
+            traceback.print_exc()
+
+    def stop_progress(self):
+        """Гасит busy-overlay (на done/error и на неактивном шоте при показе)."""
+        try:
+            if self._gen_timer is not None:
+                self._gen_timer.stop()
+            self.gen_overlay.hide()
+            self._gen_started_at = None
+        except Exception:
+            pass
+
+    def _tick_progress(self):
+        """Раз в секунду — счётчик секунд от _gen_started_at (плавно, как часы)."""
+        if self._gen_started_at is None:
+            return
+        elapsed = max(0, int(time.time() - self._gen_started_at))
+        try:
+            self.gen_seconds_lbl.setText(f"{elapsed}с")
+        except Exception:
+            pass
+
     def set_progress(self, label: str, pct: int):
+        # Если активен новый busy-overlay (одиночная генерация) — старый тонкий
+        # бар НЕ показываем (нет двойного индикатора). Mode C (overlay не
+        # активен) — работает по-старому.
+        if self.gen_overlay.isVisible():
+            return
         self.progress_bar.setValue(pct)
         self.step_label.setText(label)
         self.progress_bar.show()

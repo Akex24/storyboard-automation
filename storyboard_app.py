@@ -5652,6 +5652,10 @@ class MainWindow(QMainWindow):
         # Параллельные регенерации: ключ (block_name, panel_idx) → поток.
         # Каждый шот в каждом блоке может генериться независимо от других.
         self._active_regens: Dict[tuple, GenerateThread] = {}
+        # 2026-06-08: время старта генерации шота {(block, panel_idx): ts} —
+        # чтобы busy-overlay карточки показывал верные секунды СРАЗУ при заходе
+        # на блок с активной генерацией (как _active_generations у актёров).
+        self._shot_gen_started_at: Dict[tuple, float] = {}
         # 2026-06-03 (Этап 2): перевод реплик на uk через Haiku. Кэш {en→uk}
         # (повторный клик не дёргает модель) + список живых тредов (чтобы их
         # не собрал GC до завершения).
@@ -11021,8 +11025,10 @@ class MainWindow(QMainWindow):
             # оставляем спиннер на карточке. Иначе чистим состояние.
             if (name, i) in self._active_regens:
                 card.set_loading(True)
+                card.start_progress(self._shot_gen_started_at.get((name, i)))
             else:
                 card.set_loading(False)
+                card.stop_progress()
             # Бейдж NEW и время генерации — оба показываются ТОЛЬКО для
             # непросмотренных шотов. Когда юзер уходит и возвращается,
             # NEW и ⏱ исчезают вместе.
@@ -11419,6 +11425,9 @@ class MainWindow(QMainWindow):
             # Запускаем GenerateThread в edit-режиме.
             card = self.shot_cards[panel_idx]
             card.set_loading(True)
+            _now = time.time()
+            self._shot_gen_started_at[(target_block, panel_idx)] = _now
+            card.start_progress(_now)
             # 2026-06-07 (фича маркера, Шаг C): если открыт ShotViewerDialog
             # и юзер нарисовал маркером поверх шота — запекаем штрихи в
             # temp-картинку и отдаём её как базу [@]img0 для Nano Banana
@@ -11479,6 +11488,9 @@ class MainWindow(QMainWindow):
         # Запускаем обычный regen — GenerateThread прочитает обновлённый .txt
         card = self.shot_cards[panel_idx]
         card.set_loading(True)
+        _now = time.time()
+        self._shot_gen_started_at[(target_block, panel_idx)] = _now
+        card.start_progress(_now)
         thread = GenerateThread(target_block, panel_idx)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
@@ -12426,6 +12438,9 @@ class MainWindow(QMainWindow):
         # для параллельной регенерации, в том числе в других блоках).
         card = self.shot_cards[panel_idx]
         card.set_loading(True)
+        _now = time.time()
+        self._shot_gen_started_at[(target_block, panel_idx)] = _now
+        card.start_progress(_now)
 
         thread = GenerateThread(target_block, panel_idx)
         self._active_regens[key] = thread
@@ -12462,6 +12477,9 @@ class MainWindow(QMainWindow):
 
         card = self.shot_cards[panel_idx]
         card.set_loading(True)
+        _now = time.time()
+        self._shot_gen_started_at[(target_block, panel_idx)] = _now
+        card.start_progress(_now)
 
         thread = GenerateThread(target_block, panel_idx, realistic=True)
         self._active_regens[key] = thread
@@ -12484,6 +12502,7 @@ class MainWindow(QMainWindow):
 
     def _on_regen_done(self, panel_idx: int, target_block: str, elapsed_seconds: int = 0):
         self._active_regens.pop((target_block, panel_idx), None)
+        self._shot_gen_started_at.pop((target_block, panel_idx), None)
         # Помечаем шот «непросмотренным» — на карточке появится бейдж NEW.
         # Очистится когда юзер переключится с этого блока на другой.
         self._unseen_shots.add((target_block, panel_idx))
@@ -12529,6 +12548,7 @@ class MainWindow(QMainWindow):
 
     def _on_regen_error(self, msg: str, target_block: str, panel_idx: int):
         self._active_regens.pop((target_block, panel_idx), None)
+        self._shot_gen_started_at.pop((target_block, panel_idx), None)
 
         # Перерисовываем текущий блок ТОЛЬКО если есть смысл (см. _on_regen_done
         # выше — та же логика, иначе моргание у юзера на чужом блоке).
