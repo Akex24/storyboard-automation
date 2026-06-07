@@ -121,7 +121,8 @@ class GenerateThread(QThread):
                  edit_instruction: Optional[str] = None,
                  realistic: bool = False,
                  version_index: Optional[int] = None,
-                 camera_override: Optional[str] = None):
+                 camera_override: Optional[str] = None,
+                 base_image_override: Optional[Path] = None):
         """
         Если `edit_instruction` задан — режим редактирования:
           • существующий файл шота загружается как ЕДИНСТВЕННЫЙ реф [@]img1
@@ -142,6 +143,11 @@ class GenerateThread(QThread):
         строка CAMERA: в теле панели подменяется на этот ракурс ПЕРЕД
         генерацией (agents/camera_director.apply_camera). Дефолт None —
         обычный путь (A/B, реген, edit, realistic) не затрагивается.
+
+        Если `base_image_override` задан (фича маркера, 2026-06-07) — в
+        edit-режиме как база [@]img0 берётся эта картинка (temp-PNG с
+        запечёнными красными штрихами) вместо текущего шота. Дефолт None —
+        обычный edit по чистому shot_path, байт-в-байт прежний.
         """
         super().__init__()
         self.block_name       = block_name
@@ -150,6 +156,7 @@ class GenerateThread(QThread):
         self.realistic        = bool(realistic)
         self.version_index    = version_index
         self.camera_override  = camera_override
+        self.base_image_override = base_image_override
 
     def _upload_file(self, session: requests.Session, path: Path) -> str:
         """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует
@@ -602,7 +609,8 @@ class GenerateThread(QThread):
                 # Без рефов актёров Nano Banana не знала кто такой «Arthur»
                 # в инструкции «put Arthur in the wheelchair» и рисовала
                 # случайное лицо. См. _build_edit_prompt и _collect_shot_refs.
-                existing = _sa.shot_path(self.block_name, self.panel_idx)
+                existing = self.base_image_override or _sa.shot_path(
+                    self.block_name, self.panel_idx)
                 if not existing.exists():
                     self.error.emit(
                         f"Edit невозможен: исходного файла шота нет ({existing.name}). "

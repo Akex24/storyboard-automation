@@ -11418,8 +11418,16 @@ class MainWindow(QMainWindow):
             # Запускаем GenerateThread в edit-режиме.
             card = self.shot_cards[panel_idx]
             card.set_loading(True)
+            # 2026-06-07 (фича маркера, Шаг C): если открыт ShotViewerDialog
+            # и юзер нарисовал маркером поверх шота — запекаем штрихи в
+            # temp-картинку и отдаём её как базу [@]img0 для Nano Banana
+            # (модель поймёт какой объект тронуть). Нет диалога / нет
+            # штрихов → marked=None → путь байт-в-байт прежний.
+            sv = self._get_open_shot_viewer(target_block, panel_idx)
+            marked = sv._bake_marked_image() if sv is not None else None
             thread = GenerateThread(target_block, panel_idx,
-                                     edit_instruction=short_instruction)
+                                     edit_instruction=short_instruction,
+                                     base_image_override=marked)
             self._active_regens[key] = thread
             thread.progress.connect(self.status_bar.showMessage)
             thread.step.connect(
@@ -11428,11 +11436,20 @@ class MainWindow(QMainWindow):
                 lambda elapsed: self._on_regen_done(panel_idx, target_block, elapsed))
             thread.error.connect(
                 lambda msg: self._on_regen_error(msg, target_block, panel_idx))
+            # temp-картинка маркера живёт только на время аплоада в треде;
+            # после finished/error удаляем её (на обоих сигналах).
+            if marked is not None:
+                def _cleanup_marked(*_a, _p=marked):
+                    try:
+                        _p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                thread.finished.connect(_cleanup_marked)
+                thread.error.connect(_cleanup_marked)
             thread.start()
             # 2026-05-17: закрываем родительский ShotViewerDialog (если был
             # открыт) — юзер не должен вручную крестить попап после
-            # «Сохранить и регенерировать».
-            sv = self._get_open_shot_viewer(target_block, panel_idx)
+            # «Сохранить и регенерировать». sv уже получен выше — переиспользуем.
             if sv is not None:
                 try:
                     sv.close()
