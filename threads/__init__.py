@@ -33,6 +33,7 @@ from threads.soften_prompt import SoftenPromptThread
 from threads.auth_switch import AuthSwitchThread
 from threads.montage_orchestrator import MontageOrchestratorThread
 from threads.storyboard_pipeline import StoryboardPipelineThread
+from threads.improve_prompt import ImprovePromptThread
 
 __all__ = [
     # update
@@ -48,6 +49,7 @@ __all__ = [
     'EditActorRefThread',
     'ApplyTextureThread',
     'ClaudeGeometryThread',
+    'ImprovePromptThread',
     'RunEpisodeThread',
     # autonomous_gen (sub-MVP «кнопка автономной генерации в чате»)
     'AutonomousGenThread',

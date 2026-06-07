@@ -62,6 +62,7 @@ from threads import (
     RefGenerateThread,
     GenerateActorRefThread,
     ClaudeGeometryThread,
+    ImprovePromptThread,
     RunEpisodeThread,
 )
 
@@ -11393,7 +11394,7 @@ class MainWindow(QMainWindow):
             return
 
         # Попап с pre-filled промптом + второе поле «короткая инструкция AI»
-        result = self._ask_edit_full_prompt(panel_idx, current_body)
+        result = self._ask_edit_full_prompt(panel_idx, current_body, target_block)
         if not result:
             return  # юзер нажал Отмена / закрыл окно
         new_body, short_instruction = result
@@ -11501,7 +11502,8 @@ class MainWindow(QMainWindow):
             f"Перегенерирую SHOT {panel_idx + 1} с правленым промптом…")
 
     def _ask_edit_full_prompt(self, panel_idx: int,
-                                  current_body: str
+                                  current_body: str,
+                                  target_block: str
                                   ) -> Optional[tuple]:
         """Попап правки SHOT — два режима в одном окне (2026-05-07).
 
@@ -11583,7 +11585,108 @@ class MainWindow(QMainWindow):
         btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
+
+        # 2026-06-08: «✨ Улучшить» — зрячий Sonnet 4.6 переписывает короткую
+        # русскую правку из short_field в командный английский промпт для Nano
+        # Banana, ГЛЯДЯ на картинку текущей версии шота. Если открыт
+        # ShotViewerDialog со штрихами маркера — Sonnet видит ту же размеченную
+        # картинку, что увидит Nano Banana (целится в обведённый объект).
+        improve_row = QHBoxLayout()
+        improve_btn = QPushButton(tr('improve_btn'))
+        improve_btn.setObjectName("save")
+        improve_btn.setIcon(get_icon('sparkles'))
+        improve_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        improve_btn.setEnabled(bool(short_field.toPlainText().strip()))
+        improve_row.addWidget(improve_btn)
+        improve_row.addStretch()
+        v.addLayout(improve_row)
         v.addWidget(btns)
+
+        # guard времени жизни модалки: поздний результат фонового потока не
+        # должен трогать удалённые виджеты после закрытия диалога.
+        _improve_state = {'alive': True}
+        dlg.finished.connect(lambda *_: _improve_state.update(alive=False))
+
+        def _toggle_improve():
+            improve_btn.setEnabled(bool(short_field.toPlainText().strip()))
+        short_field.textChanged.connect(_toggle_improve)
+
+        def _do_improve():
+            txt = short_field.toPlainText().strip()
+            if not txt:
+                return
+            cli = find_claude_cli()
+            if not cli:
+                self.status_bar.showMessage(
+                    tr('improve_error', msg='claude CLI not found'))
+                return
+            # marked-or-clean: размеченная картинка если открыт viewer со
+            # штрихами, иначе чистый активный шот (та же база, что и edit).
+            sv = self._get_open_shot_viewer(target_block, panel_idx)
+            marked = sv._bake_marked_image() if sv is not None else None
+            img = marked or shot_path(target_block, panel_idx)
+            ok_btn = btns.button(QDialogButtonBox.StandardButton.Ok)
+            improve_btn.setEnabled(False)
+            improve_btn.setText(tr('improve_running'))
+            short_field.setReadOnly(True)
+            if ok_btn is not None:
+                ok_btn.setEnabled(False)
+            th = ImprovePromptThread(txt, img, self._project_root, cli)
+            if not hasattr(self, '_improve_threads'):
+                self._improve_threads = []
+            self._improve_threads.append(th)
+
+            def _restore():
+                try:
+                    improve_btn.setText(tr('improve_btn'))
+                    short_field.setReadOnly(False)
+                    improve_btn.setEnabled(
+                        bool(short_field.toPlainText().strip()))
+                    if ok_btn is not None:
+                        ok_btn.setEnabled(True)
+                except RuntimeError:
+                    pass
+
+            def _on_improve_ok(res):
+                if not _improve_state['alive']:
+                    return
+                try:
+                    short_field.setPlainText(res)
+                except RuntimeError:
+                    pass
+                _restore()
+
+            def _on_improve_err(msg):
+                if not _improve_state['alive']:
+                    return
+                self.status_bar.showMessage(tr('improve_error', msg=msg))
+                _restore()
+
+            def _cleanup_marked():
+                # temp-картинка маркера живёт только на время вызова Sonnet —
+                # чистим ВСЕГДА по завершении потока (как в Шаге C edit).
+                if marked is not None:
+                    try:
+                        Path(marked).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            th.result_ready.connect(_on_improve_ok)
+            th.error.connect(_on_improve_err)
+            th.finished.connect(_cleanup_marked)
+
+            def _detach(*_):
+                # на закрытие модалки отцепляем виджет-апдейтеры (поздний сигнал
+                # игнор); _cleanup_marked на th.finished остаётся.
+                for sig in (th.result_ready, th.error):
+                    try:
+                        sig.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+            dlg.finished.connect(_detach)
+            th.start()
+
+        improve_btn.clicked.connect(_do_improve)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
