@@ -27,7 +27,7 @@ from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon, Q
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
-    QStackedWidget, QMessageBox
+    QStackedWidget, QMessageBox, QGraphicsItem, QGraphicsView
 )
 
 from i18n import tr
@@ -165,60 +165,60 @@ class VersionThumb(QFrame):
         super().mousePressEvent(ev)
 
 
-class _MarkerCanvas(QWidget):
-    """Прозрачный overlay поверх превью для рисования красным маркером (Шаг A/B).
-    Штрихи временные, в памяти. Хранятся в SCENE-координатах (= пиксели картинки
-    1:1, см. StoryboardView) → привязаны к картинке при ЛЮБОМ зуме/панораме:
-    точка экрана → scene при рисовании, обратно (mapFromScene) при отрисовке.
-    Рисование разрешено ТОЛЬКО внутри картинки (pixmap_item), по чёрным полям
-    letterbox нельзя. clear() сбрасывает. Неактивен → прозрачен для мыши."""
+class _MarkerItem(QGraphicsItem):
+    """Элемент сцены StoryboardView для рисования красным маркером (Шаг A/B/C).
+    Рисуется КАК ЭЛЕМЕНТ сцены поверх картинки (тот же приём, что face-grid
+    сетки) — НЕ отдельным translucent-виджетом: тот ронял cocoa в
+    QBackingStore::flush на внешних мониторах с дробным DPR (M4 + Qt 6.10).
+    Штрихи временные, в памяти, в координатах ITEM = SCENE = пиксели картинки
+    1:1 (item в origin, без трансформа) → привязаны к картинке при ЛЮБОМ
+    зуме/панораме (сцена сама трансформирует). Рисование разрешено ТОЛЬКО
+    внутри картинки (pixmap_item). clear() сбрасывает."""
 
-    def __init__(self, view, parent=None):
-        super().__init__(parent)
-        self._view = view            # StoryboardView — mapToScene/mapFromScene
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self._strokes = []          # list[list[QPointF]] в SCENE-координатах
+    def __init__(self, view):
+        super().__init__()
+        self._view = view            # StoryboardView — pixmap_item / dpr курсора
+        self._strokes = []           # list[list[QPointF]] в SCENE-координатах
         self._cur = []
-        self._image_rect = QRect()  # зона картинки в viewport (для clip отрисовки)
         self._drawing = False
-        self.hide()
+        self.setZValue(1000)         # поверх картинки
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemClipsToShape, True)
+        self.setVisible(False)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
-    def set_image_rect(self, rect):
-        self._image_rect = QRect(rect)
+    def boundingRect(self):
+        item = getattr(self._view, 'pixmap_item', None)
+        return item.boundingRect() if item is not None else QRectF()
 
     def set_active(self, on):
-        # активен → ловит мышь и видим + круглый курсор-кисть; иначе прозрачен
-        # для мыши, скрыт и курсор сброшен (вид показывает свой курсор pan).
-        self.setAttribute(
-            Qt.WidgetAttribute.WA_TransparentForMouseEvents, not bool(on))
+        # активен → видим, ловит ЛКМ, круглый курсор-кисть; иначе скрыт, мышь
+        # не ловит, курсор сброшен (вид показывает свой pan-курсор).
         self.setVisible(bool(on))
+        self.setAcceptedMouseButtons(
+            Qt.MouseButton.LeftButton if on else Qt.MouseButton.NoButton)
         if on:
             self.setCursor(self._build_cursor())
-            self.raise_()
         else:
             self.unsetCursor()
         self.update()
 
     def _safe_dpr(self):
-        """device pixel ratio ТОЛЬКО когда виджет реально realized на экране
+        """device pixel ratio ТОЛЬКО когда вид реально realized на экране
         (есть windowHandle). Иначе / при ошибке — 1.0. Защита от SIGSEGV в
         cocoa-флаше на внешних мониторах с дробным DPR (M4 + Qt 6.10)."""
         try:
-            wh = self.window().windowHandle() if self.window() else None
+            w = self._view.window() if self._view else None
+            wh = w.windowHandle() if w else None
             if wh is None:
                 return 1.0
-            return self.devicePixelRatioF() or 1.0
+            return self._view.devicePixelRatioF() or 1.0
         except Exception:
             return 1.0
 
     def _build_cursor(self):
-        """Круглый курсор-кисть для режима маркера. QPixmap с devicePixelRatio
-        → одинаковый видимый размер на Retina(Mac)/Windows. Рисуем в логических
-        координатах (pm имеет dpr). Hotspot — центр круга (точка рисования).
-        dpr ЦЕЛОЧИСЛЕННЫЙ (round) — дробный pixmap.setDevicePixelRatio роняет
-        cocoa-курсор на нестандартных внешних мониторах."""
+        """Круглый курсор-кисть для режима маркера. dpr ЦЕЛОЧИСЛЕННЫЙ (round) —
+        дробный pixmap.setDevicePixelRatio роняет cocoa-курсор на нестандартных
+        внешних мониторах. Hotspot — центр круга (точка рисования)."""
         dpr = max(1, int(round(self._safe_dpr())))
         edge = _MARKER_CURSOR_DIAM + 4           # логический размер pixmap (+поля)
         pm = QPixmap(int(round(edge * dpr)), int(round(edge * dpr)))
@@ -231,8 +231,6 @@ class _MarkerCanvas(QWidget):
         r = _MARKER_CURSOR_DIAM / 2.0
         qp.drawEllipse(QPointF(c, c), r, r)
         qp.end()
-        # hotspot при заданном devicePixelRatio трактуется в device-independent
-        # координатах → центр.
         return QCursor(pm, int(c), int(c))
 
     def clear(self):
@@ -248,61 +246,57 @@ class _MarkerCanvas(QWidget):
         # список штрихов, каждый — list[QPointF] в SCENE-координатах (пиксели).
         return self._strokes
 
-    def _scene_pt(self, e):
-        # экранная точка → scene (= пиксель картинки 1:1).
-        return self._view.mapToScene(e.position().toPoint())
-
     def _inside(self, sp):
-        # точка внутри картинки? (по scene-границам pixmap_item)
+        # точка внутри картинки? (item-координаты = scene = пиксели 1:1)
         item = getattr(self._view, 'pixmap_item', None)
         if item is None:
             return False
-        return item.sceneBoundingRect().contains(sp)
+        return item.boundingRect().contains(sp)
 
     def mousePressEvent(self, e):
-        sp = self._scene_pt(e)
+        sp = e.pos()                 # item-координаты = scene
         if e.button() == Qt.MouseButton.LeftButton and self._inside(sp):
             self._drawing = True
             self._cur = [sp]
+            e.accept()
+        else:
+            e.ignore()
 
     def mouseMoveEvent(self, e):
         if not self._drawing:
+            e.ignore()
             return
-        sp = self._scene_pt(e)
+        sp = e.pos()
         if self._inside(sp):
             self._cur.append(sp)
             self.update()
+        e.accept()
 
     def mouseReleaseEvent(self, e):
         if not self._drawing:
+            e.ignore()
             return
         self._drawing = False
         if len(self._cur) >= 2:
             self._strokes.append(self._cur)
         self._cur = []
         self.update()
+        e.accept()
 
-    def paintEvent(self, _ev):
+    def paint(self, qp, option, widget=None):
         if not self._strokes and len(self._cur) < 2:
             return
-        qp = QPainter(self)
         qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(_MARKER_COLOR, _MARKER_WIDTH)   # ширина в логических px
+        pen = QPen(_MARKER_COLOR, _MARKER_WIDTH)   # экранная толщина (cosmetic)
+        pen.setCosmetic(True)                      # постоянна при любом зуме сцены
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         qp.setPen(pen)
-        if not self._image_rect.isNull():
-            qp.setClipRect(self._image_rect)
         for stroke in self._strokes:
             if len(stroke) >= 2:
-                qp.drawPolyline(self._to_view(stroke))
+                qp.drawPolyline(QPolygonF(stroke))   # item=scene координаты
         if len(self._cur) >= 2:
-            qp.drawPolyline(self._to_view(self._cur))
-
-    def _to_view(self, scene_pts):
-        # SCENE-точки → viewport-точки (QPolygon) для отрисовки на экране.
-        return QPolygon([self._view.mapFromScene(sp).toPoint()
-                         for sp in scene_pts])
+            qp.drawPolyline(QPolygonF(self._cur))
 
 
 class ShotViewerDialog(QDialog):
@@ -453,11 +447,13 @@ class ShotViewerDialog(QDialog):
             " border-color:#6e4cc4; }")
         self.btn_mirror.clicked.connect(self._on_mirror_clicked)
         self.btn_mirror.raise_()
-        # 2026-06-07 (Шаг A фичи маркера): overlay-canvas рисования + кнопка
-        # «маркер» (child viewport, как btn_mirror). Canvas рисует только внутри
-        # image_rect. Кнопка слева от зеркала, тот же стиль #shot-mirror.
-        self.marker_canvas = _MarkerCanvas(
-            self.preview_view, self.preview_view.viewport())
+        # 2026-06-07 (Шаг A + план C фичи маркера): маркер рисуется ЭЛЕМЕНТОМ
+        # сцены preview_view (как face-grid сетки), НЕ translucent-виджетом —
+        # тот ронял cocoa в QBackingStore::flush на внешних 5K-мониторах с
+        # дробным DPR. Рядом — кнопка «маркер» слева от зеркала, стиль
+        # #shot-mirror. Рисование разрешено только внутри картинки (pixmap_item).
+        self.marker_canvas = _MarkerItem(self.preview_view)
+        self.preview_view._scene.addItem(self.marker_canvas)
         self.btn_marker = QPushButton(self.preview_view.viewport())
         self.btn_marker.setObjectName("shot-mirror")
         self.btn_marker.setIcon(get_icon('pencil'))
@@ -698,45 +694,32 @@ class ShotViewerDialog(QDialog):
         btn.move(max(0, vp.width() - btn.width() - 8),
                  max(0, vp.height() - btn.height() - 8))
         btn.raise_()
-        # Шаг A фичи маркера: кнопка «маркер» слева от зеркала + ресайз canvas
-        # под viewport + пересчёт image_rect (зум/панорама/ресайз).
+        # Шаг A фичи маркера: кнопка «маркер» слева от зеркала. Сам маркер —
+        # ЭЛЕМЕНТ сцены (план C): позиционировать/ресайзить виджет не нужно,
+        # сцена трансформирует его при зуме/панораме сама.
         mk = getattr(self, 'btn_marker', None)
         if mk is not None:
             mk.move(max(0, vp.width() - mk.width() * 2 - 16),
                     max(0, vp.height() - mk.height() - 8))
             mk.raise_()
-        cv = getattr(self, 'marker_canvas', None)
-        if cv is not None:
-            cv.setGeometry(0, 0, vp.width(), vp.height())
-            cv.set_image_rect(self._compute_image_rect())
-            if cv.isVisible():
-                cv.raise_()
-                btn.raise_()
-                if mk is not None:
-                    mk.raise_()
-
-    def _compute_image_rect(self):
-        """Прямоугольник реальной картинки внутри viewport (координаты
-        viewport). mapFromScene учитывает текущий fit/зум/панораму. Пусто если
-        картинки нет. Это зона, где маркеру разрешено рисовать."""
-        view = getattr(self, 'preview_view', None)
-        if view is None or getattr(view, 'pixmap_item', None) is None:
-            return QRect()
-        try:
-            poly = view.mapFromScene(view.pixmap_item.sceneBoundingRect())
-            return poly.boundingRect()
-        except Exception:
-            return QRect()
 
     def _on_marker_clicked(self, checked):
-        """Тогл режима маркера. ВКЛ → canvas ловит мышь и виден (рисуем красным
-        внутри картинки). ВЫКЛ → canvas прозрачен для мыши, скрыт, штрихи
-        сброшены (разово). При ВЫКЛ зум/панорама/зеркало/клик по версиям —
-        как раньше."""
+        """Тогл режима маркера. ВКЛ → элемент-маркер виден и ловит ЛКМ, вид
+        переводится в NoDrag (ЛКМ рисует, не панорамит). ВЫКЛ → элемент скрыт,
+        штрихи сброшены (разово), прежний dragMode (пан) возвращается."""
         cv = getattr(self, 'marker_canvas', None)
         if cv is None:
             return
-        self._position_mirror_btn()          # свежий размер + image_rect
+        if checked:
+            # запоминаем прежний режим перетаскивания (пан) и выключаем его —
+            # иначе ЛКМ панорамит вид, а не рисует.
+            self._prev_drag_mode = self.preview_view.dragMode()
+            self.preview_view.setDragMode(QGraphicsView.DragMode.NoDrag)
+        else:
+            prev = getattr(self, '_prev_drag_mode', None)
+            self.preview_view.setDragMode(
+                prev if prev is not None
+                else QGraphicsView.DragMode.ScrollHandDrag)
         cv.set_active(bool(checked))
         if not checked:
             cv.clear()
