@@ -3910,6 +3910,14 @@ _BODY_PROPORTION_RULE = (
 )
 
 
+_STRICT_CAMERA_RULE = (
+    "STRICT CAMERA RULE: The CAMERA line defines the exact viewpoint, angle "
+    "and framing for this shot. Render the scene strictly from that camera "
+    "position. This camera instruction overrides any default or habitual "
+    "framing — do not fall back to a generic in-car composition."
+)
+
+
 def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
     """Извлекает контент одного шота как самостоятельный 9:16 промпт.
 
@@ -3987,6 +3995,17 @@ def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
     header_final = header_new.strip()
     if "natural human body proportions" not in header_final:
         header_final = f"{header_final} {_BODY_PROPORTION_RULE}"
+    # 2026-06-07 (Mode C): жёсткая директива про камеру — дописывается в шапку
+    # ТОЛЬКО в Mode C. Гейт через QSettings-режим (lazy import, фолбэк 'a' при
+    # сбое — тот же паттерн что в build_user_prompt, Коммит 2). При a/b/d или
+    # ошибке импорта директива НЕ добавляется, header_final посимвольно прежний.
+    try:
+        from agents.mode_loader import get_current_mode as _get_mode
+        _mode_c = (_get_mode() == 'c')
+    except Exception:
+        _mode_c = False
+    if _mode_c:
+        header_final = f"{header_final} {_STRICT_CAMERA_RULE}"
     return f"{header_final}\n\n{panel_body}"
 
 
