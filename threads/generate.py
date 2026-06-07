@@ -744,6 +744,27 @@ class GenerateThread(QThread):
             except Exception:
                 traceback.print_exc()
 
+            # 2026-06-07 (Mode C диагностика): сохраняем ИТОГОВЫЙ промпт
+            # каждой версии (уже с подменённым CAMERA:) рядом с картинкой
+            # версии, чтобы прочитать все промпты глазами. ТОЛЬКО для Mode C
+            # версий (version_index задан) — для regen/edit/realistic/A/B/D
+            # ветка мёртвая, путь исполнения посимвольно прежний. Сбой записи
+            # не роняет генерацию (диагностика не критична).
+            if self.version_index is not None:
+                try:
+                    vdir = _sa.shot_history_dir(self.block_name, self.panel_idx)
+                    vdir.mkdir(parents=True, exist_ok=True)
+                    vpath = vdir / f"v{self.version_index}.prompt.txt"
+                    vpath.write_text(
+                        f"# block:   {self.block_name}\n"
+                        f"# shot:    {self.panel_idx + 1} (panel_idx={self.panel_idx})\n"
+                        f"# version: v{self.version_index}\n"
+                        f"# --- финальный промпт (что ушло в Nano Banana) ---\n\n"
+                        f"{clean}\n",
+                        encoding="utf-8")
+                except Exception:
+                    traceback.print_exc()
+
             r = session.post(f"{_sa.API_BASE}{endpoint}",
                              json=payload, timeout=60)
             r.raise_for_status()
