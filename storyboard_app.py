@@ -11559,21 +11559,11 @@ class MainWindow(QMainWindow):
             "color:#d8c8ff; font-size:13px; font-weight:600;")
         v.addWidget(short_title)
 
-        short_hint = QLabel(
-            "Заполни ТОЛЬКО если хочешь точечно изменить уже "
-            "сгенерированную картинку — например «убери ружьё», "
-            "«удали стул», «без шляпы». AI возьмёт текущую картинку "
-            "как основу и поменяет ТОЛЬКО заданное, остальное "
-            "(композиция, ракурс, поза, фон) сохранит. Большое поле "
-            "выше при этом не используется.")
-        short_hint.setStyleSheet("color:#888; font-size:11px;")
-        short_hint.setWordWrap(True)
-        v.addWidget(short_hint)
-
         short_field = QPlainTextEdit()
         short_field.setPlaceholderText(
-            "например: «убери ружьё, остальное оставь как есть»")
-        short_field.setFixedHeight(72)
+            "убери ружьё, остальное оставь как есть… можно коротко "
+            "по-русски и нажать ✨ Улучшить — AI перепишет в точный промпт")
+        short_field.setMinimumHeight(150)
         short_field.setStyleSheet(
             "QPlainTextEdit { background:#1a1330; border:1px solid #4a3470; "
             "border-radius:6px; color:#fff; padding:8px; font-size:12px; }")
@@ -11594,7 +11584,6 @@ class MainWindow(QMainWindow):
         improve_row = QHBoxLayout()
         improve_btn = QPushButton(tr('improve_btn'))
         improve_btn.setObjectName("save")
-        improve_btn.setIcon(get_icon('sparkles'))
         improve_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         improve_btn.setEnabled(bool(short_field.toPlainText().strip()))
         improve_row.addWidget(improve_btn)
@@ -11604,8 +11593,27 @@ class MainWindow(QMainWindow):
 
         # guard времени жизни модалки: поздний результат фонового потока не
         # должен трогать удалённые виджеты после закрытия диалога.
-        _improve_state = {'alive': True}
+        _improve_state = {'alive': True, 'dots': 0}
         dlg.finished.connect(lambda *_: _improve_state.update(alive=False))
+
+        # анимация мигающих точек на «✨ Улучшаю промпт» пока крутится вызов.
+        # Таймер parented к dlg (умрёт с диалогом); тик защищён alive-guard'ом
+        # и try/except — не трогает удалённый виджет после закрытия.
+        _improve_timer = QTimer(dlg)
+        _improve_timer.setInterval(500)
+        _improve_base = tr('improve_running').rstrip('.… ')
+
+        def _tick_dots():
+            if not _improve_state['alive']:
+                _improve_timer.stop()
+                return
+            _improve_state['dots'] = (_improve_state['dots'] % 3) + 1
+            try:
+                improve_btn.setText(_improve_base + '.' * _improve_state['dots'])
+            except RuntimeError:
+                _improve_timer.stop()
+        _improve_timer.timeout.connect(_tick_dots)
+        dlg.finished.connect(lambda *_: _improve_timer.stop())
 
         def _toggle_improve():
             improve_btn.setEnabled(bool(short_field.toPlainText().strip()))
@@ -11627,7 +11635,9 @@ class MainWindow(QMainWindow):
             img = marked or shot_path(target_block, panel_idx)
             ok_btn = btns.button(QDialogButtonBox.StandardButton.Ok)
             improve_btn.setEnabled(False)
-            improve_btn.setText(tr('improve_running'))
+            _improve_state['dots'] = 1
+            improve_btn.setText(_improve_base + '.')
+            _improve_timer.start()
             short_field.setReadOnly(True)
             if ok_btn is not None:
                 ok_btn.setEnabled(False)
@@ -11638,6 +11648,7 @@ class MainWindow(QMainWindow):
 
             def _restore():
                 try:
+                    _improve_timer.stop()
                     improve_btn.setText(tr('improve_btn'))
                     short_field.setReadOnly(False)
                     improve_btn.setEnabled(
