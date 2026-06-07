@@ -190,12 +190,47 @@ overlay поверх QGraphicsView.** (Промежуточный курсорн
 edit-флоу не зависит от пути записи результата → штрихи в сохранённый
 `v{N}.jpg` не попадают (Nano Banana перерисовывает чистый кадр).
 
+## Кнопка «Улучшить» — зрячий Sonnet переписывает RU→EN промпт (2026-06-08)
+
+В окне AI-edit шота (`_ask_edit_full_prompt`, [storyboard_app.py](storyboard_app.py))
+под полем короткой правки — кнопка «✨ Улучшить». Юзер пишет правку по-русски
+простыми словами → Sonnet 4.6 ГЛЯДЯ на картинку текущей версии шота переписывает
+её в короткий командный английский промпт для Nano Banana (image-edit). Текст в
+поле заменяется результатом — юзер видит и может поправить перед отправкой.
+
+**Зрячий канал — тот же приём, что `ClaudeGeometryThread`:** `ImprovePromptThread`
+([threads/improve_prompt.py](threads/improve_prompt.py)) зовёт `claude -p
+--system-prompt … --dangerously-skip-permissions --model claude-sonnet-4-6`,
+cwd=project_root, timeout 120, CREATE_NO_WINDOW на win32. Sonnet открывает картинку
+**Read-инструментом** (абсолютный путь в user-prompt) — НЕ через Anthropic vision
+SDK (Max-подписка, без per-token billing). Системный промпт `_NB_IMPROVE_SYSTEM`
+лежит в том же файле (НЕ в bundled `ГЛАВНАЯ_ИНСТРУКЦИЯ.md` — та про монтаж):
+короткий императивный английский, «keep everything else unchanged», сохранять
+арт-стиль (sketch/photo не конвертировать), учитывать красную обводку маркера.
+
+**Marker-aware:** картинка для Sonnet — `_bake_marked_image()` если открыт
+`ShotViewerDialog` со штрихами (та же размеченная картинка, что увидит Nano
+Banana → Sonnet целится в обведённый объект), иначе чистый `shot_path`. temp-PNG
+маркера чистится на `th.finished` (как в Шаге C edit). Системный промпт велит НЕ
+описывать сам красный след — он только указатель «какой объект».
+
+**Модалка + async:** вызов в фоне (QThread) под guard'ом `_improve_state['alive']`
++ `_detach` виджет-апдейтеров на `dlg.finished` (поздний результат не трогает
+удалённые виджеты) + ссылка в `self._improve_threads`. На время вызова — анимация
+мигающих точек (QTimer parented к dlg), кнопка с зарезервированной шириной
+(`fontMetrics`, паттерн `_start_animation`) и лево-выравниванием текста, чтобы
+слово не ездило при смене 1/2/3 точек.
+
 ## Архитектурные решения которые легко забыть
 
-- **Anthropic API напрямую НЕ вызывается.** `pipeline.py` использует только
-  Fast Gen AI (генерация картинок). Описание геометрии локаций делает
-  Claude Code сам, глядя на сгенерированную картинку. Класс
-  `ClaudeGeometryThread` — legacy имя, не вызывает Anthropic API.
+- **Anthropic API напрямую НЕ вызывается** (нет per-token billing мимо Max-
+  подписки). `pipeline.py` использует только Fast Gen AI (генерация картинок).
+  НО Claude РЕАЛЬНО ВИДИТ картинки — через **Read-инструмент** headless
+  `claude -p`, не через Anthropic vision SDK. Два таких зрячих канала:
+  `ClaudeGeometryThread` (описание геометрии локации — `claude -p` читает jpg
+  рефа и переписывает `<slug>_geometry.txt`) и кнопка «Улучшить» (см. секцию
+  выше). `ClaudeGeometryThread` — legacy имя (Anthropic API напрямую не зовёт),
+  но это полноценный **vision-канал**: Claude смотрит на картинку через Read.
 - **Caching работает прозрачно через Claude CLI** (серверный prefix-cache
   включён по умолчанию у Anthropic). **Переход на anthropic Python SDK
   делать НЕ надо** — это per-token billing мимо Max-подписки админа.
