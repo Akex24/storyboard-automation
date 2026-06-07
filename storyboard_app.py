@@ -11023,7 +11023,12 @@ class MainWindow(QMainWindow):
             card.set_image(panels[i] if i < len(panels) else None)
             # Если этот шот ИМЕННО ЭТОГО блока сейчас регенерируется —
             # оставляем спиннер на карточке. Иначе чистим состояние.
-            if (name, i) in self._active_regens:
+            # Активен если идёт обычная регенерация (_active_regens) ИЛИ хотя бы
+            # одна Mode C версия этого шота (3-tuple ключ (block, panel, version)).
+            _shot_active = ((name, i) in self._active_regens or any(
+                b == name and p == i
+                for (b, p, _v) in self._active_mode_c_version_threads))
+            if _shot_active:
                 card.set_loading(True)
                 card.start_progress(self._shot_gen_started_at.get((name, i)))
             else:
@@ -12668,12 +12673,17 @@ class MainWindow(QMainWindow):
             return
         self._storyboard_active_pending = len(shots)
 
+        _now = time.time()
         for block_basename, panel_idx in shots:
+            # started_at для всех шотов блока (overlay покажет верные секунды
+            # при заходе на блок); start_progress — только для видимых сейчас.
+            self._shot_gen_started_at[(block_basename, panel_idx)] = _now
             # Если юзер сейчас на этом блоке — крутим прелоадер на карточке
             if (self.current_block == block_basename
                     and 0 <= panel_idx < len(self.shot_cards)):
                 try:
                     self.shot_cards[panel_idx].set_loading(True)
+                    self.shot_cards[panel_idx].start_progress(_now)
                 except Exception:
                     pass
 
@@ -12736,11 +12746,16 @@ class MainWindow(QMainWindow):
         block_basename = shots[0][0]
         # set_loading ДО старта режиссёра — карточки светятся «занято» уже
         # во время его работы (раньше было внутри цикла спавна).
+        _now = time.time()
         for _b, panel_idx in shots:
+            # started_at для всех шотов (Mode C: время старта = клик, до
+            # режиссёра камер); start_progress — только для видимых карточек.
+            self._shot_gen_started_at[(block_basename, panel_idx)] = _now
             if (self.current_block == block_basename
                     and 0 <= panel_idx < len(self.shot_cards)):
                 try:
                     self.shot_cards[panel_idx].set_loading(True)
+                    self.shot_cards[panel_idx].start_progress(_now)
                 except Exception:
                     pass
         # Контекст шотов блока из montage_card (строго по позиции массива).
@@ -12862,6 +12877,11 @@ class MainWindow(QMainWindow):
         но без касания _active_regens)."""
         self._active_mode_c_version_threads.pop(
             (block_basename, panel_idx, version_index), None)
+        # Если для этого шота не осталось НИ ОДНОЙ версии — последняя ушла,
+        # чистим started_at (overlay гасит re-render блока ниже / reopen loop).
+        if not any(b == block_basename and p == panel_idx
+                   for (b, p, _v) in self._active_mode_c_version_threads):
+            self._shot_gen_started_at.pop((block_basename, panel_idx), None)
         # gen_time per-shot (без version_index) — последний завершившийся
         # тред перезапишет своим временем (= самой долгой версии, т.к.
         # стартовали одновременно). Логика как в _on_regen_done.
@@ -12897,6 +12917,9 @@ class MainWindow(QMainWindow):
         счётчика, уведомление юзера. Не блокирует остальные версии/блоки."""
         self._active_mode_c_version_threads.pop(
             (block_basename, panel_idx, version_index), None)
+        if not any(b == block_basename and p == panel_idx
+                   for (b, p, _v) in self._active_mode_c_version_threads):
+            self._shot_gen_started_at.pop((block_basename, panel_idx), None)
         if self.current_block:
             needs_redraw = (
                 self.current_block == block_basename
