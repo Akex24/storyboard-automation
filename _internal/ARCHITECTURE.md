@@ -221,6 +221,48 @@ Banana → Sonnet целится в обведённый объект), инач
 (`fontMetrics`, паттерн `_start_animation`) и лево-выравниванием текста, чтобы
 слово не ездило при смене 1/2/3 точек.
 
+## Instant gen-overlay карточки шота (2026-06-07)
+
+Индикатор генерации на карточке шота (`ShotCard`, [widgets/editor_widgets.py](widgets/editor_widgets.py))
+показывается **моментально** при заходе на блок с активной генерацией и тикает
+плавными секундами — перенос механизма с карточки актёра (`ActorCard`). До этого
+был кривой: тонкая полоска под шотом, секунды рывками раз в ~4с (зашиты в текст
+`step_label`, обновлялись по сигналу потока `step.emit`), индикатор появлялся с
+задержкой (`set_loading(True)` сам ничего не рисовал, ждал следующий `step.emit`).
+
+**Виджет (копия ActorCard):** `gen_overlay` — `QWidget` поверх `img_container`,
+затемнение `rgba(20,14,30,0.78)`, **border-radius 6px** (КРИТИЧНО: совпадает с
+радиусом картинки `img_label`/pixmap-маски — при 11px в углах проступала светлая
+дуга 6–11px, артефакт). Внутри — indeterminate `QProgressBar(setRange(0,0))` +
+жёлтые секунды, БЕЗ белого текст-лейбла (в отличие от ActorCard). Методы
+`start_progress(started_at=None)` / `stop_progress()` / `_tick_progress()` 1:1 из
+ActorCard: **свой `QTimer(1000мс)`** считает `int(time.time() - _gen_started_at)`
+→ секунды плавные, независимо от сигналов потока. Guard в `set_progress`:
+`if gen_overlay.isVisible(): return` — старый тонкий бар не рисуется поверх
+overlay (нет двойного индикатора).
+
+**Реестр старта:** `MainWindow._shot_gen_started_at: Dict[(block, panel_idx), float]`
+([storyboard_app.py](storyboard_app.py)) — момент старта генерации шота, аналог
+`_active_generations` у актёров. Block-open loop при отрисовке синхронно опрашивает
+реестры и зовёт `start_progress(self._shot_gen_started_at.get((name, i)))` → overlay
+сразу, секунды с верного числа (не сбрасываются при пересоборе/повторном заходе).
+
+**Точки старта/стопа:**
+- Одиночная генерация (AI-edit, text-regen, regen, realistic) + batch
+  (`_start_storyboard_block`) + Mode C (`_start_storyboard_block_mode_c`): пишут
+  `started_at` + зовут `start_progress`.
+- Стоп — через существующий re-render блока: `_on_regen_done`/`_on_regen_error`
+  (одиночная/batch, реестр `_active_regens`) и `_on_mode_c_version_finished`/`_error`
+  (Mode C) попают реестр + перерисовывают блок → block-open loop видит «не активно»
+  → `stop_progress`. Явный `stop_progress` в обработчиках не нужен.
+
+**Mode C — last-version-stop:** на одну карточку `(block, panel)` идёт N версий,
+реестр `_active_mode_c_version_threads` с **3-tuple ключом `(block, panel, version)`**.
+Overlay держится пока в реестре есть хоть одна `(block, panel, *)` (block-open loop:
+`any(b == name and p == i for (b, p, _v) in ...)`) и гаснет ТОЛЬКО когда ушла
+последняя версия шота. `_shot_gen_started_at` чистится в Mode C-обработчиках по
+тому же предикату «версий не осталось» (не на первой завершившейся).
+
 ## Архитектурные решения которые легко забыть
 
 - **Anthropic API напрямую НЕ вызывается** (нет per-token billing мимо Max-
