@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer, QPoint, QRect, QPointF
-from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon, QCursor
+from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon, QPolygonF, QCursor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
@@ -166,20 +166,22 @@ class VersionThumb(QFrame):
 
 
 class _MarkerCanvas(QWidget):
-    """Прозрачный overlay поверх превью для рисования красным маркером (Шаг A).
-    Штрихи временные, в памяти (на диск не пишутся). Рисование разрешено ТОЛЬКО
-    внутри image_rect (прямоугольник реальной 9:16-картинки в координатах
-    viewport) — по чёрным полям letterbox рисовать нельзя. clear() сбрасывает.
-    Когда неактивен — прозрачен для мыши (вид получает zoom/pan как обычно)."""
+    """Прозрачный overlay поверх превью для рисования красным маркером (Шаг A/B).
+    Штрихи временные, в памяти. Хранятся в SCENE-координатах (= пиксели картинки
+    1:1, см. StoryboardView) → привязаны к картинке при ЛЮБОМ зуме/панораме:
+    точка экрана → scene при рисовании, обратно (mapFromScene) при отрисовке.
+    Рисование разрешено ТОЛЬКО внутри картинки (pixmap_item), по чёрным полям
+    letterbox нельзя. clear() сбрасывает. Неактивен → прозрачен для мыши."""
 
-    def __init__(self, parent=None):
+    def __init__(self, view, parent=None):
         super().__init__(parent)
+        self._view = view            # StoryboardView — mapToScene/mapFromScene
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self._strokes = []          # list[list[QPoint]]
+        self._strokes = []          # list[list[QPointF]] в SCENE-координатах
         self._cur = []
-        self._image_rect = QRect()  # зона картинки в координатах viewport
+        self._image_rect = QRect()  # зона картинки в viewport (для clip отрисовки)
         self._drawing = False
         self.hide()
 
@@ -225,22 +227,36 @@ class _MarkerCanvas(QWidget):
         self._drawing = False
         self.update()
 
-    def _pt(self, e):
-        return e.position().toPoint()
+    def has_strokes(self):
+        return bool(self._strokes)
+
+    def scene_strokes(self):
+        # список штрихов, каждый — list[QPointF] в SCENE-координатах (пиксели).
+        return self._strokes
+
+    def _scene_pt(self, e):
+        # экранная точка → scene (= пиксель картинки 1:1).
+        return self._view.mapToScene(e.position().toPoint())
+
+    def _inside(self, sp):
+        # точка внутри картинки? (по scene-границам pixmap_item)
+        item = getattr(self._view, 'pixmap_item', None)
+        if item is None:
+            return False
+        return item.sceneBoundingRect().contains(sp)
 
     def mousePressEvent(self, e):
-        p = self._pt(e)
-        if (e.button() == Qt.MouseButton.LeftButton
-                and self._image_rect.contains(p)):
+        sp = self._scene_pt(e)
+        if e.button() == Qt.MouseButton.LeftButton and self._inside(sp):
             self._drawing = True
-            self._cur = [p]
+            self._cur = [sp]
 
     def mouseMoveEvent(self, e):
         if not self._drawing:
             return
-        p = self._pt(e)
-        if self._image_rect.contains(p):
-            self._cur.append(p)
+        sp = self._scene_pt(e)
+        if self._inside(sp):
+            self._cur.append(sp)
             self.update()
 
     def mouseReleaseEvent(self, e):
@@ -265,9 +281,14 @@ class _MarkerCanvas(QWidget):
             qp.setClipRect(self._image_rect)
         for stroke in self._strokes:
             if len(stroke) >= 2:
-                qp.drawPolyline(QPolygon(stroke))
+                qp.drawPolyline(self._to_view(stroke))
         if len(self._cur) >= 2:
-            qp.drawPolyline(QPolygon(self._cur))
+            qp.drawPolyline(self._to_view(self._cur))
+
+    def _to_view(self, scene_pts):
+        # SCENE-точки → viewport-точки (QPolygon) для отрисовки на экране.
+        return QPolygon([self._view.mapFromScene(sp).toPoint()
+                         for sp in scene_pts])
 
 
 class ShotViewerDialog(QDialog):
@@ -421,7 +442,8 @@ class ShotViewerDialog(QDialog):
         # 2026-06-07 (Шаг A фичи маркера): overlay-canvas рисования + кнопка
         # «маркер» (child viewport, как btn_mirror). Canvas рисует только внутри
         # image_rect. Кнопка слева от зеркала, тот же стиль #shot-mirror.
-        self.marker_canvas = _MarkerCanvas(self.preview_view.viewport())
+        self.marker_canvas = _MarkerCanvas(
+            self.preview_view, self.preview_view.viewport())
         self.btn_marker = QPushButton(self.preview_view.viewport())
         self.btn_marker.setObjectName("shot-mirror")
         self.btn_marker.setIcon(get_icon('pencil'))
@@ -706,6 +728,70 @@ class ShotViewerDialog(QDialog):
             cv.clear()
         self.btn_mirror.raise_()
         self.btn_marker.raise_()
+
+    def _bake_marked_image(self):
+        """Шаг B: запекает штрихи маркера в копию полноразмерной картинки версии.
+        Возвращает путь к temp-PNG или None (нет штрихов / нет картинки). Оригинал
+        версии НЕ трогается. crop/mirror уже в pixmap сцены — берём ЕЁ (НЕ
+        перечитываем v{n}.jpg). Штрихи в SCENE-координатах = пиксели 1:1 → рисуем
+        прямо. В crop-случае scene = orig (до crop) → финально вырезаем видимый
+        кадр через .copy(scene_rect); crop НЕ применяется дважды. Для Шага C."""
+        cv = getattr(self, 'marker_canvas', None)
+        if cv is None or not cv.has_strokes():
+            return None
+        view = self.preview_view
+        item = getattr(view, 'pixmap_item', None)
+        if item is None:
+            return None
+        src = item.pixmap()
+        if src is None or src.isNull():
+            return None
+        baked = src.copy()
+        try:
+            qp = QPainter(baked)
+            qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # перо в ПИКСЕЛЯХ картинки: экранную толщину делим на масштаб вида
+            # (m11 = scene→viewport) → штрих на полноразмере как на экране.
+            m11 = view.transform().m11() or 1.0
+            pen = QPen(_MARKER_COLOR, max(1.0, _MARKER_WIDTH / m11))
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            qp.setPen(pen)
+            for stroke in cv.scene_strokes():
+                if len(stroke) >= 2:
+                    qp.drawPolyline(QPolygonF(stroke))   # scene = пиксель 1:1
+            qp.end()
+        except Exception:
+            import sys
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            return None
+        # crop к видимому кадру версии (scene = orig в crop-случае).
+        out = baked
+        try:
+            from storyboard_app import read_shot_crop
+            crop = read_shot_crop(self.history_dir, self._selected_version)
+            sr = crop.get('scene_rect') if crop else None
+            if sr is not None:
+                rect = QRect(int(sr['x']), int(sr['y']),
+                             int(sr['w']), int(sr['h'])).intersected(baked.rect())
+                if rect.width() > 1 and rect.height() > 1:
+                    out = baked.copy(rect)
+        except Exception:
+            pass
+        # temp PNG (gettempdir; чистится Шагом C после отправки).
+        try:
+            import tempfile
+            fname = (f"shot_marked_{self.block_name}_shot{self.panel_idx + 1}"
+                     f"_v{int(self._selected_version)}.png")
+            path = Path(tempfile.gettempdir()) / fname
+            if out.save(str(path), "PNG"):
+                return path
+        except Exception:
+            import sys
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+        return None
 
     def _on_mirror_clicked(self, checked):
         """M-b: тогл горизонтального зеркала просматриваемой версии. Зеркало
