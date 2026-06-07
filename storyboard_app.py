@@ -11584,6 +11584,13 @@ class MainWindow(QMainWindow):
         improve_row = QHBoxLayout()
         improve_btn = QPushButton(tr('improve_btn'))
         improve_btn.setObjectName("save")
+        # лево-выравнивание текста: при анимации точек слово «Улучшаю промпт»
+        # стоит у левого края, точки растут вправо (не ездит). Тем же #save-
+        # селектором — фон/border/радиус берутся от глобального QSS, добавляем
+        # только text-align+padding-left (Qt мерджит стили по свойствам). В
+        # статике кнопка content-sized → выравнивание визуально незаметно.
+        improve_btn.setStyleSheet(
+            "QPushButton#save { text-align: left; padding-left: 14px; }")
         improve_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         improve_btn.setEnabled(bool(short_field.toPlainText().strip()))
         improve_row.addWidget(improve_btn)
