@@ -22,8 +22,8 @@ import shutil
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer
-from PyQt6.QtGui import QPixmap, QTransform
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer, QPoint, QRect
+from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
@@ -49,6 +49,13 @@ THUMB_H = 125  # 70 × (688/384) ≈ 125
 # (Windows): angleDelta идёт квантами ~120 на «щелчок». Сколько пикселей
 # двигать ленту за один квант. # подобрать на живой Windows-мыши.
 _STRIP_WHEEL_STEP_PX = 80
+
+# Толщина маркера в ЛОГИЧЕСКИХ пикселях (device-independent). QPainter рисует в
+# логических координатах, Qt сам масштабирует по devicePixelRatio → видимая
+# толщина ОДИНАКОВА на Retina (Mac) и обычных экранах (Windows). НЕ умножать на
+# dpr вручную. «Средняя» фиксированная толщина (регулировки пока нет).
+_MARKER_WIDTH = 3
+_MARKER_COLOR = QColor(230, 30, 30)   # фиксированный красный
 
 
 class VersionThumb(QFrame):
@@ -150,6 +157,87 @@ class VersionThumb(QFrame):
         if ev.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.version_n)
         super().mousePressEvent(ev)
+
+
+class _MarkerCanvas(QWidget):
+    """Прозрачный overlay поверх превью для рисования красным маркером (Шаг A).
+    Штрихи временные, в памяти (на диск не пишутся). Рисование разрешено ТОЛЬКО
+    внутри image_rect (прямоугольник реальной 9:16-картинки в координатах
+    viewport) — по чёрным полям letterbox рисовать нельзя. clear() сбрасывает.
+    Когда неактивен — прозрачен для мыши (вид получает zoom/pan как обычно)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._strokes = []          # list[list[QPoint]]
+        self._cur = []
+        self._image_rect = QRect()  # зона картинки в координатах viewport
+        self._drawing = False
+        self.hide()
+
+    def set_image_rect(self, rect):
+        self._image_rect = QRect(rect)
+
+    def set_active(self, on):
+        # активен → ловит мышь и видим; иначе прозрачен для мыши и скрыт.
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, not bool(on))
+        self.setVisible(bool(on))
+        if on:
+            self.raise_()
+        self.update()
+
+    def clear(self):
+        self._strokes = []
+        self._cur = []
+        self._drawing = False
+        self.update()
+
+    def _pt(self, e):
+        return e.position().toPoint()
+
+    def mousePressEvent(self, e):
+        p = self._pt(e)
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self._image_rect.contains(p)):
+            self._drawing = True
+            self._cur = [p]
+
+    def mouseMoveEvent(self, e):
+        if not self._drawing:
+            return
+        p = self._pt(e)
+        if self._image_rect.contains(p):
+            self._cur.append(p)
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if not self._drawing:
+            return
+        self._drawing = False
+        if len(self._cur) >= 2:
+            self._strokes.append(self._cur)
+        self._cur = []
+        self.update()
+
+    def paintEvent(self, _ev):
+        if not self._strokes and len(self._cur) < 2:
+            return
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(_MARKER_COLOR, _MARKER_WIDTH)   # ширина в логических px
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        qp.setPen(pen)
+        if not self._image_rect.isNull():
+            qp.setClipRect(self._image_rect)
+        for stroke in self._strokes:
+            if len(stroke) >= 2:
+                qp.drawPolyline(QPolygon(stroke))
+        if len(self._cur) >= 2:
+            qp.drawPolyline(QPolygon(self._cur))
 
 
 class ShotViewerDialog(QDialog):
@@ -300,6 +388,25 @@ class ShotViewerDialog(QDialog):
             " border-color:#6e4cc4; }")
         self.btn_mirror.clicked.connect(self._on_mirror_clicked)
         self.btn_mirror.raise_()
+        # 2026-06-07 (Шаг A фичи маркера): overlay-canvas рисования + кнопка
+        # «маркер» (child viewport, как btn_mirror). Canvas рисует только внутри
+        # image_rect. Кнопка слева от зеркала, тот же стиль #shot-mirror.
+        self.marker_canvas = _MarkerCanvas(self.preview_view.viewport())
+        self.btn_marker = QPushButton(self.preview_view.viewport())
+        self.btn_marker.setObjectName("shot-mirror")
+        self.btn_marker.setIcon(get_icon('pencil'))
+        self.btn_marker.setIconSize(QSize(16, 16))
+        self.btn_marker.setFixedSize(28, 28)
+        self.btn_marker.setCheckable(True)
+        self.btn_marker.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_marker.setStyleSheet(
+            "QPushButton#shot-mirror { background:rgba(10,6,18,0.65);"
+            " border:1px solid #322545; border-radius:6px; }"
+            "QPushButton#shot-mirror:hover { background:rgba(40,24,64,0.85); }"
+            "QPushButton#shot-mirror:checked { background:#231840;"
+            " border-color:#6e4cc4; }")
+        self.btn_marker.clicked.connect(self._on_marker_clicked)
+        self.btn_marker.raise_()
 
         # Лента миниатюр (горизонтальный scroll)
         strip_label = QLabel(tr('shot_viewer_versions_label'))
@@ -525,6 +632,50 @@ class ShotViewerDialog(QDialog):
         btn.move(max(0, vp.width() - btn.width() - 8),
                  max(0, vp.height() - btn.height() - 8))
         btn.raise_()
+        # Шаг A фичи маркера: кнопка «маркер» слева от зеркала + ресайз canvas
+        # под viewport + пересчёт image_rect (зум/панорама/ресайз).
+        mk = getattr(self, 'btn_marker', None)
+        if mk is not None:
+            mk.move(max(0, vp.width() - mk.width() * 2 - 16),
+                    max(0, vp.height() - mk.height() - 8))
+            mk.raise_()
+        cv = getattr(self, 'marker_canvas', None)
+        if cv is not None:
+            cv.setGeometry(0, 0, vp.width(), vp.height())
+            cv.set_image_rect(self._compute_image_rect())
+            if cv.isVisible():
+                cv.raise_()
+                btn.raise_()
+                if mk is not None:
+                    mk.raise_()
+
+    def _compute_image_rect(self):
+        """Прямоугольник реальной картинки внутри viewport (координаты
+        viewport). mapFromScene учитывает текущий fit/зум/панораму. Пусто если
+        картинки нет. Это зона, где маркеру разрешено рисовать."""
+        view = getattr(self, 'preview_view', None)
+        if view is None or getattr(view, 'pixmap_item', None) is None:
+            return QRect()
+        try:
+            poly = view.mapFromScene(view.pixmap_item.sceneBoundingRect())
+            return poly.boundingRect()
+        except Exception:
+            return QRect()
+
+    def _on_marker_clicked(self, checked):
+        """Тогл режима маркера. ВКЛ → canvas ловит мышь и виден (рисуем красным
+        внутри картинки). ВЫКЛ → canvas прозрачен для мыши, скрыт, штрихи
+        сброшены (разово). При ВЫКЛ зум/панорама/зеркало/клик по версиям —
+        как раньше."""
+        cv = getattr(self, 'marker_canvas', None)
+        if cv is None:
+            return
+        self._position_mirror_btn()          # свежий размер + image_rect
+        cv.set_active(bool(checked))
+        if not checked:
+            cv.clear()
+        self.btn_mirror.raise_()
+        self.btn_marker.raise_()
 
     def _on_mirror_clicked(self, checked):
         """M-b: тогл горизонтального зеркала просматриваемой версии. Зеркало
@@ -590,6 +741,10 @@ class ShotViewerDialog(QDialog):
         но отматывает от оригинала). Нет → грузим v{n}.jpg как обычно."""
         n = int(n)
         self._pending_crop_rect = None
+        # Шаг A фичи маркера: смена/перешоу версии → старые штрихи неактуальны.
+        _cv = getattr(self, 'marker_canvas', None)
+        if _cv is not None:
+            _cv.clear()
         crop = None
         try:
             from storyboard_app import read_shot_crop, shot_orig_path
