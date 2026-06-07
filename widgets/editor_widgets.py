@@ -307,7 +307,7 @@ class ShotCard(QFrame):
         self.gen_overlay = QWidget(self.img_container)
         self.gen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
         self.gen_overlay.setStyleSheet(
-            "background: rgba(20, 14, 30, 0.78); border-radius:11px;")
+            "background: rgba(20, 14, 30, 0.78); border-radius:6px;")
         _go = QVBoxLayout(self.gen_overlay)
         _go.setContentsMargins(14, 14, 14, 14)
         _go.addStretch()
