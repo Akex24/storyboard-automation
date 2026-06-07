@@ -22,8 +22,8 @@ import shutil
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer, QPoint, QRect
-from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer, QPoint, QRect, QPointF
+from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon, QCursor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
@@ -56,6 +56,12 @@ _STRIP_WHEEL_STEP_PX = 80
 # dpr вручную. «Средняя» фиксированная толщина (регулировки пока нет).
 _MARKER_WIDTH = 3
 _MARKER_COLOR = QColor(230, 30, 30)   # фиксированный красный
+
+# Курсор-кисть режима маркера: диаметр круга и толщина контура в ЛОГИЧЕСКИХ px
+# (device-independent, как _MARKER_WIDTH — Qt масштабирует по dpr → одинаковый
+# видимый размер на Retina/Windows). Центр круга = точка рисования (hotspot).
+_MARKER_CURSOR_DIAM = 14
+_MARKER_CURSOR_PEN = 2
 
 
 class VersionThumb(QFrame):
@@ -181,13 +187,37 @@ class _MarkerCanvas(QWidget):
         self._image_rect = QRect(rect)
 
     def set_active(self, on):
-        # активен → ловит мышь и видим; иначе прозрачен для мыши и скрыт.
+        # активен → ловит мышь и видим + круглый курсор-кисть; иначе прозрачен
+        # для мыши, скрыт и курсор сброшен (вид показывает свой курсор pan).
         self.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, not bool(on))
         self.setVisible(bool(on))
         if on:
+            self.setCursor(self._build_cursor())
             self.raise_()
+        else:
+            self.unsetCursor()
         self.update()
+
+    def _build_cursor(self):
+        """Круглый курсор-кисть для режима маркера. QPixmap с devicePixelRatio
+        → одинаковый видимый размер на Retina(Mac)/Windows. Рисуем в логических
+        координатах (pm имеет dpr). Hotspot — центр круга (точка рисования)."""
+        dpr = self.devicePixelRatioF() or 1.0
+        edge = _MARKER_CURSOR_DIAM + 4           # логический размер pixmap (+поля)
+        pm = QPixmap(int(round(edge * dpr)), int(round(edge * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        qp = QPainter(pm)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        qp.setPen(QPen(_MARKER_COLOR, _MARKER_CURSOR_PEN))
+        c = edge / 2.0                           # центр в ЛОГИЧЕСКИХ координатах
+        r = _MARKER_CURSOR_DIAM / 2.0
+        qp.drawEllipse(QPointF(c, c), r, r)
+        qp.end()
+        # hotspot при заданном devicePixelRatio трактуется в device-independent
+        # координатах → центр.
+        return QCursor(pm, int(c), int(c))
 
     def clear(self):
         self._strokes = []
