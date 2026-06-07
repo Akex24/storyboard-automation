@@ -45,6 +45,11 @@ PREVIEW_H = 688
 THUMB_W = 70
 THUMB_H = 125  # 70 × (688/384) ≈ 125
 
+# Шаг горизонтальной прокрутки ленты версий колесом для классической мыши
+# (Windows): angleDelta идёт квантами ~120 на «щелчок». Сколько пикселей
+# двигать ленту за один квант. # подобрать на живой Windows-мыши.
+_STRIP_WHEEL_STEP_PX = 80
+
 
 class VersionThumb(QFrame):
     """Кликабельная миниатюра версии в ленте."""
@@ -318,6 +323,8 @@ class ShotViewerDialog(QDialog):
         self.strip_layout.addStretch()
         self.strip_scroll.setWidget(strip_container)
         lay.addWidget(self.strip_scroll)
+        # Колесо над лентой версий → горизонтальная прокрутка (eventFilter ниже).
+        self.strip_scroll.viewport().installEventFilter(self)
 
         self.empty_versions_lbl = QLabel(tr('shot_viewer_no_versions'))
         self.empty_versions_lbl.setObjectName("empty")
@@ -441,6 +448,27 @@ class ShotViewerDialog(QDialog):
                 self._preview_dirty = True
             elif ev.type() == QEvent.Type.Resize:
                 self._position_mirror_btn()
+        # Колесо над лентой версий → горизонтальная прокрутка ленты.
+        # Кросс-платформа: Win-мышь шлёт angleDelta.y квантами ~120 (pixelDelta
+        # пустой); Mac-трекпад — pixelDelta с инерцией, часто с горизонтальной
+        # составляющей. Горизонтальный жест отдаём Qt (он сам скроллит H) —
+        # без задвоения. Вертикальное колесо перенаправляем в H-скроллбар.
+        if (obj is self.strip_scroll.viewport()
+                and ev.type() == QEvent.Type.Wheel):
+            pd = ev.pixelDelta()
+            ad = ev.angleDelta()
+            # Шаг 1: уже горизонтальный жест → отдать Qt (без задвоения на Mac).
+            if (abs(pd.x()) > abs(pd.y())
+                    or (pd.isNull() and abs(ad.x()) > abs(ad.y()))):
+                return False
+            # Шаг 2: вертикальное колесо → редирект в горизонтальный скроллбар.
+            if not pd.isNull():
+                dv = pd.y()                       # Mac: попиксельно (инерция)
+            else:
+                dv = ad.y() / 120.0 * _STRIP_WHEEL_STEP_PX   # Win: квант 120 → px
+            hbar = self.strip_scroll.horizontalScrollBar()
+            hbar.setValue(hbar.value() - int(dv))
+            return True
         return super().eventFilter(obj, ev)
 
     def _on_view_scrolled(self, _value):
