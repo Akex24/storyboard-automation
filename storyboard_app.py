@@ -11637,6 +11637,11 @@ class MainWindow(QMainWindow):
             improve_btn.setEnabled(False)
             _improve_state['dots'] = 1
             improve_btn.setText(_improve_base + '.')
+            # резерв ширины под максимум «…промпт...» (3 точки) — кнопка не
+            # дёргается при смене 1/2/3 точек (паттерн как в _start_animation).
+            _ifm = improve_btn.fontMetrics()
+            _iw = _ifm.horizontalAdvance(_improve_base + '...') + 30
+            improve_btn.setMinimumWidth(max(improve_btn.width(), _iw))
             _improve_timer.start()
             short_field.setReadOnly(True)
             if ok_btn is not None:
@@ -11649,6 +11654,7 @@ class MainWindow(QMainWindow):
             def _restore():
                 try:
                     _improve_timer.stop()
+                    improve_btn.setMinimumWidth(0)   # вернуть плавающую ширину
                     improve_btn.setText(tr('improve_btn'))
                     short_field.setReadOnly(False)
                     improve_btn.setEnabled(
