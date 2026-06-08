@@ -315,80 +315,12 @@ class EpisodeChatView(QWidget):
         self.status_lbl = QLabel("")
         self.status_lbl.setVisible(False)
 
-        # Дропдаун выбора модели — общий с NewEpisodeView через
-        # QSettings(new_ep/model). Меняешь здесь — следующее сообщение этого
-        # же чата уйдёт на новой модели, и при следующем «Новый эпизод» она
-        # будет подхвачена. Помещаю в отдельной тонкой строке над инпутом.
-        model_row = QHBoxLayout()
-        model_row.setSpacing(8)
-        self.model_label = QLabel(tr('new_ep_model_label'))
-        self.model_label.setStyleSheet("color:#aaa; font-size:12px;")
-        model_row.addWidget(self.model_label)
-        self.model_combo = QComboBox()
-        self.model_combo.setFixedHeight(28)
-        self.model_combo.setMinimumWidth(140)
-        self.model_combo.setStyleSheet(
-            "QComboBox { background:#15101e; border:1px solid #322545;"
-            " border-radius:6px; padding:2px 8px; color:#ddd; font-size:12px; }"
-            "QComboBox::drop-down { border:0; width:18px; }"
-            "QComboBox QAbstractItemView { background:#15101e; color:#ddd;"
-            " selection-background-color:#322545; border:1px solid #322545; }"
-        )
-        for label, mid in (
-            ("Sonnet 4.6", "claude-sonnet-4-6"),
-            ("Opus 4.7",   "claude-opus-4-7"),
-            ("Haiku 4.5",  "claude-haiku-4-5-20251001"),
-        ):
-            self.model_combo.addItem(label, mid)
-        try:
-            qs = QSettings(_sa.APP_ORG, _sa.APP_NAME)
-            saved = qs.value("new_ep/model_v2", "claude-opus-4-7", type=str)
-            for i in range(self.model_combo.count()):
-                if self.model_combo.itemData(i) == saved:
-                    self.model_combo.setCurrentIndex(i)
-                    break
-        except Exception:
-            pass
-        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        _sa.block_wheel_event(self.model_combo)
-        model_row.addWidget(self.model_combo)
-        model_row.addStretch()
-        lay.addLayout(model_row)
-
-        # Поле ввода + кнопка отправки
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.input_edit = ChatInputEdit()
-        self.input_edit.setPlaceholderText(tr('chat_input_placeholder'))
-        # 2026-05-08 редизайн Этап 6: LUMZ-стиль для поля ввода чата.
-        self.input_edit.setStyleSheet(
-            "QPlainTextEdit { background: rgba(255, 255, 255, 0.04);"
-            " border: 1px solid rgba(255, 255, 255, 0.12);"
-            " border-radius: 8px; padding: 10px; color: #ffffff;"
-            " font-size: 13px; }")
-        self.input_edit.setFixedHeight(70)
-        # Enter / Shift+Enter / Cmd+Enter — обработаны в ChatInputEdit
-        self.input_edit.submit_requested.connect(self._on_send)
-        # Дополнительно Cmd+Enter / Ctrl+Enter — для совместимости (обычно
-        # ChatInputEdit сам ловит Enter, но shortcut не помешает)
-        self._send_shortcut = QShortcut(
-            QKeySequence("Ctrl+Return"), self.input_edit)
-        self._send_shortcut.activated.connect(self._on_send)
-        row.addWidget(self.input_edit, stretch=1)
-
-        self.send_btn = QPushButton(tr('chat_send_btn'))
-        self.send_btn.setObjectName("save")
-        self.send_btn.setFixedHeight(70)
-        self.send_btn.setMinimumWidth(120)
-        self.send_btn.clicked.connect(self._on_send)
-        row.addWidget(self.send_btn)
-        lay.addLayout(row)
+        # 2026-06-08: блок ввода (Model-дропдаун + поле + Send) УДАЛЁН —
+        # юзер запускает работу агента только из «Нового эпизода». Этот чат
+        # теперь read-only лог: история + GenButton-карточки + плашка монтажки
+        # (она сама опускается вниз, т.к. log_view имеет stretch=1).
 
     def apply_lang(self):
-        self.input_edit.setPlaceholderText(tr('chat_input_placeholder'))
-        self.send_btn.setText(tr('chat_send_btn'))
-        if hasattr(self, 'model_label'):
-            self.model_label.setText(tr('new_ep_model_label'))
         # Если открыт эпизод и история пустая — обновить хинт
         if self._ep_id is not None and not _sa.load_chat_messages(self._ep_id):
             self._render_empty_state()
@@ -457,26 +389,6 @@ class EpisodeChatView(QWidget):
         prefix = dots_pattern[dot_step % len(dots_pattern)]
         self.active_gens_btn.setText(
             f"{prefix}  " + tr('active_gens_btn_text', n=n))
-
-    def _on_model_changed(self, _index: int):
-        """Сохраняем выбор в QSettings — переживёт перезапуск Studio.
-
-        2026-05-09: дропдаун модели остался только в этом view (для
-        свободного чата эпизода). NewEpisodeView читает то же значение
-        через QSettings ключ "new_ep/model_v2" в своём _current_model().
-        """
-        try:
-            mid = self.model_combo.currentData()
-            if mid:
-                QSettings(_sa.APP_ORG, _sa.APP_NAME).setValue("new_ep/model_v2", mid)
-        except Exception:
-            pass
-
-    def _current_model(self) -> Optional[str]:
-        try:
-            return self.model_combo.currentData()
-        except Exception:
-            return None
 
     def set_episode(self, ep_id: Optional[str]):
         """Переключить чат на другой эпизод. Перерисовывает историю."""
@@ -1126,51 +1038,6 @@ class EpisodeChatView(QWidget):
                     fmt = cursor.charFormat()
                     cursor.removeSelectedText()
                     cursor.insertText(long_base, fmt)
-
-    def _on_send(self):
-        if self._thread is not None and self._thread.isRunning():
-            return
-        if not self._ep_id:
-            return
-        text = self.input_edit.toPlainText().strip()
-        if not text:
-            return
-        # Phase 2 hotfix #8: сбрасываем накопитель fallback-парсера
-        # перед каждым новым запросом — чтобы синтез шёл по СВЕЖЕМУ ответу.
-        self._stream_full = ''
-        # Записываем в файл + рисуем в UI
-        user_line = f"\n💬 {tr('new_ep_you_label')}: {text}\n\n"
-        _sa.append_chat_message(self._ep_id, "user", user_line, kind='user')
-        self._render_message(user_line, kind='user')
-        # 2026-05-08: без `…` и без пустой строки после — сразу появляется
-        # `▶ Думаю`, тикер заменит на `▶ Думаю · / ·· / ··· / ····`,
-        # при первом chunk финализируется обратно на `▶ Думаю` без точек.
-        # Одна `\n` чтобы slow_thinking встал ровно следующей строкой.
-        thinking_line = f"▶ {tr('new_ep_log_thinking')}\n"
-        _sa.append_chat_message(self._ep_id, "system", thinking_line, kind='system')
-        self._render_message(thinking_line, kind='system')
-
-        self.input_edit.clear()
-        self.send_btn.setEnabled(False)
-        self._thinking_step = 0
-        self._thinking_active = True
-        self._thinking_timer.start()
-        self.status_lbl.setStyleSheet("color:#ffaa44; font-size:12px;")
-        self.status_lbl.setText(tr('new_ep_log_thinking'))
-
-        # Модель из СВОЕГО дропдауна (юзер мог переключить прямо в чате
-        # эпизода — например на Opus для сложной задачи или Haiku для простого
-        # вопроса). Значение сохраняется в QSettings, разделено с NewEpisodeView.
-        model_id = self._current_model()
-        self._thread = RunEpisodeThread(
-            self._mw._project_root, text,
-            continue_session=True, model=model_id)
-        self._thread.output_chunk.connect(self._on_chunk)
-        self._thread.finished_ok.connect(self._on_done)
-        self._thread.error.connect(self._on_error)
-        self._thread.stopped.connect(self._on_stopped)
-        self._thread.slow_thinking.connect(self._on_slow_thinking)
-        self._thread.start()
 
     def _on_slow_thinking(self):
         """Сигнал от RunEpisodeThread через 120с без первого chunk —
@@ -2573,7 +2440,6 @@ class EpisodeChatView(QWidget):
             self._render_message(done, kind='ok')
         self.status_lbl.setStyleSheet("color:#6db86d; font-size:12px;")
         self.status_lbl.setText(tr('new_ep_log_done'))
-        self.send_btn.setEnabled(True)
         # Phase 2 hotfix #8: если AI не вставил [[GEN:...]] маркеры в свой
         # ответ (просто словами «- ✗ name — рефа нет»), мы сами их
         # синтезируем по строкам секций ЛОКАЦИИ:/ОБЪЕКТЫ: и создаём кнопки.
@@ -2587,7 +2453,6 @@ class EpisodeChatView(QWidget):
             self._check_montage_ready()
         except Exception:
             traceback.print_exc()
-        self.input_edit.setFocus()
 
     def _on_error(self, msg: str):
         # 2026-05-11 multi-ep fix: см. комментарий в `_on_done`.
@@ -2598,7 +2463,6 @@ class EpisodeChatView(QWidget):
             self._render_message(line, kind='error')
         self.status_lbl.setStyleSheet("color:#cc6666; font-size:12px;")
         self.status_lbl.setText(f"{tr('new_ep_log_error')}: {msg[:120]}")
-        self.send_btn.setEnabled(True)
 
     def _on_stopped(self):
         # 2026-05-11 multi-ep fix: см. комментарий в `_on_done`.
@@ -2609,7 +2473,6 @@ class EpisodeChatView(QWidget):
             self._render_message(line, kind='warn')
         self.status_lbl.setStyleSheet("color:#aaa; font-size:12px;")
         self.status_lbl.setText(tr('new_ep_log_stopped'))
-        self.send_btn.setEnabled(True)
 
     # ──────────────────────────────────────────────────────────────────
     # 2026-05-06: Multi-agent монтажная карта.
