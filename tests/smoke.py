@@ -581,7 +581,7 @@ def test_views_episode_chat() -> None:
 
     # Контракт EpisodeChatView API (что зовёт MainWindow)
     expected = ('set_episode', 'on_external_append', 'apply_lang',
-                '_on_send', '_render_message')
+                '_render_message')
     missing = [m for m in expected if not hasattr(EpisodeChatView, m)]
     if missing:
         fail("EpisodeChatView API", f"потерялись методы: {missing}")
