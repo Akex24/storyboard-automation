@@ -1931,3 +1931,71 @@ gated в промпте).
 4. То же сделать для `fastgen_api_key`.
 
 **Срочность:** низкая — `fastgen_api_key` живёт plain-text давно, никаких инцидентов не было. Юзер должен сам понимать что админский профиль = доверенная среда.
+
+## Пул API-ключей FastGen (round-robin + индикатор) — 2026-06-09
+
+До 5 ключей FastGen с балансировкой по кругу. При 1 ключе поведение
+идентично прежнему (полная обратная совместимость).
+
+### Модуль `key_pool.py` (корень репо)
+Чистый Python, **без Qt** и **без импорта storyboard_app** (импортируется
+CLI-скриптами в отдельных процессах — Qt там недоступен; circular import
+исключён). Экспорт:
+- `get_keys() -> list[str]` — все настроенные ключи по порядку. Источник:
+  сайдкар `fastgen_keys.txt` → fallback на первую строку `.env` (= старое
+  одиночное поведение).
+- `next_key() -> str` — следующий ключ по кругу. 1 ключ → возврат без
+  изменения курсора; >1 → атомарный сдвиг курсора. ЛЮБОЕ исключение →
+  fallback на одиночный ключ (kill-switch: генерация не падает).
+- `save_keys(list)` — атомарная запись сайдкара (tmp + os.replace).
+- `set_root(path)` — переопределяет project_root (writable) для frozen GUI.
+
+### Хранение (всё в project_root)
+- **QSettings** `fastgen_api_key` (primary) + `fastgen_api_key_2..5` — для
+  репопуляции 5 полей в Настройках.
+- **`fastgen_keys.txt`** — сайдкар, рантайм-источник ротации (по строке на
+  ключ). СОДЕРЖИТ КЛЮЧИ → в `.gitignore`.
+- **`.env` строка 0** — primary-ключ (legacy `load_key()`/`load_api_key()`
+  fallback; sync через существующий `save_api_key`).
+- **`.fastgen_keys_cursor`** — монотонный курсор round-robin.
+
+### GUI vs CLI (резолв ROOT)
+- CLI (`pipeline.py`/`generate_storyboards.py`) импортируют `key_pool` из
+  project_root (куда он скопирован) → `Path(__file__).parent` = writable.
+- Frozen GUI импортирует `key_pool` из бандла (_MEIPASS, read-only) →
+  `storyboard_app` зовёт `key_pool.set_root(project_root)` при старте
+  (рядом с `sync_*` в `MainWindow.__init__`).
+
+### Читатели ключа (6 шт., все через пул)
+- 4 GUI-потока в `threads/generate.py` (GenerateThread / RefGenerateThread /
+  GenerateActorRefThread / EditActorRefThread) → `_sa.next_api_key()` →
+  обёртка `storyboard_app.next_api_key()` → `key_pool.next_key()`.
+- 2 CLI: `pipeline.py` / `generate_storyboards.py` → `next_key() or load_key()`
+  (ленивый импорт + двойной fallback; без `key_pool.py` рядом — тихо на
+  одиночном ключе).
+
+### Доставка в frozen .app
+`StoryboardStudio.spec` datas бандлит `pipeline.py`, `generate_storyboards.py`,
+`key_pool.py`. `sync_pipeline_py_to_project` (MainWindow.__init__) копирует
+все три в project_root при старте (цикл с `continue`, skip-identical).
+⚠️ Старый .app (до этих правок) при запуске откатывает `pipeline.py` в
+project_root старым бандлом — до пересборки .app не запускать против рабочего
+репо.
+
+### Индикатор-лампочка (косметика, реалтайм)
+Файл-мост `.fastgen_keys_active` (`"{idx} {nonce}"`, nonce=time.time())
+пишется в `key_pool.next_key()` ПОСЛЕ выбора ключа, в СОБСТВЕННОМ try/except
+— его поломка НЕ влияет на выдачу ключа. GUI (`storyboard_app`) слушает файл
+через `QFileSystemWatcher` (создан в `__init__`, не привязан к вкладке) и
+мигает лампочкой выданного ключа (`_on_keypool_active_changed` →
+`_blink_key_indicator`, вспышка ~400мс с авто-гашением). Пишется при выдаче
+из ЛЮБОГО источника (GUI + CLI) → «бегущий огонёк» по реально занятым ключам.
+Дедуп по nonce (watcher шумит по каталогу). Всё в try/except — на генерацию
+не влияет.
+
+### Задача Б (НЕ сделана, отложена)
+Failover при лимите/ошибке ключа: если ключ упёрся в лимит или отвалился —
+временно вывести из ротации, нагрузка на живые без перезагрузки; крестик
+«ключ недоступен» у поля; уведомления о лимите. Сейчас обработка ошибок
+FastGen НЕ различает «лимит ключа» от «сервер недоступен» (всё через
+`raise_for_status` → generic), retry-логики нет. Это следующий этап.
