@@ -50,6 +50,12 @@ ENV_FILE: Path = ROOT / ".env"
 # Файл-мост для UI-лампочки round-robin: какой индекс ключа только что
 # отдан. Пишется в next_key, слушается GUI через QFileSystemWatcher.
 ACTIVE_FILE: Path = ROOT / ".fastgen_keys_active"
+# 2026-06-09 (задача Б, Этап 1): failover. Файл выведенных из ротации ключей
+# (cross-process: пишет GUI, читают и GUI и CLI синхронно в next_key). Строка
+# на ключ: "<idx> <reason> <until_epoch>", reason ∈ temp|perm, until=0 для perm.
+DISABLED_FILE: Path = ROOT / ".fastgen_keys_disabled"
+# Сколько держать temp-выбитый ключ (429/лимит) вне ротации, сек (15 мин).
+DISABLE_TEMP_TTL = 900
 
 
 def set_root(root) -> None:
@@ -58,7 +64,7 @@ def set_root(root) -> None:
     Вызывает GUI-обёртка из frozen .app, передавая project_root из QSettings,
     потому что в бандле Path(__file__).parent указывает в read-only _MEIPASS.
     CLI это не зовёт. Идемпотентно, потокобезопасно, не кидает."""
-    global ROOT, KEYS_FILE, CURSOR_FILE, ENV_FILE, ACTIVE_FILE
+    global ROOT, KEYS_FILE, CURSOR_FILE, ENV_FILE, ACTIVE_FILE, DISABLED_FILE
     if not root:
         return
     try:
@@ -71,6 +77,7 @@ def set_root(root) -> None:
         CURSOR_FILE = p / ".fastgen_keys_cursor"
         ENV_FILE = p / ".env"
         ACTIVE_FILE = p / ".fastgen_keys_active"
+        DISABLED_FILE = p / ".fastgen_keys_disabled"
 
 
 def _read_env_first_line() -> str:
@@ -175,6 +182,88 @@ def last_index():
     return _last_index
 
 
+def _read_disabled() -> dict:
+    """Прочитать выведенные из ротации ключи → {idx: (reason, until)}.
+
+    Строка файла: "<idx> <reason> <until_epoch>". reason ∈ temp|perm.
+    Ленивый TTL: temp-записи с until<=now считаются истёкшими (ключ вернулся
+    в ротацию) — отбрасываются И файл переписывается без них. perm живут до
+    save_keys. Малформ-строки молча пропускаются. На любой ошибке → {}.
+    Cross-process: читается синхронно и GUI, и CLI (без watcher)."""
+    out: dict = {}
+    try:
+        if not DISABLED_FILE.exists():
+            return {}
+        now = time.time()
+        changed = False
+        for line in DISABLED_FILE.read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                changed = changed or bool(line.strip())
+                continue
+            try:
+                idx = int(parts[0])
+                reason = parts[1]
+                until = float(parts[2])
+            except Exception:
+                changed = True
+                continue
+            if reason == "temp" and until <= now:
+                changed = True  # истёк → не возвращаем в out, перепишем файл
+                continue
+            out[idx] = (reason, until)
+        if changed:
+            try:
+                _write_disabled(out)
+            except Exception:
+                pass
+    except Exception:
+        return {}
+    return out
+
+
+def _write_disabled(disabled: dict) -> None:
+    """Атомарно записать карту выбитых ключей. Пустая карта → удалить файл
+    (возврат к «всё в ротации»). Под _lock у вызывающего НЕ требуется —
+    сам не трогает курсор. Не кидает."""
+    try:
+        if not disabled:
+            try:
+                if DISABLED_FILE.exists():
+                    DISABLED_FILE.unlink()
+            except Exception:
+                pass
+            return
+        lines = [f"{idx} {reason} {until}"
+                 for idx, (reason, until) in sorted(disabled.items())]
+        _write_atomic(DISABLED_FILE, "\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def disable_key(idx, reason, ttl_seconds=DISABLE_TEMP_TTL) -> None:
+    """Вывести ключ idx из ротации. reason: 'temp' (429/лимит — вернётся через
+    ttl_seconds) или 'perm' (401/403/license — до ручного save_keys).
+
+    perm перекрывает temp (если ключ уже temp, а пришёл perm — станет perm).
+    Повторный temp продлевает until. idx=None / некорректный reason → no-op.
+    Не кидает (kill-switch: failover НИКОГДА не роняет генерацию)."""
+    try:
+        if idx is None or reason not in ("temp", "perm"):
+            return
+        idx = int(idx)
+        with _lock:
+            disabled = _read_disabled()
+            prev = disabled.get(idx)
+            if prev and prev[0] == "perm" and reason == "temp":
+                return  # perm уже стоит — temp не понижает
+            until = 0.0 if reason == "perm" else (time.time() + float(ttl_seconds))
+            disabled[idx] = (reason, until)
+            _write_disabled(disabled)
+    except Exception:
+        pass
+
+
 def next_key() -> str:
     """Следующий ключ по кругу (round-robin).
 
@@ -190,11 +279,20 @@ def next_key() -> str:
             return ""
         if len(keys) == 1:
             # 1 ключ: курсор НЕ трогаем (ротация без изменений), idx=0.
+            # Даже если он выбит — отдаём (graceful: лучше дёрнуть, чем "").
             key, idx = keys[0], 0
         else:
+            # 2026-06-09 (задача Б): отсев выведенных из ротации ключей.
+            # Если выбиты ВСЕ — фолбэк на полный список (пробуем всё равно,
+            # не возвращаем пустоту). Курсор крутится по живому подмножеству.
+            disabled = _read_disabled()
+            live = [i for i in range(len(keys)) if i not in disabled]
+            if not live:
+                live = list(range(len(keys)))
             with _lock:
-                idx = _advance_cursor(len(keys))
-            key = keys[idx % len(keys)]
+                pos = _advance_cursor(len(live))
+            idx = live[pos % len(live)]
+            key = keys[idx]
         # Мост лампочки — ПОСЛЕ выбора ключа. _write_active имеет
         # СОБСТВЕННЫЙ try/except → его ошибка не доходит сюда, `return
         # key` ниже выполнится в любом случае. Ветка 0/fallback сюда не идёт.
@@ -226,6 +324,13 @@ def save_keys(keys) -> None:
             if len(cleaned) >= MAX_KEYS:
                 break
         with _lock:
+            # 2026-06-09 (задача Б): ручное обновление ключей снимает ВСЕ
+            # выбивания (в т.ч. perm/license) — новый набор пробуется с нуля.
+            try:
+                if DISABLED_FILE.exists():
+                    DISABLED_FILE.unlink()
+            except Exception:
+                pass
             if not cleaned:
                 try:
                     if KEYS_FILE.exists():

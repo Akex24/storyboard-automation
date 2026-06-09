@@ -135,6 +135,25 @@ def _http_error_detail(exc):
         return ''
 
 
+def _classify_key_error(exc):
+    """Классификатор ошибки ключа для failover (задача Б, Этап 1).
+
+    Возвращает: 'temp' (429/лимит → вернуть в ротацию по TTL), 'perm'
+    (401/403 — отказ доступа/license_expired → до ручного обновления ключей)
+    или None (5xx/таймаут/сеть/без response — это СЕРВЕР, ключ не виноват,
+    не выбивать). Тело на license_expired не парсим: по политике любой 403 =
+    perm. Полностью изолировано, не кидает."""
+    try:
+        code = getattr(getattr(exc, 'response', None), 'status_code', None)
+        if code == 429:
+            return 'temp'
+        if code in (401, 403):
+            return 'perm'
+    except Exception:
+        pass
+    return None
+
+
 # ─── Поток генерации шота ────────────────────────────────────────
 
 class GenerateThread(QThread):
@@ -935,6 +954,17 @@ class GenerateThread(QThread):
             if _detail:
                 _msg = f"{_msg} | server: {_detail}"
             self.error.emit(_msg)
+            # 2026-06-09 (задача Б): виновный ключ 429/401/403 — вывести из
+            # ротации. 5xx/таймаут/сеть → None, ключ не трогаем. Изолировано.
+            try:
+                _kind = _classify_key_error(e)
+                if _kind:
+                    import key_pool as _kp
+                    _bad = getattr(self, '_used_key_idx', None)
+                    if _bad is not None:
+                        _kp.disable_key(_bad, _kind)
+            except Exception:
+                pass
 
 
 # ─── Поток регенерации/редактирования рефа ───────────────────────
@@ -1163,6 +1193,17 @@ class RefGenerateThread(QThread):
             if _detail:
                 _msg = f"{_msg} | server: {_detail}"
             self.error.emit(_msg)
+            # 2026-06-09 (задача Б): виновный ключ 429/401/403 — вывести из
+            # ротации. 5xx/таймаут/сеть → None, ключ не трогаем. Изолировано.
+            try:
+                _kind = _classify_key_error(e)
+                if _kind:
+                    import key_pool as _kp
+                    _bad = getattr(self, '_used_key_idx', None)
+                    if _bad is not None:
+                        _kp.disable_key(_bad, _kind)
+            except Exception:
+                pass
 
 
 # ─── Поток обновления geometry через Claude CLI ──────────────────
@@ -1775,6 +1816,17 @@ class GenerateActorRefThread(QThread):
             if _detail:
                 _error_msg = f"{_error_msg} | server: {_detail}"
             self.error.emit(_error_msg)
+            # 2026-06-09 (задача Б): виновный ключ 429/401/403 — вывести из
+            # ротации. 5xx/таймаут/сеть → None, ключ не трогаем. Изолировано.
+            try:
+                _kind = _classify_key_error(e)
+                if _kind:
+                    import key_pool as _kp
+                    _bad = getattr(self, '_used_key_idx', None)
+                    if _bad is not None:
+                        _kp.disable_key(_bad, _kind)
+            except Exception:
+                pass
         finally:
             # 2026-05-22 (v1.0.78): финальный лог end — закрывает сессию.
             # last_stage показывает на какой стадии завершилось (полезно
@@ -2014,6 +2066,17 @@ class EditActorRefThread(QThread):
             if _detail:
                 _msg = f"{_msg} | server: {_detail}"
             self.error.emit(_msg)
+            # 2026-06-09 (задача Б): виновный ключ 429/401/403 — вывести из
+            # ротации. 5xx/таймаут/сеть → None, ключ не трогаем. Изолировано.
+            try:
+                _kind = _classify_key_error(e)
+                if _kind:
+                    import key_pool as _kp
+                    _bad = getattr(self, '_used_key_idx', None)
+                    if _bad is not None:
+                        _kp.disable_key(_bad, _kind)
+            except Exception:
+                pass
 
 
 class ApplyTextureThread(QThread):

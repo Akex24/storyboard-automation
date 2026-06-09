@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-09 (keep-alive потоков `_threads_pending_delete` + reaper — фикс краша lifecycle под Mode C)
+**Последнее обновление:** 2026-06-09 (failover ключей Этап 1 — disable-файл + `next_key` фильтр + `_classify_key_error`)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -646,6 +646,57 @@ handoff):** кастомный `finished` **затеняет** встроенн�
 (`_on_ref_done`/`_on_ref_error` без `.pop`) → преждевременного GC и краша он не
 даёт (лёгкая утечка списка, не lifecycle-баг; при желании чистить тем же reaper'ом
 отдельной правкой).
+
+## Failover пула ключей FastGen — Этап 1, ядро (2026-06-09)
+
+Round-robin пул (`key_pool.py`, задача А) до v2026-06-09 крутил ВСЕ ключи без
+фильтра — битый/лимитный ключ оставался в ротации, следующий запрос мог снова
+его взять. Этап 1 задачи Б добавляет **вывод виновного ключа из ротации**.
+
+**Disable-файл `.fastgen_keys_disabled`** (рядом с `.fastgen_keys_cursor` в
+writable project_root; путь в `set_root`). Cross-process: пишет GUI, читают и
+GUI, и CLI (`pipeline.py`/`generate_storyboards.py`) синхронно в `next_key()` —
+**без watcher** (FSEvents на внешнем томе ненадёжен). Строка на выбитый ключ:
+```
+<idx> <reason> <until_epoch>
+```
+- `reason ∈ temp|perm`. **`temp`** (429/лимит): `until_epoch` = АБСОЛЮТНЫЙ
+  timestamp возврата (`now + DISABLE_TEMP_TTL`, дефолт 900с=15мин) — несёт точное
+  время авто-возврата (и для countdown в UI Этапа 2). **`perm`** (401/403/
+  license_expired): `until=0`, возврата нет — до ручного `save_keys`.
+- Идентификация ключа по **`idx`** (как лампочка/`last_index`). Безопасно: единств.
+  мутатор `fastgen_keys.txt` — `save_keys`, и он чистит disabled-файл → idx
+  стабилен между сохранениями.
+
+**Функции `key_pool.py`:**
+- `disable_key(idx, reason, ttl_seconds=900)` — merge в файл под `_lock`; perm
+  перекрывает temp, повторный temp продлевает `until`; `idx=None`/неверный
+  reason → no-op; не кидает (kill-switch — failover НЕ роняет генерацию).
+- `_read_disabled() -> {idx:(reason,until)}` — парс + **ленивый TTL-prune**:
+  temp с `until<=now` отбрасываются И файл переписывается без них (так ключ
+  возвращается в ротацию **без таймер-треда**, cross-process). Малформ-строки
+  пропускаются, на ошибке → `{}`.
+- `next_key()` фильтр (только ветка >1 ключа): `live = idx не в disabled`; если
+  выбиты ВСЕ → `live = все` (graceful fallback, не пустота); курсор крутится по
+  `live`. Ветки **0 и 1 ключа — без изменений** (1 ключ отдаётся даже выбитым).
+- `save_keys()` — удаляет disabled-файл (ручное обновление ключей снимает ВСЕ
+  выбивания, в т.ч. perm).
+
+**Детект на стороне потоков** (`threads/generate.py`): `_classify_key_error(exc)`
+рядом с `_http_error_detail` — `429→'temp'`, `401/403→'perm'`, иначе (5xx/таймаут/
+сеть/без response) `None` (это сервер, ключ не виноват). Тело на `license_expired`
+НЕ парсится — по политике любой 403 = perm. Вызов `disable_key(self._used_key_idx,
+kind)` дописан **ПОСЛЕ** существующего `self.error.emit(...)` в 4 потоках
+(GenerateThread, RefGenerateThread, GenerateActorRefThread, EditActorRefThread),
+каждый под своим `try/except`. `emit`-логика и `_http_error_detail` НЕ изменены.
+`self._used_key_idx` уже сохранялся на старте (round-robin лампочка) — переиспользован.
+
+**Границы Этапа 1 (осознанно отложено):**
+- **CLI write-side** — `pipeline.py`/`generate_storyboards.py` пока только ЧИТАЮТ
+  выбивания (фильтр в `next_key` общий), но сами disable НЕ пишут → **Этап 1b**.
+- **Визуал** — цвет индикатора ключа, крестик «недоступен» в Settings, countdown
+  «вернётся через ~N мин», i18n → **Этап 2**. Данные (`until`/`reason`) уже есть.
+- **Публичный `disabled_status()`** (read-only, без prune для UI-поллинга) → Этап 2.
 
 ## Slug collision handling (refs)
 
