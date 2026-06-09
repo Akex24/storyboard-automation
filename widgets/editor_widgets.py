@@ -695,15 +695,13 @@ class ShotCard(QFrame):
             pass
 
     def set_progress(self, label: str, pct: int):
-        # Если активен новый busy-overlay (одиночная генерация) — старый тонкий
-        # бар НЕ показываем (нет двойного индикатора). Mode C (overlay не
-        # активен) — работает по-старому.
-        if self.gen_overlay.isVisible():
-            return
-        self.progress_bar.setValue(pct)
-        self.step_label.setText(label)
-        self.progress_bar.show()
-        self.step_label.show()
+        # 2026-06-09: нижний индикатор («Генерирую… (Nс)» + тонкий бар ПОД
+        # превью шота) убран совсем — остаётся только центральный gen_overlay.
+        # Метод оставлен как no-op (его всё ещё зовёт _on_regen_step), чтобы
+        # ничего не показывать и не падать. progress_bar/step_label
+        # по-прежнему создаются и в layout, но .show() их больше НИКТО не
+        # зовёт → остаются скрытыми навсегда (нулевая высота).
+        return
 
     def set_loading(self, loading: bool):
         self._is_loading = loading
