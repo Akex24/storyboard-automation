@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-09 (failover ключей Этап 1 — disable-файл + `next_key` фильтр + `_classify_key_error`)
+**Последнее обновление:** 2026-06-09 (фикс racy-idx — `next_key_with_idx() -> (key, idx)` в одни руки)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -697,6 +697,25 @@ kind)` дописан **ПОСЛЕ** существующего `self.error.emit
 - **Визуал** — цвет индикатора ключа, крестик «недоступен» в Settings, countdown
   «вернётся через ~N мин», i18n → **Этап 2**. Данные (`until`/`reason`) уже есть.
 - **Публичный `disabled_status()`** (read-only, без prune для UI-поллинга) → Этап 2.
+
+**Корректная атрибуция idx — `next_key_with_idx()` (2026-06-09, фикс racy-idx):**
+До фикса поток узнавал idx своего ключа из ГЛОБАЛЬНОГО `key_pool._last_index` —
+`next_key()` писал туда idx, поток сразу читал через `last_index()`
+(`self._used_key_idx = _kp.last_index()`). Под Mode C (~30 потоков) глобал
+перезаписывался параллельными потоками **между** выдачей ключа и чтением idx →
+поток ловил ЧУЖОЙ idx. Это било и по лампочке (мигала не на тот ключ / не мигала:
+idx4 отработал 12×, но `.fastgen_keys_active=4` при cursor=60 — лампа молчала), и —
+важнее — по **failover**: `disable_key(self._used_key_idx)` мог выбить ЗДОРОВЫЙ
+ключ из-за чужой 403. **Фикс (Вариант B):** новая `next_key_with_idx() -> (key, idx)`
+отдаёт idx НАПРЯМУЮ — каждый поток получает свой idx в одни руки, без глобала.
+`next_key() -> str` стал тонкой обёрткой `next_key_with_idx()[0]` (CLI-контракт
+`pipeline.py`/`generate_storyboards.py` цел). GUI-обёртка `next_api_key()`
+([storyboard_app.py](storyboard_app.py)) тоже отдаёт `(key, idx)`; 4 потока в
+`generate.py` делают `key, self._used_key_idx = _sa.next_api_key()`. Фолбэк
+(пустой пул / ошибка диспетчера) → `idx=None`: лампочка молчит (guard),
+`disable_key(None)`=no-op (фолбэк-ключ вне idx-пространства пула — выбивать нечего).
+`_last_index`/`last_index()` оставлены LEGACY для CLI-лампочки-watcher
+(`.fastgen_keys_active` мост), GUI оттуда idx больше не читает.
 
 ## Slug collision handling (refs)
 

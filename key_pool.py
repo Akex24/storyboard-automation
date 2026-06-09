@@ -178,7 +178,11 @@ def _set_last_index(idx):
 
 
 def last_index():
-    """idx ключа, выданного последним next_key(); None если ещё не выдавался."""
+    """LEGACY (2026-06-09): idx ключа, выданного последним next_key(), через
+    ГЛОБАЛ `_last_index`. Оставлено для CLI-лампочки-watcher (`.fastgen_keys_active`
+    мост). GUI/потоки idx больше отсюда НЕ читают — он racy под Mode C (глобал
+    перезаписывается параллельными потоками между выдачей и чтением); вместо
+    этого берут idx напрямую из `next_key_with_idx()`. Не удалять."""
     return _last_index
 
 
@@ -264,19 +268,26 @@ def disable_key(idx, reason, ttl_seconds=DISABLE_TEMP_TTL) -> None:
         pass
 
 
-def next_key() -> str:
-    """Следующий ключ по кругу (round-robin).
+def next_key_with_idx() -> tuple:
+    """Следующий ключ по кругу (round-robin) ВМЕСТЕ с его idx → (key, idx).
 
-    • 0 ключей → "" (не хуже текущего поведения при пустом ключе).
-    • 1 ключ  → вернуть его, КУРСОР НЕ ТРОГАТЬ (1-в-1 с текущим кодом).
-    • >1      → атомарно крутануть курсор и вернуть следующий.
+    2026-06-09 (фикс racy-idx): idx возвращается НАПРЯМУЮ вызывающему — каждый
+    поток получает СВОЙ idx в одни руки, без чтения общего `_last_index`
+    (который перезаписывался параллельными Mode C-потоками → чужой idx в
+    лампочке И в failover-выбивании). `next_key()` ниже — тонкая обёртка.
 
-    ЛЮБОЕ исключение → fallback на одиночный ключ (kill-switch): генерация
-    НИКОГДА не падает из-за диспетчера."""
+    • 0 ключей → ("", None).
+    • 1 ключ  → (key, 0), КУРСОР НЕ ТРОГАТЬ (1-в-1 с прежним кодом).
+    • >1      → атомарно крутануть курсор, (key, real_idx).
+
+    ЛЮБОЕ исключение → fallback (kill-switch): (key, None) — idx не
+    атрибутируем (фолбэк-ключ вне idx-пространства пула). None у downstream:
+    лампочка не мигает (guard), disable_key(None)=no-op (НЕ выбьет чужой ключ).
+    Генерация НИКОГДА не падает из-за диспетчера."""
     try:
         keys = get_keys()
         if not keys:
-            return ""
+            return "", None
         if len(keys) == 1:
             # 1 ключ: курсор НЕ трогаем (ротация без изменений), idx=0.
             # Даже если он выбит — отдаём (graceful: лучше дёрнуть, чем "").
@@ -294,19 +305,28 @@ def next_key() -> str:
             idx = live[pos % len(live)]
             key = keys[idx]
         # Мост лампочки — ПОСЛЕ выбора ключа. _write_active имеет
-        # СОБСТВЕННЫЙ try/except → его ошибка не доходит сюда, `return
-        # key` ниже выполнится в любом случае. Ветка 0/fallback сюда не идёт.
+        # СОБСТВЕННЫЙ try/except → его ошибка не доходит сюда, return
+        # ниже выполнится в любом случае. Ветка 0/fallback сюда не идёт.
+        # _set_last_index — LEGACY для CLI-watcher (GUI берёт idx из return).
         _set_last_index(idx)
         _write_active(idx)
-        return key
+        return key, idx
     except Exception:
         try:
             ks = get_keys()
             if ks:
-                return ks[0]
+                return ks[0], None
         except Exception:
             pass
-        return _read_env_first_line()
+        return _read_env_first_line(), None
+
+
+def next_key() -> str:
+    """Тонкая обёртка над next_key_with_idx() — возвращает ТОЛЬКО ключ (строку).
+
+    Контракт сохранён для CLI (`pipeline.py`/`generate_storyboards.py`:
+    `key = next_key() or load_key()`), которому idx не нужен."""
+    return next_key_with_idx()[0]
 
 
 def save_keys(keys) -> None:

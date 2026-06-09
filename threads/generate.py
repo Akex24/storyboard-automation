@@ -635,15 +635,10 @@ class GenerateThread(QThread):
     def run(self):
         start_time = time.time()
         try:
-            key     = _sa.next_api_key()
-            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
-            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
-            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
-            try:
-                import key_pool as _kp
-                self._used_key_idx = _kp.last_index()
-            except Exception:
-                self._used_key_idx = None
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
+            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
+            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
+            key, self._used_key_idx = _sa.next_api_key()
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -1028,15 +1023,10 @@ class RefGenerateThread(QThread):
     def run(self):
         start_time = time.time()
         try:
-            key     = _sa.next_api_key()
-            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
-            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
-            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
-            try:
-                import key_pool as _kp
-                self._used_key_idx = _kp.last_index()
-            except Exception:
-                self._used_key_idx = None
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
+            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
+            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
+            key, self._used_key_idx = _sa.next_api_key()
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -1573,15 +1563,10 @@ class GenerateActorRefThread(QThread):
         except Exception:
             pass
         try:
-            key = _sa.next_api_key()
-            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
-            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
-            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
-            try:
-                import key_pool as _kp
-                self._used_key_idx = _kp.last_index()
-            except Exception:
-                self._used_key_idx = None
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
+            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
+            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
+            key, self._used_key_idx = _sa.next_api_key()
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
@@ -1918,15 +1903,10 @@ class EditActorRefThread(QThread):
                 self.error.emit(
                     f"Нет исходного рефа: {self.source_image_path.name}")
                 return
-            key = _sa.next_api_key()
-            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
-            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
-            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
-            try:
-                import key_pool as _kp
-                self._used_key_idx = _kp.last_index()
-            except Exception:
-                self._used_key_idx = None
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
+            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
+            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
+            key, self._used_key_idx = _sa.next_api_key()
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return

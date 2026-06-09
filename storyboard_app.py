@@ -3481,23 +3481,26 @@ def load_api_key() -> str:
         return ""
 
 
-def next_api_key() -> str:
-    """Round-robin обёртка над пулом ключей (key_pool).
+def next_api_key():
+    """Round-robin обёртка над пулом ключей (key_pool) → (key, idx).
 
-    Возвращает следующий ключ из пула Fast Gen. При 1 настроенном ключе ведёт
-    себя 1-в-1 с load_api_key() (тот же ключ, без ротации). При ЛЮБОЙ ошибке
-    диспетчера — fallback на load_api_key() (kill-switch: генерация не падает).
+    2026-06-09 (фикс racy-idx): возвращает КОРТЕЖ (key, idx) — поток получает
+    свой idx в одни руки (для лампочки + корректного failover-выбивания), не
+    читая racy-глобал `last_index()`. При 1 настроенном ключе ведёт себя 1-в-1
+    с load_api_key() (idx=0). При ЛЮБОЙ ошибке диспетчера — fallback на
+    load_api_key() с idx=None (kill-switch: генерация не падает; None →
+    лампочка молчит, disable_key(None)=no-op, чужой ключ не выбьется).
 
     Ленивый import key_pool — чтобы не тянуть модуль на уровне импорта
     storyboard_app и не плодить зависимостей при старте."""
     try:
         import key_pool
-        k = key_pool.next_key()
+        k, idx = key_pool.next_key_with_idx()
         if k:
-            return k
+            return k, idx
     except Exception:
         traceback.print_exc()
-    return load_api_key()
+    return load_api_key(), None
 
 
 def save_api_key(key: str) -> None:
