@@ -109,6 +109,32 @@ class _AppProxy:
 _sa = _AppProxy()
 
 
+def _http_error_detail(exc):
+    """Причина от сервера для HTTPError; '' если недоступна. Полностью изолировано."""
+    try:
+        resp = getattr(exc, 'response', None)
+        if resp is None:
+            return ''
+        detail = ''
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                err = data.get('error') or ''
+                code = data.get('code') or ''
+                if err or code:
+                    detail = f"{err} [{code}]".strip()
+        except Exception:
+            detail = ''
+        if not detail:
+            try:
+                detail = (resp.text or '')[:400]
+            except Exception:
+                detail = ''
+        return detail.strip()
+    except Exception:
+        return ''
+
+
 # ─── Поток генерации шота ────────────────────────────────────────
 
 class GenerateThread(QThread):
@@ -878,7 +904,11 @@ class GenerateThread(QThread):
             self.finished.emit(elapsed)
 
         except Exception as e:
-            self.error.emit(str(e))
+            _detail = _http_error_detail(e)
+            _msg = str(e)
+            if _detail:
+                _msg = f"{_msg} | server: {_detail}"
+            self.error.emit(_msg)
 
 
 # ─── Поток регенерации/редактирования рефа ───────────────────────
@@ -1076,7 +1106,11 @@ class RefGenerateThread(QThread):
             self.finished.emit(elapsed)
 
         except Exception as e:
-            self.error.emit(str(e))
+            _detail = _http_error_detail(e)
+            _msg = str(e)
+            if _detail:
+                _msg = f"{_msg} | server: {_detail}"
+            self.error.emit(_msg)
 
 
 # ─── Поток обновления geometry через Claude CLI ──────────────────
@@ -1669,6 +1703,9 @@ class GenerateActorRefThread(QThread):
 
         except Exception as e:
             _error_msg = str(e)
+            _detail = _http_error_detail(e)
+            if _detail:
+                _error_msg = f"{_error_msg} | server: {_detail}"
             self.error.emit(_error_msg)
         finally:
             # 2026-05-22 (v1.0.78): финальный лог end — закрывает сессию.
@@ -1888,7 +1925,11 @@ class EditActorRefThread(QThread):
                        status=status or 'pending', sec=elapsed))
 
         except Exception as e:
-            self.error.emit(str(e))
+            _detail = _http_error_detail(e)
+            _msg = str(e)
+            if _detail:
+                _msg = f"{_msg} | server: {_detail}"
+            self.error.emit(_msg)
 
 
 class ApplyTextureThread(QThread):
