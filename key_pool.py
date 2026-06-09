@@ -39,6 +39,10 @@ MAX_KEYS = 5
 # плану: худший случай — два запроса возьмут один ключ, лёгкий перекос, не краш).
 _lock = threading.Lock()
 
+# idx ключа, выданного последним next_key() — для прямого UI-сигнала лампочки
+# (GUI-поток читает через last_index() и эмитит сигнал). Обновляется в next_key.
+_last_index = None
+
 ROOT: Path = Path(__file__).resolve().parent
 KEYS_FILE: Path = ROOT / "fastgen_keys.txt"
 CURSOR_FILE: Path = ROOT / ".fastgen_keys_cursor"
@@ -156,6 +160,21 @@ def _write_active(idx: int) -> None:
         pass
 
 
+def _set_last_index(idx):
+    """Запомнить idx последней выдачи ключа (для прямого UI-сигнала лампочки).
+    СОБСТВЕННЫЙ try/except — поломка НЕ влияет на выдачу ключа."""
+    global _last_index
+    try:
+        _last_index = idx
+    except Exception:
+        pass
+
+
+def last_index():
+    """idx ключа, выданного последним next_key(); None если ещё не выдавался."""
+    return _last_index
+
+
 def next_key() -> str:
     """Следующий ключ по кругу (round-robin).
 
@@ -179,6 +198,7 @@ def next_key() -> str:
         # Мост лампочки — ПОСЛЕ выбора ключа. _write_active имеет
         # СОБСТВЕННЫЙ try/except → его ошибка не доходит сюда, `return
         # key` ниже выполнится в любом случае. Ветка 0/fallback сюда не идёт.
+        _set_last_index(idx)
         _write_active(idx)
         return key
     except Exception:

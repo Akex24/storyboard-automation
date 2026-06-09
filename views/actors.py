@@ -1105,6 +1105,7 @@ class ActorsView(QWidget):
             thread.progress.connect(_on_progress)
             thread.finished.connect(_on_finished)
             thread.error.connect(_on_error)
+            thread.key_used.connect(lambda idx: getattr(self.window(), '_blink_key_indicator', lambda *a: None)(idx))  # лампочка round-robin
             thread.start()
             # Сразу даём фидбек что генерация пошла
             try:
@@ -1675,6 +1676,7 @@ class ActorsView(QWidget):
         thread.progress.connect(_on_progress)
         thread.finished.connect(_on_finished)
         thread.error.connect(_on_error)
+        thread.key_used.connect(lambda idx: getattr(self.window(), '_blink_key_indicator', lambda *a: None)(idx))  # лампочка round-robin
         # Старт — тоже persistent (висит до первого progress-сообщения)
         self._show_status_persistent(
             tr('create_ref_started', actor=display_name))

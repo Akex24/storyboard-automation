@@ -11539,6 +11539,7 @@ class MainWindow(QMainWindow):
                                      base_image_override=marked)
             self._active_regens[key] = thread
             thread.progress.connect(self.status_bar.showMessage)
+            thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
             thread.step.connect(
                 lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
             thread.finished.connect(
@@ -11593,6 +11594,7 @@ class MainWindow(QMainWindow):
         thread = GenerateThread(target_block, panel_idx)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
+        thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
         thread.step.connect(
             lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
         thread.finished.connect(
@@ -11975,6 +11977,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(tr('ref_status_edit', name=ref_name))
 
         thread.progress.connect(self.status_bar.showMessage)
+        thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
 
         def _on_step(lbl: str, pct: int):
             try:
@@ -12544,6 +12547,7 @@ class MainWindow(QMainWindow):
         thread = GenerateThread(target_block, panel_idx)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
+        thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
         thread.step.connect(
             lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
         thread.finished.connect(
@@ -12583,6 +12587,7 @@ class MainWindow(QMainWindow):
         thread = GenerateThread(target_block, panel_idx, realistic=True)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
+        thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
         thread.step.connect(
             lambda lbl, pct: self._on_regen_step(lbl, pct, target_block, panel_idx))
         thread.finished.connect(
@@ -12785,6 +12790,7 @@ class MainWindow(QMainWindow):
             thread = GenerateThread(block_basename, panel_idx)
             self._active_regens[key] = thread
             thread.progress.connect(self.status_bar.showMessage)
+            thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
             thread.step.connect(
                 lambda lbl, pct, bn=block_basename, pi=panel_idx:
                     self._on_regen_step(lbl, pct, bn, pi))
@@ -12948,6 +12954,7 @@ class MainWindow(QMainWindow):
                     camera_override=cams.get((panel_idx, v)))
                 self._active_mode_c_version_threads[key] = thread
                 thread.progress.connect(self.status_bar.showMessage)
+                thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
                 thread.step.connect(
                     lambda lbl, pct, bn=block_basename, pi=panel_idx:
                         self._on_regen_step(lbl, pct, bn, pi))

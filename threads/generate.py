@@ -142,6 +142,7 @@ class GenerateThread(QThread):
     step     = pyqtSignal(str, int)   # (label, percent)
     finished = pyqtSignal(int)        # elapsed seconds
     error    = pyqtSignal(str)
+    key_used = pyqtSignal(int)        # idx выданного ключа (лампочка round-robin)
 
     def __init__(self, block_name: str, panel_idx: int,
                  edit_instruction: Optional[str] = None,
@@ -616,6 +617,16 @@ class GenerateThread(QThread):
         start_time = time.time()
         try:
             key     = _sa.next_api_key()
+            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
+            # который не доставляет события на внешнем томе). idx — из key_pool.
+            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            try:
+                import key_pool as _kp
+                _ki = _kp.last_index()
+                if _ki is not None:
+                    self.key_used.emit(_ki)
+            except Exception:
+                pass
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -928,6 +939,7 @@ class RefGenerateThread(QThread):
     step     = pyqtSignal(str, int)   # (label, percent)
     finished = pyqtSignal(int)        # elapsed seconds
     error    = pyqtSignal(str)
+    key_used = pyqtSignal(int)        # idx выданного ключа (лампочка round-robin)
 
     def __init__(self, image_path: Path, mode: str,
                  instruction: Optional[str] = None):
@@ -972,6 +984,16 @@ class RefGenerateThread(QThread):
         start_time = time.time()
         try:
             key     = _sa.next_api_key()
+            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
+            # который не доставляет события на внешнем томе). idx — из key_pool.
+            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            try:
+                import key_pool as _kp
+                _ki = _kp.last_index()
+                if _ki is not None:
+                    self.key_used.emit(_ki)
+            except Exception:
+                pass
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -1416,6 +1438,7 @@ class GenerateActorRefThread(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(str)        # путь к сохранённому файлу
     error = pyqtSignal(str)
+    key_used = pyqtSignal(int)        # idx выданного ключа (лампочка round-robin)
 
     def __init__(self, actor_slug: str, target_dir: Path,
                  photo_paths: List[Path],
@@ -1480,6 +1503,16 @@ class GenerateActorRefThread(QThread):
             pass
         try:
             key = _sa.next_api_key()
+            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
+            # который не доставляет события на внешнем томе). idx — из key_pool.
+            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            try:
+                import key_pool as _kp
+                _ki = _kp.last_index()
+                if _ki is not None:
+                    self.key_used.emit(_ki)
+            except Exception:
+                pass
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
@@ -1742,6 +1775,7 @@ class EditActorRefThread(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(str)        # путь к сохранённому файлу
     error = pyqtSignal(str)
+    key_used = pyqtSignal(int)        # idx выданного ключа (лампочка round-robin)
 
     # Шаблон промпта — identity-якорь + точечная правка. Зеркалит логику
     # _build_edit_prompt из GenerateThread и edit-промпт RefGenerateThread,
@@ -1798,6 +1832,16 @@ class EditActorRefThread(QThread):
                     f"Нет исходного рефа: {self.source_image_path.name}")
                 return
             key = _sa.next_api_key()
+            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
+            # который не доставляет события на внешнем томе). idx — из key_pool.
+            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            try:
+                import key_pool as _kp
+                _ki = _kp.last_index()
+                if _ki is not None:
+                    self.key_used.emit(_ki)
+            except Exception:
+                pass
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
