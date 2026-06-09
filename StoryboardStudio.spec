@@ -21,6 +21,12 @@ a = Analysis(
         # На Mac разместится в Contents/Resources/, на Win onedir — в
         # _internal/. sys._MEIPASS указывает на корень в обоих случаях.
         ('pipeline.py', '.'),
+        # 2026-06-09: key_pool.py — диспетчер пула ключей (round-robin).
+        # Синкается в project_root рядом с pipeline.py через
+        # sync_pipeline_py_to_project, чтобы CLI (pipeline.py) мог
+        # `from key_pool import next_key`. Без бандла CLI упал бы на
+        # fallback (одиночный .env-ключ) — не критично, но без ротации.
+        ('key_pool.py', '.'),
         # 2026-05-13 (v1.0.66): ГЛАВНАЯ_ИНСТРУКЦИЯ.md — источник правды
         # для Scriptwriter/Validator/Editor/ContextReviewer. Загружается
         # в runtime через agents/instruction_loader.py с селективным

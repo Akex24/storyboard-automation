@@ -1701,18 +1701,23 @@ def sync_pipeline_py_to_project(project_root: Path) -> None:
         else:
             # Dev-режим: pipeline.py рядом с storyboard_app.py.
             bundle_root = Path(__file__).resolve().parent
-        src = bundle_root / "pipeline.py"
-        if not src.exists() or not src.is_file():
-            return  # bundle не содержит — нечего синкать
-        dst = project_root / "pipeline.py"
-        try:
-            # Если target существует и идентичен — не трогаем mtime.
-            if dst.exists() and dst.stat().st_size == src.stat().st_size:
-                if src.read_bytes() == dst.read_bytes():
-                    return
-            shutil.copy2(str(src), str(dst))
-        except Exception:
-            traceback.print_exc()
+        # 2026-06-09: синкаем pipeline.py И key_pool.py (диспетчер пула ключей) —
+        # оба нужны CLI: pipeline.py делает `from key_pool import next_key`.
+        # Цикл с `continue` (а не `return`), чтобы skip-identical одного файла
+        # НЕ пропускал копирование второго. Механизм копирования прежний.
+        for _name in ("pipeline.py", "key_pool.py"):
+            src = bundle_root / _name
+            if not src.exists() or not src.is_file():
+                continue  # bundle не содержит этот файл — пропускаем
+            dst = project_root / _name
+            try:
+                # Если target существует и идентичен — не трогаем mtime.
+                if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                    if src.read_bytes() == dst.read_bytes():
+                        continue
+                shutil.copy2(str(src), str(dst))
+            except Exception:
+                traceback.print_exc()
     except Exception:
         traceback.print_exc()
 
