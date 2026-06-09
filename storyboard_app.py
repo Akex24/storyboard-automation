@@ -5822,6 +5822,24 @@ class MainWindow(QMainWindow):
             lambda _p: QTimer.singleShot(800, self._refresh_after_external_change))
         self._wire_refs_watcher()
 
+        # 2026-06-09: watcher файла-моста пула ключей (.fastgen_keys_active)
+        # для лампочки round-robin в Настройках (КОСМЕТИКА). Путь = project_root
+        # (тот же, что отдан в key_pool.set_root). Слушаем и файл, и каталог
+        # (файл может ещё не существовать; Qt теряет путь при os.replace →
+        # переподписка в слоте). Любая ошибка — молча, генерация не трогается.
+        self._keypool_last_nonce = None
+        try:
+            self._keypool_active_path = str(self._project_root / ".fastgen_keys_active")
+            self._keypool_watcher = QFileSystemWatcher()
+            if os.path.exists(self._keypool_active_path):
+                self._keypool_watcher.addPath(self._keypool_active_path)
+            if self._project_root and os.path.isdir(str(self._project_root)):
+                self._keypool_watcher.addPath(str(self._project_root))
+            self._keypool_watcher.fileChanged.connect(self._on_keypool_active_changed)
+            self._keypool_watcher.directoryChanged.connect(self._on_keypool_active_changed)
+        except Exception:
+            traceback.print_exc()
+
         # Авто-проверка обновлений через 2 секунды после запуска
         if github_configured():
             QTimer.singleShot(2000, self._check_updates)
@@ -7925,9 +7943,21 @@ class MainWindow(QMainWindow):
             "color:#aaa; font-size:12px; padding-bottom:10px;")
         akf.addWidget(self.apikey_hint_lbl)
 
-        # Строка: input + кнопки
+        # Строка: input + кнопки. 2026-06-09: + лампочка-индикатор round-robin
+        # (косметика — мигает когда этот ключ отдал генерацию). Список
+        # self._apikey_indicators индексно совпадает с self._apikey_fields.
+        self._apikey_indicators = []
+        def _mk_key_indicator():
+            _d = QLabel()
+            _d.setFixedSize(12, 12)
+            _d.setStyleSheet(
+                "QLabel { background:#3a3a3a; border-radius:6px; }")  # тусклый = неактивен
+            return _d
         ak_row = QHBoxLayout()
         ak_row.setSpacing(8)
+        _ind0 = _mk_key_indicator()
+        ak_row.addWidget(_ind0)
+        self._apikey_indicators.append(_ind0)
         self.apikey_input = QLineEdit()
         self.apikey_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.apikey_input.setPlaceholderText(tr('apikey_placeholder'))
@@ -7977,8 +8007,14 @@ class MainWindow(QMainWindow):
                 " border-radius:6px; padding:8px 10px; color:#ddd;"
                 " font-size:13px; font-family: 'Menlo', monospace;"
                 " margin-top:6px; }")
-            akf.addWidget(_inp)
+            _row_i = QHBoxLayout()
+            _row_i.setSpacing(8)
+            _ind_i = _mk_key_indicator()
+            _row_i.addWidget(_ind_i)
+            _row_i.addWidget(_inp, stretch=1)
+            akf.addLayout(_row_i)
             self._apikey_fields.append(_inp)
+            self._apikey_indicators.append(_ind_i)
 
         # Статус «✓ Сохранено» появляется на 2 секунды после клика «Сохранить»
         self.apikey_status_lbl = QLabel("")
@@ -14977,6 +15013,53 @@ class MainWindow(QMainWindow):
                    wps=f"{wps:g}", ex=f"{example_sec:g}"))
         except Exception:
             traceback.print_exc()
+
+    def _on_keypool_active_changed(self, *args):
+        """Слот watcher'а файла-моста пула ключей. Читает .fastgen_keys_active,
+        парсит индекс и мигает соответствующей лампочкой. Чистая КОСМЕТИКА —
+        любая ошибка проглатывается, на генерацию/UI не влияет. Переподписывает
+        путь (Qt теряет его при os.replace)."""
+        try:
+            path = getattr(self, '_keypool_active_path', None)
+            if not path:
+                return
+            try:
+                w = self._keypool_watcher
+                if path not in w.files() and os.path.exists(path):
+                    w.addPath(path)
+            except Exception:
+                pass
+            if not os.path.exists(path):
+                return
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.read().strip()
+            if not raw:
+                return
+            parts = raw.split()
+            idx = int(parts[0])
+            nonce = parts[1] if len(parts) > 1 else raw
+            # Дедуп: мигаем только на новое значение (watcher шумит по каталогу).
+            if nonce == getattr(self, '_keypool_last_nonce', None):
+                return
+            self._keypool_last_nonce = nonce
+            self._blink_key_indicator(idx)
+        except Exception:
+            pass
+
+    def _blink_key_indicator(self, idx):
+        """Подсветить лампочку ключа idx (яркая), через ~400мс погасить.
+        Косметика — ошибки молча игнорятся."""
+        try:
+            inds = getattr(self, '_apikey_indicators', [])
+            if not (0 <= idx < len(inds)):
+                return
+            dot = inds[idx]
+            dot.setStyleSheet(
+                "QLabel { background:#46d160; border-radius:6px; }")
+            QTimer.singleShot(400, lambda d=dot: d.setStyleSheet(
+                "QLabel { background:#3a3a3a; border-radius:6px; }"))
+        except Exception:
+            pass
 
     def _on_apikey_save(self):
         """Сохраняет введённый API-ключ в QSettings и показывает «✓ Сохранено».
