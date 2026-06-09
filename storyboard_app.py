@@ -7951,6 +7951,30 @@ class MainWindow(QMainWindow):
         ak_row.addWidget(self.apikey_save_btn)
         akf.addLayout(ak_row)
 
+        # 2026-06-09: пул до 5 ключей (round-robin). Поле 1 = apikey_input выше
+        # (primary, идёт в .env строку 0). Поля 2..5 — дополнительные ключи пула,
+        # хранятся ТОЛЬКО в QSettings (fastgen_api_key_2..5) + сайдкаре
+        # fastgen_keys.txt; в .env НЕ пишутся (там со 2-й строки Anthropic-ключ
+        # и пр.). Единый список self._apikey_fields используют toggle видимости
+        # и _on_apikey_save.
+        self._apikey_fields = [self.apikey_input]
+        _qs_keys = QSettings(APP_ORG, APP_NAME)
+        for _i in range(2, 6):
+            _inp = QLineEdit()
+            _inp.setEchoMode(QLineEdit.EchoMode.Password)
+            _inp.setPlaceholderText(tr('apikey_placeholder'))
+            try:
+                _inp.setText(_qs_keys.value(f"fastgen_api_key_{_i}", "", type=str) or "")
+            except Exception:
+                pass
+            _inp.setStyleSheet(
+                "QLineEdit { background:#1a1424; border:1px solid #3a2c52;"
+                " border-radius:6px; padding:8px 10px; color:#ddd;"
+                " font-size:13px; font-family: 'Menlo', monospace;"
+                " margin-top:6px; }")
+            akf.addWidget(_inp)
+            self._apikey_fields.append(_inp)
+
         # Статус «✓ Сохранено» появляется на 2 секунды после клика «Сохранить»
         self.apikey_status_lbl = QLabel("")
         self.apikey_status_lbl.setStyleSheet(
@@ -14526,7 +14550,8 @@ class MainWindow(QMainWindow):
         try:
             mode = (QLineEdit.EchoMode.Normal if checked
                     else QLineEdit.EchoMode.Password)
-            self.apikey_input.setEchoMode(mode)
+            for _f in getattr(self, '_apikey_fields', [self.apikey_input]):
+                _f.setEchoMode(mode)
             self.apikey_show_btn.setText(
                 tr('apikey_hide') if checked else tr('apikey_show'))
         except Exception:
@@ -14953,13 +14978,31 @@ class MainWindow(QMainWindow):
         load_api_key() при следующем вызове вернёт уже новый ключ — без
         перезапуска приложения. Старый .env остаётся как fallback."""
         try:
-            key = self.apikey_input.text().strip()
-            if not key:
+            fields = getattr(self, '_apikey_fields', [self.apikey_input])
+            vals = [f.text().strip() for f in fields]   # по порядку, пустые допустимы
+            nonempty = [v for v in vals if v]
+            if not nonempty:
                 self.apikey_status_lbl.setText(tr('apikey_empty'))
                 self.apikey_status_lbl.setStyleSheet(
                     "color:#ff7a7a; font-size:12px; padding-top:8px;")
                 return
-            save_api_key(key)
+            # Доп. ключи 2..5 → только QSettings (в .env НЕ пишем: там Anthropic-ключ).
+            qs = QSettings(APP_ORG, APP_NAME)
+            for i in range(2, 6):
+                v = vals[i - 1] if (i - 1) < len(vals) else ""
+                qs.setValue(f"fastgen_api_key_{i}", v)
+            # Сайдкар round-robin: все НЕПУСТЫЕ по порядку (key_pool читает его).
+            try:
+                import key_pool
+                key_pool.save_keys(nonempty)
+            except Exception:
+                traceback.print_exc()
+            # Primary в QSettings(fastgen_api_key) + .env строка 0 — через
+            # существующий save_api_key (его логику НЕ меняем). primary = поле 1;
+            # если поле 1 пустое — берём первый непустой, чтобы legacy
+            # load_key()/load_api_key() не остались без ключа.
+            primary = vals[0] if vals else ""
+            save_api_key(primary or nonempty[0])
             self.apikey_status_lbl.setText(tr('apikey_saved'))
             self.apikey_status_lbl.setStyleSheet(
                 "color:#6db86d; font-size:12px; padding-top:8px;")
