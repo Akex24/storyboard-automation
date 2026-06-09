@@ -617,16 +617,14 @@ class GenerateThread(QThread):
         start_time = time.time()
         try:
             key     = _sa.next_api_key()
-            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
-            # который не доставляет события на внешнем томе). idx — из key_pool.
-            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
+            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
+            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
             try:
                 import key_pool as _kp
-                _ki = _kp.last_index()
-                if _ki is not None:
-                    self.key_used.emit(_ki)
+                self._used_key_idx = _kp.last_index()
             except Exception:
-                pass
+                self._used_key_idx = None
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -912,6 +910,13 @@ class GenerateThread(QThread):
 
             elapsed = max(0, int(time.time() - start_time))
             self.step.emit("Готово!", 100)
+            # Лампочка round-robin: мигаем ТОЛЬКО на успехе, сохранённым idx.
+            try:
+                _used = getattr(self, '_used_key_idx', None)
+                if _used is not None:
+                    self.key_used.emit(_used)
+            except Exception:
+                pass
             self.finished.emit(elapsed)
 
         except Exception as e:
@@ -984,16 +989,14 @@ class RefGenerateThread(QThread):
         start_time = time.time()
         try:
             key     = _sa.next_api_key()
-            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
-            # который не доставляет события на внешнем томе). idx — из key_pool.
-            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
+            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
+            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
             try:
                 import key_pool as _kp
-                _ki = _kp.last_index()
-                if _ki is not None:
-                    self.key_used.emit(_ki)
+                self._used_key_idx = _kp.last_index()
             except Exception:
-                pass
+                self._used_key_idx = None
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -1125,6 +1128,13 @@ class RefGenerateThread(QThread):
 
             elapsed = max(0, int(time.time() - start_time))
             self.step.emit("Готово!", 100)
+            # Лампочка round-robin: мигаем ТОЛЬКО на успехе, сохранённым idx.
+            try:
+                _used = getattr(self, '_used_key_idx', None)
+                if _used is not None:
+                    self.key_used.emit(_used)
+            except Exception:
+                pass
             self.finished.emit(elapsed)
 
         except Exception as e:
@@ -1503,16 +1513,14 @@ class GenerateActorRefThread(QThread):
             pass
         try:
             key = _sa.next_api_key()
-            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
-            # который не доставляет события на внешнем томе). idx — из key_pool.
-            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
+            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
+            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
             try:
                 import key_pool as _kp
-                _ki = _kp.last_index()
-                if _ki is not None:
-                    self.key_used.emit(_ki)
+                self._used_key_idx = _kp.last_index()
             except Exception:
-                pass
+                self._used_key_idx = None
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
@@ -1721,6 +1729,13 @@ class GenerateActorRefThread(QThread):
                         _last_stage = "result_saved"
                     except Exception:
                         pass
+                    # Лампочка round-robin: мигаем ТОЛЬКО на успехе, сохранённым idx.
+                    try:
+                        _used = getattr(self, '_used_key_idx', None)
+                        if _used is not None:
+                            self.key_used.emit(_used)
+                    except Exception:
+                        pass
                     self.finished.emit(str(target))
                     return
                 if status == "error":
@@ -1832,16 +1847,14 @@ class EditActorRefThread(QThread):
                     f"Нет исходного рефа: {self.source_image_path.name}")
                 return
             key = _sa.next_api_key()
-            # 2026-06-09: прямой UI-сигнал лампочки round-robin (минуя файл-watcher,
-            # который не доставляет события на внешнем томе). idx — из key_pool.
-            # Свой try/except: поломка НЕ влияет на выдачу ключа/генерацию.
+            # 2026-06-09: запоминаем idx выданного ключа для лампочки round-robin.
+            # Эмит key_used НЕ здесь, а на УСПЕХЕ (перед finished.emit) — чтобы
+            # мёртвый ключ (403/404/лимит) НЕ мигал. Сохранение idx изолировано.
             try:
                 import key_pool as _kp
-                _ki = _kp.last_index()
-                if _ki is not None:
-                    self.key_used.emit(_ki)
+                self._used_key_idx = _kp.last_index()
             except Exception:
-                pass
+                self._used_key_idx = None
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
@@ -1959,6 +1972,13 @@ class EditActorRefThread(QThread):
                         r2.raise_for_status()
                         image_bytes = r2.content
                     target.write_bytes(image_bytes)
+                    # Лампочка round-robin: мигаем ТОЛЬКО на успехе, сохранённым idx.
+                    try:
+                        _used = getattr(self, '_used_key_idx', None)
+                        if _used is not None:
+                            self.key_used.emit(_used)
+                    except Exception:
+                        pass
                     self.finished.emit(str(target))
                     return
                 if status == "error":
