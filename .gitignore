@@ -48,3 +48,10 @@ _archive/
 # попадать на GitHub репо проекта.
 .claude/
 _session_log.md
+_handoff_actor_grid.md
+
+# Key-pool runtime files (пул API-ключей FastGen). Живут в project_root,
+# создаются в рантайме. fastgen_keys.txt СОДЕРЖИТ КЛЮЧИ — критично не коммитить.
+.fastgen_keys_active
+.fastgen_keys_cursor
+fastgen_keys.txt
