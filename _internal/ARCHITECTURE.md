@@ -1993,6 +1993,32 @@ project_root старым бандлом — до пересборки .app не
 Дедуп по nonce (watcher шумит по каталогу). Всё в try/except — на генерацию
 не влияет.
 
+**2026-06-09 (апдейт: прямой сигнал + по успеху + poll-таймаут):**
+- **Лампочка теперь через прямой Qt-сигнал, а НЕ watcher.** `QFileSystemWatcher`
+  на файл-мост оказался ненадёжен: проект на внешнем томе (`/Volumes/…`), FSEvents
+  там часто не доставляет `directoryChanged`/`fileChanged` → лампочка молчала.
+  Файл-мост `.fastgen_keys_active` + watcher ОСТАВЛЕНЫ как fallback и единственный
+  путь для CLI, но основной путь для GUI — сигнал `key_used = pyqtSignal(int)` в
+  4 потоках (`threads/generate.py`), подключён к `_blink_key_indicator` в 9 точках
+  (7 в `storyboard_app.py`, 2 в `views/actors.py` через `self.window()`).
+- **Мигает по УСПЕХУ, а не по выдаче.** idx выданного ключа сохраняется локально
+  в потоке (`self._used_key_idx = key_pool.last_index()` сразу после выдачи), а
+  `key_used.emit` — ПЕРЕД `finished.emit` (на успешном скачивании картинки). Так
+  мёртвый ключ (403/404/лимит) уходит в `except` ДО успеха и НЕ мигает. Новый
+  аксессор `key_pool.last_index()` отдаёт idx последней выдачи без смены сигнатуры
+  `next_key()`.
+- **Диагностика ошибок:** `_http_error_detail` (`threads/generate.py`) дописывает
+  причину сервера в текст ошибки (`… | server: <текст> [<code>]`) для 4 GUI-потоков
+  — раньше был только generic «403 Client Error» без тела ответа.
+
+### Poll-таймаут потоков генерации (2026-06-09)
+Все 4 потока (`GenerateThread`, `RefGenerateThread`, `GenerateActorRefThread`,
+`EditActorRefThread`) имеют `POLL_TIMEOUT_SEC = 300` (5 мин, по `time.monotonic`).
+Если FastGen держит операцию в `pending` дольше — `error.emit("API timeout…")` +
+`return`, поток завершается, карточка освобождается. Раньше `GenerateThread`/
+`RefGenerateThread` крутили `while True` без потолка → под нагрузкой Mode C
+(~40 потоков) зависшая операция висела вечно (600+с), карточка не закрывалась.
+
 ### Задача Б (НЕ сделана, отложена)
 Failover при лимите/ошибке ключа: если ключ упёрся в лимит или отвалился —
 временно вывести из ротации, нагрузка на живые без перезагрузки; крестик
