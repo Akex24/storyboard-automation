@@ -153,7 +153,14 @@ def build_ordered_ref_hashes(refs: dict, session: requests.Session) -> list:
 
 def main():
     STORYBOARDS_DIR.mkdir(parents=True, exist_ok=True)
-    key = load_key()
+    # 2026-06-09: ключ через round-robin пул (key_pool). Ленивый импорт +
+    # fallback на load_key(): если key_pool.py не докопировался рядом со
+    # скриптом (старая установка) — CLI молча работает на одиночном .env-ключе.
+    try:
+        from key_pool import next_key
+        key = next_key() or load_key()
+    except Exception:
+        key = load_key()
     session = requests.Session()
     session.headers.update({"X-API-Key": key})
 
