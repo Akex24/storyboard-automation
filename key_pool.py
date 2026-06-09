@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 from typing import List
 
@@ -42,6 +43,9 @@ ROOT: Path = Path(__file__).resolve().parent
 KEYS_FILE: Path = ROOT / "fastgen_keys.txt"
 CURSOR_FILE: Path = ROOT / ".fastgen_keys_cursor"
 ENV_FILE: Path = ROOT / ".env"
+# Файл-мост для UI-лампочки round-robin: какой индекс ключа только что
+# отдан. Пишется в next_key, слушается GUI через QFileSystemWatcher.
+ACTIVE_FILE: Path = ROOT / ".fastgen_keys_active"
 
 
 def set_root(root) -> None:
@@ -50,7 +54,7 @@ def set_root(root) -> None:
     Вызывает GUI-обёртка из frozen .app, передавая project_root из QSettings,
     потому что в бандле Path(__file__).parent указывает в read-only _MEIPASS.
     CLI это не зовёт. Идемпотентно, потокобезопасно, не кидает."""
-    global ROOT, KEYS_FILE, CURSOR_FILE, ENV_FILE
+    global ROOT, KEYS_FILE, CURSOR_FILE, ENV_FILE, ACTIVE_FILE
     if not root:
         return
     try:
@@ -62,6 +66,7 @@ def set_root(root) -> None:
         KEYS_FILE = p / "fastgen_keys.txt"
         CURSOR_FILE = p / ".fastgen_keys_cursor"
         ENV_FILE = p / ".env"
+        ACTIVE_FILE = p / ".fastgen_keys_active"
 
 
 def _read_env_first_line() -> str:
@@ -135,6 +140,22 @@ def _advance_cursor(n: int) -> int:
     return idx
 
 
+def _write_active(idx: int) -> None:
+    """Файл-мост для UI-лампочки round-robin (КОСМЕТИКА).
+
+    Пишет "{idx} {nonce}" в ACTIVE_FILE (разделитель — пробел). nonce
+    (time.time()) гарантирует смену содержимого даже при том же idx
+    (например 1 ключ) → watcher в GUI срабатывает на каждой выдаче.
+    СОБСТВЕННЫЙ try/except: любая ошибка записи проглатывается и НЕ
+    влияет на выдачу ключа."""
+    try:
+        tmp = ACTIVE_FILE.with_name(f"{ACTIVE_FILE.name}.tmp.{os.getpid()}")
+        tmp.write_text(f"{idx} {time.time()}", encoding="utf-8")
+        os.replace(tmp, ACTIVE_FILE)
+    except Exception:
+        pass
+
+
 def next_key() -> str:
     """Следующий ключ по кругу (round-robin).
 
@@ -149,10 +170,17 @@ def next_key() -> str:
         if not keys:
             return ""
         if len(keys) == 1:
-            return keys[0]
-        with _lock:
-            idx = _advance_cursor(len(keys))
-        return keys[idx % len(keys)]
+            # 1 ключ: курсор НЕ трогаем (ротация без изменений), idx=0.
+            key, idx = keys[0], 0
+        else:
+            with _lock:
+                idx = _advance_cursor(len(keys))
+            key = keys[idx % len(keys)]
+        # Мост лампочки — ПОСЛЕ выбора ключа. _write_active имеет
+        # СОБСТВЕННЫЙ try/except → его ошибка не доходит сюда, `return
+        # key` ниже выполнится в любом случае. Ветка 0/fallback сюда не идёт.
+        _write_active(idx)
+        return key
     except Exception:
         try:
             ks = get_keys()
