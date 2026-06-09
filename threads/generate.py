@@ -589,7 +589,7 @@ class GenerateThread(QThread):
     def run(self):
         start_time = time.time()
         try:
-            key     = _sa.load_api_key()
+            key     = _sa.next_api_key()
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -941,7 +941,7 @@ class RefGenerateThread(QThread):
     def run(self):
         start_time = time.time()
         try:
-            key     = _sa.load_api_key()
+            key     = _sa.next_api_key()
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -1445,7 +1445,7 @@ class GenerateActorRefThread(QThread):
         except Exception:
             pass
         try:
-            key = _sa.load_api_key()
+            key = _sa.next_api_key()
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
@@ -1760,7 +1760,7 @@ class EditActorRefThread(QThread):
                 self.error.emit(
                     f"Нет исходного рефа: {self.source_image_path.name}")
                 return
-            key = _sa.load_api_key()
+            key = _sa.next_api_key()
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
