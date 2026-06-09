@@ -820,12 +820,22 @@ class GenerateThread(QThread):
             poll_count = 0
             self.step.emit("Генерирую…", 30)
 
+            POLL_TIMEOUT_SEC = 300  # 5 минут — потолок ожидания (как у actor-потоков)
+            poll_started = time.monotonic()
+            last_status = ""
             while True:
                 time.sleep(4)
+                elapsed = int(time.monotonic() - poll_started)
+                if elapsed > POLL_TIMEOUT_SEC:
+                    self.error.emit(
+                        f"API timeout: статус «{last_status or 'unknown'}»"
+                        f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
+                    return
                 r = session.get(f"{_sa.API_BASE}/api/v4/operations/{op_id}", timeout=30)
                 r.raise_for_status()
                 data   = r.json()
                 status = data.get("status")
+                last_status = status
                 poll_count += 1
                 pct = min(85, 30 + int(poll_count / 20 * 55))
                 self.step.emit(f"Генерирую… ({poll_count * 4}с)", pct)
@@ -1089,12 +1099,22 @@ class RefGenerateThread(QThread):
             poll_count = 0
             self.step.emit("Генерирую…", 30)
 
+            POLL_TIMEOUT_SEC = 300  # 5 минут — потолок ожидания (как у actor-потоков)
+            poll_started = time.monotonic()
+            last_status = ""
             while True:
                 time.sleep(4)
+                elapsed = int(time.monotonic() - poll_started)
+                if elapsed > POLL_TIMEOUT_SEC:
+                    self.error.emit(
+                        f"API timeout: статус «{last_status or 'unknown'}»"
+                        f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
+                    return
                 r = session.get(f"{_sa.API_BASE}/api/v4/operations/{op_id}", timeout=30)
                 r.raise_for_status()
                 data   = r.json()
                 status = data.get("status")
+                last_status = status
                 poll_count += 1
                 pct = min(85, 30 + int(poll_count / 20 * 55))
                 self.step.emit(f"Генерирую… ({poll_count * 4}с)", pct)
