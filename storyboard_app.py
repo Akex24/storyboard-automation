@@ -3476,6 +3476,25 @@ def load_api_key() -> str:
         return ""
 
 
+def next_api_key() -> str:
+    """Round-robin обёртка над пулом ключей (key_pool).
+
+    Возвращает следующий ключ из пула Fast Gen. При 1 настроенном ключе ведёт
+    себя 1-в-1 с load_api_key() (тот же ключ, без ротации). При ЛЮБОЙ ошибке
+    диспетчера — fallback на load_api_key() (kill-switch: генерация не падает).
+
+    Ленивый import key_pool — чтобы не тянуть модуль на уровне импорта
+    storyboard_app и не плодить зависимостей при старте."""
+    try:
+        import key_pool
+        k = key_pool.next_key()
+        if k:
+            return k
+    except Exception:
+        traceback.print_exc()
+    return load_api_key()
+
+
 def save_api_key(key: str) -> None:
     """Сохраняет API-ключ Fast Gen в QSettings + синхронизирует в `.env`
     project root'а (bridge для pipeline.py, который читает только из .env)."""
@@ -5595,6 +5614,16 @@ class MainWindow(QMainWindow):
         # при старте Studio (на случай если ключ обновлён в QSettings но .env устарел).
         try:
             sync_api_key_to_env(project_root, load_api_key())
+        except Exception:
+            traceback.print_exc()
+        # 2026-06-09: пул ключей (key_pool) — указываем writable project_root,
+        # чтобы сайдкар fastgen_keys.txt и курсор легли рядом с image_provider.txt
+        # /.env, а НЕ в read-only _MEIPASS (в frozen GUI key_pool импортируется
+        # из бандла, поэтому его дефолтный __file__.parent не writable). CLI этот
+        # код не исполняет (storyboard_app не импортируется в subprocess'ах).
+        try:
+            import key_pool
+            key_pool.set_root(project_root)
         except Exception:
             traceback.print_exc()
         # Активный сериал и эпизод
