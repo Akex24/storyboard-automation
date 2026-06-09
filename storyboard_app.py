@@ -1705,7 +1705,7 @@ def sync_pipeline_py_to_project(project_root: Path) -> None:
         # оба нужны CLI: pipeline.py делает `from key_pool import next_key`.
         # Цикл с `continue` (а не `return`), чтобы skip-identical одного файла
         # НЕ пропускал копирование второго. Механизм копирования прежний.
-        for _name in ("pipeline.py", "key_pool.py"):
+        for _name in ("pipeline.py", "generate_storyboards.py", "key_pool.py"):
             src = bundle_root / _name
             if not src.exists() or not src.is_file():
                 continue  # bundle не содержит этот файл — пропускаем

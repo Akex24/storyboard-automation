@@ -27,6 +27,11 @@ a = Analysis(
         # `from key_pool import next_key`. Без бандла CLI упал бы на
         # fallback (одиночный .env-ключ) — не критично, но без ротации.
         ('key_pool.py', '.'),
+        # 2026-06-09: generate_storyboards.py — боевой image-генератор
+        # FastGen (Nano Banana 2), такой же потребитель ключа. Синкается
+        # в project_root рядом с key_pool.py, чтобы его
+        # `from key_pool import next_key` сработал в frozen .app (ротация).
+        ('generate_storyboards.py', '.'),
         # 2026-05-13 (v1.0.66): ГЛАВНАЯ_ИНСТРУКЦИЯ.md — источник правды
         # для Scriptwriter/Validator/Editor/ContextReviewer. Загружается
         # в runtime через agents/instruction_loader.py с селективным
