@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-05-13 (v1.0.66 — ГЛАВНАЯ_ИНСТРУКЦИЯ.md в bundle + lazy load по разделам)
+**Последнее обновление:** 2026-06-09 (keep-alive потоков `_threads_pending_delete` + reaper — фикс краша lifecycle под Mode C)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -600,6 +600,52 @@ ep_id=self._current_ep_id)` — ep_id передаётся явно (раньш�
 **gen_time per-shot (не per-version):** ключ QSettings `gen_time_{block}_shot{N}`
 без `version_index` — последний завершившийся тред перезапишет своим временем
 (= самой долгой версии, т.к. стартовали одновременно).
+
+## Lifecycle потоков шотов — keep-alive `_threads_pending_delete` + reaper (2026-06-09)
+
+**Проблема:** `GenerateThread` (regen + Mode C-версии) объявляет **кастомный**
+сигнал `finished = pyqtSignal(int)` ([threads/generate.py:142](threads/generate.py:142))
+и эмитит его из `run()` ([generate.py:930](threads/generate.py:930)) **ДО возврата
+`run()`** — поток в этот момент ещё `running`. Слоты `_on_regen_done` /
+`_on_regen_error` / `_on_mode_c_version_finished` / `_on_mode_c_version_error`
+ловят сигнал и делают `.pop()` из реестра (`_active_regens` /
+`_active_mode_c_version_threads`). Реестр держал **единственную сильную ссылку** →
+`.pop()` роняет её, Python GC уничтожает QThread пока `run()` не вышел →
+`~QThread()` видит `isRunning()==true` → `qFatal` → `abort()`. Под Mode C
+(~30-40 параллельных потоков) гонка ловится почти гарантированно (краши ep25,
+ep25 block_9).
+
+**Почему НЕ «коннект на встроенном `QThread.finished`» (как в первом наброске
+handoff):** кастомный `finished` **затеняет** встроенный `QThread.finished` —
+обратиться к встроенному как `thread.finished` нельзя. Буквальный путь потребовал
+бы rename сигнала во ВСЕХ emit/connect-точках двух файлов; любой пропущенный
+`.finished.connect` тихо подключился бы к беспараметровому встроенному → рантайм-
+`TypeError`. Поэтому выбран keep-alive через `QThread.isFinished()` — та же
+гарантия («снимаем объект только ПОСЛЕ возврата `run()`»), но локально в одном
+файле, без rename.
+
+**Механизм** ([storyboard_app.py](storyboard_app.py)):
+- `_threads_pending_delete: set` + `QTimer _thread_reaper` (1500 мс) заводятся в
+  `__init__` рядом с `_shot_gen_started_at`.
+- `_retire_thread(t)` — кладёт завершившийся поток в множество (держит ссылку
+  ЖИВОЙ, чтобы GC не тронул), заводит reaper если не активен.
+- `_reap_finished_threads()` — на каждом тике сметает те, у кого
+  `t.isFinished()==True` (а это **только после возврата `run()`**) →
+  `t.deleteLater()` (фактическое разрушение отдаётся Qt event-loop'у); когда
+  множество пусто — таймер останавливается (не тикает вхолостую).
+- 4 слота: `.pop(...)` обёрнуты в `_retire_thread(.pop(...))`. **Логика реестра,
+  redraw-предиката и `_shot_gen_started_at` не изменилась** — поток так же
+  мгновенно исчезает из реестра (overlay гаснет как прежде); меняется лишь то,
+  что объект живёт в keep-alive до `isFinished()`, а не дропается сразу.
+- `_collect_all_threads` ([storyboard_app.py](storyboard_app.py)) дренажит и
+  `_threads_pending_delete` при закрытии — редкий ещё-бегущий при shutdown поток
+  дождётся `.wait()`, не словит SIGABRT.
+
+**НЕ затронуто:** `threads/generate.py` (сигналы/emit без изменений, rename НЕ
+делался); `_ref_threads` — это `list`, из которого ссылку НИКОГДА не снимают
+(`_on_ref_done`/`_on_ref_error` без `.pop`) → преждевременного GC и краша он не
+даёт (лёгкая утечка списка, не lifecycle-баг; при желании чистить тем же reaper'ом
+отдельной правкой).
 
 ## Slug collision handling (refs)
 

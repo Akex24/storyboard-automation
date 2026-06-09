@@ -5690,6 +5690,17 @@ class MainWindow(QMainWindow):
         # чтобы busy-overlay карточки показывал верные секунды СРАЗУ при заходе
         # на блок с активной генерацией (как _active_generations у актёров).
         self._shot_gen_started_at: Dict[tuple, float] = {}
+        # 2026-06-09: keep-alive для завершившихся GenerateThread'ов. Кастомный
+        # сигнал finished/error летит ИЗНУТРИ run() ДО его возврата; немедленный
+        # .pop последней ссылки в слоте → GC уничтожает QThread пока он ещё
+        # running → "QThread: Destroyed while thread is still running" → abort()
+        # (краш под Mode C, ~30 потоков). _retire_thread держит ссылку в этом
+        # множестве, пока QThread.isFinished() (= run() ВЕРНУЛСЯ), затем
+        # deleteLater; reaper-таймер периодически сметает завершившиеся.
+        self._threads_pending_delete: set = set()
+        self._thread_reaper = QTimer(self)
+        self._thread_reaper.setInterval(1500)
+        self._thread_reaper.timeout.connect(self._reap_finished_threads)
         # 2026-06-03 (Этап 2): перевод реплик на uk через Haiku. Кэш {en→uk}
         # (повторный клик не дёргает модель) + список живых тредов (чтобы их
         # не собрал GC до завершения).
@@ -9619,6 +9630,9 @@ class MainWindow(QMainWindow):
         try:
             threads.extend(self._active_regens.values())
             threads.extend(self._active_mode_c_version_threads.values())
+            # 2026-06-09: keep-alive завершающихся потоков — редкий ещё-бегущий
+            # при закрытии надо дождаться, иначе SIGABRT при destruction'е.
+            threads.extend(getattr(self, '_threads_pending_delete', set()) or [])
             threads.extend(getattr(self, '_camera_director_threads', {}).values())
             threads.extend(getattr(self, '_ref_threads', []) or [])
             threads.extend(getattr(self, '_geometry_threads', []) or [])
@@ -9663,6 +9677,43 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
         # Уникальные ненулевые
         return [t for t in {id(t): t for t in threads if t is not None}.values()]
+
+    def _retire_thread(self, t):
+        """Безопасно снимает ссылку на завершившийся GenerateThread.
+
+        НЕ дропаем объект сразу: кастомный сигнал finished/error летит
+        ИЗНУТРИ run() ДО его возврата, и если реестр держал ПОСЛЕДНЮЮ
+        ссылку — её немедленный .pop в слоте даёт GC, который уничтожает
+        QThread пока тот ещё running → 'QThread: Destroyed while thread is
+        still running' → abort(). Держим ссылку в _threads_pending_delete и
+        отдаём deleteLater только когда QThread.isFinished() — т.е. run()
+        реально вернулся. Сметает периодический reaper-таймер.
+        """
+        if t is None:
+            return
+        self._threads_pending_delete.add(t)
+        if not self._thread_reaper.isActive():
+            self._thread_reaper.start()
+
+    def _reap_finished_threads(self):
+        """Reaper-таймер: удаляет из keep-alive потоки, у которых run()
+        уже вернулся (isFinished()). deleteLater отдаёт фактическое
+        разрушение Qt event-loop'у. Пустое множество → стоп таймера
+        (не тикаем вхолостую)."""
+        if not self._threads_pending_delete:
+            self._thread_reaper.stop()
+            return
+        done = [t for t in self._threads_pending_delete
+                if t is None or t.isFinished()]
+        for t in done:
+            self._threads_pending_delete.discard(t)
+            if t is not None:
+                try:
+                    t.deleteLater()
+                except Exception:
+                    pass
+        if not self._threads_pending_delete:
+            self._thread_reaper.stop()
 
     def closeEvent(self, event):
         """Перехват закрытия окна. Если есть активные фоновые задачи —
@@ -12605,7 +12656,7 @@ class MainWindow(QMainWindow):
             self.shot_cards[panel_idx].set_progress(lbl, pct)
 
     def _on_regen_done(self, panel_idx: int, target_block: str, elapsed_seconds: int = 0):
-        self._active_regens.pop((target_block, panel_idx), None)
+        self._retire_thread(self._active_regens.pop((target_block, panel_idx), None))
         self._shot_gen_started_at.pop((target_block, panel_idx), None)
         # Помечаем шот «непросмотренным» — на карточке появится бейдж NEW.
         # Очистится когда юзер переключится с этого блока на другой.
@@ -12651,7 +12702,7 @@ class MainWindow(QMainWindow):
                 tr('status_shot_done_other', n=panel_idx + 1, block=target_block))
 
     def _on_regen_error(self, msg: str, target_block: str, panel_idx: int):
-        self._active_regens.pop((target_block, panel_idx), None)
+        self._retire_thread(self._active_regens.pop((target_block, panel_idx), None))
         self._shot_gen_started_at.pop((target_block, panel_idx), None)
 
         # Перерисовываем текущий блок ТОЛЬКО если есть смысл (см. _on_regen_done
@@ -12976,8 +13027,8 @@ class MainWindow(QMainWindow):
         """Одна версия шота Mode C завершилась. pop из нового реестра,
         декремент общего счётчика, обновление UI (аналог _on_regen_done,
         но без касания _active_regens)."""
-        self._active_mode_c_version_threads.pop(
-            (block_basename, panel_idx, version_index), None)
+        self._retire_thread(self._active_mode_c_version_threads.pop(
+            (block_basename, panel_idx, version_index), None))
         # Если для этого шота не осталось НИ ОДНОЙ версии — последняя ушла,
         # чистим started_at (overlay гасит re-render блока ниже / reopen loop).
         if not any(b == block_basename and p == panel_idx
@@ -13016,8 +13067,8 @@ class MainWindow(QMainWindow):
                                   msg: str):
         """Одна версия шота Mode C упала. pop из нового реестра, декремент
         счётчика, уведомление юзера. Не блокирует остальные версии/блоки."""
-        self._active_mode_c_version_threads.pop(
-            (block_basename, panel_idx, version_index), None)
+        self._retire_thread(self._active_mode_c_version_threads.pop(
+            (block_basename, panel_idx, version_index), None))
         if not any(b == block_basename and p == panel_idx
                    for (b, p, _v) in self._active_mode_c_version_threads):
             self._shot_gen_started_at.pop((block_basename, panel_idx), None)
