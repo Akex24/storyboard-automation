@@ -5756,6 +5756,10 @@ class MainWindow(QMainWindow):
         # (ключ (block, panel_idx, version_index)). Не пересекается с
         # _active_regens — старые хендлеры его не видят.
         self._active_mode_c_version_threads: Dict[tuple, GenerateThread] = {}
+        # 2026-06-09 (дотяжка Mode C): ключи (block,panel,version) версий, которые
+        # УЖЕ повторно перезапускались — гарантия РОВНО 1 повтора (анти-задвоение).
+        # Чистится в начале _spawn_mode_c_versions (новый блок = свежий бюджет).
+        self._mode_c_retried: set = set()
         # 2026-06-07 (Mode C): реестр фоновых тредов режиссёра камер
         # (ключ block_basename). Отдельно от версий; нужен для shutdown.
         self._camera_director_threads: Dict[str, QThread] = {}
@@ -12994,31 +12998,47 @@ class MainWindow(QMainWindow):
         self._camera_director_threads.pop(block_basename, None)
         self._spawn_mode_c_versions(shots, n, cams or {})
 
+    def _spawn_one_mode_c_version(self, block_basename: str, panel_idx: int,
+                                   v: int, camera_override):
+        """Спавн ОДНОЙ версии Mode C: создаёт GenerateThread(version_index=v,
+        camera_override=...), регистрирует под 3-tuple ключом в
+        _active_mode_c_version_threads, заводит сигналы, стартует.
+
+        Вызывается из _spawn_mode_c_versions (первичный проход) И из retry-ветки
+        _on_mode_c_version_error (дотяжка). При вызове из retry ключ к этому
+        моменту УЖЕ освобождён (pop в начале хендлера) → запись под тем же
+        ключом не перезаписывает живую ссылку; старый упавший тред уже ушёл в
+        keep-alive (_retire_thread), reaper дожмёт по isFinished() — конфликта нет."""
+        key = (block_basename, panel_idx, v)
+        thread = GenerateThread(
+            block_basename, panel_idx, version_index=v,
+            camera_override=camera_override)
+        self._active_mode_c_version_threads[key] = thread
+        thread.progress.connect(self.status_bar.showMessage)
+        thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
+        thread.step.connect(
+            lambda lbl, pct, bn=block_basename, pi=panel_idx:
+                self._on_regen_step(lbl, pct, bn, pi))
+        thread.finished.connect(
+            lambda elapsed, bn=block_basename, pi=panel_idx, vi=v:
+                self._on_mode_c_version_finished(bn, pi, vi, elapsed))
+        thread.error.connect(
+            lambda msg, bn=block_basename, pi=panel_idx, vi=v:
+                self._on_mode_c_version_error(bn, pi, vi, msg))
+        thread.start()
+
     def _spawn_mode_c_versions(self, shots: List[tuple], n: int, cams: dict):
         """Спавнит N версий на каждый шот в реестр _active_mode_c_version_threads
         (как было), подставляя camera_override из cams для v2..vN. cams пустой
         → camera_override=None для всех → авторский ракурс (текущее поведение)."""
         block_basename = shots[0][0]
         self._storyboard_active_pending = len(shots) * n
+        # Дотяжка: новый блок → свежий бюджет повторов (по 1 на версию).
+        self._mode_c_retried = set()
         for block_basename, panel_idx in shots:
             for v in range(1, n + 1):
-                key = (block_basename, panel_idx, v)
-                thread = GenerateThread(
-                    block_basename, panel_idx, version_index=v,
-                    camera_override=cams.get((panel_idx, v)))
-                self._active_mode_c_version_threads[key] = thread
-                thread.progress.connect(self.status_bar.showMessage)
-                thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
-                thread.step.connect(
-                    lambda lbl, pct, bn=block_basename, pi=panel_idx:
-                        self._on_regen_step(lbl, pct, bn, pi))
-                thread.finished.connect(
-                    lambda elapsed, bn=block_basename, pi=panel_idx, vi=v:
-                        self._on_mode_c_version_finished(bn, pi, vi, elapsed))
-                thread.error.connect(
-                    lambda msg, bn=block_basename, pi=panel_idx, vi=v:
-                        self._on_mode_c_version_error(bn, pi, vi, msg))
-                thread.start()
+                self._spawn_one_mode_c_version(
+                    block_basename, panel_idx, v, cams.get((panel_idx, v)))
         self._refresh_block_indicator(block_basename)
         self.status_bar.showMessage(
             f"Сториборды (Mode C): блок {block_basename} → "
@@ -13069,9 +13089,16 @@ class MainWindow(QMainWindow):
                                   panel_idx: int, version_index: int,
                                   msg: str):
         """Одна версия шота Mode C упала. pop из нового реестра, декремент
-        счётчика, уведомление юзера. Не блокирует остальные версии/блоки."""
+        счётчика, уведомление юзера. Не блокирует остальные версии/блоки.
+
+        2026-06-09 (дотяжка): ПЕРЕД обычным путём «не вышло» — ОДНА повторная
+        попытка этой версии (ракурс из v{N}.prompt.txt). pop выше уже освободил
+        ключ → повтор регистрируется чисто; pending НЕ декрементим (слот держит
+        повторный тред) → блок не финиширует пока повтор в полёте."""
         self._retire_thread(self._active_mode_c_version_threads.pop(
             (block_basename, panel_idx, version_index), None))
+        if self._try_retry_mode_c_version(block_basename, panel_idx, version_index):
+            return
         if not any(b == block_basename and p == panel_idx
                    for (b, p, _v) in self._active_mode_c_version_threads):
             self._shot_gen_started_at.pop((block_basename, panel_idx), None)
@@ -13095,6 +13122,69 @@ class MainWindow(QMainWindow):
             0, self._storyboard_active_pending - 1)
         if self._storyboard_active_pending == 0:
             self._maybe_start_next_storyboard_block()
+
+    def _recover_camera_override(self, block_basename: str, panel_idx: int,
+                                  version_index: int):
+        """Дотяжка (путь B): восстановить ракурс упавшей версии из её
+        v{N}.prompt.txt (пишется ДО POST → переживает падение по 403/timeout).
+        Возвращает строку из `CAMERA:` или None (нет файла / нет строки →
+        повтор пойдёт с авторским ракурсом, согласовано). Не кидает."""
+        try:
+            vpath = (shot_history_dir(block_basename, panel_idx)
+                     / f"v{version_index}.prompt.txt")
+            if not vpath.exists():
+                return None
+            txt = vpath.read_text(encoding="utf-8")
+            m = re.search(r'(?im)^CAMERA:\s*(.*)$', txt)
+            if m:
+                return m.group(1).strip() or None
+        except Exception:
+            traceback.print_exc()
+        return None
+
+    def _try_retry_mode_c_version(self, block_basename: str, panel_idx: int,
+                                   version_index: int) -> bool:
+        """Дотяжка: РОВНО одна повторная попытка упавшей версии. True → повтор
+        запущен (хендлер сразу return, слот остаётся pending). False → повтор не
+        нужен/невозможен (обычный путь «не вышло»).
+
+        Гейты: (1) key не в _mode_c_retried (анти-задвоение, ≤1 повтор);
+        (2) есть v{N}.prompt.txt (есть что воспроизвести путём B); (3) есть живой
+        ключ — иначе уведомление + False (без заведомо-мёртвого запроса)."""
+        key = (block_basename, panel_idx, version_index)
+        if key in self._mode_c_retried:
+            return False
+        vpath = (shot_history_dir(block_basename, panel_idx)
+                 / f"v{version_index}.prompt.txt")
+        if not vpath.exists():
+            return False  # промпта нет (сбой ДО его записи) — нечего повторять
+        try:
+            import key_pool
+            live = key_pool.live_key_count()
+        except Exception:
+            live = 1  # не смогли посчитать — не блокируем повтор
+        if live <= 0:
+            try:
+                self._notify_storyboard_failure(
+                    block_basename, panel_idx,
+                    f"SHOT {panel_idx + 1} v{version_index}: живых ключей не "
+                    f"осталось — повтор пропущен")
+            except Exception:
+                traceback.print_exc()
+            return False
+        self._mode_c_retried.add(key)
+        cam = self._recover_camera_override(
+            block_basename, panel_idx, version_index)
+        self._spawn_one_mode_c_version(block_basename, panel_idx,
+                                       version_index, cam)
+        try:
+            self._notify_storyboard_failure(
+                block_basename, panel_idx,
+                f"SHOT {panel_idx + 1} v{version_index} блока "
+                f"«{block_basename}»: повтор (дотяжка, 1 попытка)")
+        except Exception:
+            traceback.print_exc()
+        return True
 
     def _notify_storyboard_failure(self, block_basename: str,
                                      panel_idx: int, line: str):

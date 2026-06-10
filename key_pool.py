@@ -120,6 +120,22 @@ def key_count() -> int:
     return len(get_keys())
 
 
+def live_key_count() -> int:
+    """Сколько ключей СЕЙЧАС в ротации (НЕ выведены failover'ом).
+
+    2026-06-09 (дотяжка): зеркалит фильтр next_key — idx не в _read_disabled().
+    0 → повторять упавшую версию бессмысленно (все ключи мёртвые). Никогда не
+    кидает: при любой ошибке → 0."""
+    try:
+        keys = get_keys()
+        if not keys:
+            return 0
+        disabled = _read_disabled()
+        return sum(1 for i in range(len(keys)) if i not in disabled)
+    except Exception:
+        return 0
+
+
 def _read_cursor() -> int:
     try:
         return int((CURSOR_FILE.read_text(encoding="utf-8").strip() or "0"))
