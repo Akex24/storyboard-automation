@@ -5910,6 +5910,11 @@ class MainWindow(QMainWindow):
         self._key_status_timer.setInterval(10000)
         self._key_status_timer.timeout.connect(
             self._refresh_key_status_indicators)
+        # 2026-06-10 (health check): транзиентные UI-статусы ключей по field_idx
+        # (checking/limit/server_down — НЕ в key_pool, только UI) + реестр
+        # health-потоков для graceful shutdown.
+        self._key_health_status: dict = {}
+        self._key_health_threads: list = []
 
     def _tick_dots(self):
         """Перебирает шаги анимации точек и обновляет индикаторы у блоков
@@ -9728,6 +9733,7 @@ class MainWindow(QMainWindow):
             threads.extend(getattr(self, '_ref_threads', []) or [])
             threads.extend(getattr(self, '_geometry_threads', []) or [])
             threads.extend(getattr(self, '_seedance_regen_threads', []) or [])
+            threads.extend(getattr(self, '_key_health_threads', []) or [])
             t = getattr(self, '_auth_switch_thread', None)
             if t is not None:
                 threads.append(t)
@@ -15315,6 +15321,7 @@ class MainWindow(QMainWindow):
     _KEY_COL_GREEN  = "#46d160"   # живой
     _KEY_COL_YELLOW = "#e0b341"   # лимит (temp, 429)
     _KEY_COL_RED    = "#e05a5a"   # выбит насовсем (perm, 401/403/license)
+    _KEY_COL_ORANGE = "#e0913a"   # сервер недоступен (health check, не вина ключа)
 
     def _refresh_key_status_indicators(self):
         """Перекрашивает индикаторы и пишет статус-лейблы 5 полей ключей по
@@ -15357,8 +15364,18 @@ class MainWindow(QMainWindow):
                     kidx = keys.index(txt) if txt in keys else None
                     entry = dis.get(kidx) if kidx is not None else None
                     reason = entry[0] if entry else None
+                    # 2026-06-10 (health check): транзиентный UI-статус (НЕ в
+                    # key_pool) имеет приоритет над perm/temp/live, но НЕ над
+                    # manual-off. Ставится _on_key_health / _start_key_health_check.
+                    _h = getattr(self, '_key_health_status', {}).get(i)
                     if is_off:
                         color, status = self._KEY_COL_GREY, tr('key_status_manual_off')
+                    elif _h == 'checking':
+                        color, status = self._KEY_COL_GREY, tr('key_status_checking')
+                    elif _h == 'server_down':
+                        color, status = self._KEY_COL_ORANGE, tr('key_status_server_down')
+                    elif _h == 'limit':
+                        color, status = self._KEY_COL_YELLOW, tr('key_status_ratelimited')
                     elif reason == 'perm':
                         color, status = self._KEY_COL_RED, tr('key_status_dead')
                     elif reason == 'temp':
@@ -15438,6 +15455,9 @@ class MainWindow(QMainWindow):
             self._set_apikey_dirty(False)
             # Через 4с прячем подтверждение чтобы не висело
             QTimer.singleShot(4000, lambda: self.apikey_status_lbl.setText(""))
+            # 2026-06-10 (health check): после сохранения — асинхронная проверка
+            # живости ключей (лёгкий запрос без генерации). Не блокирует UI.
+            self._start_key_health_check()
         except Exception:
             traceback.print_exc()
 
@@ -15465,6 +15485,67 @@ class MainWindow(QMainWindow):
         «Сохранить»). textChanged коннектится ПОСЛЕ build, так что программный
         setText при сборке вкладки сюда не приводит."""
         self._set_apikey_dirty(True)
+
+    def _start_key_health_check(self):
+        """2026-06-10 (health check): запустить асинхронную проверку живости
+        непустых, НЕ-manual-off ключей (лёгкий POST /upload без файла, без
+        генерации). Помечает поля «проверяю…» и стартует KeyHealthThread.
+        Косметика/диагностика — ошибки молча проглатываются."""
+        try:
+            import key_pool
+            from threads.key_health import KeyHealthThread
+            manual = key_pool.manual_off_keys()
+            fields = getattr(self, '_apikey_fields', [])
+            pairs = []
+            for i, fld in enumerate(fields):
+                txt = (fld.text() or "").strip()
+                if not txt or txt in manual:
+                    self._key_health_status.pop(i, None)   # не проверяем
+                    continue
+                pairs.append((i, txt))
+                self._key_health_status[i] = 'checking'
+            self._refresh_key_status_indicators()
+            if not pairs:
+                return
+            th = KeyHealthThread(pairs, self)
+            th.key_health.connect(self._on_key_health)
+            # Снятие из реестра на ВСТРОЕННОМ finished (летит ПОСЛЕ возврата
+            # run() → без premature-GC). KeyHealthThread кастомный finished НЕ
+            # объявляет, так что это родной QThread.finished.
+            th.finished.connect(
+                lambda t=th: (self._key_health_threads.remove(t)
+                              if t in self._key_health_threads else None))
+            self._key_health_threads.append(th)
+            th.start()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_key_health(self, field_idx: int, key_str: str, status: str):
+        """Результат проверки одного ключа. dead → disable_key(perm) + красный;
+        alive → снять perm (ключ заменили на рабочий) + зелёный; limit → жёлтый
+        UI (в disabled НЕ пишем); server_down → оранжевый «сервер недоступен»
+        (ключ НЕ виним, не дизейблим). Затем refresh."""
+        try:
+            import key_pool
+            keys = key_pool.get_keys()
+            kidx = keys.index(key_str) if key_str in keys else None
+            if status == 'dead':
+                if kidx is not None:
+                    key_pool.disable_key(kidx, 'perm')
+                self._key_health_status.pop(field_idx, None)
+            elif status == 'alive':
+                if kidx is not None:
+                    key_pool.clear_disabled(kidx)   # заменён на рабочий — снять perm
+                self._key_health_status.pop(field_idx, None)
+            elif status == 'limit':
+                self._key_health_status[field_idx] = 'limit'
+            elif status == 'server_down':
+                self._key_health_status[field_idx] = 'server_down'
+            else:
+                self._key_health_status.pop(field_idx, None)
+            self._refresh_key_status_indicators()
+        except Exception:
+            traceback.print_exc()
 
     def _open_folder(self):
         # Открываем папку АКТИВНОГО сериала (со всеми его storyboards/refs/etc).

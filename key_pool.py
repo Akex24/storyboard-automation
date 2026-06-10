@@ -328,6 +328,28 @@ def _write_disabled(disabled: dict) -> None:
         pass
 
 
+def clear_disabled(idx) -> None:
+    """Снять ТОЛЬКО perm-выбивание с одного ключа idx (health-check при
+    «Сохранить» подтвердил, что заменённый ключ снова живой).
+
+    КРИТИЧНО: temp-записи (429 из боя) НЕ трогаем — health-проба идёт на storage
+    и НЕ видит лимитов генерации, досрочно возвращать temp-выбитый ключ нельзя
+    (его вернёт сам TTL). Атомарно под _lock, не кидает. idx=None / нет perm-
+    записи → no-op."""
+    try:
+        if idx is None:
+            return
+        idx = int(idx)
+        with _lock:
+            disabled = _read_disabled()
+            entry = disabled.get(idx)
+            if entry and entry[0] == 'perm':
+                disabled.pop(idx, None)
+                _write_disabled(disabled)
+    except Exception:
+        pass
+
+
 def disable_key(idx, reason, ttl_seconds=DISABLE_TEMP_TTL) -> None:
     """Вывести ключ idx из ротации. reason: 'temp' (429/лимит — вернётся через
     ttl_seconds) или 'perm' (401/403/license — до ручного save_keys).
