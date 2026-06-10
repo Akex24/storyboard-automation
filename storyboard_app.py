@@ -13097,7 +13097,8 @@ class MainWindow(QMainWindow):
         повторный тред) → блок не финиширует пока повтор в полёте."""
         self._retire_thread(self._active_mode_c_version_threads.pop(
             (block_basename, panel_idx, version_index), None))
-        if self._try_retry_mode_c_version(block_basename, panel_idx, version_index):
+        if self._try_retry_mode_c_version(block_basename, panel_idx,
+                                          version_index, msg):
             return
         if not any(b == block_basename and p == panel_idx
                    for (b, p, _v) in self._active_mode_c_version_threads):
@@ -13143,14 +13144,24 @@ class MainWindow(QMainWindow):
         return None
 
     def _try_retry_mode_c_version(self, block_basename: str, panel_idx: int,
-                                   version_index: int) -> bool:
+                                   version_index: int, msg: str = "") -> bool:
         """Дотяжка: РОВНО одна повторная попытка упавшей версии. True → повтор
         запущен (хендлер сразу return, слот остаётся pending). False → повтор не
-        нужен/невозможен (обычный путь «не вышло»).
+        нужен/невозможен (обычный путь «не вышло» — исходный msg логируется там).
 
-        Гейты: (1) key не в _mode_c_retried (анти-задвоение, ≤1 повтор);
+        Гейты: (0) ошибка НЕ таймаут (таймаут = сервер перегружен; повтор почти
+        обречён и удваивает время блока 300+300с → False, ошибка идёт обычным
+        путём); (1) key не в _mode_c_retried (анти-задвоение, ≤1 повтор);
         (2) есть v{N}.prompt.txt (есть что воспроизвести путём B); (3) есть живой
-        ключ — иначе уведомление + False (без заведомо-мёртвого запроса)."""
+        ключ — иначе уведомление + False (без заведомо-мёртвого запроса).
+
+        2026-06-10: при ЗАПУСКЕ повтора в чат пишем и исходный msg — раньше
+        early-return глотал текст ошибки (видно было только «повтор»)."""
+        # Гейт 0: таймаут — НЕ повторяем (перегруженный сервер). 'timed out'
+        # покрывает 'read timed out'; 'api timeout' — наш текст poll-таймаута.
+        _low = (msg or "").lower()
+        if "api timeout" in _low or "timed out" in _low:
+            return False
         key = (block_basename, panel_idx, version_index)
         if key in self._mode_c_retried:
             return False
@@ -13181,7 +13192,7 @@ class MainWindow(QMainWindow):
             self._notify_storyboard_failure(
                 block_basename, panel_idx,
                 f"SHOT {panel_idx + 1} v{version_index} блока "
-                f"«{block_basename}»: повтор (дотяжка, 1 попытка)")
+                f"«{block_basename}»: повтор (дотяжка, 1 попытка): {msg[:300]}")
         except Exception:
             traceback.print_exc()
         return True
