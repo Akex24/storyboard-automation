@@ -8088,11 +8088,30 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
+        # 2026-06-10 (косметика): лейбл «есть несохранённые изменения» —
+        # показывается пока поля изменены, но не нажато «Сохранить».
+        self.apikey_dirty_lbl = QLabel("")
+        self.apikey_dirty_lbl.setStyleSheet(
+            "color:#e0913a; font-size:12px; padding-top:6px;")
+        akf.addWidget(self.apikey_dirty_lbl)
+
         # Статус «✓ Сохранено» появляется на 2 секунды после клика «Сохранить»
         self.apikey_status_lbl = QLabel("")
         self.apikey_status_lbl.setStyleSheet(
             "color:#6db86d; font-size:12px; padding-top:8px;")
         akf.addWidget(self.apikey_status_lbl)
+
+        # 2026-06-10 (косметика): #1 фикс обрезки кнопки «Сохранить» (padding
+        # 7px вместо глобальных 11px — текст влезает в высоту 34px) + базовый
+        # стиль (dirty=False). #3 — textChanged полей включает dirty-индикацию.
+        # Коннект ПОСЛЕ build: программный setText полей был выше (до коннекта),
+        # ложный dirty невозможен; refresh поля не setText'ит.
+        self._set_apikey_dirty(False)
+        for _f in self._apikey_fields:
+            try:
+                _f.textChanged.connect(self._on_apikey_field_changed)
+            except Exception:
+                pass
 
         lay.addWidget(apikey_frame)
 
@@ -15404,10 +15423,37 @@ class MainWindow(QMainWindow):
             self.apikey_status_lbl.setText(tr('apikey_saved'))
             self.apikey_status_lbl.setStyleSheet(
                 "color:#6db86d; font-size:12px; padding-top:8px;")
+            # 2026-06-10: сохранили → снять dirty-индикацию.
+            self._set_apikey_dirty(False)
             # Через 4с прячем подтверждение чтобы не висело
             QTimer.singleShot(4000, lambda: self.apikey_status_lbl.setText(""))
         except Exception:
             traceback.print_exc()
+
+    def _set_apikey_dirty(self, dirty: bool):
+        """2026-06-10: индикация несохранённых изменений в полях ключей.
+        dirty=True → оранжевая рамка у «Сохранить» + лейбл «есть несохранённые
+        изменения»; False → норма. Inline-стиль #save также несёт фикс паддинга
+        (#1): 7px вместо глобальных 11px, чтобы текст не обрезался в высоту 34px.
+        Косметика — ошибки молча проглатываются."""
+        try:
+            border = " border:1px solid #e0913a;" if dirty else ""
+            self.apikey_save_btn.setStyleSheet(
+                "QPushButton#save { padding: 7px 14px;%s }" % border)
+        except Exception:
+            pass
+        try:
+            lbl = getattr(self, 'apikey_dirty_lbl', None)
+            if lbl is not None:
+                lbl.setText(tr('apikey_dirty') if dirty else "")
+        except Exception:
+            pass
+
+    def _on_apikey_field_changed(self, *args):
+        """Любое изменение текста в поле ключа → dirty (пока не нажато
+        «Сохранить»). textChanged коннектится ПОСЛЕ build, так что программный
+        setText при сборке вкладки сюда не приводит."""
+        self._set_apikey_dirty(True)
 
     def _open_folder(self):
         # Открываем папку АКТИВНОГО сериала (со всеми его storyboards/refs/etc).
