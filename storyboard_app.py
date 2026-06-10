@@ -7349,6 +7349,15 @@ class MainWindow(QMainWindow):
                     self.server_check_btn.setToolTip(tr('server_check_tip'))
                 if hasattr(self, 'server_support_btn'):
                     self.server_support_btn.setText(tr('server_support_btn'))
+                # 2026-06-10 (фикс перевода на лету в области ключей): чекбоксы
+                # «use» (все 5), плейсхолдеры всех полей ключей, перерисовка
+                # статус-лейблов. server_check_result_lbl НЕ трогаем — там может
+                # висеть итог теста с форматированными данными.
+                for _tg in getattr(self, '_apikey_toggles', []) or []:
+                    _tg.setText(tr('key_use_toggle'))
+                for _fl in getattr(self, '_apikey_fields', []) or []:
+                    _fl.setPlaceholderText(tr('apikey_placeholder'))
+                self._refresh_key_status_indicators()
             except Exception:
                 traceback.print_exc()
         # v1.0.65: секция «🌐 ПРОКСИ-СЕРВЕР» — retranslate всех меток.
