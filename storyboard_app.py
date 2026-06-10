@@ -7995,10 +7995,20 @@ class MainWindow(QMainWindow):
         # Сохраняется в QSettings (приоритет над .env). См. load_api_key().
         self.sec_apikey_lbl = QLabel(tr('sec_apikey'))
         self.sec_apikey_lbl.setObjectName("settings-section")
+        # 2026-06-10 (выделение блока ключей): золотой заголовок поверх общего
+        # #settings-section — блок видно при быстрой прокрутке Settings.
+        self.sec_apikey_lbl.setStyleSheet(
+            "QLabel#settings-section { font-size:11px; font-weight:700;"
+            " color:#d9b96a; letter-spacing:2.5px; }")
         lay.addWidget(self.sec_apikey_lbl)
 
         apikey_frame = QFrame()
         apikey_frame.setObjectName("settings-group")
+        # 2026-06-10 (выделение блока ключей): тёплая золотая рамка поверх общей
+        # #settings-group; фон/радиус оставляем как у остальных групп.
+        apikey_frame.setStyleSheet(
+            "QFrame#settings-group { background: rgba(20, 16, 30, 0.5);"
+            " border:1px solid #b08a3e; border-radius:12px; }")
         akf = QVBoxLayout(apikey_frame)
         akf.setSpacing(0)
         akf.setContentsMargins(18, 14, 18, 14)
@@ -15746,7 +15756,8 @@ class MainWindow(QMainWindow):
         (down) — копируем в буфер готовое письмо (время + op_id) и показываем
         QMessageBox с инструкцией «вставь Cmd/Ctrl+V» + сам текст письма; по
         кнопке «Открыть Telegram» открываем чат (телеграм всплывает ПОСЛЕ окна —
-        юзер уже знает что вставить). Без провального теста — сразу открываем."""
+        юзер уже знает что вставить); крестик/Esc = Отмена → НЕ открываем. Без
+        провального теста — сразу открываем."""
         try:
             info = getattr(self, '_server_check_down_info', None)
             if info:
@@ -15760,10 +15771,18 @@ class MainWindow(QMainWindow):
                     box.setWindowTitle(tr('server_check_support_title'))
                     box.setText(tr('server_check_support_body'))
                     box.setInformativeText(body)
-                    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    box.setStandardButtons(
+                        QMessageBox.StandardButton.Ok
+                        | QMessageBox.StandardButton.Cancel)
                     box.button(QMessageBox.StandardButton.Ok).setText(
                         tr('server_check_support_open'))
-                    box.exec()
+                    box.button(QMessageBox.StandardButton.Cancel).setText(
+                        tr('server_check_support_cancel'))
+                    box.setDefaultButton(QMessageBox.StandardButton.Ok)
+                    # Телеграм открываем ТОЛЬКО по «Открыть Telegram». Крестик/Esc
+                    # → Cancel → НЕ открываем (текст уже в буфере — это ок).
+                    if box.exec() != QMessageBox.StandardButton.Ok:
+                        return
                 except Exception:
                     traceback.print_exc()
             from PyQt6.QtGui import QDesktopServices
