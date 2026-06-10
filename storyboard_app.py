@@ -15736,23 +15736,15 @@ class MainWindow(QMainWindow):
             pass
 
     def _reserve_server_check_lbl_height(self):
-        """minHeight лейбла итога = высота самого длинного текста (explain) при
-        текущей ширине → переходы idle→explain→итог не меняют высоту блока
-        (лейбл всегда непуст, нижний отступ стабилен, без «пустого подвала»).
-        До реализации ширины (build) берём оценку ~ширины Settings."""
+        """minHeight лейбла итога = ровно 4 строки (lineSpacing*4 + отступ). От
+        ширины НЕ зависит (без boundingRect/оценок) → идемпотентен; держит
+        стабильную высоту блока: лейбл всегда непуст, без «пустого подвала» и без
+        завышенного резерва на широких окнах."""
         try:
             lbl = getattr(self, 'server_check_result_lbl', None)
             if lbl is None:
                 return
-            w = lbl.width()
-            if w < 50:
-                w = 420   # ширина ещё не реализована — оценка под Settings-панель
-            from PyQt6.QtCore import QRect
-            h = lbl.fontMetrics().boundingRect(
-                QRect(0, 0, w, 100000),
-                int(Qt.TextFlag.TextWordWrap),
-                tr('server_check_explain')).height()
-            lbl.setMinimumHeight(h + 12)
+            lbl.setMinimumHeight(lbl.fontMetrics().lineSpacing() * 4 + 12)
         except Exception:
             pass
 
