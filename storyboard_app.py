@@ -5901,6 +5901,16 @@ class MainWindow(QMainWindow):
             self._refresh_episode_pill_indicators)
         self._pill_indicator_timer.start(3000)
 
+        # 2026-06-10 (задача Б, этап 2): статусы ключей в Settings. base-цвет
+        # индикатора per-idx (чтобы blink round-robin сбрасывал в СТАТУС-цвет,
+        # не в жёсткий серый) + таймер обновления (countdown «вернётся через
+        # N мин»), тикает ТОЛЬКО когда открыта вкладка Settings.
+        self._key_status_colors: dict = {}
+        self._key_status_timer = QTimer(self)
+        self._key_status_timer.setInterval(10000)
+        self._key_status_timer.timeout.connect(
+            self._refresh_key_status_indicators)
+
     def _tick_dots(self):
         """Перебирает шаги анимации точек и обновляет индикаторы у блоков
         с активной регенерацией шотов + у пилюли «Референсы» если там идёт
@@ -7165,6 +7175,11 @@ class MainWindow(QMainWindow):
         Settings tab — индекс 2 (Editor=0, Actors=1, Settings=2).
         """
         if idx != 2:
+            # 2026-06-10: ушли с Settings → гасим таймер статусов ключей.
+            try:
+                self._key_status_timer.stop()
+            except Exception:
+                pass
             return
         try:
             if getattr(self, '_is_admin', False):
@@ -7173,6 +7188,13 @@ class MainWindow(QMainWindow):
             pass
         try:
             self._auth_check_tick()
+        except Exception:
+            pass
+        # 2026-06-10 (этап 2): обновить статусы ключей + завести таймер countdown
+        # (тикает только пока открыта вкладка Settings).
+        try:
+            self._refresh_key_status_indicators()
+            self._key_status_timer.start()
         except Exception:
             pass
 
@@ -7965,12 +7987,26 @@ class MainWindow(QMainWindow):
         # (косметика — мигает когда этот ключ отдал генерацию). Список
         # self._apikey_indicators индексно совпадает с self._apikey_fields.
         self._apikey_indicators = []
+        # 2026-06-10 (этап 2): per-row тумблер «использовать» + лейбл статуса.
+        # Индексно совпадают с self._apikey_fields (0..4).
+        self._apikey_toggles = []
+        self._apikey_status_labels = []
         def _mk_key_indicator():
             _d = QLabel()
             _d.setFixedSize(12, 12)
             _d.setStyleSheet(
                 "QLabel { background:#3a3a3a; border-radius:6px; }")  # тусклый = неактивен
             return _d
+        def _mk_key_status_lbl():
+            _l = QLabel("")
+            _l.setStyleSheet(
+                "color:#888; font-size:11px; padding:0 0 4px 20px;")
+            return _l
+        def _mk_key_toggle(_idx):
+            _t = QCheckBox(tr('key_use_toggle'))
+            _t.setStyleSheet("QCheckBox { color:#aaa; font-size:11px; }")
+            _t.toggled.connect(lambda _checked, i=_idx: self._on_key_toggle(i))
+            return _t
         ak_row = QHBoxLayout()
         ak_row.setSpacing(8)
         _ind0 = _mk_key_indicator()
@@ -8002,7 +8038,13 @@ class MainWindow(QMainWindow):
         self.apikey_save_btn.setMinimumWidth(120)
         self.apikey_save_btn.clicked.connect(self._on_apikey_save)
         ak_row.addWidget(self.apikey_save_btn)
+        _tgl0 = _mk_key_toggle(0)
+        ak_row.addWidget(_tgl0)
+        self._apikey_toggles.append(_tgl0)
         akf.addLayout(ak_row)
+        _lbl0 = _mk_key_status_lbl()
+        akf.addWidget(_lbl0)
+        self._apikey_status_labels.append(_lbl0)
 
         # 2026-06-09: пул до 5 ключей (round-robin). Поле 1 = apikey_input выше
         # (primary, идёт в .env строку 0). Поля 2..5 — дополнительные ключи пула,
@@ -8030,9 +8072,21 @@ class MainWindow(QMainWindow):
             _ind_i = _mk_key_indicator()
             _row_i.addWidget(_ind_i)
             _row_i.addWidget(_inp, stretch=1)
+            _tgl_i = _mk_key_toggle(_i - 1)   # поле _i (2..5) → индекс _i-1 (1..4)
+            _row_i.addWidget(_tgl_i)
             akf.addLayout(_row_i)
+            _lbl_i = _mk_key_status_lbl()
+            akf.addWidget(_lbl_i)
             self._apikey_fields.append(_inp)
             self._apikey_indicators.append(_ind_i)
+            self._apikey_toggles.append(_tgl_i)
+            self._apikey_status_labels.append(_lbl_i)
+
+        # 2026-06-10 (этап 2): первичная отрисовка статусов (цвет/текст/тумблеры).
+        try:
+            self._refresh_key_status_indicators()
+        except Exception:
+            traceback.print_exc()
 
         # Статус «✓ Сохранено» появляется на 2 секунды после клика «Сохранить»
         self.apikey_status_lbl = QLabel("")
@@ -15209,7 +15263,9 @@ class MainWindow(QMainWindow):
             pass
 
     def _blink_key_indicator(self, idx):
-        """Подсветить лампочку ключа idx (яркая), через ~400мс погасить.
+        """Подсветить лампочку ключа idx (яркая), через ~400мс вернуть СТАТУС-цвет.
+        2026-06-10: сброс на _key_status_colors[idx] (зелёный/жёлтый/красный/серый
+        статуса), НЕ жёсткий серый — иначе мигание затирало бы статус ключа.
         Косметика — ошибки молча игнорятся."""
         try:
             inds = getattr(self, '_apikey_indicators', [])
@@ -15218,10 +15274,102 @@ class MainWindow(QMainWindow):
             dot = inds[idx]
             dot.setStyleSheet(
                 "QLabel { background:#46d160; border-radius:6px; }")
-            QTimer.singleShot(400, lambda d=dot: d.setStyleSheet(
-                "QLabel { background:#3a3a3a; border-radius:6px; }"))
+            QTimer.singleShot(400, lambda d=dot, ix=idx: d.setStyleSheet(
+                "QLabel { background:%s; border-radius:6px; }"
+                % getattr(self, '_key_status_colors', {}).get(ix, "#3a3a3a")))
         except Exception:
             pass
+
+    # ── Статусы ключей в Settings (задача Б, этап 2) ──────────────────────
+    _KEY_COL_GREY   = "#3a3a3a"   # неактивен / пустое поле / отключён вручную
+    _KEY_COL_GREEN  = "#46d160"   # живой
+    _KEY_COL_YELLOW = "#e0b341"   # лимит (temp, 429)
+    _KEY_COL_RED    = "#e05a5a"   # выбит насовсем (perm, 401/403/license)
+
+    def _refresh_key_status_indicators(self):
+        """Перекрашивает индикаторы и пишет статус-лейблы 5 полей ключей по
+        данным key_pool: manual-off (серый «отключён вручную») > perm (красный
+        «не работает — замени») > temp (жёлтый «лимит, вернётся через N мин») >
+        live (зелёный). Пустое поле → серый/без текста/тумблер disabled. Текст не
+        из get_keys() (несохранённый) → нейтральный статус, без исключений.
+        Косметика — любые ошибки молча проглатываются."""
+        try:
+            import key_pool, time
+            keys = key_pool.get_keys()
+            dis = key_pool.disabled_status()      # {idx:(reason,until)}
+            manual = key_pool.manual_off_keys()   # set строк-ключей
+        except Exception:
+            return
+        now = time.time()
+        fields = getattr(self, '_apikey_fields', [])
+        inds = getattr(self, '_apikey_indicators', [])
+        lbls = getattr(self, '_apikey_status_labels', [])
+        tgls = getattr(self, '_apikey_toggles', [])
+        for i, fld in enumerate(fields):
+            try:
+                txt = (fld.text() or "").strip()
+                ind = inds[i] if i < len(inds) else None
+                lbl = lbls[i] if i < len(lbls) else None
+                tgl = tgls[i] if i < len(tgls) else None
+                if not txt:
+                    color, status = self._KEY_COL_GREY, ""
+                    if tgl is not None:
+                        tgl.blockSignals(True)
+                        tgl.setChecked(False)
+                        tgl.setEnabled(False)
+                        tgl.blockSignals(False)
+                else:
+                    if tgl is not None:
+                        tgl.setEnabled(True)
+                    is_off = txt in manual
+                    # idx ключа в пространстве get_keys() — по ТЕКСТУ, не позиции
+                    # поля; нет в get_keys() (несохранён) → kidx=None, нейтрально.
+                    kidx = keys.index(txt) if txt in keys else None
+                    entry = dis.get(kidx) if kidx is not None else None
+                    reason = entry[0] if entry else None
+                    if is_off:
+                        color, status = self._KEY_COL_GREY, tr('key_status_manual_off')
+                    elif reason == 'perm':
+                        color, status = self._KEY_COL_RED, tr('key_status_dead')
+                    elif reason == 'temp':
+                        n = max(1, (int(entry[1] - now) + 59) // 60)
+                        color, status = self._KEY_COL_YELLOW, tr('key_status_limit', n=n)
+                    else:
+                        color, status = self._KEY_COL_GREEN, ""
+                    if tgl is not None:
+                        tgl.blockSignals(True)
+                        tgl.setChecked(not is_off)
+                        tgl.blockSignals(False)
+                if ind is not None:
+                    ind.setStyleSheet(
+                        "QLabel { background:%s; border-radius:6px; }" % color)
+                # base-цвет для blink-сброса (idx индикатора = i)
+                self._key_status_colors[i] = color
+                if lbl is not None:
+                    lbl.setText(status)
+                    lbl.setStyleSheet(
+                        "color:%s; font-size:11px; padding:0 0 4px 20px;"
+                        % (color if status else "#888"))
+            except Exception:
+                continue
+
+    def _on_key_toggle(self, i):
+        """Тумблер «использовать» у ключа i. Снятая галка → ключ в manual-off
+        (исключён из ротации, текст в поле остаётся); поставленная → вернуть.
+        Хранение по ТЕКСТУ ключа (key_pool.set_manual_off). Пустое поле — no-op."""
+        try:
+            fields = getattr(self, '_apikey_fields', [])
+            tgls = getattr(self, '_apikey_toggles', [])
+            if not (0 <= i < len(fields)) or not (0 <= i < len(tgls)):
+                return
+            txt = (fields[i].text() or "").strip()
+            if not txt:
+                return
+            import key_pool
+            key_pool.set_manual_off(txt, not tgls[i].isChecked())
+            self._refresh_key_status_indicators()
+        except Exception:
+            traceback.print_exc()
 
     def _on_apikey_save(self):
         """Сохраняет введённый API-ключ в QSettings и показывает «✓ Сохранено».

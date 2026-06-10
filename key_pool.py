@@ -56,6 +56,12 @@ ACTIVE_FILE: Path = ROOT / ".fastgen_keys_active"
 DISABLED_FILE: Path = ROOT / ".fastgen_keys_disabled"
 # Сколько держать temp-выбитый ключ (429/лимит) вне ротации, сек (15 мин).
 DISABLE_TEMP_TTL = 900
+# 2026-06-10 (задача Б, Этап 2): ручной тумблер. Ключи, ВЫКЛЮЧЕННЫЕ ЮЗЕРОМ в
+# Settings (исключены из ротации, но текст в поле остаётся). Хранятся по ТЕКСТУ
+# ключа (по строке), НЕ idx → переживает reorder/save_keys. ОТДЕЛЬНЫЙ файл от
+# disabled: только юзер его меняет (set_manual_off); failover (disable_key) и
+# save_keys его НЕ трогают; нет TTL — снимается лишь повторным тумблером.
+MANUAL_OFF_FILE: Path = ROOT / ".fastgen_keys_manual_off"
 
 
 def set_root(root) -> None:
@@ -65,6 +71,7 @@ def set_root(root) -> None:
     потому что в бандле Path(__file__).parent указывает в read-only _MEIPASS.
     CLI это не зовёт. Идемпотентно, потокобезопасно, не кидает."""
     global ROOT, KEYS_FILE, CURSOR_FILE, ENV_FILE, ACTIVE_FILE, DISABLED_FILE
+    global MANUAL_OFF_FILE
     if not root:
         return
     try:
@@ -78,6 +85,7 @@ def set_root(root) -> None:
         ENV_FILE = p / ".env"
         ACTIVE_FILE = p / ".fastgen_keys_active"
         DISABLED_FILE = p / ".fastgen_keys_disabled"
+        MANUAL_OFF_FILE = p / ".fastgen_keys_manual_off"
 
 
 def _read_env_first_line() -> str:
@@ -131,9 +139,68 @@ def live_key_count() -> int:
         if not keys:
             return 0
         disabled = _read_disabled()
-        return sum(1 for i in range(len(keys)) if i not in disabled)
+        manual = _read_manual_off()
+        return sum(1 for i in range(len(keys))
+                   if i not in disabled and keys[i] not in manual)
     except Exception:
         return 0
+
+
+def _read_manual_off() -> set:
+    """Ключи, ВЫКЛЮЧЕННЫЕ ВРУЧНУЮ юзером (тумблер в Settings) → set строк-ключей.
+    Хранение по ТЕКСТУ ключа (не idx) → переживает reorder/save_keys. Отдельный
+    файл .fastgen_keys_manual_off; failover/save_keys его НЕ трогают. На любой
+    ошибке → set()."""
+    out: set = set()
+    try:
+        if not MANUAL_OFF_FILE.exists():
+            return out
+        for line in MANUAL_OFF_FILE.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s:
+                out.add(s)
+    except Exception:
+        return set()
+    return out
+
+
+def manual_off_keys() -> set:
+    """Публичный read для UI (этап 2): какие ключи выключены вручную (set строк)."""
+    return _read_manual_off()
+
+
+def set_manual_off(key_str, off: bool) -> None:
+    """Тумблер «использовать» из Settings. off=True → добавить ключ в manual-off
+    (исключить из ротации, текст в поле остаётся), off=False → вернуть. Хранение
+    по тексту ключа. Атомарно под _lock, не кидает. Снимается ТОЛЬКО так (не TTL,
+    не save_keys, не disable_key)."""
+    try:
+        s = (key_str or "").strip()
+        if not s:
+            return
+        with _lock:
+            cur = _read_manual_off()
+            if off:
+                cur.add(s)
+            else:
+                cur.discard(s)
+            if not cur:
+                try:
+                    if MANUAL_OFF_FILE.exists():
+                        MANUAL_OFF_FILE.unlink()
+                except Exception:
+                    pass
+                return
+            _write_atomic(MANUAL_OFF_FILE, "\n".join(sorted(cur)) + "\n")
+    except Exception:
+        pass
+
+
+def disabled_status() -> dict:
+    """Публичный read-only снимок выбитых failover'ом ключей → {idx:(reason,until)}
+    для UI (этап 2). Обёртка над _read_disabled (он же лениво prune'ит истёкшие
+    temp). idx — в пространстве get_keys()."""
+    return _read_disabled()
 
 
 def _read_cursor() -> int:
@@ -304,18 +371,26 @@ def next_key_with_idx() -> tuple:
         keys = get_keys()
         if not keys:
             return "", None
-        if len(keys) == 1:
-            # 1 ключ: курсор НЕ трогаем (ротация без изменений), idx=0.
-            # Даже если он выбит — отдаём (graceful: лучше дёрнуть, чем "").
-            key, idx = keys[0], 0
+        # 2026-06-10 (этап 2): ручной off — ЖЁСТКОЕ исключение. Эти ключи НЕ
+        # используются НИ В КАКОМ случае (даже в fallback ниже). pool = вручную
+        # ВКЛЮЧЁННЫЕ. Все выключены вручную → ("", None) (как пустой пул).
+        manual = _read_manual_off()
+        pool = [i for i in range(len(keys)) if keys[i] not in manual]
+        if not pool:
+            return "", None
+        if len(pool) == 1:
+            # 1 доступный ключ: курсор НЕ трогаем (как было для 1 ключа).
+            # Даже если он выбит failover'ом — отдаём (graceful, лучше чем "").
+            idx = pool[0]
+            key = keys[idx]
         else:
-            # 2026-06-09 (задача Б): отсев выведенных из ротации ключей.
-            # Если выбиты ВСЕ — фолбэк на полный список (пробуем всё равно,
-            # не возвращаем пустоту). Курсор крутится по живому подмножеству.
+            # 2026-06-09 (задача Б): среди вручную-включённых отсев выбитых
+            # failover'ом. Если выбиты ВСЕ из них — фолбэк на pool (вручную-
+            # включённые, но НЕ manual-off). Курсор крутится по live-подмножеству.
             disabled = _read_disabled()
-            live = [i for i in range(len(keys)) if i not in disabled]
+            live = [i for i in pool if i not in disabled]
             if not live:
-                live = list(range(len(keys)))
+                live = pool
             with _lock:
                 pos = _advance_cursor(len(live))
             idx = live[pos % len(live)]
