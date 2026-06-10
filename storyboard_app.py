@@ -8149,6 +8149,12 @@ class MainWindow(QMainWindow):
         _btns_row.setSpacing(8)
         _btns_row.addWidget(self.server_check_btn)
         _btns_row.addWidget(self.server_support_btn)
+        # 2026-06-10: статус сохранения («несохранено» / «✓ Сохранено» / «пусто»)
+        # в ОДНОЙ строке с кнопками (высота ряда 34 фикс → не дёргается) — вместо
+        # отдельных лейблов в вертикальном стеке, дававших пустой подвал.
+        self.apikey_inline_status_lbl = QLabel("")
+        self.apikey_inline_status_lbl.setStyleSheet("font-size:12px;")
+        _btns_row.addWidget(self.apikey_inline_status_lbl)
         _btns_row.addStretch(1)
         _btns_row.addWidget(self.apikey_show_btn)
         _btns_row.addWidget(self.apikey_save_btn)
@@ -8170,24 +8176,6 @@ class MainWindow(QMainWindow):
             self._refresh_key_status_indicators()
         except Exception:
             traceback.print_exc()
-
-        # 2026-06-10 (косметика): лейбл «есть несохранённые изменения» —
-        # показывается пока поля изменены, но не нажато «Сохранить».
-        self.apikey_dirty_lbl = QLabel("")
-        self.apikey_dirty_lbl.setStyleSheet(
-            "color:#e0913a; font-size:12px; padding-top:6px;")
-        # Резерв одной строки — появление «несохранённые изменения» не дёргает рамку.
-        self.apikey_dirty_lbl.setMinimumHeight(
-            self.apikey_dirty_lbl.fontMetrics().height() + 6)
-        akf.addWidget(self.apikey_dirty_lbl)
-
-        # Статус «✓ Сохранено» появляется на 2 секунды после клика «Сохранить»
-        self.apikey_status_lbl = QLabel("")
-        self.apikey_status_lbl.setStyleSheet(
-            "color:#6db86d; font-size:12px; padding-top:8px;")
-        self.apikey_status_lbl.setMinimumHeight(
-            self.apikey_status_lbl.fontMetrics().height() + 8)
-        akf.addWidget(self.apikey_status_lbl)
 
         # 2026-06-10 (косметика): #1 фикс обрезки кнопки «Сохранить» (padding
         # 7px вместо глобальных 11px — текст влезает в высоту 34px) + базовый
@@ -15527,9 +15515,9 @@ class MainWindow(QMainWindow):
             vals = [f.text().strip() for f in fields]   # по порядку, пустые допустимы
             nonempty = [v for v in vals if v]
             if not nonempty:
-                self.apikey_status_lbl.setText(tr('apikey_empty'))
-                self.apikey_status_lbl.setStyleSheet(
-                    "color:#ff7a7a; font-size:12px; padding-top:8px;")
+                self.apikey_inline_status_lbl.setText(tr('apikey_inline_empty'))
+                self.apikey_inline_status_lbl.setStyleSheet(
+                    "color:#ff7a7a; font-size:12px;")
                 return
             # Доп. ключи 2..5 → только QSettings (в .env НЕ пишем: там Anthropic-ключ).
             qs = QSettings(APP_ORG, APP_NAME)
@@ -15548,13 +15536,18 @@ class MainWindow(QMainWindow):
             # load_key()/load_api_key() не остались без ключа.
             primary = vals[0] if vals else ""
             save_api_key(primary or nonempty[0])
-            self.apikey_status_lbl.setText(tr('apikey_saved'))
-            self.apikey_status_lbl.setStyleSheet(
-                "color:#6db86d; font-size:12px; padding-top:8px;")
-            # 2026-06-10: сохранили → снять dirty-индикацию.
+            # Снимаем dirty ПЕРЕД показом «✓ Сохранено» (оба статуса теперь в
+            # одном inline-лейбле — иначе сброс dirty затёр бы «Сохранено»).
             self._set_apikey_dirty(False)
-            # Через 4с прячем подтверждение чтобы не висело
-            QTimer.singleShot(4000, lambda: self.apikey_status_lbl.setText(""))
+            self.apikey_inline_status_lbl.setText(tr('apikey_inline_saved'))
+            self.apikey_inline_status_lbl.setStyleSheet(
+                "color:#6db86d; font-size:12px;")
+            # Через 4с прячем «Сохранено» — но только если за это время не
+            # появилась dirty-индикация (её не затираем).
+            QTimer.singleShot(4000, lambda: (
+                self.apikey_inline_status_lbl.setText("")
+                if self.apikey_inline_status_lbl.text() == tr('apikey_inline_saved')
+                else None))
             # 2026-06-10 (health check): после сохранения — асинхронная проверка
             # живости ключей (лёгкий запрос без генерации). Не блокирует UI.
             self._start_key_health_check()
@@ -15574,9 +15567,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            lbl = getattr(self, 'apikey_dirty_lbl', None)
+            lbl = getattr(self, 'apikey_inline_status_lbl', None)
             if lbl is not None:
-                lbl.setText(tr('apikey_dirty') if dirty else "")
+                if dirty:
+                    lbl.setText(tr('apikey_inline_dirty'))
+                    lbl.setStyleSheet("color:#e0913a; font-size:12px;")
+                else:
+                    lbl.setText("")
         except Exception:
             pass
 
