@@ -7207,6 +7207,12 @@ class MainWindow(QMainWindow):
             self._key_status_timer.start()
         except Exception:
             pass
+        # 2026-06-10 (стабильность блока ключей): пересчитать резерв высоты
+        # лейбла итога под реальную ширину (вкладка Settings теперь видима).
+        try:
+            self._reserve_server_check_lbl_height()
+        except Exception:
+            pass
 
     def _refresh_lang_btn(self):
         """Обновляет текст кнопки языка под текущий выбор: «РУС ▾».
@@ -8039,6 +8045,9 @@ class MainWindow(QMainWindow):
             _l = QLabel("")
             _l.setStyleSheet(
                 "color:#888; font-size:11px; padding:0 0 4px 20px;")
+            # Резерв высоты в одну строку — появление статуса («не работает —
+            # замени» и т.п.) не дёргает высоту ряда ключа.
+            _l.setMinimumHeight(_l.fontMetrics().height() + 4)
             return _l
         def _mk_key_toggle(_idx):
             _t = QCheckBox(tr('key_use_toggle'))
@@ -8146,11 +8155,15 @@ class MainWindow(QMainWindow):
         akf.addLayout(_btns_row)
 
         # Пояснение во время теста / итог проверки — один лейбл под рядом кнопок.
-        self.server_check_result_lbl = QLabel("")
+        # В покое показывает постоянную idle-подсказку (лейбл НИКОГДА не пуст →
+        # нет «пустого подвала»). minHeight зарезервирован под самый длинный
+        # текст (explain) → переходы idle→explain→итог не меняют высоту блока.
+        self.server_check_result_lbl = QLabel(tr('server_check_idle_hint'))
         self.server_check_result_lbl.setWordWrap(True)
         self.server_check_result_lbl.setStyleSheet(
-            "font-size:12px; padding-top:6px;")
+            "color:#9a8fb0; font-size:12px; padding-top:6px;")
         akf.addWidget(self.server_check_result_lbl)
+        self._reserve_server_check_lbl_height()
 
         # 2026-06-10 (этап 2): первичная отрисовка статусов (цвет/текст/тумблеры).
         try:
@@ -8163,12 +8176,17 @@ class MainWindow(QMainWindow):
         self.apikey_dirty_lbl = QLabel("")
         self.apikey_dirty_lbl.setStyleSheet(
             "color:#e0913a; font-size:12px; padding-top:6px;")
+        # Резерв одной строки — появление «несохранённые изменения» не дёргает рамку.
+        self.apikey_dirty_lbl.setMinimumHeight(
+            self.apikey_dirty_lbl.fontMetrics().height() + 6)
         akf.addWidget(self.apikey_dirty_lbl)
 
         # Статус «✓ Сохранено» появляется на 2 секунды после клика «Сохранить»
         self.apikey_status_lbl = QLabel("")
         self.apikey_status_lbl.setStyleSheet(
             "color:#6db86d; font-size:12px; padding-top:8px;")
+        self.apikey_status_lbl.setMinimumHeight(
+            self.apikey_status_lbl.fontMetrics().height() + 8)
         akf.addWidget(self.apikey_status_lbl)
 
         # 2026-06-10 (косметика): #1 фикс обрезки кнопки «Сохранить» (padding
@@ -15652,6 +15670,7 @@ class MainWindow(QMainWindow):
             from threads.server_check import ServerCheckThread
             self._server_check_down_info = None   # новый тест — прошлый down неактуален
             # Пояснение «что происходит» на время теста (заменится итогом).
+            self._reserve_server_check_lbl_height()   # под текущую ширину
             self.server_check_result_lbl.setText(tr('server_check_explain'))
             self.server_check_result_lbl.setStyleSheet(
                 "color:#9a8fb0; font-size:12px; padding-top:6px;")
@@ -15713,6 +15732,27 @@ class MainWindow(QMainWindow):
             self.server_check_btn.setMaximumWidth(16777215)
             self.server_check_btn.setStyleSheet(self._SERVER_CHECK_QSS_IDLE)
             self.server_check_btn.setText(tr('server_check_btn'))
+        except Exception:
+            pass
+
+    def _reserve_server_check_lbl_height(self):
+        """minHeight лейбла итога = высота самого длинного текста (explain) при
+        текущей ширине → переходы idle→explain→итог не меняют высоту блока
+        (лейбл всегда непуст, нижний отступ стабилен, без «пустого подвала»).
+        До реализации ширины (build) берём оценку ~ширины Settings."""
+        try:
+            lbl = getattr(self, 'server_check_result_lbl', None)
+            if lbl is None:
+                return
+            w = lbl.width()
+            if w < 50:
+                w = 420   # ширина ещё не реализована — оценка под Settings-панель
+            from PyQt6.QtCore import QRect
+            h = lbl.fontMetrics().boundingRect(
+                QRect(0, 0, w, 100000),
+                int(Qt.TextFlag.TextWordWrap),
+                tr('server_check_explain')).height()
+            lbl.setMinimumHeight(h + 12)
         except Exception:
             pass
 
