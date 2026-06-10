@@ -5917,6 +5917,10 @@ class MainWindow(QMainWindow):
         self._key_health_threads: list = []
         # 2026-06-10 (очередь #1): одиночный поток боевой проверки сервера FastGen.
         self._server_check_thread = None
+        self._server_check_timer = None      # UI-таймер секунд+точек (не из потока)
+        self._server_check_dots = 0
+        self._server_check_t0 = 0.0
+        self._server_check_down_info = None  # {'n':sec,'op_id':str} последнего down — для письма в техподдержку
 
     def _tick_dots(self):
         """Перебирает шаги анимации точек и обновляет индикаторы у блоков
@@ -8099,37 +8103,40 @@ class MainWindow(QMainWindow):
             self._apikey_toggles.append(_tgl_i)
             self._apikey_status_labels.append(_lbl_i)
 
-        # 2026-06-10 (косметика): «Скрыть» + «Сохранить» — отдельным нижним рядом
-        # под 5-м полем (раньше торчали справа от 1-го поля). Правое выравнивание
-        # через addStretch. Те же объекты/коннекты, только layout.
+        # 2026-06-10 (UX-полировка очереди #1): все 4 кнопки в ОДИН ряд внизу —
+        # слева диагностика [Проверить сервер][Техподдержка], справа [Показать]
+        # [Сохранить], между ними stretch. Высота 34 у всех. «Проверить сервер» —
+        # вторичный синий акцент; «Сохранить» — #save-акцент; «Показать»/
+        # «Техподдержка» нейтральны (дефолтный QPushButton).
+        self.server_check_btn = QPushButton(tr('server_check_btn'))
+        self.server_check_btn.setToolTip(tr('server_check_tip'))
+        self.server_check_btn.setFixedHeight(34)
+        self.server_check_btn.setStyleSheet(self._SERVER_CHECK_QSS_IDLE)
+        self.server_check_btn.clicked.connect(self._on_server_check_click)
+        self.server_support_btn = QPushButton(tr('server_support_btn'))
+        self.server_support_btn.setFixedHeight(34)
+        self.server_support_btn.clicked.connect(self._on_server_support_click)
+
         _btns_row = QHBoxLayout()
         _btns_row.setSpacing(8)
+        _btns_row.addWidget(self.server_check_btn)
+        _btns_row.addWidget(self.server_support_btn)
         _btns_row.addStretch(1)
         _btns_row.addWidget(self.apikey_show_btn)
         _btns_row.addWidget(self.apikey_save_btn)
         akf.addLayout(_btns_row)
 
-        # 2026-06-10 (очередь #1): «Проверить сервер FastGen» (боевой тест
-        # генерации, ~4 кредита) + «Написать в техподдержку» (t.me). Отдельный
-        # ряд под кнопками ключей; результат — лейбл ниже, висит до след. теста.
-        _srv_row = QHBoxLayout()
-        _srv_row.setSpacing(8)
-        self.server_check_btn = QPushButton(tr('server_check_btn'))
-        self.server_check_btn.setToolTip(tr('server_check_tip'))
-        self.server_check_btn.setFixedHeight(34)
-        self.server_check_btn.clicked.connect(self._on_server_check_click)
-        self.server_support_btn = QPushButton(tr('server_support_btn'))
-        self.server_support_btn.setFixedHeight(34)
-        self.server_support_btn.clicked.connect(self._on_server_support_click)
-        _srv_row.addWidget(self.server_check_btn)
-        _srv_row.addWidget(self.server_support_btn)
-        _srv_row.addStretch(1)
-        akf.addLayout(_srv_row)
+        # Пояснение во время теста / итог проверки — один лейбл под рядом кнопок.
         self.server_check_result_lbl = QLabel("")
         self.server_check_result_lbl.setWordWrap(True)
         self.server_check_result_lbl.setStyleSheet(
             "font-size:12px; padding-top:6px;")
         akf.addWidget(self.server_check_result_lbl)
+        # Транзиентная подпись «текст скопирован» (на ~2с при копии в техподдержку).
+        self.server_check_copied_lbl = QLabel("")
+        self.server_check_copied_lbl.setStyleSheet(
+            "color:#46d160; font-size:11px; padding-top:2px;")
+        akf.addWidget(self.server_check_copied_lbl)
 
         # 2026-06-10 (этап 2): первичная отрисовка статусов (цвет/текст/тумблеры).
         try:
@@ -15359,6 +15366,20 @@ class MainWindow(QMainWindow):
     _KEY_COL_RED    = "#ff2b2b"   # выбит насовсем (perm, 401/403/license)
     _KEY_COL_ORANGE = "#e0913a"   # сервер недоступен (health check, не вина ключа)
 
+    # 2026-06-10 (UX очередь #1): стили кнопки «Проверить сервер» — вторичный
+    # синий акцент (#6fb6ff, цвет «Ты:» из чата). IDLE — обычное состояние,
+    # RUNNING — выделение во время теста (фон+яркий текст, держится и в disabled).
+    _SERVER_CHECK_QSS_IDLE = (
+        "QPushButton { border:1px solid #6fb6ff; color:#6fb6ff; }"
+        "QPushButton:hover { background: rgba(111,182,255,0.10); }"
+        "QPushButton:disabled { color: rgba(111,182,255,0.45);"
+        " border-color: rgba(111,182,255,0.35); }")
+    _SERVER_CHECK_QSS_RUNNING = (
+        "QPushButton { border:1px solid #6fb6ff; color:#cfe6ff;"
+        " background: rgba(111,182,255,0.16); }"
+        "QPushButton:disabled { color:#cfe6ff;"
+        " background: rgba(111,182,255,0.16); border-color:#6fb6ff; }")
+
     def _refresh_key_status_indicators(self):
         """Перекрашивает индикаторы и пишет статус-лейблы 5 полей ключей по
         данным key_pool: manual-off (серый «отключён вручную») > perm (красный
@@ -15584,10 +15605,11 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def _on_server_check_click(self):
-        """2026-06-10 (очередь #1): запустить боевой тест сервера FastGen.
+        """2026-06-10 (очередь #1, UX): запустить боевой тест сервера FastGen.
         Ключ — первый доступный из пула (next_key, фильтрует выбитые/manual-off).
-        Пустой → «нет доступных ключей», поток НЕ стартует. Кнопка disabled на
-        время теста (повторный клик невозможен)."""
+        Пустой → «нет доступных ключей», поток НЕ стартует. Секунды/точки ведёт
+        UI-таймер (на больном сервере poll-GET блокирует поток — сигнал из потока
+        «замирал» бы). Кнопка disabled + фикс-ширина (не прыгает) + выделение."""
         try:
             sct = getattr(self, '_server_check_thread', None)
             if sct is not None and sct.isRunning():
@@ -15603,44 +15625,98 @@ class MainWindow(QMainWindow):
                     "color:#e0913a; font-size:12px; padding-top:6px;")
                 return
             from threads.server_check import ServerCheckThread
-            self.server_check_result_lbl.setText("")
+            self._server_check_down_info = None   # новый тест — прошлый down неактуален
+            try:
+                self.server_check_copied_lbl.setText("")
+            except Exception:
+                pass
+            # Пояснение «что происходит» на время теста (заменится итогом).
+            self.server_check_result_lbl.setText(tr('server_check_explain'))
+            self.server_check_result_lbl.setStyleSheet(
+                "color:#9a8fb0; font-size:12px; padding-top:6px;")
+            # Резерв ширины под самый длинный бегущий текст (3 точки + «300с»),
+            # фикс → кнопка не дёргается при смене точек/секунд.
+            self._server_check_dots = 0
+            self._server_check_t0 = time.monotonic()
+            _reserve = tr('server_check_running').format(dots='...', n=300)
+            _fm = self.server_check_btn.fontMetrics()
+            _w = _fm.horizontalAdvance(_reserve) + 32
+            self.server_check_btn.setFixedWidth(
+                max(self.server_check_btn.width(), _w))
             self.server_check_btn.setEnabled(False)
-            self.server_check_btn.setText(tr('server_check_running').format(n=0))
+            self.server_check_btn.setStyleSheet(self._SERVER_CHECK_QSS_RUNNING)
+            self._tick_server_check()   # сразу «Проверяю. 0с», без паузы 0.5с
+            # UI-таймер: 500мс (точки плавные), секунды по time.monotonic.
+            from PyQt6.QtCore import QTimer
+            self._server_check_timer = QTimer(self)
+            self._server_check_timer.setInterval(500)
+            self._server_check_timer.timeout.connect(self._tick_server_check)
+            self._server_check_timer.start()
             th = ServerCheckThread(key, self)
-            th.progress.connect(self._on_server_check_progress)
             th.result.connect(self._on_server_check_result)
             th.finished.connect(self._on_server_check_finished)
             self._server_check_thread = th
             th.start()
         except Exception:
             traceback.print_exc()
-            try:
-                self.server_check_btn.setEnabled(True)
-                self.server_check_btn.setText(tr('server_check_btn'))
-            except Exception:
-                pass
+            self._stop_server_check_timer()
+            self._reset_server_check_btn()
 
-    def _on_server_check_progress(self, sec: int):
-        """Тик секунд — обновляем текст кнопки «проверяю… Nс»."""
+    def _tick_server_check(self):
+        """UI-тик: бегущие точки (1→2→3) + секунды по time.monotonic. Секунды
+        НЕ из потока — на больном сервере poll-GET блокирует поток до 30с."""
         try:
+            self._server_check_dots = (self._server_check_dots % 3) + 1
+            sec = int(time.monotonic() - (self._server_check_t0 or time.monotonic()))
             self.server_check_btn.setText(
-                tr('server_check_running').format(n=int(sec)))
+                tr('server_check_running').format(
+                    dots='.' * self._server_check_dots, n=sec))
         except Exception:
             pass
 
-    def _on_server_check_result(self, outcome: str, sec: int):
-        """Итог: ok зелёный / down красный / noconn оранжевый. Висит до
-        следующего теста."""
+    def _stop_server_check_timer(self):
+        """Остановить и снять UI-таймер секунд (idempotent)."""
+        t = getattr(self, '_server_check_timer', None)
+        if t is not None:
+            try:
+                t.stop()
+            except Exception:
+                pass
+            self._server_check_timer = None
+
+    def _reset_server_check_btn(self):
+        """Вернуть кнопку в idle: текст, idle-стиль, снять фикс-ширину."""
         try:
+            self.server_check_btn.setEnabled(True)
+            self.server_check_btn.setMinimumWidth(0)
+            self.server_check_btn.setMaximumWidth(16777215)
+            self.server_check_btn.setStyleSheet(self._SERVER_CHECK_QSS_IDLE)
+            self.server_check_btn.setText(tr('server_check_btn'))
+        except Exception:
+            pass
+
+    def _on_server_check_result(self, outcome: str, sec: int, op_id: str = ""):
+        """Итог (sec — реальное время потока по monotonic): ok зелёный /
+        down красный (+ время + строка op_id + указание на техподдержку) /
+        noconn оранжевый. При down запоминаем {n, op_id} для письма в
+        техподдержку. Заменяет пояснение, висит до следующего теста."""
+        self._stop_server_check_timer()
+        try:
+            op_id = str(op_id or "")
             if outcome == 'ok':
                 txt = tr('server_check_ok').format(n=int(sec))
                 col = "#46d160"
+                self._server_check_down_info = None
             elif outcome == 'noconn':
                 txt = tr('server_check_noconn')
                 col = "#e0913a"
+                self._server_check_down_info = None
             else:
-                txt = tr('server_check_down')
+                txt = tr('server_check_down').format(n=int(sec))
+                if op_id:
+                    txt += "\n" + tr('server_check_task_id').format(op_id=op_id)
                 col = "#ff2b2b"
+                self._server_check_down_info = {'n': int(sec), 'op_id': op_id}
             self.server_check_result_lbl.setText(txt)
             self.server_check_result_lbl.setStyleSheet(
                 "color:%s; font-size:12px; padding-top:6px;" % col)
@@ -15648,23 +15724,41 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def _on_server_check_finished(self):
-        """Снятие потока из реестра + разблокировка кнопки (встроенный
-        QThread.finished — ПОСЛЕ возврата run(), без premature-GC)."""
-        try:
-            self.server_check_btn.setEnabled(True)
-            self.server_check_btn.setText(tr('server_check_btn'))
-        except Exception:
-            pass
+        """Снятие потока + таймера, сброс кнопки (встроенный QThread.finished —
+        ПОСЛЕ возврата run(), без premature-GC)."""
+        self._stop_server_check_timer()
+        self._reset_server_check_btn()
         self._server_check_thread = None
 
     def _on_server_support_click(self):
-        """Открыть чат техподдержки FastGen (Telegram) в браузере."""
+        """Открыть чат техподдержки FastGen (Telegram). Если перед этим тест
+        провалился (down) — копируем в буфер готовое письмо (время + op_id),
+        показываем подпись «скопировано» на ~2с, затем открываем телеграм.
+        Без провального теста — просто открываем чат."""
         try:
+            info = getattr(self, '_server_check_down_info', None)
+            if info:
+                try:
+                    msg = tr('server_check_support_msg').format(
+                        n=int(info.get('n', 0)),
+                        op_id=(info.get('op_id') or 'не получен'))
+                    QApplication.clipboard().setText(msg)
+                    self.server_check_copied_lbl.setText(tr('server_check_copied'))
+                    QTimer.singleShot(2500, self._clear_server_check_copied)
+                except Exception:
+                    traceback.print_exc()
             from PyQt6.QtGui import QDesktopServices
             from PyQt6.QtCore import QUrl
             QDesktopServices.openUrl(QUrl("https://t.me/vlad_automatoin"))
         except Exception:
             traceback.print_exc()
+
+    def _clear_server_check_copied(self):
+        """Снять транзиентную подпись «скопировано» (guard на удалённый виджет)."""
+        try:
+            self.server_check_copied_lbl.setText("")
+        except Exception:
+            pass
 
     def _open_folder(self):
         # Открываем папку АКТИВНОГО сериала (со всеми его storyboards/refs/etc).
