@@ -15320,7 +15320,7 @@ class MainWindow(QMainWindow):
     _KEY_COL_GREY   = "#3a3a3a"   # неактивен / пустое поле / отключён вручную
     _KEY_COL_GREEN  = "#46d160"   # живой
     _KEY_COL_YELLOW = "#e0b341"   # лимит (temp, 429)
-    _KEY_COL_RED    = "#e05a5a"   # выбит насовсем (perm, 401/403/license)
+    _KEY_COL_RED    = "#ff2b2b"   # выбит насовсем (perm, 401/403/license)
     _KEY_COL_ORANGE = "#e0913a"   # сервер недоступен (health check, не вина ключа)
 
     def _refresh_key_status_indicators(self):
