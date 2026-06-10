@@ -8030,14 +8030,15 @@ class MainWindow(QMainWindow):
         self.apikey_show_btn.setMinimumWidth(110)
         self.apikey_show_btn.setCheckable(True)
         self.apikey_show_btn.toggled.connect(self._on_apikey_toggle_visibility)
-        ak_row.addWidget(self.apikey_show_btn)
+        # 2026-06-10 (косметика): кнопки «Скрыть»/«Сохранить» НЕ добавляем в
+        # ak_row — переносятся в отдельный нижний ряд под 5-м полем (ниже).
+        # Объекты и коннекты создаём здесь как раньше (логика не меняется).
 
         self.apikey_save_btn = QPushButton(tr('apikey_save'))
         self.apikey_save_btn.setObjectName("save")
         self.apikey_save_btn.setFixedHeight(34)
         self.apikey_save_btn.setMinimumWidth(120)
         self.apikey_save_btn.clicked.connect(self._on_apikey_save)
-        ak_row.addWidget(self.apikey_save_btn)
         _tgl0 = _mk_key_toggle(0)
         ak_row.addWidget(_tgl0)
         self._apikey_toggles.append(_tgl0)
@@ -8081,6 +8082,16 @@ class MainWindow(QMainWindow):
             self._apikey_indicators.append(_ind_i)
             self._apikey_toggles.append(_tgl_i)
             self._apikey_status_labels.append(_lbl_i)
+
+        # 2026-06-10 (косметика): «Скрыть» + «Сохранить» — отдельным нижним рядом
+        # под 5-м полем (раньше торчали справа от 1-го поля). Правое выравнивание
+        # через addStretch. Те же объекты/коннекты, только layout.
+        _btns_row = QHBoxLayout()
+        _btns_row.setSpacing(8)
+        _btns_row.addStretch(1)
+        _btns_row.addWidget(self.apikey_show_btn)
+        _btns_row.addWidget(self.apikey_save_btn)
+        akf.addLayout(_btns_row)
 
         # 2026-06-10 (этап 2): первичная отрисовка статусов (цвет/текст/тумблеры).
         try:
