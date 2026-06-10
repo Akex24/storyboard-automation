@@ -5917,8 +5917,7 @@ class MainWindow(QMainWindow):
         self._key_health_threads: list = []
         # 2026-06-10 (очередь #1): одиночный поток боевой проверки сервера FastGen.
         self._server_check_thread = None
-        self._server_check_timer = None      # UI-таймер секунд+точек (не из потока)
-        self._server_check_dots = 0
+        self._server_check_timer = None      # UI-таймер секунд (не из потока)
         self._server_check_t0 = 0.0
         self._server_check_down_info = None  # {'n':sec,'op_id':str} последнего down — для письма в техподдержку
 
@@ -8115,6 +8114,7 @@ class MainWindow(QMainWindow):
         self.server_check_btn.clicked.connect(self._on_server_check_click)
         self.server_support_btn = QPushButton(tr('server_support_btn'))
         self.server_support_btn.setFixedHeight(34)
+        self.server_support_btn.setStyleSheet(self._SERVER_SUPPORT_QSS)
         self.server_support_btn.clicked.connect(self._on_server_support_click)
 
         _btns_row = QHBoxLayout()
@@ -15371,9 +15371,20 @@ class MainWindow(QMainWindow):
         " border-color: rgba(111,182,255,0.35); }")
     _SERVER_CHECK_QSS_RUNNING = (
         "QPushButton { border:1px solid #6fb6ff; color:#cfe6ff;"
-        " background: rgba(111,182,255,0.16); }"
+        " background: rgba(111,182,255,0.16);"
+        " text-align:left; padding-left:12px; }"
         "QPushButton:disabled { color:#cfe6ff;"
-        " background: rgba(111,182,255,0.16); border-color:#6fb6ff; }")
+        " background: rgba(111,182,255,0.16); border-color:#6fb6ff;"
+        " text-align:left; padding-left:12px; }")
+
+    # 2026-06-10 (UX очередь #1): кнопка «Написать в техподдержку» — фиолетовый
+    # акцент (палитра regen_btn: текст #c9aaff, рамка #4a2f7a, hover #372659).
+    # Отличается от синего «Проверить сервер», структура как у *_QSS_IDLE.
+    _SERVER_SUPPORT_QSS = (
+        "QPushButton { border:1px solid #4a2f7a; color:#c9aaff; }"
+        "QPushButton:hover { background:#372659; border-color:#5a3f8a; }"
+        "QPushButton:disabled { color: rgba(201,170,255,0.4);"
+        " border-color: rgba(74,47,122,0.5); }")
 
     def _refresh_key_status_indicators(self):
         """Перекрашивает индикаторы и пишет статус-лейблы 5 полей ключей по
@@ -15625,18 +15636,17 @@ class MainWindow(QMainWindow):
             self.server_check_result_lbl.setText(tr('server_check_explain'))
             self.server_check_result_lbl.setStyleSheet(
                 "color:#9a8fb0; font-size:12px; padding-top:6px;")
-            # Резерв ширины под самый длинный бегущий текст (3 точки + «300с»),
-            # фикс → кнопка не дёргается при смене точек/секунд.
-            self._server_check_dots = 0
+            # Резерв ширины под самый длинный текст («Проверяю… 300с»), фикс →
+            # кнопка не дёргается; лево-выравнивание держит надпись стабильной.
             self._server_check_t0 = time.monotonic()
-            _reserve = tr('server_check_running').format(dots='...', n=300)
+            _reserve = tr('server_check_running').format(n=300)
             _fm = self.server_check_btn.fontMetrics()
             _w = _fm.horizontalAdvance(_reserve) + 32
             self.server_check_btn.setFixedWidth(
                 max(self.server_check_btn.width(), _w))
             self.server_check_btn.setEnabled(False)
             self.server_check_btn.setStyleSheet(self._SERVER_CHECK_QSS_RUNNING)
-            self._tick_server_check()   # сразу «Проверяю. 0с», без паузы 0.5с
+            self._tick_server_check()   # сразу «Проверяю… 0с», без паузы 0.5с
             # UI-таймер: 500мс (точки плавные), секунды по time.monotonic.
             from PyQt6.QtCore import QTimer
             self._server_check_timer = QTimer(self)
@@ -15654,14 +15664,15 @@ class MainWindow(QMainWindow):
             self._reset_server_check_btn()
 
     def _tick_server_check(self):
-        """UI-тик: бегущие точки (1→2→3) + секунды по time.monotonic. Секунды
-        НЕ из потока — на больном сервере poll-GET блокирует поток до 30с."""
+        """UI-тик: ТОЛЬКО секунды по time.monotonic. Многоточие в тексте
+        статичное «…» (не анимируется) — иначе при смене числа точек менялась бы
+        ширина текста и надпись ездила. Кнопка лево-выровнена → секунды растут
+        вправо внутри фикс-ширины, слева ничего не дёргается. Секунды НЕ из
+        потока — на больном сервере poll-GET блокирует поток до 30с."""
         try:
-            self._server_check_dots = (self._server_check_dots % 3) + 1
             sec = int(time.monotonic() - (self._server_check_t0 or time.monotonic()))
             self.server_check_btn.setText(
-                tr('server_check_running').format(
-                    dots='.' * self._server_check_dots, n=sec))
+                tr('server_check_running').format(n=sec))
         except Exception:
             pass
 
