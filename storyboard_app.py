@@ -5915,6 +5915,8 @@ class MainWindow(QMainWindow):
         # health-потоков для graceful shutdown.
         self._key_health_status: dict = {}
         self._key_health_threads: list = []
+        # 2026-06-10 (очередь #1): одиночный поток боевой проверки сервера FastGen.
+        self._server_check_thread = None
 
     def _tick_dots(self):
         """Перебирает шаги анимации точек и обновляет индикаторы у блоков
@@ -7335,6 +7337,15 @@ class MainWindow(QMainWindow):
                     self.apikey_show_btn.setText(tr('apikey_hide'))
                 else:
                     self.apikey_show_btn.setText(tr('apikey_show'))
+                # 2026-06-10 (очередь #1): кнопки проверки сервера. Базовый
+                # текст кнопки НЕ трогаем пока идёт тест (там «проверяю… Nс»).
+                if hasattr(self, 'server_check_btn'):
+                    _sct = getattr(self, '_server_check_thread', None)
+                    if _sct is None or not _sct.isRunning():
+                        self.server_check_btn.setText(tr('server_check_btn'))
+                    self.server_check_btn.setToolTip(tr('server_check_tip'))
+                if hasattr(self, 'server_support_btn'):
+                    self.server_support_btn.setText(tr('server_support_btn'))
             except Exception:
                 traceback.print_exc()
         # v1.0.65: секция «🌐 ПРОКСИ-СЕРВЕР» — retranslate всех меток.
@@ -8097,6 +8108,28 @@ class MainWindow(QMainWindow):
         _btns_row.addWidget(self.apikey_show_btn)
         _btns_row.addWidget(self.apikey_save_btn)
         akf.addLayout(_btns_row)
+
+        # 2026-06-10 (очередь #1): «Проверить сервер FastGen» (боевой тест
+        # генерации, ~4 кредита) + «Написать в техподдержку» (t.me). Отдельный
+        # ряд под кнопками ключей; результат — лейбл ниже, висит до след. теста.
+        _srv_row = QHBoxLayout()
+        _srv_row.setSpacing(8)
+        self.server_check_btn = QPushButton(tr('server_check_btn'))
+        self.server_check_btn.setToolTip(tr('server_check_tip'))
+        self.server_check_btn.setFixedHeight(34)
+        self.server_check_btn.clicked.connect(self._on_server_check_click)
+        self.server_support_btn = QPushButton(tr('server_support_btn'))
+        self.server_support_btn.setFixedHeight(34)
+        self.server_support_btn.clicked.connect(self._on_server_support_click)
+        _srv_row.addWidget(self.server_check_btn)
+        _srv_row.addWidget(self.server_support_btn)
+        _srv_row.addStretch(1)
+        akf.addLayout(_srv_row)
+        self.server_check_result_lbl = QLabel("")
+        self.server_check_result_lbl.setWordWrap(True)
+        self.server_check_result_lbl.setStyleSheet(
+            "font-size:12px; padding-top:6px;")
+        akf.addWidget(self.server_check_result_lbl)
 
         # 2026-06-10 (этап 2): первичная отрисовка статусов (цвет/текст/тумблеры).
         try:
@@ -9734,6 +9767,9 @@ class MainWindow(QMainWindow):
             threads.extend(getattr(self, '_geometry_threads', []) or [])
             threads.extend(getattr(self, '_seedance_regen_threads', []) or [])
             threads.extend(getattr(self, '_key_health_threads', []) or [])
+            t = getattr(self, '_server_check_thread', None)
+            if t is not None:
+                threads.append(t)
             t = getattr(self, '_auth_switch_thread', None)
             if t is not None:
                 threads.append(t)
@@ -15544,6 +15580,89 @@ class MainWindow(QMainWindow):
             else:
                 self._key_health_status.pop(field_idx, None)
             self._refresh_key_status_indicators()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_server_check_click(self):
+        """2026-06-10 (очередь #1): запустить боевой тест сервера FastGen.
+        Ключ — первый доступный из пула (next_key, фильтрует выбитые/manual-off).
+        Пустой → «нет доступных ключей», поток НЕ стартует. Кнопка disabled на
+        время теста (повторный клик невозможен)."""
+        try:
+            sct = getattr(self, '_server_check_thread', None)
+            if sct is not None and sct.isRunning():
+                return  # уже идёт
+            import key_pool
+            try:
+                key = key_pool.next_key() or ""
+            except Exception:
+                key = ""
+            if not key:
+                self.server_check_result_lbl.setText(tr('server_check_nokeys'))
+                self.server_check_result_lbl.setStyleSheet(
+                    "color:#e0913a; font-size:12px; padding-top:6px;")
+                return
+            from threads.server_check import ServerCheckThread
+            self.server_check_result_lbl.setText("")
+            self.server_check_btn.setEnabled(False)
+            self.server_check_btn.setText(tr('server_check_running').format(n=0))
+            th = ServerCheckThread(key, self)
+            th.progress.connect(self._on_server_check_progress)
+            th.result.connect(self._on_server_check_result)
+            th.finished.connect(self._on_server_check_finished)
+            self._server_check_thread = th
+            th.start()
+        except Exception:
+            traceback.print_exc()
+            try:
+                self.server_check_btn.setEnabled(True)
+                self.server_check_btn.setText(tr('server_check_btn'))
+            except Exception:
+                pass
+
+    def _on_server_check_progress(self, sec: int):
+        """Тик секунд — обновляем текст кнопки «проверяю… Nс»."""
+        try:
+            self.server_check_btn.setText(
+                tr('server_check_running').format(n=int(sec)))
+        except Exception:
+            pass
+
+    def _on_server_check_result(self, outcome: str, sec: int):
+        """Итог: ok зелёный / down красный / noconn оранжевый. Висит до
+        следующего теста."""
+        try:
+            if outcome == 'ok':
+                txt = tr('server_check_ok').format(n=int(sec))
+                col = "#46d160"
+            elif outcome == 'noconn':
+                txt = tr('server_check_noconn')
+                col = "#e0913a"
+            else:
+                txt = tr('server_check_down')
+                col = "#ff2b2b"
+            self.server_check_result_lbl.setText(txt)
+            self.server_check_result_lbl.setStyleSheet(
+                "color:%s; font-size:12px; padding-top:6px;" % col)
+        except Exception:
+            traceback.print_exc()
+
+    def _on_server_check_finished(self):
+        """Снятие потока из реестра + разблокировка кнопки (встроенный
+        QThread.finished — ПОСЛЕ возврата run(), без premature-GC)."""
+        try:
+            self.server_check_btn.setEnabled(True)
+            self.server_check_btn.setText(tr('server_check_btn'))
+        except Exception:
+            pass
+        self._server_check_thread = None
+
+    def _on_server_support_click(self):
+        """Открыть чат техподдержки FastGen (Telegram) в браузере."""
+        try:
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl("https://t.me/vlad_automatoin"))
         except Exception:
             traceback.print_exc()
 
