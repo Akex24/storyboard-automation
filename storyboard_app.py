@@ -8132,11 +8132,6 @@ class MainWindow(QMainWindow):
         self.server_check_result_lbl.setStyleSheet(
             "font-size:12px; padding-top:6px;")
         akf.addWidget(self.server_check_result_lbl)
-        # Транзиентная подпись «текст скопирован» (на ~2с при копии в техподдержку).
-        self.server_check_copied_lbl = QLabel("")
-        self.server_check_copied_lbl.setStyleSheet(
-            "color:#46d160; font-size:11px; padding-top:2px;")
-        akf.addWidget(self.server_check_copied_lbl)
 
         # 2026-06-10 (этап 2): первичная отрисовка статусов (цвет/текст/тумблеры).
         try:
@@ -15626,10 +15621,6 @@ class MainWindow(QMainWindow):
                 return
             from threads.server_check import ServerCheckThread
             self._server_check_down_info = None   # новый тест — прошлый down неактуален
-            try:
-                self.server_check_copied_lbl.setText("")
-            except Exception:
-                pass
             # Пояснение «что происходит» на время теста (заменится итогом).
             self.server_check_result_lbl.setText(tr('server_check_explain'))
             self.server_check_result_lbl.setStyleSheet(
@@ -15731,20 +15722,28 @@ class MainWindow(QMainWindow):
         self._server_check_thread = None
 
     def _on_server_support_click(self):
-        """Открыть чат техподдержки FastGen (Telegram). Если перед этим тест
-        провалился (down) — копируем в буфер готовое письмо (время + op_id),
-        показываем подпись «скопировано» на ~2с, затем открываем телеграм.
-        Без провального теста — просто открываем чат."""
+        """Чат техподдержки FastGen (Telegram). Если перед этим тест провалился
+        (down) — копируем в буфер готовое письмо (время + op_id) и показываем
+        QMessageBox с инструкцией «вставь Cmd/Ctrl+V» + сам текст письма; по
+        кнопке «Открыть Telegram» открываем чат (телеграм всплывает ПОСЛЕ окна —
+        юзер уже знает что вставить). Без провального теста — сразу открываем."""
         try:
             info = getattr(self, '_server_check_down_info', None)
             if info:
                 try:
-                    msg = tr('server_check_support_msg').format(
+                    body = tr('server_check_support_msg').format(
                         n=int(info.get('n', 0)),
                         op_id=(info.get('op_id') or 'не получен'))
-                    QApplication.clipboard().setText(msg)
-                    self.server_check_copied_lbl.setText(tr('server_check_copied'))
-                    QTimer.singleShot(2500, self._clear_server_check_copied)
+                    QApplication.clipboard().setText(body)
+                    box = QMessageBox(self)
+                    box.setIcon(QMessageBox.Icon.Information)
+                    box.setWindowTitle(tr('server_check_support_title'))
+                    box.setText(tr('server_check_support_body'))
+                    box.setInformativeText(body)
+                    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    box.button(QMessageBox.StandardButton.Ok).setText(
+                        tr('server_check_support_open'))
+                    box.exec()
                 except Exception:
                     traceback.print_exc()
             from PyQt6.QtGui import QDesktopServices
@@ -15752,13 +15751,6 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl("https://t.me/vlad_automatoin"))
         except Exception:
             traceback.print_exc()
-
-    def _clear_server_check_copied(self):
-        """Снять транзиентную подпись «скопировано» (guard на удалённый виджет)."""
-        try:
-            self.server_check_copied_lbl.setText("")
-        except Exception:
-            pass
 
     def _open_folder(self):
         # Открываем папку АКТИВНОГО сериала (со всеми его storyboards/refs/etc).
