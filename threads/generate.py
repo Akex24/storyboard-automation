@@ -154,6 +154,29 @@ def _classify_key_error(exc):
     return None
 
 
+def _is_ref_expired_error(exc):
+    """True если ответ 404 `resource.file_not_found_or_expired` — реф-картинка,
+    ранее загруженная в FastGen storage, протухла/удалена на сервере, а в payload
+    ушёл её СТАРЫЙ file-hash (из in-memory _upload_cache). Отдельно от
+    _classify_key_error (404 — НЕ вина ключа). Изолировано, не кидает."""
+    try:
+        resp = getattr(exc, 'response', None)
+        if resp is None or getattr(resp, 'status_code', None) != 404:
+            return False
+        blob = _http_error_detail(exc) or ''
+        if not blob:
+            try:
+                blob = resp.text or ''
+            except Exception:
+                blob = ''
+        blob = blob.lower()
+        return ('file_not_found_or_expired' in blob
+                or 'resource.file_not_found' in blob
+                or ('file not found' in blob and 'expired' in blob))
+    except Exception:
+        return False
+
+
 # ─── Поток генерации шота ────────────────────────────────────────
 
 class GenerateThread(QThread):
@@ -204,9 +227,15 @@ class GenerateThread(QThread):
         self.camera_override  = camera_override
         self.base_image_override = base_image_override
 
-    def _upload_file(self, session: requests.Session, path: Path) -> str:
+    def _upload_file(self, session: requests.Session, path: Path,
+                     force_reupload: bool = False) -> str:
         """Загружает файл в Fast Gen storage, возвращает file_hash. Кеширует
         по (resolved-path, mtime_ns).
+
+        2026-06-10: `force_reupload=True` пропускает ЧТЕНИЕ кеша (всегда POST) и
+        ПЕРЕЗАПИСЫВАЕТ запись свежим хешем — инвалидация при 404
+        file_not_found_or_expired (серверный blob протух, старый хеш в кеше
+        мёртв). Дефолт False → поведение байт-в-байт прежнее.
 
         2026-05-19: cache_key переведён с одиночного `str(path.resolve())`
         на кортеж `(resolved, mtime_ns)`. Старый ключ не учитывал содержимое
@@ -231,7 +260,7 @@ class GenerateThread(QThread):
             # 0 как mtime обеспечит cache miss (никакой реальный mtime != 0).
             mtime_ns = 0
         cache_key = (resolved, mtime_ns)
-        if cache_key in _sa._upload_cache:
+        if not force_reupload and cache_key in _sa._upload_cache:
             return _sa._upload_cache[cache_key]
         data_bytes, mime = _read_image_for_upload(path)
         r = session.post(f"{_sa.STORAGE_BASE}/upload",
@@ -239,8 +268,22 @@ class GenerateThread(QThread):
         r.raise_for_status()
         data = r.json()
         fh   = data.get("file_hash") or data.get("file") or data.get("hash") or ""
-        _sa._upload_cache[cache_key] = fh
+        _sa._upload_cache[cache_key] = fh   # перезапись свежим хешем (force)
         return fh
+
+    def _reupload_shot_refs(self, session, filtered_refs, sorted_tags,
+                            existing_path) -> List[str]:
+        """404-перезаливка: перезалить рефы шота (force_reupload=True) и собрать
+        ref_hashes в ТОМ ЖЕ порядке, что первичная сборка. Зеркалит ветки run():
+        regen → shot_hashes; edit → [base]+shot_hashes; realistic → shot_hashes+[base]
+        (порядок shot_hashes = по sorted_tags, как в _collect_shot_refs)."""
+        shot_hashes = [self._upload_file(session, filtered_refs[t],
+                                         force_reupload=True)
+                       for t in sorted_tags if filtered_refs.get(t)]
+        if existing_path is not None and (self.realistic or self.edit_instruction):
+            base = self._upload_file(session, existing_path, force_reupload=True)
+            return (shot_hashes + [base]) if self.realistic else ([base] + shot_hashes)
+        return shot_hashes
 
     def _build_edit_prompt(self, instruction: str,
                             source_prompt: str,
@@ -822,10 +865,39 @@ class GenerateThread(QThread):
                 except Exception:
                     traceback.print_exc()
 
-            r = session.post(f"{_sa.API_BASE}{endpoint}",
-                             json=payload, timeout=60)
-            r.raise_for_status()
-            data = r.json()
+            # 2026-06-10 (404-перезаливка рефа): submit с ОДНИМ ретраем. Если
+            # сервер вернул 404 file_not_found_or_expired (реф-картинка протухла
+            # на сервере, а в payload ушёл её мёртвый кешированный file-hash) —
+            # перезаливаем рефы шота (force) + пересобираем reference_images +
+            # повторяем POST РОВНО один раз. Анти-цикл: range(2).
+            data = None
+            for _submit_attempt in range(2):
+                try:
+                    r = session.post(f"{_sa.API_BASE}{endpoint}",
+                                     json=payload, timeout=60)
+                    r.raise_for_status()
+                    data = r.json()
+                    break
+                except Exception as _post_e:
+                    if (_submit_attempt == 0 and ref_hashes
+                            and _is_ref_expired_error(_post_e)):
+                        try:
+                            ep_id = self.block_name.split('_block_', 1)[0]
+                            _sa.append_chat_message(
+                                ep_id, 'system',
+                                f"\nℹ SHOT {self.panel_idx + 1} блока "
+                                f"«{self.block_name}»: реф истёк на сервере "
+                                f"— перезалит, повторяю\n")
+                        except Exception:
+                            pass
+                        ref_hashes = self._reupload_shot_refs(
+                            session, filtered_refs, sorted_tags, existing_path)
+                        if (provider == _sa.IMAGE_PROVIDER_OPENAI
+                                and len(ref_hashes) > 2):
+                            ref_hashes = ref_hashes[:2]
+                        payload["reference_images"] = ref_hashes
+                        continue
+                    raise
             if not data.get("operation_id"):
                 self.error.emit(f"No operation_id: {data}")
                 return

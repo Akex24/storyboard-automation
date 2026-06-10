@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-09 (дотяжка Mode C — 1 повтор упавшей версии по ракурсу из v{N}.prompt.txt)
+**Последнее обновление:** 2026-06-10 (404-перезаливка рефа — force re-upload при file_not_found_or_expired)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -641,6 +641,38 @@ finished/error). Блок не финиширует пока повтор в п�
 `_threads_pending_delete` (см. секцию Lifecycle). Старый тред дожимает reaper по
 `isFinished()`, повтор живёт в основном реестре — **разные контейнеры, reaper
 повтор не трогает**, перезаписи живой ссылки нет.
+
+## 404-перезаливка протухшего рефа (2026-06-10)
+
+**Симптом:** FastGen массово отдаёт `404 resource.file_not_found_or_expired`
+("Referenced file not found or expired (file:<hash>)") при живых ключах.
+
+**Причина:** реф-картинка заливается в FastGen storage один раз → серверный
+`file_hash` оседает в **in-memory `_upload_cache`** ([storyboard_app.py:228](storyboard_app.py:228),
+ключ `(resolved_path, mtime_ns)`). Сервер протухает/удаляет blob по storage-TTL, но
+кеш продолжает отдавать мёртвый хеш (mtime файла не менялся → перезаливки нет) →
+каждый шот с этим рефом ловит 404. До фикса не было ни TTL, ни проверки свежести,
+ни re-upload при 404. Хеш — СЕРВЕРНЫЙ id (`data.get("file_hash")`), не md5 контента.
+
+**Механика фикса** ([threads/generate.py](threads/generate.py), только GenerateThread):
+- `_is_ref_expired_error(exc)` — детект 404 + тело `file_not_found_or_expired`/
+  `resource.file_not_found`. Отдельно от `_classify_key_error` (404 — НЕ вина ключа,
+  там так и None → ключ не выбивается).
+- `_upload_file(..., force_reupload=False)` — при True пропускает ЧТЕНИЕ кеша (всегда
+  POST) и **перезаписывает** запись свежим хешем (= инвалидация мёртвого). Дефолт →
+  поведение байт-в-байт. Кеш — lock-free, перезапись идемпотентна под GIL.
+- `_reupload_shot_refs(...)` — перезалив рефов шота force + сборка `ref_hashes` в том
+  же порядке, что первичная (regen→shot_hashes; edit→[base]+shot; realistic→shot+[base];
+  shot по `sorted_tags`).
+- В `run()` submit POST обёрнут в `for _submit_attempt in range(2)`: на 404-expired
+  (только attempt 0) → чат-уведомление «реф истёк — перезалит, повторяю»
+  (`_sa.append_chat_message` — чистый file-I/O в jsonl, UI не трогает → безопасно из
+  рабочего потока) + `_reupload_shot_refs` + пересбор `reference_images` (с OpenAI
+  ≤2) + retry. **Анти-цикл:** `range(2)` = РОВНО 1 перезаливка; повторный 404 на
+  attempt 1 → `raise` в общий `except` как прежняя ошибка версии.
+
+**НЕ затронуто:** `RefGenerateThread._upload` (его cache-key БЕЗ mtime — отдельный
+латентный баг, в очереди); poll-цикл; Mode A.
 
 ## Lifecycle потоков шотов — keep-alive `_threads_pending_delete` + reaper (2026-06-09)
 
