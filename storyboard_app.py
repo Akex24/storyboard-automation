@@ -7742,6 +7742,8 @@ class MainWindow(QMainWindow):
         self.block_refs_btn = QPushButton(tr('block_refs_btn'))
         self.block_refs_btn.setObjectName("block-refs-btn")
         self.block_refs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.block_refs_btn.setIcon(get_icon('folder'))
+        self.block_refs_btn.setIconSize(QSize(16, 16))
         self.block_refs_btn.setStyleSheet(
             "QPushButton#block-refs-btn {"
             " background: rgba(228, 52, 74, 0.10);"
@@ -7812,6 +7814,8 @@ class MainWindow(QMainWindow):
         self.clear_block_btn = QPushButton(tr('clear_block_btn'))
         self.clear_block_btn.setObjectName("clear-block-btn")
         self.clear_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_block_btn.setIcon(get_icon('trash-2'))
+        self.clear_block_btn.setIconSize(QSize(16, 16))
         self.clear_block_btn.setStyleSheet(
             "QPushButton#clear-block-btn {"
             " background: transparent; color: #9a9aa5;"
