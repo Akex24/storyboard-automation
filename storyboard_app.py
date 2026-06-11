@@ -7787,25 +7787,25 @@ class MainWindow(QMainWindow):
         self.seedance_btn.clicked.connect(self._on_seedance_btn)
         self.seedance_btn.setVisible(False)
         title_row.addWidget(self.seedance_btn)
-        # 2026-06-11 (стоп-кнопка): «Остановить генерацию» — видна пока идёт
-        # генерация (глобально). Outline-red, рядом с Seedance/refs.
+        # 2026-06-11 (стоп-кнопка): «Остановить генерацию» — ПЕРВАЯ в ряду
+        # (перед «Рефы блока»), видна пока идёт генерация. Залитый янтарный —
+        # выделяется на фоне двух красных кнопок (Seedance/refs).
         self.stop_gen_btn = QPushButton(tr('stop_gen_btn'))
         self.stop_gen_btn.setObjectName("stop-gen-btn")
         self.stop_gen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stop_gen_btn.setStyleSheet(
             "QPushButton#stop-gen-btn {"
-            " background: rgba(228, 52, 74, 0.10);"
-            " border: 1px solid rgba(228, 52, 74, 0.35);"
-            " border-radius: 8px; color: #e4344a;"
+            " background: #e8a33d; color: #1a1208; border: none;"
+            " border-radius: 8px;"
             " padding: 8px 14px; font-size: 12px; font-weight: 600; }"
-            "QPushButton#stop-gen-btn:hover {"
-            " background: rgba(228, 52, 74, 0.20); }"
+            "QPushButton#stop-gen-btn:hover { background: #f0b355; }"
             "QPushButton#stop-gen-btn:disabled {"
-            " color: rgba(228, 52, 74, 0.45);"
-            " border-color: rgba(228, 52, 74, 0.20); }")
+            " background: rgba(232, 163, 61, 0.35);"
+            " color: rgba(26, 18, 8, 0.55); }")
         self.stop_gen_btn.clicked.connect(self._on_stop_gen_btn)
         self.stop_gen_btn.setVisible(False)
-        title_row.addWidget(self.stop_gen_btn)
+        # Первой среди кнопок (после заголовка-stretch, перед «Рефы блока»).
+        title_row.insertWidget(1, self.stop_gen_btn)
         lay.addLayout(title_row)
 
         # ── Стек: страница 0 = шоты, страница 1 = референсы ─────────────────
@@ -11285,7 +11285,15 @@ class MainWindow(QMainWindow):
                 ct.start()
             except Exception:
                 traceback.print_exc()
-        # 6) UI: обновить индикаторы всех блоков + спрятать кнопку.
+        # 6) UI: погасить прогресс/секунды карточек текущего блока — перерисовка
+        #    в idle (реестры уже пусты → _shot_active=False для всех карточек,
+        #    set_loading(False)+stop_progress()); без ухода в другой блок.
+        try:
+            if self.current_block:
+                self._display_block(self.current_block)
+        except Exception:
+            traceback.print_exc()
+        # Индикаторы всех блоков (снять точки) + спрятать кнопку.
         try:
             for bn in list(getattr(self, '_block_pills', {}).keys()):
                 self._refresh_block_indicator(bn)
