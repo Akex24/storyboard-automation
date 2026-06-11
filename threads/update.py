@@ -91,18 +91,24 @@ class CheckUpdateThread(QThread):
 
             curr_proj = _sa.read_local_version(self.root)
             curr_app  = _sa.read_local_app_version(self.root)
+            print(f"[update] check: curr_app={curr_app} root={self.root}")
 
             r = requests.get(_sa.github_raw_url("version.json"), timeout=10)
             r.raise_for_status()
             latest_proj = r.json().get("version", curr_proj)
 
             latest_app = _sa.fetch_latest_app_release_version() or curr_app
+            print(f"[update] github: latest_proj={latest_proj} latest_app={latest_app}")
 
             if _sa.version_gt(latest_proj, curr_proj) or _sa.version_gt(latest_app, curr_app):
+                print(f"[update] update_found: proj {curr_proj}->{latest_proj} "
+                      f"app {curr_app}->{latest_app}")
                 self.update_found.emit(curr_proj, latest_proj, curr_app, latest_app)
             else:
+                print(f"[update] no_update (curr_app={curr_app} latest_app={latest_app})")
                 self.no_update.emit()
         except Exception as e:
+            print(f"[update] check ERROR: {e}")
             self.error.emit(str(e))
 
 
