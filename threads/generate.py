@@ -226,6 +226,17 @@ class GenerateThread(QThread):
         self.version_index    = version_index
         self.camera_override  = camera_override
         self.base_image_override = base_image_override
+        # 2026-06-11 (кнопка «Остановить генерацию»): кооперативный стоп-флаг,
+        # op_id текущей задачи и её ключ (для серверной отмены).
+        self._stop = False
+        self._op_id = ""
+        self._used_key = ""
+
+    def stop(self):
+        """Кооперативная остановка: run() выйдет на ближайшей stop-точке (перед
+        submit / в начале poll-итерации) — без error.emit и без записи частичного
+        файла. op_id/used_key остаются доступны снаружи для серверной отмены."""
+        self._stop = True
 
     def _upload_file(self, session: requests.Session, path: Path,
                      force_reupload: bool = False) -> str:
@@ -682,6 +693,7 @@ class GenerateThread(QThread):
             # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
             # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
             key, self._used_key_idx = _sa.next_api_key()
+            self._used_key = key
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -870,6 +882,8 @@ class GenerateThread(QThread):
             # на сервере, а в payload ушёл её мёртвый кешированный file-hash) —
             # перезаливаем рефы шота (force) + пересобираем reference_images +
             # повторяем POST РОВНО один раз. Анти-цикл: range(2).
+            if self._stop:
+                return
             data = None
             for _submit_attempt in range(2):
                 try:
@@ -903,6 +917,7 @@ class GenerateThread(QThread):
                 return
 
             op_id      = data["operation_id"]
+            self._op_id = op_id
             poll_count = 0
             self.step.emit("Генерирую…", 30)
 
@@ -910,7 +925,13 @@ class GenerateThread(QThread):
             poll_started = time.monotonic()
             last_status = ""
             while True:
-                time.sleep(4)
+                # Дробим сон на 1с-кванты для быстрого отклика на stop.
+                for _ in range(4):
+                    if self._stop:
+                        return
+                    time.sleep(1)
+                if self._stop:
+                    return
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
                     self.error.emit(

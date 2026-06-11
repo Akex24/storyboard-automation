@@ -5752,6 +5752,9 @@ class MainWindow(QMainWindow):
         self._storyboard_blocks_queue: List[List[tuple]] = []
         self._storyboard_active_block: Optional[str] = None
         self._storyboard_active_pending: int = 0
+        # 2026-06-11 (стоп-кнопка): глобальный флаг остановки. True → автопереход
+        # к следующему блоку и старт новых блоков подавлены (сброс при новом прогоне).
+        self._generation_stopped: bool = False
         # 2026-06-06 (Mode C): отдельный реестр тредов версий шота
         # (ключ (block, panel_idx, version_index)). Не пересекается с
         # _active_regens — старые хендлеры его не видят.
@@ -7784,6 +7787,25 @@ class MainWindow(QMainWindow):
         self.seedance_btn.clicked.connect(self._on_seedance_btn)
         self.seedance_btn.setVisible(False)
         title_row.addWidget(self.seedance_btn)
+        # 2026-06-11 (стоп-кнопка): «Остановить генерацию» — видна пока идёт
+        # генерация (глобально). Outline-red, рядом с Seedance/refs.
+        self.stop_gen_btn = QPushButton(tr('stop_gen_btn'))
+        self.stop_gen_btn.setObjectName("stop-gen-btn")
+        self.stop_gen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_gen_btn.setStyleSheet(
+            "QPushButton#stop-gen-btn {"
+            " background: rgba(228, 52, 74, 0.10);"
+            " border: 1px solid rgba(228, 52, 74, 0.35);"
+            " border-radius: 8px; color: #e4344a;"
+            " padding: 8px 14px; font-size: 12px; font-weight: 600; }"
+            "QPushButton#stop-gen-btn:hover {"
+            " background: rgba(228, 52, 74, 0.20); }"
+            "QPushButton#stop-gen-btn:disabled {"
+            " color: rgba(228, 52, 74, 0.45);"
+            " border-color: rgba(228, 52, 74, 0.20); }")
+        self.stop_gen_btn.clicked.connect(self._on_stop_gen_btn)
+        self.stop_gen_btn.setVisible(False)
+        title_row.addWidget(self.stop_gen_btn)
         lay.addLayout(title_row)
 
         # ── Стек: страница 0 = шоты, страница 1 = референсы ─────────────────
@@ -9797,6 +9819,7 @@ class MainWindow(QMainWindow):
             threads.extend(getattr(self, '_geometry_threads', []) or [])
             threads.extend(getattr(self, '_seedance_regen_threads', []) or [])
             threads.extend(getattr(self, '_key_health_threads', []) or [])
+            threads.extend(getattr(self, '_cancel_threads', []) or [])
             t = getattr(self, '_server_check_thread', None)
             if t is not None:
                 threads.append(t)
@@ -11182,6 +11205,97 @@ class MainWindow(QMainWindow):
         btn.setText(self._format_block_label(block_name))
         btn.setProperty("unseen", has_unseen)
         btn.style().unpolish(btn); btn.style().polish(btn)
+        self._refresh_stop_btn()
+
+    def _refresh_stop_btn(self):
+        """Видимость кнопки «Остановить» = есть хоть одна активная генерация
+        (стоп глобальный, не зависит от показанного блока). После клика держим
+        «Останавливаю…» пока реестры не опустеют."""
+        btn = getattr(self, 'stop_gen_btn', None)
+        if btn is None:
+            return
+        active = bool(self._active_regens or self._active_mode_c_version_threads)
+        try:
+            btn.setVisible(active)
+            if active and not getattr(self, '_generation_stopped', False):
+                btn.setEnabled(True)
+                btn.setText(tr('stop_gen_btn'))
+        except Exception:
+            pass
+
+    def _on_stop_gen_btn(self):
+        """Клик «Остановить генерацию» → глобальный стоп. Кнопка → «Останавливаю…»
+        (disabled), скроется когда реестры опустеют через _refresh_stop_btn."""
+        try:
+            self.stop_gen_btn.setEnabled(False)
+            self.stop_gen_btn.setText(tr('stop_gen_running'))
+        except Exception:
+            pass
+        self._stop_all_generation()
+
+    def _stop_all_generation(self):
+        """Глобальный стоп: гасит текущий блок И всю очередь следующих. Уже
+        доставленные картинки остаются. Кооперативно (без terminate): стоп-флаг
+        тредам + утилизация через жнец (без wait в UI) + best-effort серверная
+        отмена в фоне."""
+        self._generation_stopped = True
+        # 1) upstream pipeline-тред (пишет .txt блоков) — стоп, чтобы не плодил
+        #    новые блоки и не жёг claude-токены.
+        try:
+            ev = getattr(self, 'episode_chat_view', None)
+            t = getattr(ev, '_storyboard_pipeline_thread', None) if ev else None
+            if t is not None and hasattr(t, 'stop'):
+                t.stop()
+        except Exception:
+            traceback.print_exc()
+        # 2) очередь блоков — очистить, активный сбросить (автопереход подавлен).
+        try:
+            self._storyboard_blocks_queue.clear()
+        except Exception:
+            pass
+        self._storyboard_active_block = None
+        self._storyboard_active_pending = 0
+        # 3) собрать (op_id, key) летящих задач ДО остановки (для серверной отмены).
+        threads = (list(self._active_regens.values())
+                   + list(self._active_mode_c_version_threads.values()))
+        pairs = []
+        for t in threads:
+            oid = getattr(t, '_op_id', "") or ""
+            k = getattr(t, '_used_key', "") or ""
+            if oid and k:
+                pairs.append((oid, k))
+        # 4) кооперативный стоп + утилизация через жнец (НЕ wait в UI-потоке).
+        for t in threads:
+            try:
+                if hasattr(t, 'stop'):
+                    t.stop()
+            except Exception:
+                pass
+            self._retire_thread(t)
+        self._active_regens.clear()
+        self._active_mode_c_version_threads.clear()
+        # 5) серверная отмена в фоне (best-effort, ошибки глотаем).
+        if pairs:
+            try:
+                from threads.cancel import CancelThread
+                ct = CancelThread(pairs, self)
+                ct.finished.connect(lambda c=ct: self._retire_thread(c))
+                self._cancel_threads = getattr(self, '_cancel_threads', [])
+                self._cancel_threads.append(ct)
+                ct.start()
+            except Exception:
+                traceback.print_exc()
+        # 6) UI: обновить индикаторы всех блоков + спрятать кнопку.
+        try:
+            for bn in list(getattr(self, '_block_pills', {}).keys()):
+                self._refresh_block_indicator(bn)
+        except Exception:
+            pass
+        self._refresh_stop_btn()
+        try:
+            self.status_bar.showMessage(tr('stop_gen_done'))
+        except Exception:
+            pass
 
     def _mark_block_seen(self, block_name: str):
         """Очищает бейджи NEW у всех шотов указанного блока + обновляет индикатор."""
@@ -11396,6 +11510,9 @@ class MainWindow(QMainWindow):
             self._seedance_btn_mode = 'pending'
             if hasattr(self, 'block_refs_btn'):
                 self.block_refs_btn.setVisible(False)
+        # 2026-06-11 (стоп-кнопка): видимость по глобальному наличию активных
+        # генераций (стоп глобальный), независимо от показанного блока.
+        self._refresh_stop_btn()
 
     # ── Regeneration ─────────────────────────────────────────────────────────
 
@@ -12916,6 +13033,8 @@ class MainWindow(QMainWindow):
         имя файла без `.txt` (например "ep1_block_1"). Собираем список
         шотов и запускаем их батчем."""
         try:
+            if getattr(self, '_generation_stopped', False):
+                return   # стоп активен — поздние prompt_ready не стартуют блок
             if hasattr(self, '_render_block_pills'):
                 self._render_block_pills()
 
@@ -13027,6 +13146,8 @@ class MainWindow(QMainWindow):
         стартует автоматически из `_on_storyboard_block_prompt_ready`."""
         self._storyboard_active_block = None
         self._storyboard_active_pending = 0
+        if getattr(self, '_generation_stopped', False):
+            return   # глобальный стоп — следующий блок не запускаем
         if self._storyboard_blocks_queue:
             next_shots = self._storyboard_blocks_queue.pop(0)
             self._start_storyboard_block(next_shots)

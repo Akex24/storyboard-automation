@@ -3713,6 +3713,12 @@ class EpisodeChatView(QWidget):
         if mw is not None and hasattr(mw, '_on_storyboard_pipeline_done'):
             thread.all_done.connect(mw._on_storyboard_pipeline_done)
 
+        # 2026-06-11 (стоп-кнопка): новый прогон сбрасывает глобальный стоп-флаг.
+        try:
+            if mw is not None:
+                mw._generation_stopped = False
+        except Exception:
+            pass
         # Сохраняем ссылку чтобы тред не собрался GC до завершения.
         self._storyboard_pipeline_thread = thread
         thread.start()
