@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-10 (статусы ключей в Settings + ручной тумблер — задача Б этап 2 UI)
+**Последнее обновление:** 2026-06-11 (троттлинг ключей — ≤25 одновременных запросов на ключ)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -735,6 +735,60 @@ handoff):** кастомный `finished` **затеняет** встроенн�
 (`_on_ref_done`/`_on_ref_error` без `.pop`) → преждевременного GC и краша он не
 даёт (лёгкая утечка списка, не lifecycle-баг; при желании чистить тем же reaper'ом
 отдельной правкой).
+
+## Троттлинг ключей — ≤25 одновременных запросов на ключ (2026-06-11)
+
+FastGen PRO держит **25 concurrent потоков на ключ** (картинка = 4 кредита,
+4000 кредитов/час). Mode C блок 3 шота × 10 версий = **30 параллельных
+GenerateThread'ов** на одном ключе пробивал лимит → сервер ронял/тормозил.
+Фикс: in-process счётчик живых запросов + acquire/release слотов.
+
+**`key_pool.py` (новое, всё под существующим `_lock`):**
+- `MAX_INFLIGHT_PER_KEY = 25` — hardcode-лимит (если FastGen поменяет тариф —
+  менять здесь).
+- `_inflight: dict {idx: count}` — живые запросы на ключ. idx — в пространстве
+  `get_keys()`. **In-process**: живёт в памяти GUI-процесса; CLI-процессы
+  (`generate_storyboards.py`/`pipeline.py`) последовательны (1 запрос/процесс)
+  и сюда НЕ входят — межпроцессного лимита НЕТ (дорого, не окупается; худший
+  случай GUI 25 + штучный CLI-реф = небольшой перелим, безвреден).
+- `acquire_slot(max_per_key=25) -> (key, idx, ok)` — берёт слот на **наименее
+  загруженном** живом ключе со свободным местом (`_inflight[idx] < max`),
+  `_inflight[idx]+=1`. Фильтр живых — ТОТ ЖЕ, что у `next_key_with_idx`
+  (manual-off жёстко исключены; среди оставшихся отсев `_read_disabled`, при
+  пустоте фолбэк на pool). Tie-break при равной загрузке — round-robin
+  `_advance_cursor` (вызывается ВНУТРИ `with _lock`, сам лок не берёт → нет
+  реентранси). `_write_active` для лампочки. Возвраты: все на потолке →
+  `("", None, False)` (caller ждёт и повторяет); нет ключей/все manual-off →
+  `("", None, True)` (ждать бессмысленно); **любая ошибка → fallback
+  `(key, None, True)` БЕЗ резерва слота** (kill-switch — троттл отключается,
+  генерация не падает).
+- `release_slot(idx)` — декремент под `_lock`, не ниже 0, пустой счётчик ключа
+  удаляется (карта не растёт). `idx=None` → no-op (kill-switch/фолбэк-ключ).
+
+**`storyboard_app.py`:** обёртки `acquire_api_slot()` / `release_api_slot(idx)`
+рядом с `next_api_key()` (ленивый import key_pool, kill-switch на `load_api_key`).
+Достижимы из потоков через `_sa.` (см. `_AppProxy`).
+
+**`threads/generate.py` — 4 потока генерации** (GenerateThread, RefGenerateThread,
+GenerateActorRefThread, EditActorRefThread): вместо одиночного `next_api_key()` —
+**acquire-петля** + `try/finally release_api_slot(_slot_idx)`. Инвариант: один
+acquire на `run()`, release в `finally` → счётчик НЕ залипает ни на одном пути
+падения (return/except/raise). `_slot_idx=None` объявлен ДО `try` → finally
+никогда не `NameError` (стоп до захвата слота → release(None) no-op).
+- **GenerateThread** (есть `self._stop`): петля прерывается `self._stop` (как в
+  его poll-цикле). Mode C-дотяжка/добор идут через тот же `run()` → троттлятся
+  автоматически.
+- **3 штучных реф-потока** (нет `_stop`): петля `self.isInterruptionRequested()`
+  + cap `_wait >= 150` (≈300с); на исчерпании берут ключ через `next_api_key()`
+  **без резерва** (перелимит на 1 для редкого штучного реф-гена безопаснее
+  зависшего навсегда потока). На практике слот свободен с первого прохода.
+- `GenerateActorRefThread` release вложен в ЕГО существующий `finally`
+  (детектив-лог), у остальных трёх — новый `finally`.
+
+**НЕ затронуто:** `next_key()`/`next_key_with_idx()` (контракт CLI сохранён);
+failover (`disable_key`/`_read_disabled`); ручной тумблер; CLI-пути;
+`ApplyTextureThread` (чистый PIL, ключ не берёт); тело `run()` (submit-retry/
+poll/404-перезаливка/сохранение) — byte-for-byte. Коммит `128c0fc`.
 
 ## Статусы ключей в Settings + ручной тумблер — Этап 2 UI (2026-06-10)
 
