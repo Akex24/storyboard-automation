@@ -49,6 +49,7 @@ _archive/
 .claude/
 _session_log.md
 _handoff_actor_grid.md
+_session_handoff.md
 
 # Key-pool runtime files (пул API-ключей FastGen). Живут в project_root,
 # создаются в рантайме. fastgen_keys.txt СОДЕРЖИТ КЛЮЧИ — критично не коммитить.

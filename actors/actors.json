@@ -50,7 +50,8 @@
       "finalnyy_raschet_2": "policeman",
       "audit_na_vyzhivanie": "cole",
       "taynyy_investor": "kristian",
-      "eshche_odin_muzh": "mark"
+      "eshche_odin_muzh": "mark",
+      "testovyy_serial_s_odnoy_seriey": "mr_wayne"
     }
   },
   "akter_4": {
@@ -81,7 +82,8 @@
       "finalnyy_raschet_2": "detective",
       "testovyy_serial_2": "arthur",
       "taynyy_investor": "lobby_concierge",
-      "eshche_odin_muzh": "barlow"
+      "eshche_odin_muzh": "barlow",
+      "testovyy_serial_s_odnoy_seriey": "marcus"
     }
   },
   "akter_6": {
@@ -139,7 +141,8 @@
     "display_name": "Макс",
     "roles": {
       "audit_na_vyzhivanie": "foreman",
-      "taynyy_investor": "waiter"
+      "taynyy_investor": "waiter",
+      "testovyy_serial_s_odnoy_seriey": "jimmy"
     }
   },
   "alina": {
@@ -158,7 +161,8 @@
   "valeriya": {
     "display_name": "Валерiя",
     "roles": {
-      "taynyy_investor": "bianca"
+      "taynyy_investor": "bianca",
+      "testovyy_serial_s_odnoy_seriey": "gina"
     }
   },
   "aleksey": {

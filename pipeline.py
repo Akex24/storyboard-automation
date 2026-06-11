@@ -232,14 +232,7 @@ def main() -> None:
             sys.exit(1)
         name = args[0]
         prompt = args[1]
-        # 2026-06-09: ключ через round-robin пул (key_pool). Ленивый импорт +
-        # fallback на load_key(): если key_pool.py не докопировался рядом со
-        # скриптом (старая установка) — CLI молча работает на одиночном .env-ключе.
-        try:
-            from key_pool import next_key
-            key = next_key() or load_key()
-        except Exception:
-            key = load_key()
+        key = load_key()
         target_dir = OBJECTS_DIR if kind == "object" else LOCATIONS_DIR
         existing = list(target_dir.glob(f"{name}.*"))
         if existing and not force:
