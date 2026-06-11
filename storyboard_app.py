@@ -11341,6 +11341,23 @@ class MainWindow(QMainWindow):
                 t.stop()
         except Exception:
             traceback.print_exc()
+        # 1b) Seedance-промпт-пайплайны (Opus 4.7) идут ПАРАЛЛЕЛЬНО шотам и НЕ
+        #     гаснут со стопом картинок. Стоп-кнопка = «остановить ВСЁ по эпизоду»,
+        #     поэтому глушим и их (stop() терминирует живой claude-Popen). Покрывает
+        #     основной пайплайн чата эпизода + регенерации Seedance-промптов.
+        try:
+            ev = getattr(self, 'episode_chat_view', None)
+            st = getattr(ev, '_seedance_pipeline_thread', None) if ev else None
+            if st is not None and hasattr(st, 'stop'):
+                st.stop()
+        except Exception:
+            traceback.print_exc()
+        try:
+            for st in list(getattr(self, '_seedance_regen_threads', []) or []):
+                if st is not None and hasattr(st, 'stop'):
+                    st.stop()
+        except Exception:
+            traceback.print_exc()
         # 2) очередь блоков — очистить, активный сбросить (автопереход подавлен).
         try:
             self._storyboard_blocks_queue.clear()
