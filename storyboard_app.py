@@ -5906,8 +5906,11 @@ class MainWindow(QMainWindow):
         # не в жёсткий серый) + таймер обновления (countdown «вернётся через
         # N мин»), тикает ТОЛЬКО когда открыта вкладка Settings.
         self._key_status_colors: dict = {}
+        # 2026-06-10 (лампочки v2): монотонный дедлайн зелёной вспышки per-idx —
+        # _refresh не затирает индикатор пока вспышка активна (тик теперь 1с).
+        self._key_flash_until: dict = {}
         self._key_status_timer = QTimer(self)
-        self._key_status_timer.setInterval(10000)
+        self._key_status_timer.setInterval(1000)   # 1с: countdown лимита MM:SS
         self._key_status_timer.timeout.connect(
             self._refresh_key_status_indicators)
         # 2026-06-10 (health check): транзиентные UI-статусы ключей по field_idx
@@ -15362,20 +15365,34 @@ class MainWindow(QMainWindow):
             pass
 
     def _blink_key_indicator(self, idx):
-        """Подсветить лампочку ключа idx (яркая), через ~400мс вернуть СТАТУС-цвет.
-        2026-06-10: сброс на _key_status_colors[idx] (зелёный/жёлтый/красный/серый
-        статуса), НЕ жёсткий серый — иначе мигание затирало бы статус ключа.
-        Косметика — ошибки молча игнорятся."""
+        """Зелёная ВСПЫШКА лампочки ключа idx (~700мс), затем назад в статус-цвет
+        (_key_status_colors[idx]; база теперь серая «погашена»). Дедлайн вспышки
+        в _key_flash_until → _refresh (тик 1с) её не затирает. Зовётся на key_used
+        (доставка картинки) и на health-alive. Косметика — ошибки игнорятся."""
         try:
             inds = getattr(self, '_apikey_indicators', [])
             if not (0 <= idx < len(inds)):
                 return
             dot = inds[idx]
+            self._key_flash_until[idx] = time.monotonic() + 0.7
             dot.setStyleSheet(
                 "QLabel { background:#46d160; border-radius:6px; }")
-            QTimer.singleShot(400, lambda d=dot, ix=idx: d.setStyleSheet(
-                "QLabel { background:%s; border-radius:6px; }"
-                % getattr(self, '_key_status_colors', {}).get(ix, "#3a3a3a")))
+            QTimer.singleShot(700, lambda ix=idx: self._end_key_flash(ix))
+        except Exception:
+            pass
+
+    def _end_key_flash(self, idx):
+        """Конец зелёной вспышки idx → вернуть индикатор в статус-цвет, если за
+        700мс не стартовала новая вспышка (тогда её дедлайн ещё в будущем)."""
+        try:
+            if time.monotonic() < self._key_flash_until.get(idx, 0):
+                return
+            self._key_flash_until.pop(idx, None)
+            inds = getattr(self, '_apikey_indicators', [])
+            if 0 <= idx < len(inds):
+                inds[idx].setStyleSheet(
+                    "QLabel { background:%s; border-radius:6px; }"
+                    % getattr(self, '_key_status_colors', {}).get(idx, "#3a3a3a"))
         except Exception:
             pass
 
@@ -15384,7 +15401,6 @@ class MainWindow(QMainWindow):
     _KEY_COL_GREEN  = "#46d160"   # живой
     _KEY_COL_YELLOW = "#e0b341"   # лимит (temp, 429)
     _KEY_COL_RED    = "#ff2b2b"   # выбит насовсем (perm, 401/403/license)
-    _KEY_COL_ORANGE = "#e0913a"   # сервер недоступен (health check, не вина ключа)
 
     # 2026-06-10 (UX очередь #1): стили кнопки «Проверить сервер» — вторичный
     # синий акцент (#6fb6ff, цвет «Ты:» из чата). IDLE — обычное состояние,
@@ -15460,26 +15476,30 @@ class MainWindow(QMainWindow):
                         color, status = self._KEY_COL_GREY, tr('key_status_manual_off')
                     elif _h == 'checking':
                         color, status = self._KEY_COL_GREY, tr('key_status_checking')
-                    elif _h == 'server_down':
-                        color, status = self._KEY_COL_ORANGE, tr('key_status_server_down')
                     elif _h == 'limit':
                         color, status = self._KEY_COL_YELLOW, tr('key_status_ratelimited')
                     elif reason == 'perm':
                         color, status = self._KEY_COL_RED, tr('key_status_dead')
                     elif reason == 'temp':
-                        n = max(1, (int(entry[1] - now) + 59) // 60)
-                        color, status = self._KEY_COL_YELLOW, tr('key_status_limit', n=n)
+                        rem = max(0, int(entry[1] - now))
+                        color = self._KEY_COL_YELLOW
+                        status = tr('key_status_limit_mmss',
+                                    t="%02d:%02d" % (rem // 60, rem % 60))
                     else:
-                        color, status = self._KEY_COL_GREEN, ""
+                        # 2026-06-10 (лампочки v2): по умолчанию ПОГАШЕНА (серая);
+                        # зелёный — только ВСПЫШКА (health-alive / key_used).
+                        color, status = self._KEY_COL_GREY, ""
                     if tgl is not None:
                         tgl.blockSignals(True)
                         tgl.setChecked(not is_off)
                         tgl.blockSignals(False)
-                if ind is not None:
-                    ind.setStyleSheet(
-                        "QLabel { background:%s; border-radius:6px; }" % color)
                 # base-цвет для blink-сброса (idx индикатора = i)
                 self._key_status_colors[i] = color
+                # Guard: не затирать активную зелёную вспышку (тик 1с мог бы).
+                if ind is not None and \
+                        time.monotonic() >= self._key_flash_until.get(i, 0):
+                    ind.setStyleSheet(
+                        "QLabel { background:%s; border-radius:6px; }" % color)
                 if lbl is not None:
                     lbl.setText(status)
                     lbl.setStyleSheet(
@@ -15619,9 +15639,9 @@ class MainWindow(QMainWindow):
 
     def _on_key_health(self, field_idx: int, key_str: str, status: str):
         """Результат проверки одного ключа. dead → disable_key(perm) + красный;
-        alive → снять perm (ключ заменили на рабочий) + зелёный; limit → жёлтый
-        UI (в disabled НЕ пишем); server_down → оранжевый «сервер недоступен»
-        (ключ НЕ виним, не дизейблим). Затем refresh."""
+        alive → снять perm + зелёная ВСПЫШКА (база серая); limit → жёлтый UI
+        (в disabled НЕ пишем); server_down/timeout/5xx → НЕ красим (погашена).
+        Затем refresh."""
         try:
             import key_pool
             keys = key_pool.get_keys()
@@ -15636,11 +15656,12 @@ class MainWindow(QMainWindow):
                 self._key_health_status.pop(field_idx, None)
             elif status == 'limit':
                 self._key_health_status[field_idx] = 'limit'
-            elif status == 'server_down':
-                self._key_health_status[field_idx] = 'server_down'
             else:
+                # server_down / timeout / 5xx — НЕ красим, ключ остаётся погашенным.
                 self._key_health_status.pop(field_idx, None)
             self._refresh_key_status_indicators()
+            if status == 'alive':
+                self._blink_key_indicator(field_idx)   # зелёная вспышка «живой»
         except Exception:
             traceback.print_exc()
 
