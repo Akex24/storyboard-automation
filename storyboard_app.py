@@ -7806,6 +7806,23 @@ class MainWindow(QMainWindow):
         self.stop_gen_btn.setVisible(False)
         # Первой среди кнопок (после заголовка-stretch, перед «Рефы блока»).
         title_row.insertWidget(1, self.stop_gen_btn)
+        # 2026-06-11 (очистка блока): «🗑 Очистить блок» — ПЕРВОЙ в ряду (перед
+        # «Остановить»). Тихая outline; видна только если в блоке есть картинки
+        # и нет активной генерации (см. _refresh_clear_btn).
+        self.clear_block_btn = QPushButton(tr('clear_block_btn'))
+        self.clear_block_btn.setObjectName("clear-block-btn")
+        self.clear_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_block_btn.setStyleSheet(
+            "QPushButton#clear-block-btn {"
+            " background: transparent; color: #9a9aa5;"
+            " border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;"
+            " padding: 8px 14px; font-size: 12px; font-weight: 500; }"
+            "QPushButton#clear-block-btn:hover {"
+            " background: rgba(255,255,255,0.06); color: #ccc;"
+            " border-color: rgba(255,255,255,0.28); }")
+        self.clear_block_btn.clicked.connect(self._on_clear_block_btn)
+        self.clear_block_btn.setVisible(False)
+        title_row.insertWidget(1, self.clear_block_btn)
         lay.addLayout(title_row)
 
         # ── Стек: страница 0 = шоты, страница 1 = референсы ─────────────────
@@ -11215,6 +11232,7 @@ class MainWindow(QMainWindow):
         index 0) И только если открытый эпизод == эпизод, чьи блоки сейчас
         генерятся (ep-префикс ключей реестров: b.split('_block_')[0]). После
         клика держим «Останавливаю…» пока реестры не опустеют."""
+        self._refresh_clear_btn()
         btn = getattr(self, 'stop_gen_btn', None)
         if btn is None:
             return
@@ -11315,6 +11333,133 @@ class MainWindow(QMainWindow):
         self._refresh_stop_btn()
         try:
             self.status_bar.showMessage(tr('stop_gen_done'))
+        except Exception:
+            pass
+
+    def _refresh_clear_btn(self):
+        """Видимость «Очистить блок»: ТОЛЬКО на странице блоков (content_stack=0)
+        И если в текущем блоке есть хотя бы один файл шота И НЕТ активных тредов
+        этого блока (очистка во время генерации запрещена)."""
+        btn = getattr(self, 'clear_block_btn', None)
+        if btn is None:
+            return
+        block = self.current_block
+        on_blocks = (hasattr(self, 'content_stack')
+                     and self.content_stack.currentIndex() == 0)
+        has_img = bool(block) and any(
+            shot_path(block, i).exists() for i in range(PANELS))
+        busy = bool(block) and (
+            any(b == block for (b, _p) in self._active_regens)
+            or any(b == block
+                   for (b, _p, _v) in self._active_mode_c_version_threads))
+        try:
+            btn.setVisible(bool(on_blocks and has_img and not busy))
+        except Exception:
+            pass
+
+    def _on_clear_block_btn(self):
+        """Клик «Очистить блок» → подтверждение (Cancel по умолчанию) → удаление.
+        Запрещено при активной генерации блока (кнопка и так скрыта — двойная защита)."""
+        block = self.current_block
+        if not block:
+            return
+        busy = (any(b == block for (b, _p) in self._active_regens)
+                or any(b == block
+                       for (b, _p, _v) in self._active_mode_c_version_threads))
+        if busy:
+            return
+        m = re.match(r'(ep\d+)_block_(\d+)', block)
+        n = m.group(2) if m else "?"
+        try:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(tr('clear_confirm_title', n=n))
+            box.setText(tr('clear_confirm_text'))
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            box.button(QMessageBox.StandardButton.Ok).setText(
+                tr('clear_confirm_ok'))
+            box.button(QMessageBox.StandardButton.Cancel).setText(
+                tr('clear_confirm_cancel'))
+            box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if box.exec() != QMessageBox.StandardButton.Ok:
+                return
+        except Exception:
+            traceback.print_exc()
+            return
+        self._clear_current_block(block)
+
+    def _clear_current_block(self, block: str):
+        """Адресно удаляет с диска ВСЕ шоты и версии блока + косметику + склеенный
+        лист. Рефы, монтажку, .txt-промпт, соседние блоки НЕ трогает. Без rm -rf
+        по storyboards — только поимённый unlink файлов этого блока."""
+        for i in range(PANELS):
+            try:
+                shot_path(block, i).unlink(missing_ok=True)
+            except Exception:
+                traceback.print_exc()
+            # История версий шота — папка _history/{block}_shot{N}/ (НА ШОТ):
+            # поимённый unlink файлов + rmdir пустой (не rmtree).
+            try:
+                hist = shot_history_dir(block, i)
+                if hist.exists() and hist.is_dir():
+                    for f in list(hist.iterdir()):
+                        try:
+                            if f.is_file():
+                                f.unlink()
+                        except Exception:
+                            pass
+                    try:
+                        hist.rmdir()
+                    except Exception:
+                        pass
+            except Exception:
+                traceback.print_exc()
+            # Косметика: время генерации + unseen/overlay.
+            try:
+                QSettings(APP_ORG, APP_NAME).remove(
+                    f"gen_time_{block}_shot{i + 1}")
+            except Exception:
+                pass
+            self._unseen_shots.discard((block, i))
+            self._shot_gen_started_at.pop((block, i), None)
+        # Склеенный лист блока: .cache/_block_view/{ep}_block{N}/{ep}_block{N}.*
+        try:
+            m = re.match(r'(ep\d+)_block_(\d+)', block)
+            if m and self._current_show:
+                ep_id, bn = m.group(1), int(m.group(2))
+                sheet_dir = (self._project_root / "shows" / self._current_show
+                             / ".cache" / "_block_view" / f"{ep_id}_block{bn}")
+                for ext in ("jpg", "jpeg", "png"):
+                    try:
+                        (sheet_dir / f"{ep_id}_block{bn}.{ext}").unlink(
+                            missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception:
+            traceback.print_exc()
+        # Закрыть открытые ShotViewer этого блока (версии удалены).
+        try:
+            for b, _p, dlg in list(self._ensure_open_shot_viewers()):
+                if b == block:
+                    try:
+                        dlg.close()
+                    except Exception:
+                        pass
+        except Exception:
+            traceback.print_exc()
+        # UI: карточки → ПУСТО (перерисовка, файлы удалены) + индикатор/кнопки.
+        try:
+            if self.current_block == block:
+                self._display_block(block)
+        except Exception:
+            traceback.print_exc()
+        try:
+            self._refresh_block_indicator(block)
+        except Exception:
+            pass
+        try:
+            self.status_bar.showMessage(tr('clear_done'))
         except Exception:
             pass
 
