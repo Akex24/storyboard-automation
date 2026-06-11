@@ -13646,6 +13646,13 @@ class MainWindow(QMainWindow):
             # (переход к следующему НЕ зовём — он сработает когда добор завершится).
             self._mode_c_retry_pass = getattr(self, '_mode_c_retry_pass', 0) + 1
             self._storyboard_active_pending += len(gaps)
+            # 2026-06-11 (фикс таймера секунд): для перезапускаемых шотов вернуть
+            # метку начала, если её НЕТ (первичный pop удалил после завершения
+            # шота). setdefault не затирает живую метку ещё активного шота →
+            # секунды на карточке/блоке не сбрасываются на 0 при перерисовке.
+            _now_retry = time.time()
+            for _blk, _panel, _v in gaps:
+                self._shot_gen_started_at.setdefault((_blk, _panel), _now_retry)
             for _blk, _panel, v in gaps:
                 cam = self._recover_camera_override(_blk, _panel, v)
                 self._spawn_one_mode_c_version(_blk, _panel, v, cam)
