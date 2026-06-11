@@ -7741,6 +7741,7 @@ class MainWindow(QMainWindow):
         # залитым красным Seedance-кнопкой.
         self.block_refs_btn = QPushButton(tr('block_refs_btn'))
         self.block_refs_btn.setObjectName("block-refs-btn")
+        self.block_refs_btn.setFixedHeight(34)   # единая высота 4 кнопок
         self.block_refs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.block_refs_btn.setIcon(get_icon('folder'))
         self.block_refs_btn.setIconSize(QSize(16, 16))
@@ -7750,7 +7751,7 @@ class MainWindow(QMainWindow):
             " border: 1px solid rgba(228, 52, 74, 0.25);"
             " border-radius: 8px;"
             " color: #e4344a;"
-            " padding: 8px 14px;"
+            " padding: 8px 10px;"
             " font-size: 12px; font-weight: 500;"
             "}"
             "QPushButton#block-refs-btn:hover {"
@@ -7767,6 +7768,7 @@ class MainWindow(QMainWindow):
         # карты эпизода. State обновляется в _display_block.
         self.seedance_btn = QPushButton(tr('seedance_btn'))
         self.seedance_btn.setObjectName("seedance-btn")
+        self.seedance_btn.setFixedHeight(34)   # единая высота 4 кнопок
         self.seedance_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         # 2026-05-08 редизайн Этап 5: главная action-кнопка экрана —
         # залитая красная (LUMZ accent_red). Это единственная такая
@@ -7776,7 +7778,7 @@ class MainWindow(QMainWindow):
             "QPushButton#seedance-btn {"
             " background: #e4344a; color: #ffffff;"
             " border: none; border-radius: 8px;"
-            " padding: 9px 18px;"
+            " padding: 8px 10px;"
             " font-size: 12px; font-weight: 500;"
             "}"
             "QPushButton#seedance-btn:hover { background: #d92d44; }"
@@ -7794,12 +7796,13 @@ class MainWindow(QMainWindow):
         # выделяется на фоне двух красных кнопок (Seedance/refs).
         self.stop_gen_btn = QPushButton(tr('stop_gen_btn'))
         self.stop_gen_btn.setObjectName("stop-gen-btn")
+        self.stop_gen_btn.setFixedHeight(34)   # единая высота 4 кнопок
         self.stop_gen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stop_gen_btn.setStyleSheet(
             "QPushButton#stop-gen-btn {"
             " background: #e8a33d; color: #1a1208; border: none;"
             " border-radius: 8px;"
-            " padding: 8px 14px; font-size: 12px; font-weight: 600; }"
+            " padding: 8px 10px; font-size: 12px; font-weight: 600; }"
             "QPushButton#stop-gen-btn:hover { background: #f0b355; }"
             "QPushButton#stop-gen-btn:disabled {"
             " background: rgba(232, 163, 61, 0.35);"
@@ -7813,6 +7816,7 @@ class MainWindow(QMainWindow):
         # и нет активной генерации (см. _refresh_clear_btn).
         self.clear_block_btn = QPushButton(tr('clear_block_btn'))
         self.clear_block_btn.setObjectName("clear-block-btn")
+        self.clear_block_btn.setFixedHeight(34)   # единая высота 4 кнопок
         self.clear_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_block_btn.setIcon(get_icon('trash-2'))
         self.clear_block_btn.setIconSize(QSize(16, 16))
@@ -7820,7 +7824,7 @@ class MainWindow(QMainWindow):
             "QPushButton#clear-block-btn {"
             " background: transparent; color: #9a9aa5;"
             " border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;"
-            " padding: 8px 14px; font-size: 12px; font-weight: 500; }"
+            " padding: 8px 10px; font-size: 12px; font-weight: 500; }"
             "QPushButton#clear-block-btn:hover {"
             " background: rgba(255,255,255,0.06); color: #ccc;"
             " border-color: rgba(255,255,255,0.28); }")
@@ -11259,8 +11263,26 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_stop_gen_btn(self):
-        """Клик «Остановить генерацию» → глобальный стоп. Кнопка → «Останавливаю…»
-        (disabled), скроется когда реестры опустеют через _refresh_stop_btn."""
+        """Клик «Остановить генерацию» → подтверждение (Cancel по умолчанию) →
+        глобальный стоп. Cancel → кнопка остаётся активной. Ok → «Останавливаю…»
+        (disabled) + _stop_all_generation."""
+        try:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(tr('stop_confirm_title'))
+            box.setText(tr('stop_confirm_text'))
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            box.button(QMessageBox.StandardButton.Ok).setText(
+                tr('stop_confirm_ok'))
+            box.button(QMessageBox.StandardButton.Cancel).setText(
+                tr('stop_confirm_cancel'))
+            box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if box.exec() != QMessageBox.StandardButton.Ok:
+                return
+        except Exception:
+            traceback.print_exc()
+            return
         try:
             self.stop_gen_btn.setEnabled(False)
             self.stop_gen_btn.setText(tr('stop_gen_running'))
