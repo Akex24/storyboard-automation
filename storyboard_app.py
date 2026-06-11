@@ -9922,8 +9922,21 @@ class MainWindow(QMainWindow):
                     threads.append(t)
         except Exception:
             traceback.print_exc()
-        # Уникальные ненулевые
-        return [t for t in {id(t): t for t in threads if t is not None}.values()]
+        # Уникальные ненулевые + отсев МЁРТВЫХ wrapper'ов: C++ объект уже
+        # удалён через deleteLater (напр. отработавший CancelThread, чья Python-
+        # ссылка осталась в _cancel_threads — список не чистится). Любой их метод
+        # (isRunning в _graceful_shutdown) кинул бы RuntimeError и уронил бы
+        # graceful-shutdown ДО остановки живых тредов → пробуем живость заранее.
+        out = []
+        for t in {id(t): t for t in threads if t is not None}.values():
+            try:
+                t.isRunning()  # проба: на мёртвом wrapper'е кидает RuntimeError
+            except RuntimeError:
+                continue
+            except Exception:
+                pass
+            out.append(t)
+        return out
 
     def _retire_thread(self, t):
         """Безопасно снимает ссылку на завершившийся GenerateThread.
