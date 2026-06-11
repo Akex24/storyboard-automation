@@ -3506,6 +3506,34 @@ def next_api_key():
     return load_api_key(), None
 
 
+def acquire_api_slot():
+    """Троттл-обёртка над key_pool.acquire_slot() → (key, idx, ok).
+
+    ok=True  → слот взят (или kill-switch fallback без троттла) — бери key и
+               работай, в finally обязательно вызови release_api_slot(idx).
+    ok=False → все живые ключи на потолке (≥MAX_INFLIGHT_PER_KEY/ключ) — подожди
+               и повтори. При ЛЮБОЙ ошибке пула → fallback load_api_key() с
+               idx=None, ok=True (генерация не падает, троттл просто отключается).
+
+    Ленивый import key_pool — как в next_api_key()."""
+    try:
+        import key_pool
+        return key_pool.acquire_slot()
+    except Exception:
+        traceback.print_exc()
+    return load_api_key(), None, True
+
+
+def release_api_slot(idx) -> None:
+    """Освободить слот ключа idx (key_pool.release_slot). idx=None → no-op.
+    Зовётся в finally потока — НИКОГДА не кидает."""
+    try:
+        import key_pool
+        key_pool.release_slot(idx)
+    except Exception:
+        pass
+
+
 def save_api_key(key: str) -> None:
     """Сохраняет API-ключ Fast Gen в QSettings + синхронизирует в `.env`
     project root'а (bridge для pipeline.py, который читает только из .env)."""

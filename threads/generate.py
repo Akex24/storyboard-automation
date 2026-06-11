@@ -688,11 +688,20 @@ class GenerateThread(QThread):
 
     def run(self):
         start_time = time.time()
+        _slot_idx = None  # 2026-06-11 (троттл): idx занятого слота; None=не держим
         try:
-            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
-            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
-            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
-            key, self._used_key_idx = _sa.next_api_key()
+            # 2026-06-11 (троттлинг ≤25/ключ): берём слот на наименее загруженном
+            # живом ключе. Все заняты → ждём 2с и пробуем снова; стоп прерывает.
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки (НЕ racy last_index);
+            # этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
+            while True:
+                key, self._used_key_idx, _ok = _sa.acquire_api_slot()
+                if _ok:
+                    _slot_idx = self._used_key_idx
+                    break
+                if self._stop:
+                    return
+                time.sleep(2)
             self._used_key = key
             session = requests.Session()
             session.headers["X-API-Key"] = key
@@ -1053,6 +1062,9 @@ class GenerateThread(QThread):
                         _kp.disable_key(_bad, _kind)
             except Exception:
                 pass
+        finally:
+            # 2026-06-11 (троттл): слот ВСЕГДА освобождаем — любой return/except.
+            _sa.release_api_slot(_slot_idx)
 
 
 # ─── Поток регенерации/редактирования рефа ───────────────────────
@@ -1115,11 +1127,25 @@ class RefGenerateThread(QThread):
 
     def run(self):
         start_time = time.time()
+        _slot_idx = None  # 2026-06-11 (троттл): idx занятого слота; None=не держим
         try:
-            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
-            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
-            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
-            key, self._used_key_idx = _sa.next_api_key()
+            # 2026-06-11 (троттлинг ≤25/ключ): штучный поток (один реф) — слот
+            # почти всегда свободен. Все ключи на потолке (редко, при параллельном
+            # Mode C-залпе) → ждём, но НЕ вечно: cap ~300с + isInterruptionRequested;
+            # на исчерпании берём ключ без резерва (перелимит на 1 для редкого
+            # реф-гена безопаснее зависшего потока).
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки.
+            _wait = 0
+            while True:
+                key, self._used_key_idx, _ok = _sa.acquire_api_slot()
+                if _ok:
+                    _slot_idx = self._used_key_idx
+                    break
+                if self.isInterruptionRequested() or _wait >= 150:
+                    key, self._used_key_idx = _sa.next_api_key()
+                    break
+                _wait += 1
+                time.sleep(2)
             session = requests.Session()
             session.headers["X-API-Key"] = key
 
@@ -1287,6 +1313,9 @@ class RefGenerateThread(QThread):
                         _kp.disable_key(_bad, _kind)
             except Exception:
                 pass
+        finally:
+            # 2026-06-11 (троттл): слот ВСЕГДА освобождаем — любой return/except.
+            _sa.release_api_slot(_slot_idx)
 
 
 # ─── Поток обновления geometry через Claude CLI ──────────────────
@@ -1655,11 +1684,23 @@ class GenerateActorRefThread(QThread):
             _last_stage = "entry_start"
         except Exception:
             pass
+        _slot_idx = None  # 2026-06-11 (троттл): idx занятого слота; None=не держим
         try:
-            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
-            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
-            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
-            key, self._used_key_idx = _sa.next_api_key()
+            # 2026-06-11 (троттлинг ≤25/ключ): штучный actor-реф — слот почти
+            # всегда свободен; на потолке ждём (cap ~300с + isInterruptionRequested),
+            # на исчерпании берём ключ без резерва (см. RefGenerateThread).
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки.
+            _wait = 0
+            while True:
+                key, self._used_key_idx, _ok = _sa.acquire_api_slot()
+                if _ok:
+                    _slot_idx = self._used_key_idx
+                    break
+                if self.isInterruptionRequested() or _wait >= 150:
+                    key, self._used_key_idx = _sa.next_api_key()
+                    break
+                _wait += 1
+                time.sleep(2)
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
@@ -1906,6 +1947,8 @@ class GenerateActorRefThread(QThread):
             except Exception:
                 pass
         finally:
+            # 2026-06-11 (троттл): слот ВСЕГДА освобождаем — любой return/except.
+            _sa.release_api_slot(_slot_idx)
             # 2026-05-22 (v1.0.78): финальный лог end — закрывает сессию.
             # last_stage показывает на какой стадии завершилось (полезно
             # для return-путей которые не доходят до result_saved).
@@ -1988,6 +2031,7 @@ class EditActorRefThread(QThread):
                 pass
 
     def run(self):
+        _slot_idx = None  # 2026-06-11 (троттл): idx занятого слота; None=не держим
         try:
             if not self.instruction:
                 self.error.emit("Edit без инструкции — нечего применять")
@@ -1996,10 +2040,21 @@ class EditActorRefThread(QThread):
                 self.error.emit(
                     f"Нет исходного рефа: {self.source_image_path.name}")
                 return
-            # 2026-06-09 (фикс racy-idx): свой idx в одни руки из next_api_key
-            # (НЕ racy last_index). key_used эмитится на УСПЕХЕ (мёртвый ключ не
-            # мигает); этот же idx идёт в disable_key при ошибке — СВОЙ ключ.
-            key, self._used_key_idx = _sa.next_api_key()
+            # 2026-06-11 (троттлинг ≤25/ключ): штучный actor-edit — слот почти
+            # всегда свободен; на потолке ждём (cap ~300с + isInterruptionRequested),
+            # на исчерпании берём ключ без резерва (см. RefGenerateThread).
+            # 2026-06-09 (фикс racy-idx): свой idx в одни руки.
+            _wait = 0
+            while True:
+                key, self._used_key_idx, _ok = _sa.acquire_api_slot()
+                if _ok:
+                    _slot_idx = self._used_key_idx
+                    break
+                if self.isInterruptionRequested() or _wait >= 150:
+                    key, self._used_key_idx = _sa.next_api_key()
+                    break
+                _wait += 1
+                time.sleep(2)
             if not key:
                 self.error.emit(tr('create_ref_no_api_key'))
                 return
@@ -2150,6 +2205,9 @@ class EditActorRefThread(QThread):
                         _kp.disable_key(_bad, _kind)
             except Exception:
                 pass
+        finally:
+            # 2026-06-11 (троттл): слот ВСЕГДА освобождаем — любой return/except.
+            _sa.release_api_slot(_slot_idx)
 
 
 class ApplyTextureThread(QThread):

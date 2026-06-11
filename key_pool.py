@@ -34,6 +34,11 @@ from typing import List
 
 MAX_KEYS = 5
 
+# 2026-06-11 (троттлинг): не больше N одновременных запросов на ОДИН ключ.
+# FastGen PRO держит 25 concurrent потоков/ключ — выше сервер роняет/тормозит.
+# Mode C (напр. 3 шота × 10 версий = 30 параллельных) на 1 ключе пробивал лимит.
+MAX_INFLIGHT_PER_KEY = 25
+
 # Внутрипроцессный лок: 4 GUI-потока генерации живут в ОДНОМ процессе и могут
 # крутить курсор параллельно. Межпроцессный лок НЕ делаем (best-effort по
 # плану: худший случай — два запроса возьмут один ключ, лёгкий перекос, не краш).
@@ -42,6 +47,13 @@ _lock = threading.Lock()
 # idx ключа, выданного последним next_key() — для прямого UI-сигнала лампочки
 # (GUI-поток читает через last_index() и эмитит сигнал). Обновляется в next_key.
 _last_index = None
+
+# 2026-06-11 (троттлинг): счётчик живых запросов на каждый ключ {idx: count}.
+# idx — в пространстве get_keys(). Инкремент в acquire_slot, декремент в
+# release_slot — оба под _lock. In-process: живёт в памяти GUI-процесса; CLI-
+# процессы последовательны (1 запрос/процесс) и сюда НЕ входят (межпроцессный
+# лимит не строим — дорого, не окупается).
+_inflight: dict = {}
 
 ROOT: Path = Path(__file__).resolve().parent
 KEYS_FILE: Path = ROOT / "fastgen_keys.txt"
@@ -440,6 +452,76 @@ def next_key() -> str:
     Контракт сохранён для CLI (`pipeline.py`/`generate_storyboards.py`:
     `key = next_key() or load_key()`), которому idx не нужен."""
     return next_key_with_idx()[0]
+
+
+def acquire_slot(max_per_key: int = MAX_INFLIGHT_PER_KEY) -> tuple:
+    """Взять слот на НАИМЕНЕЕ загруженном живом ключе со свободным местом
+    (< max_per_key запросов) → (key, idx, True) и inflight[idx]+=1.
+
+    • Все живые ключи на потолке → ("", None, False): вызывающий ждёт N сек и
+      пробует снова (НЕ kill-switch — это штатное «занято»).
+    • Нет ключей / все выключены вручную → ("", None, True): ждать бессмысленно,
+      downstream получит "" и сам выдаст «нет ключа» (как next_key).
+    • ЛЮБАЯ ошибка диспетчера → fallback (ключ, None, True) БЕЗ резерва слота
+      (kill-switch: троттл отключается, генерация не падает; release_slot(None)
+      = no-op).
+
+    Фильтр живых — тот же, что у next_key_with_idx (manual-off ЖЁСТКО исключены;
+    среди оставшихся отсев выбитых failover'ом, при пустоте — фолбэк на pool).
+    Tie-break при равной загрузке — round-robin курсор. _write_active — лампочка.
+    Критическая секция (выбор + inflight + курсор) под _lock; disabled/manual
+    читаются ДО лока (как в next_key_with_idx)."""
+    try:
+        keys = get_keys()
+        if not keys:
+            return "", None, True
+        manual = _read_manual_off()
+        pool = [i for i in range(len(keys)) if keys[i] not in manual]
+        if not pool:
+            return "", None, True
+        disabled = _read_disabled()
+        live = [i for i in pool if i not in disabled] or pool
+        with _lock:
+            free = [i for i in live if _inflight.get(i, 0) < max_per_key]
+            if not free:
+                return "", None, False
+            min_load = min(_inflight.get(i, 0) for i in free)
+            cand = [i for i in free if _inflight.get(i, 0) == min_load]
+            if len(cand) == 1:
+                idx = cand[0]
+            else:
+                pos = _advance_cursor(len(cand))
+                idx = cand[pos % len(cand)]
+            _inflight[idx] = _inflight.get(idx, 0) + 1
+        _set_last_index(idx)
+        _write_active(idx)
+        return keys[idx], idx, True
+    except Exception:
+        try:
+            ks = get_keys()
+            if ks:
+                return ks[0], None, True
+        except Exception:
+            pass
+        return _read_env_first_line(), None, True
+
+
+def release_slot(idx) -> None:
+    """Освободить слот ключа idx — вызывается в finally потока, ВСЕГДА. idx=None
+    (kill-switch / фолбэк-ключ вне пула) → no-op. Под _lock, не уходит ниже 0,
+    не кидает. Пустой счётчик ключа удаляется (карта не растёт)."""
+    if idx is None:
+        return
+    try:
+        idx = int(idx)
+        with _lock:
+            cur = _inflight.get(idx, 0)
+            if cur <= 1:
+                _inflight.pop(idx, None)
+            else:
+                _inflight[idx] = cur - 1
+    except Exception:
+        pass
 
 
 def save_keys(keys) -> None:
