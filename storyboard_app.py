@@ -218,6 +218,9 @@ API_BASE     = "https://googler.fast-gen.ai"
 STORAGE_BASE = "https://storage.fast-gen.ai"
 MODEL        = "NARWHAL"
 PANELS       = 4
+# 2026-06-11 (авто-добор Mode C): сколько проходов добора недостающих версий
+# делать после завершения блока (2-й проход только если после 1-го дыры остались).
+MODE_C_RETRY_MAX_PASSES = 2
 
 # Папки которые НЕ перезаписываются обновлением (контент пользователя)
 PRESERVE_ON_UPDATE = {".env", ".env.local", "output", "refs", "scenarios",
@@ -5763,6 +5766,11 @@ class MainWindow(QMainWindow):
         # УЖЕ повторно перезапускались — гарантия РОВНО 1 повтора (анти-задвоение).
         # Чистится в начале _spawn_mode_c_versions (новый блок = свежий бюджет).
         self._mode_c_retried: set = set()
+        # 2026-06-11 (авто-добор): shots/n текущего Mode C-блока + счётчик
+        # проходов добора (сбрасываются в _spawn_mode_c_versions).
+        self._mode_c_block_shots: list = []
+        self._mode_c_block_n: int = 0
+        self._mode_c_retry_pass: int = 0
         # 2026-06-07 (Mode C): реестр фоновых тредов режиссёра камер
         # (ключ block_basename). Отдельно от версий; нужен для shutdown.
         self._camera_director_threads: Dict[str, QThread] = {}
@@ -13288,6 +13296,9 @@ class MainWindow(QMainWindow):
             return
         block_basename = shots[0][0]
         self._storyboard_active_block = block_basename
+        # 2026-06-11 (defense-in-depth): новый блок стартовал → снять глобальный
+        # стоп-флаг (вторая точка сброса помимо episode_chat при старте pipeline).
+        self._generation_stopped = False
         # 2026-06-06 (Mode C): N версий на шот. Только режим C и N>1 — уходим
         # в отдельный спавнер; иначе всё ниже работает как раньше (байт-в-байт).
         if (mode_loader.get_current_mode() == 'c'
@@ -13504,6 +13515,11 @@ class MainWindow(QMainWindow):
         self._storyboard_active_pending = len(shots) * n
         # Дотяжка: новый блок → свежий бюджет повторов (по 1 на версию).
         self._mode_c_retried = set()
+        # 2026-06-11 (авто-добор): запоминаем shots/n блока + сбрасываем счётчик
+        # проходов добора (контролёр _maybe_retry_mode_c_gaps_or_advance).
+        self._mode_c_block_shots = list(shots)
+        self._mode_c_block_n = int(n)
+        self._mode_c_retry_pass = 0
         for block_basename, panel_idx in shots:
             for v in range(1, n + 1):
                 self._spawn_one_mode_c_version(
@@ -13552,7 +13568,7 @@ class MainWindow(QMainWindow):
         self._storyboard_active_pending = max(
             0, self._storyboard_active_pending - 1)
         if self._storyboard_active_pending == 0:
-            self._maybe_start_next_storyboard_block()
+            self._maybe_retry_mode_c_gaps_or_advance()
 
     def _on_mode_c_version_error(self, block_basename: str,
                                   panel_idx: int, version_index: int,
@@ -13591,7 +13607,64 @@ class MainWindow(QMainWindow):
         self._storyboard_active_pending = max(
             0, self._storyboard_active_pending - 1)
         if self._storyboard_active_pending == 0:
-            self._maybe_start_next_storyboard_block()
+            self._maybe_retry_mode_c_gaps_or_advance()
+
+    def _maybe_retry_mode_c_gaps_or_advance(self):
+        """Контролёр добора Mode C: при pending==0 ищет недостающие vN.jpg на
+        диске и перезапускает ТОЛЬКО их (≤ MODE_C_RETRY_MAX_PASSES проходов).
+        Добирает и таймауты, и upload-сбои (бежим уже после блока — сервер мог
+        ожить). Если дыр нет / стоп-флаг / не Mode C / лимит проходов — переходим
+        к следующему блоку. Косметика/диагностика — ошибки глотаются."""
+        try:
+            if getattr(self, '_generation_stopped', False):
+                self._maybe_start_next_storyboard_block()
+                return
+            shots = getattr(self, '_mode_c_block_shots', None) or []
+            n = int(getattr(self, '_mode_c_block_n', 0) or 0)
+            if not shots or n <= 0:
+                self._maybe_start_next_storyboard_block()
+                return
+            if getattr(self, '_mode_c_retry_pass', 0) >= MODE_C_RETRY_MAX_PASSES:
+                self._maybe_start_next_storyboard_block()
+                return
+            # Дыры: для каждого (block,panel) — каких v1..vN нет на диске.
+            gaps = []
+            for _blk, _panel in shots:
+                present = set()
+                for p in list_shot_versions(shot_history_dir(_blk, _panel)):
+                    try:
+                        present.add(int(p.stem[1:]))
+                    except Exception:
+                        pass
+                for v in range(1, n + 1):
+                    if v not in present:
+                        gaps.append((_blk, _panel, v))
+            if not gaps:
+                self._maybe_start_next_storyboard_block()
+                return
+            # Запускаем добор: pending растёт на число дыр, блок остаётся активным
+            # (переход к следующему НЕ зовём — он сработает когда добор завершится).
+            self._mode_c_retry_pass = getattr(self, '_mode_c_retry_pass', 0) + 1
+            self._storyboard_active_pending += len(gaps)
+            for _blk, _panel, v in gaps:
+                cam = self._recover_camera_override(_blk, _panel, v)
+                self._spawn_one_mode_c_version(_blk, _panel, v, cam)
+            try:
+                _b0 = shots[0][0]
+                self._notify_storyboard_failure(
+                    _b0, shots[0][1],
+                    f"Авто-добор Mode C (проход {self._mode_c_retry_pass}/"
+                    f"{MODE_C_RETRY_MAX_PASSES}): перезапуск {len(gaps)} "
+                    f"недостающих версий блока «{_b0}»")
+                self._refresh_block_indicator(_b0)
+            except Exception:
+                traceback.print_exc()
+        except Exception:
+            traceback.print_exc()
+            try:
+                self._maybe_start_next_storyboard_block()
+            except Exception:
+                pass
 
     def _recover_camera_override(self, block_basename: str, panel_idx: int,
                                   version_index: int):
