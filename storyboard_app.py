@@ -10741,6 +10741,7 @@ class MainWindow(QMainWindow):
         # делать no-op (re-click), а когда нужна перерисовка (другой ep).
         self._refs_view_built_for_ep = ep
         self.content_stack.setCurrentIndex(1)
+        self._refresh_stop_btn()
         self.save_btn.hide()
         self._clear_status_now()
         fade_in_widget(self.content_stack, duration=260)
@@ -10808,6 +10809,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.content_stack.setCurrentIndex(2)
+        self._refresh_stop_btn()
         self.save_btn.hide()
         self._clear_status_now()
         fade_in_widget(self.content_stack, duration=260)
@@ -10865,6 +10867,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'compile_ep_btn'):
             self.compile_ep_btn.setVisible(False)
         self.content_stack.setCurrentIndex(3)
+        self._refresh_stop_btn()
         self.save_btn.hide()
         self._clear_status_now()
         fade_in_widget(self.content_stack, duration=260)
@@ -11208,13 +11211,23 @@ class MainWindow(QMainWindow):
         self._refresh_stop_btn()
 
     def _refresh_stop_btn(self):
-        """Видимость кнопки «Остановить» = есть хоть одна активная генерация
-        (стоп глобальный, не зависит от показанного блока). После клика держим
-        «Останавливаю…» пока реестры не опустеют."""
+        """Видимость кнопки «Остановить»: ТОЛЬКО на странице блоков (content_stack
+        index 0) И только если открытый эпизод == эпизод, чьи блоки сейчас
+        генерятся (ep-префикс ключей реестров: b.split('_block_')[0]). После
+        клика держим «Останавливаю…» пока реестры не опустеют."""
         btn = getattr(self, 'stop_gen_btn', None)
         if btn is None:
             return
-        active = bool(self._active_regens or self._active_mode_c_version_threads)
+        on_blocks = (hasattr(self, 'content_stack')
+                     and self.content_stack.currentIndex() == 0)
+        ep = getattr(self, '_current_episode', None)
+        def _ep_of(b):
+            return b.split('_block_', 1)[0]
+        active = bool(
+            on_blocks and ep is not None and (
+                any(_ep_of(b) == ep for (b, _p) in self._active_regens)
+                or any(_ep_of(b) == ep
+                       for (b, _p, _v) in self._active_mode_c_version_threads)))
         try:
             btn.setVisible(active)
             if active and not getattr(self, '_generation_stopped', False):
