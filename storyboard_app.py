@@ -3247,6 +3247,22 @@ QPushButton#tab-pill:hover {
 QPushButton#tab-pill[active="true"] {
     background: rgba(255, 255, 255, 0.06); color: #ffffff;
 }
+/* Этап 2 (формат): сегмент-переключатель 9:16 | 16:9 в шапке. Активная
+   половина — фирменный красный (#e63946, как точка в логотипе), неактивная
+   приглушённая. По образцу #header-tabs + #tab-pill. */
+QFrame#aspect-seg {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+}
+QPushButton#aspect-seg-btn {
+    background: transparent; color: rgba(255, 255, 255, 0.55);
+    border: none; border-radius: 6px;
+    padding: 5px 12px; font-size: 12px; font-weight: 600;
+}
+QPushButton#aspect-seg-btn:hover { color: rgba(255, 255, 255, 0.85); }
+QPushButton#aspect-seg-btn[active="true"] { background: #e63946; color: #ffffff; }
+QPushButton#aspect-seg-btn:disabled { color: rgba(255, 255, 255, 0.25); }
 
 /* Старый QTabBar — оставлен в QSS на случай если где-то ещё используется,
    но в главном окне tab-bar СКРЫТ программно (см. _build_ui). */
@@ -7146,6 +7162,29 @@ class MainWindow(QMainWindow):
         logo.mousePressEvent = _open_lumz  # type: ignore
         lay.addWidget(logo, alignment=Qt.AlignmentFlag.AlignVCenter)
 
+        # Этап 2 (формат кадра): сегмент-переключатель 9:16 | 16:9 вплотную
+        # справа от логотипа. Активная половина — фирменный красный. Клик по
+        # неактивной → подтверждение → запись meta.aspect + просьба перезапустить.
+        # Логику генерации/UI НЕ трогает (Этап 3+).
+        self._aspect_seg_buttons: Dict[str, QPushButton] = {}
+        aspect_seg = QFrame()
+        aspect_seg.setObjectName("aspect-seg")
+        as_lay = QHBoxLayout(aspect_seg)
+        as_lay.setContentsMargins(3, 3, 3, 3)
+        as_lay.setSpacing(0)
+        for _code in ("9:16", "16:9"):
+            _b = QPushButton(_code)
+            _b.setObjectName("aspect-seg-btn")
+            _b.setCursor(Qt.CursorShape.PointingHandCursor)
+            _b.setProperty("active", False)
+            _b.clicked.connect(
+                lambda _checked=False, c=_code: self._on_aspect_seg_clicked(c))
+            self._aspect_seg_buttons[_code] = _b
+            as_lay.addWidget(_b)
+        lay.addSpacing(12)
+        lay.addWidget(aspect_seg, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._refresh_aspect_segment()
+
         lay.addStretch()
 
         # Pill-группа табов «Редактор / Актёры / Настройки».
@@ -7309,6 +7348,61 @@ class MainWindow(QMainWindow):
         pos = self.lang_btn.mapToGlobal(QPoint(0, self.lang_btn.height() + 4))
         self._lang_menu.setMinimumWidth(self.lang_btn.width() + 60)
         self._lang_menu.exec(pos)
+
+    def _refresh_aspect_segment(self):
+        """Подсветка сегмента формата под self._current_aspect (активная
+        половина — красная). Нет активного сериала → сегмент выключен (no-op
+        при клике). Перекраска через unpolish/polish (как у tab-pill)."""
+        cur = getattr(self, '_current_aspect', '9:16')
+        has_show = bool(getattr(self, '_current_show', None))
+        for code, btn in getattr(self, '_aspect_seg_buttons', {}).items():
+            btn.setProperty("active", bool(has_show and code == cur))
+            btn.setEnabled(has_show)
+            try:
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+            except Exception:
+                pass
+
+    def _on_aspect_seg_clicked(self, code: str):
+        """Клик по половине сегмента формата. По неактивной → подтверждение
+        «Применить/Отменить»; ТОЛЬКО при «Применить» пишем meta.aspect активного
+        сериала + просим перезапуск. «Отменить» → полный откат, ничего не пишем
+        (подсветка остаётся на старом формате). Логику генерации НЕ трогает."""
+        if not getattr(self, '_current_show', None):
+            return  # нет активного сериала — писать некуда
+        if code == getattr(self, '_current_aspect', '9:16'):
+            return  # уже активный формат
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(tr('aspect_switch_title'))
+        box.setText(tr('aspect_switch_confirm', fmt=code))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Ok).setText(tr('aspect_switch_apply'))
+        box.button(QMessageBox.StandardButton.Cancel).setText(
+            tr('aspect_switch_cancel'))
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if box.exec() != QMessageBox.StandardButton.Ok:
+            return  # Отмена — полный откат, ничего не трогаем
+        # read-modify-write meta.aspect (save_show_meta дампит весь dict →
+        # остальные поля сохраняются).
+        try:
+            meta = show_manager.load_show_meta(
+                self._project_root, self._current_show)
+            meta["aspect"] = code
+            show_manager.save_show_meta(
+                self._project_root, self._current_show, meta)
+            self._current_aspect = code
+        except Exception:
+            traceback.print_exc()
+        self._refresh_aspect_segment()
+        try:
+            QMessageBox.information(
+                self, tr('aspect_switch_title'),
+                tr('aspect_switch_restart', fmt=code))
+        except Exception:
+            traceback.print_exc()
 
     def _set_lang(self, code: str):
         """Применяет выбранный язык: сохраняет в QSettings + перерисовывает UI."""
@@ -9219,6 +9313,9 @@ class MainWindow(QMainWindow):
         # Этап 1 (формат кадра): обновляем формат при смене сериала.
         self._current_aspect = show_manager.show_aspect(
             self._project_root, show_name)
+        # Этап 2 (формат кадра): подсветка сегмента под новый сериал.
+        if hasattr(self, '_aspect_seg_buttons'):
+            self._refresh_aspect_segment()
         self.current_block = None
         self._current_episode = None
         # Перевешиваем file watcher на новый путь
