@@ -29,6 +29,8 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import frame_format
+
 import requests
 from PIL import Image
 
@@ -191,7 +193,8 @@ class GenerateThread(QThread):
                  realistic: bool = False,
                  version_index: Optional[int] = None,
                  camera_override: Optional[str] = None,
-                 base_image_override: Optional[Path] = None):
+                 base_image_override: Optional[Path] = None,
+                 aspect: str = "9:16"):
         """
         Если `edit_instruction` задан — режим редактирования:
           • существующий файл шота загружается как ЕДИНСТВЕННЫЙ реф [@]img1
@@ -226,6 +229,8 @@ class GenerateThread(QThread):
         self.version_index    = version_index
         self.camera_override  = camera_override
         self.base_image_override = base_image_override
+        # Этап 3.1 (формат кадра): формат шота. Дефолт "9:16" → поведение прежнее.
+        self.aspect           = aspect
         # 2026-06-11 (кнопка «Остановить генерацию»): кооперативный стоп-флаг,
         # op_id текущей задачи и её ключ (для серверной отмены).
         self._stop = False
@@ -360,9 +365,10 @@ class GenerateThread(QThread):
         # защищёнными только то что должно быть одинаковым ВСЕГДА:
         # художественный стиль = НАСЛЕДУЕТСЯ от [@]img0 (скетч ИЛИ фото —
         # промпт не форсит pencil sketch, иначе правка реалистичной версии
-        # откатывалась бы в ч-б скетч), формат (9:16), сеттинг.
+        # откатывалась бы в ч-б скетч), формат (9:16/16:9), сеттинг.
+        _fmt = frame_format.edit_format_line(self.aspect)
         return (
-            "[@]img0 is the CURRENT panel, vertical 9:16 format. Use it as "
+            f"[@]img0 is the CURRENT panel, {_fmt} format. Use it as "
             "the BASE for modification and PRESERVE its exact existing art "
             "style, rendering and color treatment — whether it is a pencil "
             "sketch or a photorealistic frame.\n\n"
@@ -379,10 +385,10 @@ class GenerateThread(QThread):
             "- Keep the EXACT same art style, rendering and color treatment "
             "as [@]img0 — do NOT convert between sketch and photo, do NOT "
             "add or remove color, do NOT turn it black-and-white\n"
-            "- Keep the same vertical 9:16 format\n"
+            f"- Keep the same {_fmt} format\n"
             "- Use the same setting/location ([@]img1) unless instructed "
             "otherwise\n"
-            "Output: single vertical 9:16 panel in the exact same visual "
+            f"Output: single {_fmt} panel in the exact same visual "
             "style, rendering and color treatment as [@]img0."
         )
 
@@ -557,7 +563,7 @@ class GenerateThread(QThread):
             refs = self._override_character_refs(refs)
         except Exception:
             pass  # fallback на шапку при любой ошибке (старое поведение)
-        clean_body = _sa.extract_shot_prompt(prompt_text, self.panel_idx) or ""
+        clean_body = _sa.extract_shot_prompt(prompt_text, self.panel_idx, aspect=self.aspect) or ""
         filtered_refs: Dict = {}
         sorted_tags: List[str] = []
         ref_hashes: List[str] = []
@@ -799,7 +805,7 @@ class GenerateThread(QThread):
             provider = _sa.image_provider_admin()
             payload: Dict = {
                 "prompt":       clean,
-                "aspect_ratio": "9:16",   # отдельный шот — портрет
+                "aspect_ratio": frame_format.payload_aspect_ratio(self.aspect),  # формат шота
             }
             if ref_hashes:
                 if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > 2:

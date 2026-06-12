@@ -39,6 +39,7 @@ from i18n import (
 # show_manager — управление сериалами (создание, slug-транслит, meta.json).
 # Чистый Python без Qt, юниты в tests/test_show_manager.py.
 import show_manager
+import frame_format
 
 # scenario_parser — разбор документа со сценариями (библия + эпизоды).
 # Чистый Python без Qt, юниты в tests/test_scenario_parser.py.
@@ -4015,7 +4016,7 @@ _STRICT_CAMERA_RULE = (
 )
 
 
-def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
+def extract_shot_prompt(prompt_text: str, panel_idx: int, aspect: str = "9:16") -> Optional[str]:
     """Извлекает контент одного шота как самостоятельный 9:16 промпт.
 
     Берёт общий хедер блока (стиль, рефы, персонажи) + тело конкретного Panel,
@@ -4050,16 +4051,17 @@ def extract_shot_prompt(prompt_text: str, panel_idx: int) -> Optional[str]:
     if not panel_body or "COMPLETELY BLANK" in panel_body.upper():
         return None
 
+    _panel = frame_format.single_panel_phrase(aspect)
     header_new = re.sub(
         r'(?i)(Film storyboard layout,\s*)?ONE\s+wide\s+horizontal\s+sheet,?\s*'
         r'EXACTLY\s+\d+\s+vertical\s+panels[^.]*\.\s*',
-        'Single vertical 9:16 panel. ',
+        _panel + ' ',
         header,
     )
     if header_new == header:
         header_new = re.sub(
             r'(?i)ONE\s+wide\s+horizontal\s+sheet[^.]*\.',
-            'Single vertical 9:16 panel.',
+            _panel,
             header,
         )
 
@@ -12288,7 +12290,8 @@ class MainWindow(QMainWindow):
             marked = sv._bake_marked_image() if sv is not None else None
             thread = GenerateThread(target_block, panel_idx,
                                      edit_instruction=short_instruction,
-                                     base_image_override=marked)
+                                     base_image_override=marked,
+                                     aspect=self._current_aspect)
             self._active_regens[key] = thread
             thread.progress.connect(self.status_bar.showMessage)
             thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
@@ -12343,7 +12346,8 @@ class MainWindow(QMainWindow):
         _now = time.time()
         self._shot_gen_started_at[(target_block, panel_idx)] = _now
         card.start_progress(_now)
-        thread = GenerateThread(target_block, panel_idx)
+        thread = GenerateThread(target_block, panel_idx,
+                                aspect=self._current_aspect)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
         thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
@@ -13296,7 +13300,8 @@ class MainWindow(QMainWindow):
         self._shot_gen_started_at[(target_block, panel_idx)] = _now
         card.start_progress(_now)
 
-        thread = GenerateThread(target_block, panel_idx)
+        thread = GenerateThread(target_block, panel_idx,
+                                aspect=self._current_aspect)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
         thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
@@ -13336,7 +13341,8 @@ class MainWindow(QMainWindow):
         self._shot_gen_started_at[(target_block, panel_idx)] = _now
         card.start_progress(_now)
 
-        thread = GenerateThread(target_block, panel_idx, realistic=True)
+        thread = GenerateThread(target_block, panel_idx, realistic=True,
+                                aspect=self._current_aspect)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
         thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
@@ -13473,7 +13479,7 @@ class MainWindow(QMainWindow):
 
             shots: List[tuple] = []
             for panel_idx in range(PANELS):
-                body = extract_shot_prompt(prompt_text, panel_idx)
+                body = extract_shot_prompt(prompt_text, panel_idx, aspect=self._current_aspect)
                 if not body:
                     continue
                 # Уже на диске (юзер успел регенерить вручную) — пропуск
@@ -13544,7 +13550,8 @@ class MainWindow(QMainWindow):
                     pass
 
             key = (block_basename, panel_idx)
-            thread = GenerateThread(block_basename, panel_idx)
+            thread = GenerateThread(block_basename, panel_idx,
+                                    aspect=self._current_aspect)
             self._active_regens[key] = thread
             thread.progress.connect(self.status_bar.showMessage)
             thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
@@ -13713,7 +13720,7 @@ class MainWindow(QMainWindow):
         key = (block_basename, panel_idx, v)
         thread = GenerateThread(
             block_basename, panel_idx, version_index=v,
-            camera_override=camera_override)
+            camera_override=camera_override, aspect=self._current_aspect)
         self._active_mode_c_version_threads[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
         thread.key_used.connect(self._blink_key_indicator)  # лампочка round-robin
