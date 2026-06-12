@@ -495,9 +495,12 @@ class GenerateThread(QThread):
             "material reflectance, real depth of field, cinematic color "
             "grading. Match each character's face, hair and clothing to "
             "THEIR reference photo in the legend — not to the sketch.\n"
-            "Output: one single full-color photorealistic vertical 9:16 "
-            "frame that looks like a real film still — with zero drawn or "
-            "sketched pixels remaining."
+            # Этап 3 (формат): строка вывода формат-зависима (как edit-ветка
+            # :369). 9:16 → «vertical 9:16» байт-в-байт; 16:9 → «horizontal 16:9».
+            f"Output: one single full-color photorealistic "
+            f"{frame_format.edit_format_line(self.aspect)} frame that looks "
+            "like a real film still — with zero drawn or sketched pixels "
+            "remaining."
         )
 
     def _collect_shot_refs(
