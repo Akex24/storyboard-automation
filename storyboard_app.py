@@ -4861,8 +4861,11 @@ def _find_overlay_font(size: int):
     return ImageFont.load_default()
 
 
-def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
-    """Склеивает все 9:16 шоты блока в одну 16:9 картинку (4 в ряд) и сохраняет.
+def stitch_shots_to_landscape(block_name: str, dest: Path, aspect: str = "9:16") -> None:
+    """Склеивает шоты блока в один лист 16:9 и сохраняет.
+
+    aspect="9:16" (дефолт) — 4 вертикальных кадра В РЯД (как было).
+    aspect="16:9" — 4 горизонтальных кадра сеткой 2×2.
 
     Пустые позиции (где нет файла) заполняются белым.
     На каждом непустом шоте СИСТЕМНО накладывает подпись «SHOT N · Xs · описание»
@@ -4886,8 +4889,17 @@ def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
     if panel_w == 0 or panel_h == 0:
         return
 
-    total_w = panel_w * PANELS
-    canvas  = PILImage.new("RGB", (total_w, panel_h), (255, 255, 255))
+    # Этап 5 (формат кадра): раскладка листа. 9:16 → 4 панели В РЯД (cols=4,
+    # rows=1) — РОВНО как было: canvas = panel_w*4 × panel_h, ячейка i = (i*panel_w,0).
+    # 16:9 → сетка 2×2 (cols=2, rows=2). Позицию ячейки панели i даёт _cell(i).
+    if aspect == "16:9":
+        cols, rows = 2, 2
+    else:
+        cols, rows = PANELS, 1
+    canvas = PILImage.new("RGB", (panel_w * cols, panel_h * rows), (255, 255, 255))
+
+    def _cell(i):
+        return ((i % cols) * panel_w, (i // cols) * panel_h)
 
     for i, p in enumerate(paths):
         if p is None:
@@ -4905,7 +4917,8 @@ def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
                     pad = PILImage.new("RGB", (panel_w, panel_h), (255, 255, 255))
                     pad.paste(piece, ((panel_w - piece.width) // 2, 0))
                     piece = pad
-        canvas.paste(piece, (i * panel_w, 0))
+        _ox, _oy = _cell(i)
+        canvas.paste(piece, (_ox, _oy))
 
     # Системное наложение подписей шотов поверх картинки.
     # Берём метаданные из промпт-файла блока через parse_shots.
@@ -4941,7 +4954,7 @@ def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
                 parts.append(desc)
             text = "  ·  ".join(parts)
 
-            x_offset = i * panel_w
+            x_offset, y_base = _cell(i)
             # Размер текста
             try:
                 bbox = draw.textbbox((0, 0), text, font=font)
@@ -4965,7 +4978,7 @@ def stitch_shots_to_landscape(block_name: str, dest: Path) -> None:
 
             # Координаты белой плашки в нижнем-левом углу панели
             box_x0 = x_offset + margin
-            box_y1 = panel_h - margin
+            box_y1 = y_base + panel_h - margin
             box_y0 = box_y1 - text_h - 2 * pad_y
             box_x1 = box_x0 + text_w + 2 * pad_x
 
@@ -16538,7 +16551,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            stitch_shots_to_landscape(self.current_block, candidate)
+            stitch_shots_to_landscape(self.current_block, candidate,
+                                      aspect=self._current_aspect)
             self.status_bar.showMessage(
                 tr('status_saved', path=str(candidate)), 6000)
             # 2026-06-02 (вариант A): чистый <base>.jpg сохранён как раньше
