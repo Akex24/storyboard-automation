@@ -7387,6 +7387,7 @@ class MainWindow(QMainWindow):
             return  # Отмена — полный откат, ничего не трогаем
         # read-modify-write meta.aspect (save_show_meta дампит весь dict →
         # остальные поля сохраняются).
+        saved = False
         try:
             meta = show_manager.load_show_meta(
                 self._project_root, self._current_show)
@@ -7394,9 +7395,21 @@ class MainWindow(QMainWindow):
             show_manager.save_show_meta(
                 self._project_root, self._current_show, meta)
             self._current_aspect = code
+            saved = True
         except Exception:
             traceback.print_exc()
-        self._refresh_aspect_segment()
+        if saved:
+            # Формат уже записан на диск (save_show_meta синхронна) ДО закрытия.
+            # Закрываемся ШТАТНО через self.close() → closeEvent →
+            # _graceful_shutdown_all_threads (корректно гасит треды, ничего не
+            # виснет). Откладываем на след. тик event-loop'а (как остальной код
+            # делает для quit) чтобы текущий клик-хендлер завершился чисто. Юзер
+            # открывает Studio заново — стартует в новом формате.
+            QTimer.singleShot(0, self.close)
+        else:
+            # Запись упала → НЕ закрываемся (иначе откроется со старым форматом),
+            # возвращаем подсветку сегмента на текущий формат.
+            self._refresh_aspect_segment()
 
     def _set_lang(self, code: str):
         """Применяет выбранный язык: сохраняет в QSettings + перерисовывает UI."""
