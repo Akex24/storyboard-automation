@@ -7397,12 +7397,6 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
         self._refresh_aspect_segment()
-        try:
-            QMessageBox.information(
-                self, tr('aspect_switch_title'),
-                tr('aspect_switch_restart', fmt=code))
-        except Exception:
-            traceback.print_exc()
 
     def _set_lang(self, code: str):
         """Применяет выбранный язык: сохраняет в QSettings + перерисовывает UI."""
