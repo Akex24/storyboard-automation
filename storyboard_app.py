@@ -4052,15 +4052,18 @@ def extract_shot_prompt(prompt_text: str, panel_idx: int, aspect: str = "9:16") 
         return None
 
     _panel = frame_format.single_panel_phrase(aspect)
+    # Этап 3.2: regex обобщён под ОБА формата — 9:16 «ONE wide horizontal sheet,
+    # EXACTLY N vertical panels…» и 16:9 «ONE storyboard sheet, EXACTLY N
+    # horizontal panels…». На 9:16-шапке результат идентичен прежнему (контроль в).
     header_new = re.sub(
-        r'(?i)(Film storyboard layout,\s*)?ONE\s+wide\s+horizontal\s+sheet,?\s*'
-        r'EXACTLY\s+\d+\s+vertical\s+panels[^.]*\.\s*',
+        r'(?i)(Film storyboard layout,\s*)?ONE\s+(?:\w+\s+){1,2}sheet,?\s*'
+        r'EXACTLY\s+\d+\s+(?:vertical|horizontal)\s+panels[^.]*\.\s*',
         _panel + ' ',
         header,
     )
     if header_new == header:
         header_new = re.sub(
-            r'(?i)ONE\s+wide\s+horizontal\s+sheet[^.]*\.',
+            r'(?i)ONE\s+(?:\w+\s+){1,2}sheet[^.]*\.',
             _panel,
             header,
         )

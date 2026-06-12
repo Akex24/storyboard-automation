@@ -33,6 +33,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from agents.storyboard_writer_prompts import (
     SYSTEM as STORYBOARD_WRITER_SYSTEM,
+    build_system as build_storyboard_writer_system,
     build_user_prompt as build_storyboard_writer_user_prompt,
 )
 
@@ -89,6 +90,7 @@ class StoryboardPipelineThread(QThread):
                  ep_id: str,
                  prompts_dir: Path,
                  geometry_context: Optional[Dict[str, str]] = None,
+                 aspect: str = "9:16",
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
@@ -96,6 +98,8 @@ class StoryboardPipelineThread(QThread):
         self._refs = refs_summary or {}
         self._chars_dict = characters_dict or {}
         self._ep_id = ep_id
+        # Этап 3.2 (формат кадра): формат для header писателя (build_system).
+        self._aspect = aspect
         self._prompts_dir = Path(prompts_dir)
         # 2026-05-06: geometry_context = {location_slug: geometry_text}
         # — описание пространства локации, передаётся PromptWriter'у
@@ -210,7 +214,7 @@ class StoryboardPipelineThread(QThread):
             ep_id=self._ep_id,
             geometry=geometry_for_block,
         )
-        return self._run_claude(STORYBOARD_WRITER_SYSTEM, user)
+        return self._run_claude(build_storyboard_writer_system(self._aspect), user)
 
     def _run_claude(self, system_prompt: str, user_prompt: str) -> str:
         if not self._cli:

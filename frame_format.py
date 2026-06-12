@@ -41,3 +41,23 @@ def edit_format_line(aspect: str = "9:16") -> str:
     if _norm(aspect) == "16:9":
         return "horizontal 16:9"
     return "vertical 9:16"
+
+
+def writer_sheet_header(aspect: str = "9:16") -> str:
+    """Первое предложение HEADER'а писателя (storyboard_writer_prompts.SYSTEM):
+    описание листа/панелей. Этот фрагмент extract_shot_prompt потом вырезает и
+    заменяет на single_panel_phrase. 9:16 → текущее дословно (байт-в-байт);
+    16:9 → горизонталь сеткой 2×2."""
+    if _norm(aspect) == "16:9":
+        return ("Film storyboard layout, ONE storyboard sheet, EXACTLY 4 "
+                "horizontal panels in a 2x2 grid, 16:9 overall, each panel 16:9.")
+    return ("Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 "
+            "vertical panels side-by-side, 16:9 overall, each panel 9:16.")
+
+
+def writer_intro_line(aspect: str = "9:16") -> str:
+    """Рус. описание формата во вступлении SYSTEM (что писатель производит).
+    9:16 → текущее дословно; 16:9 → горизонталь 2×2."""
+    if _norm(aspect) == "16:9":
+        return "карандашной раскадровки 16:9 из 4 горизонтальных панелей сеткой 2x2."
+    return "карандашной раскадровки 16:9 из 4 вертикальных панелей."

@@ -97,6 +97,9 @@ Pipeline читает папку refs/characters/
 =============================================================
 
 ШАПКА — вставляется в КАЖДЫЙ блок без изменений:
+(Технич. примечание: формат-зависимый header задаётся в КОДЕ —
+frame_format.writer_sheet_header / storyboard_writer_prompts.build_system.
+Ниже приведён дефолт 9:16; для 16:9 — 4 горизонтальные панели сеткой 2x2.)
 ---
 Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels side-by-side, 16:9 overall, each panel 9:16. Detailed pencil sketch, comic book style, black and white, clear outlines. All characters wear EXACT SAME clothes as their reference images. DO NOT invent new clothes. Blank panels: COMPLETELY BLANK AND EMPTY. Pure white space only. No drawing, no lines. STRICT RULE: Draw characters and objects EXCLUSIVELY from tagged references. Any untagged image does NOT exist. Do NOT mix features from untagged images. STRICT NO TEXT RULE: Do NOT draw any text, words, numbers, captions, labels, annotations, speech bubbles, signs, or written symbols ANYWHERE on the image. Each panel is a pure visual scene without text. FACIAL EXPRESSION STYLE: Restrained, cinematic micro-expressions only. NO cartoon shock, NO exaggerated open mouths, NO symmetric surprised eyebrows, NO soap opera reactions. Faces show tension through jaw, eyes, slight asymmetry — not through wide-open features. Style reference: restrained European arthouse acting, A24 indie drama films, Nordic noir aesthetic.
 ---

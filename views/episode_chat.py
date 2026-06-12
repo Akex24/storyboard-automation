@@ -3700,6 +3700,7 @@ class EpisodeChatView(QWidget):
             ep_id=self._ep_id or "",
             prompts_dir=prompts_dir,
             geometry_context=geometry_context,
+            aspect=getattr(self._mw, '_current_aspect', '9:16'),
             parent=self,
         )
         # Сигналы → MainWindow (он держит UI блоков/шотов и

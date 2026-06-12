@@ -481,6 +481,23 @@ Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels sid
 # ──────────────────────────────────────────────────────────────────
 
 
+def build_system(aspect: str = "9:16") -> str:
+    """SYSTEM писателя под формат кадра. 9:16 → строго текущий SYSTEM
+    (байт-в-байт: обе подмены no-op, target==source). 16:9 → header-предложение
+    и рус. описание заменяются на горизонтальные варианты из frame_format.
+    Подмена по точным фрагментам через str.replace."""
+    import frame_format
+    s = SYSTEM
+    s = s.replace(
+        "Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 "
+        "vertical panels side-by-side, 16:9 overall, each panel 9:16.",
+        frame_format.writer_sheet_header(aspect))
+    s = s.replace(
+        "карандашной раскадровки 16:9 из 4 вертикальных панелей.",
+        frame_format.writer_intro_line(aspect))
+    return s
+
+
 def build_user_prompt(block: dict,
                       refs_summary: dict,
                       characters_dict: Dict[str, str],
