@@ -40,6 +40,10 @@ from views.theme import lumz_button_qss
 # размер шота 384×688, дополнительно × 1.4 для удобства просмотра.
 PREVIEW_W = 384
 PREVIEW_H = 688
+# 16:9 (горизонтальный шот): отдельный бокс превью, чтобы кадр занимал ширину
+# попапа. PREVIEW_W/H выше НЕ трогаем (от них выведена лента версий THUMB).
+PREVIEW_W_LAND = 880
+PREVIEW_H_LAND = 495   # 880 × 9/16 = 495 → 16:9
 
 # Миниатюра в ленте версий — компактнее.
 THUMB_W = 70
@@ -322,12 +326,15 @@ class ShotViewerDialog(QDialog):
 
     def __init__(self, panel_idx: int, block_name: str,
                  active_path: Path, history_dir: Path,
+                 aspect: str = "9:16",
                  parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
         self.panel_idx = panel_idx
         self.block_name = block_name
         self.active_path = Path(active_path)
         self.history_dir = Path(history_dir)
+        # Этап (формат кадра): формат зоны просмотра. Дефолт "9:16" → как было.
+        self._aspect = aspect
         self._selected_version: int = 0  # current selection in thumb strip
         self._active_version: int = 0    # which is actually active
         self._thumbs: List[VersionThumb] = []
@@ -346,9 +353,15 @@ class ShotViewerDialog(QDialog):
             geo = QApplication.primaryScreen().availableGeometry()
             pw, ph = geo.width(), geo.height()
         max_w, max_h = int(pw * 0.9), int(ph * 0.9)
-        self.setMinimumSize(600, 700)
-        self.setMaximumSize(max_w, max_h)
-        self.resize(min(740, max_w), min(900, max_h))
+        if aspect == "16:9":
+            # Горизонтальная зона → попап шире и ниже.
+            self.setMinimumSize(900, 600)
+            self.setMaximumSize(max_w, max_h)
+            self.resize(min(1100, max_w), min(750, max_h))
+        else:
+            self.setMinimumSize(600, 700)
+            self.setMaximumSize(max_w, max_h)
+            self.resize(min(740, max_w), min(900, max_h))
         self._build()
         self.refresh()
 
@@ -662,11 +675,16 @@ class ShotViewerDialog(QDialog):
             return
         avail = self.preview_holder.size()
         aw, ah = max(1, avail.width()), max(1, avail.height())
-        h = min(PREVIEW_H, ah)
-        w = round(h * PREVIEW_W / PREVIEW_H)
-        if w > min(PREVIEW_W, aw):
-            w = min(PREVIEW_W, aw)
-            h = round(w * PREVIEW_H / PREVIEW_W)
+        # Этап (формат): 9:16 → вертикальный бокс PREVIEW_W×H (как было);
+        # 16:9 → горизонтальный PREVIEW_W_LAND×H_LAND.
+        _pw, _ph = ((PREVIEW_W_LAND, PREVIEW_H_LAND)
+                    if getattr(self, '_aspect', '9:16') == "16:9"
+                    else (PREVIEW_W, PREVIEW_H))
+        h = min(_ph, ah)
+        w = round(h * _pw / _ph)
+        if w > min(_pw, aw):
+            w = min(_pw, aw)
+            h = round(w * _ph / _pw)
         if (self.preview_stack.width() != int(w)
                 or self.preview_stack.height() != int(h)):
             self._loading_preview = True

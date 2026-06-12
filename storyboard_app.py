@@ -11966,6 +11966,7 @@ class MainWindow(QMainWindow):
                 block_name=self.current_block,
                 active_path=active,
                 history_dir=history,
+                aspect=self._current_aspect,
                 parent=self)
             # Edit/regen — те же handlers что hover-overlay имели раньше.
             dlg.edit_requested.connect(self._on_edit_shot)
