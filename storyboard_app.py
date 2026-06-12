@@ -5700,6 +5700,11 @@ class MainWindow(QMainWindow):
         setup_paths_for_show(project_root, self._current_show)
         if self._current_show:
             self._meta = read_episodes_meta(SHOW_ROOT)
+        # Этап 1 (формат кадра): читаем формат активного сериала в глобал.
+        # Дефолт "9:16". Логика генерации/UI его пока НЕ используют.
+        self._current_aspect: str = (
+            show_manager.show_aspect(project_root, self._current_show)
+            if self._current_show else "9:16")
         # 2026-05-11 (v1.0.46) diagnostic: для расследования "empty chats
         # after auto-update". Если проблема повторится — запуск из
         # терминала с `2>&1 | tee log.txt` соберёт SHOW_ROOT + meta state
@@ -9211,6 +9216,9 @@ class MainWindow(QMainWindow):
         set_current_show(self._project_root, show_name)
         setup_paths_for_show(self._project_root, show_name)
         self._meta = read_episodes_meta(SHOW_ROOT)
+        # Этап 1 (формат кадра): обновляем формат при смене сериала.
+        self._current_aspect = show_manager.show_aspect(
+            self._project_root, show_name)
         self.current_block = None
         self._current_episode = None
         # Перевешиваем file watcher на новый путь

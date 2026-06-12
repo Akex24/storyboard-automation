@@ -167,6 +167,8 @@ def create_show(project_root: Path, display_name: str) -> str:
         "display_name": name,
         "slug": slug,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        # Этап 1 (формат кадра): новые сериалы — вертикаль 9:16 по умолчанию.
+        "aspect": "9:16",
     })
 
     return slug
@@ -194,9 +196,26 @@ def load_show_meta(project_root: Path, slug: str) -> Dict:
     if not f.exists():
         return {}
     try:
-        return json.loads(f.read_text(encoding="utf-8")) or {}
+        data = json.loads(f.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
+    # Этап 1 (формат кадра): старые meta без поля → 9:16 (вертикаль, как раньше).
+    # На несуществующий сериал ({} выше) поле НЕ навешиваем.
+    if isinstance(data, dict):
+        data.setdefault("aspect", "9:16")
+    return data
+
+
+def show_aspect(project_root: Path, slug: str) -> str:
+    """Формат кадра сериала из meta.json: "9:16" (вертикаль, дефолт) или
+    "16:9" (горизонталь). Отсутствие/мусор → "9:16" — старые сериалы остаются
+    вертикальными. Этап 1 конвейера форматов: поле ЧИТАЕТСЯ и хранится, но
+    логика генерации/UI его пока НЕ использует (поведение не меняется)."""
+    try:
+        v = str((load_show_meta(project_root, slug) or {}).get("aspect", "9:16"))
+        return v if v in ("9:16", "16:9") else "9:16"
+    except Exception:
+        return "9:16"
 
 
 def display_name_for(project_root: Path, slug: str) -> str:
