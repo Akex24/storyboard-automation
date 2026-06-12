@@ -148,9 +148,14 @@ class ShotCard(QFrame):
     # что = 1000 - 28×2 margins. Высота сохраняет строгое соотношение 9:16.
     CARD_W, CARD_H  = 207, 368
 
-    def __init__(self, panel_idx: int, parent=None):
+    def __init__(self, panel_idx: int, aspect: str = "9:16", parent=None):
         super().__init__(parent)
         self.panel_idx = panel_idx
+        # Этап 4 (формат кадра): 16:9 → горизонтальная карточка. Инстанс-поля
+        # перекрывают class-константу CARD_W,CARD_H=207,368. Для 9:16 НЕ трогаем —
+        # остаётся дефолт 207×368 (вертикаль, как было, ни на пиксель).
+        if aspect == "16:9":
+            self.CARD_W, self.CARD_H = 446, 251
         # Запоминаем что шот пустой/blank — чтобы overlay не показывался
         self._is_blank = False
         self._is_loading = False

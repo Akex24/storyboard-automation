@@ -7684,6 +7684,19 @@ class MainWindow(QMainWindow):
                 "нет данных о скачиваниях", "немає даних про завантаження", "no download data"):
             self.stats_label.setText(tr('status_loading_stats'))
 
+    def _wire_shot_card(self, card):
+        """Подключение сигналов карточки шота — общее для обеих раскладок
+        (ряд 9:16 и сетка 2×2 16:9), чтобы не дублировать connect'ы."""
+        card.regen_requested.connect(self._on_regen)
+        card.edit_requested.connect(self._on_edit_shot)
+        # клик по картинке → попап ShotViewerDialog (превью + версии + edit/regen)
+        card.image_clicked.connect(self._on_shot_image_clicked)
+        # копирование активной картинки между шотами/блоками
+        card.copy_requested.connect(self._on_copy_shot)
+        card.paste_requested.connect(self._on_paste_shot)
+        # перевод реплики (uk) через Haiku
+        card.translate_requested.connect(self._on_translate_shot)
+
     def _build_editor_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -8002,25 +8015,28 @@ class MainWindow(QMainWindow):
 
         # ── Страница 0: карточки шотов ──────────────────────────────────────
         cards_w = QWidget()
-        self.cards_row = QHBoxLayout(cards_w)
-        self.cards_row.setSpacing(12)
-        self.cards_row.setContentsMargins(0, 0, 0, 0)
         self.shot_cards: List[ShotCard] = []
-        for i in range(PANELS):
-            card = ShotCard(i)
-            card.regen_requested.connect(self._on_regen)
-            card.edit_requested.connect(self._on_edit_shot)
-            # 2026-05-07: клик по картинке → попап ShotViewerDialog с
-            # большим превью + историей версий + edit/regen внутри.
-            card.image_clicked.connect(self._on_shot_image_clicked)
-            # 2026-06-02: копирование активной картинки между шотами/блоками.
-            card.copy_requested.connect(self._on_copy_shot)
-            card.paste_requested.connect(self._on_paste_shot)
-            # 2026-06-03 (Этап 2): перевод реплики (uk) через Haiku.
-            card.translate_requested.connect(self._on_translate_shot)
-            self.shot_cards.append(card)
-            self.cards_row.addWidget(card)
-        self.cards_row.addStretch()
+        # Этап 4 (формат кадра): 16:9 → сетка 2×2 горизонтальных карточек;
+        # 9:16 → текущий горизонтальный ряд (поведение НЕ меняется).
+        if self._current_aspect == "16:9":
+            grid = QGridLayout(cards_w)
+            grid.setSpacing(12)
+            grid.setContentsMargins(0, 0, 0, 0)
+            for i in range(PANELS):
+                card = ShotCard(i, aspect="16:9")
+                self._wire_shot_card(card)
+                self.shot_cards.append(card)
+                grid.addWidget(card, i // 2, i % 2)   # (0,0)(0,1)(1,0)(1,1)
+        else:
+            self.cards_row = QHBoxLayout(cards_w)
+            self.cards_row.setSpacing(12)
+            self.cards_row.setContentsMargins(0, 0, 0, 0)
+            for i in range(PANELS):
+                card = ShotCard(i)
+                self._wire_shot_card(card)
+                self.shot_cards.append(card)
+                self.cards_row.addWidget(card)
+            self.cards_row.addStretch()
 
         shots_scroll = QScrollArea()
         shots_scroll.setWidgetResizable(True)
