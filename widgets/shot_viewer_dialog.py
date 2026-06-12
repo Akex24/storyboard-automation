@@ -49,6 +49,11 @@ PREVIEW_H_LAND = 495   # 880 × 9/16 = 495 → 16:9
 THUMB_W = 70
 THUMB_H = 125  # 70 × (688/384) ≈ 125
 
+# 16:9 (горизонтальный шот): лента версий горизонтальная — перевёрнутая пара.
+# Старые THUMB_W/THUMB_H (вертикаль 9:16) НЕ трогаем.
+THUMB_W_LAND = 125
+THUMB_H_LAND = 70  # 125 × 9/16 ≈ 70 → 16:9
+
 # Шаг горизонтальной прокрутки ленты версий колесом для классической мыши
 # (Windows): angleDelta идёт квантами ~120 на «щелчок». Сколько пикселей
 # двигать ленту за один квант. # подобрать на живой Windows-мыши.
@@ -75,15 +80,21 @@ class VersionThumb(QFrame):
     delete_requested = pyqtSignal(int)  # version_n — крестик удаления
 
     def __init__(self, version_n: int, image_path: Path, is_active: bool,
-                 can_delete: bool = False, parent=None):
+                 can_delete: bool = False, aspect: str = "9:16", parent=None):
         super().__init__(parent)
         self.version_n = version_n
         self.image_path = image_path
         self._is_active = is_active
         self._is_selected = is_active  # выбран по умолчанию = активный
         self._can_delete = can_delete
+        self._aspect = aspect
+        # Этап (формат): 16:9 → горизонтальная миниатюра (перевёрнутая пара);
+        # 9:16 → вертикальная THUMB_W×H (как было, байт-в-байт).
+        self._thumb_w, self._thumb_h = (
+            (THUMB_W_LAND, THUMB_H_LAND) if aspect == "16:9"
+            else (THUMB_W, THUMB_H))
         self.setObjectName("VersionThumb")
-        self.setFixedSize(THUMB_W + 6, THUMB_H + 28)
+        self.setFixedSize(self._thumb_w + 6, self._thumb_h + 28)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._build()
         self._refresh_style()
@@ -93,7 +104,7 @@ class VersionThumb(QFrame):
         lay.setContentsMargins(3, 3, 3, 3)
         lay.setSpacing(4)
         self.img_lbl = QLabel()
-        self.img_lbl.setFixedSize(THUMB_W, THUMB_H)
+        self.img_lbl.setFixedSize(self._thumb_w, self._thumb_h)
         self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_lbl.setStyleSheet(
             "background:#1a1424; border-radius:4px;")
@@ -102,7 +113,7 @@ class VersionThumb(QFrame):
             pix = QPixmap(str(self.image_path))
             if not pix.isNull():
                 pix = pix.scaled(
-                    QSize(THUMB_W, THUMB_H),
+                    QSize(self._thumb_w, self._thumb_h),
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation)
                 self.img_lbl.setPixmap(pix)
@@ -120,7 +131,7 @@ class VersionThumb(QFrame):
         self.btn_del.setIcon(get_icon('x'))
         self.btn_del.setIconSize(QSize(12, 12))
         self.btn_del.setFixedSize(18, 18)
-        self.btn_del.move(THUMB_W - 18 - 2, 2)
+        self.btn_del.move(self._thumb_w - 18 - 2, 2)
         self.btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_del.setStyleSheet(
             "QPushButton#thumb-del { background:rgba(10,6,18,0.7);"
@@ -490,7 +501,11 @@ class ShotViewerDialog(QDialog):
 
         self.strip_scroll = QScrollArea()
         self.strip_scroll.setWidgetResizable(True)
-        self.strip_scroll.setFixedHeight(THUMB_H + 50)
+        # Этап (формат): высота ленты от формата миниатюры (16:9 — ниже).
+        _strip_thumb_h = (THUMB_H_LAND
+                          if getattr(self, '_aspect', '9:16') == "16:9"
+                          else THUMB_H)
+        self.strip_scroll.setFixedHeight(_strip_thumb_h + 50)
         self.strip_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.strip_scroll.setVerticalScrollBarPolicy(
@@ -1106,7 +1121,8 @@ class ShotViewerDialog(QDialog):
             is_active = (n == self._active_version)
             can_delete = (n != self._min_version
                           and n != self._selected_version)
-            thumb = VersionThumb(n, p, is_active, can_delete=can_delete)
+            thumb = VersionThumb(n, p, is_active, can_delete=can_delete,
+                                 aspect=self._aspect)
             thumb.clicked.connect(self._on_thumb_clicked)
             thumb.delete_requested.connect(self._on_delete_version)
             self.strip_layout.insertWidget(
