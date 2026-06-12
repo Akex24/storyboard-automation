@@ -650,7 +650,11 @@ class ShotViewerDialog(QDialog):
         # пустой); Mac-трекпад — pixelDelta с инерцией, часто с горизонтальной
         # составляющей. Горизонтальный жест отдаём Qt (он сам скроллит H) —
         # без задвоения. Вертикальное колесо перенаправляем в H-скроллбар.
-        if (obj is self.strip_scroll.viewport()
+        # getattr-гард: фильтр на preview_view.viewport() ставится (:450) ДО
+        # создания strip_scroll (:491) → preview-событие до сборки ленты иначе
+        # роняет AttributeError. После сборки ленты поведение идентично.
+        _strip = getattr(self, 'strip_scroll', None)
+        if (_strip is not None and obj is _strip.viewport()
                 and ev.type() == QEvent.Type.Wheel):
             pd = ev.pixelDelta()
             ad = ev.angleDelta()
@@ -663,7 +667,7 @@ class ShotViewerDialog(QDialog):
                 dv = pd.y()                       # Mac: попиксельно (инерция)
             else:
                 dv = ad.y() / 120.0 * _STRIP_WHEEL_STEP_PX   # Win: квант 120 → px
-            hbar = self.strip_scroll.horizontalScrollBar()
+            hbar = _strip.horizontalScrollBar()
             hbar.setValue(hbar.value() - int(dv))
             return True
         return super().eventFilter(obj, ev)
