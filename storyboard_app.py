@@ -3874,6 +3874,28 @@ def set_mode_c_parallel_blocks(n: int) -> None:
         traceback.print_exc()
 
 
+def mode_c_concurrent_shots() -> int:
+    """Конвейер шотов (Этап 0): сколько шотов генерить одновременно (1-10,
+    дефолт 4), каждый со своими версиями. Пока ТОЛЬКО настройка — оркестрация
+    этот геттер ещё НЕ читает (сериализация по блокам не изменена). Ключ
+    отдельный (`mode_c/concurrent_shots`) от legacy no-op `mode_c/parallel_blocks`,
+    который оставлен как есть."""
+    try:
+        v = QSettings(APP_ORG, APP_NAME).value("mode_c/concurrent_shots", 4)
+        return max(1, min(10, int(v)))
+    except Exception:
+        return 4
+
+
+def set_mode_c_concurrent_shots(n: int) -> None:
+    """Сохраняет число одновременных шотов конвейера. Кламп 1-10."""
+    try:
+        v = max(1, min(10, int(n)))
+        QSettings(APP_ORG, APP_NAME).setValue("mode_c/concurrent_shots", v)
+    except Exception:
+        traceback.print_exc()
+
+
 def find_ref_image(filename: str) -> Optional[Path]:
     """Резолвит имя файла рефа в физический путь на диске.
 
@@ -9014,10 +9036,10 @@ class MainWindow(QMainWindow):
             self.mode_c_parallel_spin.setMinimum(1)
             self.mode_c_parallel_spin.setMaximum(10)
             self.mode_c_parallel_spin.setSingleStep(1)
-            self.mode_c_parallel_spin.setValue(mode_c_parallel_blocks())
+            self.mode_c_parallel_spin.setValue(mode_c_concurrent_shots())
             block_wheel_event(self.mode_c_parallel_spin)
             self.mode_c_parallel_spin.valueChanged.connect(
-                set_mode_c_parallel_blocks)
+                set_mode_c_concurrent_shots)
             pb_row.addWidget(self.mode_c_parallel_spin, stretch=1)
             mc_lay.addLayout(pb_row)
             self.mode_c_parallel_hint_lbl = QLabel(
