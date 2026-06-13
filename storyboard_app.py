@@ -5870,11 +5870,10 @@ class MainWindow(QMainWindow):
         # УЖЕ повторно перезапускались — гарантия РОВНО 1 повтора (анти-задвоение).
         # Чистится в начале _spawn_mode_c_versions (новый блок = свежий бюджет).
         self._mode_c_retried: set = set()
-        # 2026-06-11 (авто-добор): shots/n текущего Mode C-блока + счётчик
-        # проходов добора (сбрасываются в _spawn_mode_c_versions).
-        self._mode_c_block_shots: list = []
-        self._mode_c_block_n: int = 0
-        self._mode_c_retry_pass: int = 0
+        # 2026-06-13 (авто-добор per-shot): проходов добора НА ШОТ (ключ
+        # (block,panel)). До MODE_C_RETRY_MAX_PASSES; чистится при завершении
+        # шота (_note_shot_version_done) и в _stop_all_generation.
+        self._shot_retry_pass: Dict[tuple, int] = {}
         # 2026-06-07 (Mode C): реестр фоновых тредов режиссёра камер
         # (ключ block_basename). Отдельно от версий; нужен для shutdown.
         self._camera_director_threads: Dict[str, QThread] = {}
@@ -11567,6 +11566,8 @@ class MainWindow(QMainWindow):
             # строгий порядок блоков — сброс буфера упорядочивания
             self._block_release_ready.clear()
             self._block_release_next = None
+            # авто-добор per-shot — сброс бюджета проходов
+            self._shot_retry_pass.clear()
         except Exception:
             pass
         self._storyboard_active_block = None
@@ -13879,9 +13880,68 @@ class MainWindow(QMainWindow):
         if left > 0:
             self._shot_window_versions_left[key] = left
             return
+        # Все версии шота отстрелялись → авто-добор недостающих (per-shot). Если
+        # запустился — слот шота ДЕРЖИМ (добор сам выставил versions_left = число
+        # дыр), следующий шот окна НЕ заводим, пока добор летит.
+        if self._maybe_redrive_shot_gaps(block_basename, panel_idx):
+            return
+        # Дыр нет / бюджет проходов исчерпан → освобождаем слот шота, чистим его
+        # бюджет добора, заводим следующий шот окна.
         self._shot_window_versions_left.pop(key, None)
         self._shot_window_inflight.discard(key)
+        self._shot_retry_pass.pop(key, None)
         self._pump_shot_window()
+
+    def _maybe_redrive_shot_gaps(self, block_basename: str, panel_idx: int) -> bool:
+        """Авто-добор per-shot: когда все версии шота отстрелялись, сканирует диск
+        на недостающие v1..vN и пере-спавнивает ТОЛЬКО дыры (ракурс из
+        v{N}.prompt.txt через _recover_camera_override). До MODE_C_RETRY_MAX_PASSES
+        проходов НА ШОТ. Бежит уже после того как сервер мог ожить (FastGen флакает).
+
+        True → запустил добор: слот шота ДЕРЖИМ (versions_left=число дыр), пул
+        следующий шот не заводит. False → дыр нет / бюджет исчерпан / стоп / N<=1 →
+        слот можно освобождать (обычный путь _note_shot_version_done).
+
+        В рамках слота шота: лишних слотов окна НЕ плодит (inflight не трогаем);
+        порядок блоков (_block_release_*) не трогаем; новых блоков не заводим."""
+        if getattr(self, '_generation_stopped', False):
+            return False
+        n = mode_c_versions_per_shot()
+        if n <= 1:
+            return False
+        key = (block_basename, panel_idx)
+        if self._shot_retry_pass.get(key, 0) >= MODE_C_RETRY_MAX_PASSES:
+            return False
+        present = set()
+        for pth in list_shot_versions(shot_history_dir(block_basename, panel_idx)):
+            try:
+                present.add(int(pth.stem[1:]))
+            except Exception:
+                pass
+        gaps = [v for v in range(1, n + 1) if v not in present]
+        if not gaps:
+            return False
+        self._shot_retry_pass[key] = self._shot_retry_pass.get(key, 0) + 1
+        # слот шота держим: versions_left = число дыр; pending +дыры (каждая
+        # версия декрементит его в своём хендлере, как при первичном спавне).
+        self._shot_window_versions_left[key] = len(gaps)
+        self._storyboard_active_pending += len(gaps)
+        # таймер: setdefault НЕ перезатирает живую метку (секунды не сбрасываем);
+        # если её уже сняли в version-хендлере (последняя версия) — ставим свежую.
+        self._shot_gen_started_at.setdefault(key, time.time())
+        for v in gaps:
+            cam = self._recover_camera_override(block_basename, panel_idx, v)
+            self._spawn_one_mode_c_version(block_basename, panel_idx, v, cam)
+        try:
+            self._notify_storyboard_failure(
+                block_basename, panel_idx,
+                f"Авто-добор шота {panel_idx + 1} (проход "
+                f"{self._shot_retry_pass[key]}/{MODE_C_RETRY_MAX_PASSES}): "
+                f"{len(gaps)} недостающих версий")
+            self._refresh_block_indicator(block_basename)
+        except Exception:
+            traceback.print_exc()
+        return True
 
     def _on_mode_c_version_finished(self, block_basename: str,
                                      panel_idx: int, version_index: int,
@@ -13964,70 +14024,6 @@ class MainWindow(QMainWindow):
         # Конвейер по шотам: версия упала (без повтора) → освобождаем слот шота,
         # когда у него не осталось версий в полёте.
         self._note_shot_version_done(block_basename, panel_idx)
-
-    def _maybe_retry_mode_c_gaps_or_advance(self):
-        """Контролёр добора Mode C: при pending==0 ищет недостающие vN.jpg на
-        диске и перезапускает ТОЛЬКО их (≤ MODE_C_RETRY_MAX_PASSES проходов).
-        Добирает и таймауты, и upload-сбои (бежим уже после блока — сервер мог
-        ожить). Если дыр нет / стоп-флаг / не Mode C / лимит проходов — переходим
-        к следующему блоку. Косметика/диагностика — ошибки глотаются."""
-        try:
-            if getattr(self, '_generation_stopped', False):
-                self._maybe_start_next_storyboard_block()
-                return
-            shots = getattr(self, '_mode_c_block_shots', None) or []
-            n = int(getattr(self, '_mode_c_block_n', 0) or 0)
-            if not shots or n <= 0:
-                self._maybe_start_next_storyboard_block()
-                return
-            if getattr(self, '_mode_c_retry_pass', 0) >= MODE_C_RETRY_MAX_PASSES:
-                self._maybe_start_next_storyboard_block()
-                return
-            # Дыры: для каждого (block,panel) — каких v1..vN нет на диске.
-            gaps = []
-            for _blk, _panel in shots:
-                present = set()
-                for p in list_shot_versions(shot_history_dir(_blk, _panel)):
-                    try:
-                        present.add(int(p.stem[1:]))
-                    except Exception:
-                        pass
-                for v in range(1, n + 1):
-                    if v not in present:
-                        gaps.append((_blk, _panel, v))
-            if not gaps:
-                self._maybe_start_next_storyboard_block()
-                return
-            # Запускаем добор: pending растёт на число дыр, блок остаётся активным
-            # (переход к следующему НЕ зовём — он сработает когда добор завершится).
-            self._mode_c_retry_pass = getattr(self, '_mode_c_retry_pass', 0) + 1
-            self._storyboard_active_pending += len(gaps)
-            # 2026-06-11 (фикс таймера секунд): для перезапускаемых шотов вернуть
-            # метку начала, если её НЕТ (первичный pop удалил после завершения
-            # шота). setdefault не затирает живую метку ещё активного шота →
-            # секунды на карточке/блоке не сбрасываются на 0 при перерисовке.
-            _now_retry = time.time()
-            for _blk, _panel, _v in gaps:
-                self._shot_gen_started_at.setdefault((_blk, _panel), _now_retry)
-            for _blk, _panel, v in gaps:
-                cam = self._recover_camera_override(_blk, _panel, v)
-                self._spawn_one_mode_c_version(_blk, _panel, v, cam)
-            try:
-                _b0 = shots[0][0]
-                self._notify_storyboard_failure(
-                    _b0, shots[0][1],
-                    f"Авто-добор Mode C (проход {self._mode_c_retry_pass}/"
-                    f"{MODE_C_RETRY_MAX_PASSES}): перезапуск {len(gaps)} "
-                    f"недостающих версий блока «{_b0}»")
-                self._refresh_block_indicator(_b0)
-            except Exception:
-                traceback.print_exc()
-        except Exception:
-            traceback.print_exc()
-            try:
-                self._maybe_start_next_storyboard_block()
-            except Exception:
-                pass
 
     def _recover_camera_override(self, block_basename: str, panel_idx: int,
                                   version_index: int):
