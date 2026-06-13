@@ -14073,8 +14073,25 @@ class MainWindow(QMainWindow):
         early-return глотал текст ошибки (видно было только «повтор»)."""
         # Гейт 0: таймаут — НЕ повторяем (перегруженный сервер). 'timed out'
         # покрывает 'read timed out'; 'api timeout' — наш текст poll-таймаута.
+        # 2026-06-13 (вариант D): + ЯВНЫЕ серверные storage/DB-поломки
+        # (DiskFull/psycopg2/5xx/no space/OOM) — сервер только что лёг, инлайн-
+        # повтор сразу почти обречён и удваивает primary-заход (~300+300с),
+        # раздувая таймер шота. Версию закрываем как дыру; недостающее дошлёт
+        # ДОБОР позже, когда сервер мог ожить. Дешёвые быстрые кейсы (404-реф и
+        # т.п.) инлайн-повтор СОХРАНЯЕТ (они не матчат маркеры ниже).
         _low = (msg or "").lower()
-        if "api timeout" in _low or "timed out" in _low:
+        _server_fail = (
+            "diskfull" in _low
+            or "could not resize shared memory" in _low
+            or "psycopg2" in _low
+            or "no space left" in _low
+            or "out of memory" in _low
+            or "server error" in _low          # 500 Internal Server Error
+            or "bad gateway" in _low           # 502
+            or "service unavailable" in _low   # 503
+            or "gateway timeout" in _low       # 504
+        )
+        if "api timeout" in _low or "timed out" in _low or _server_fail:
             return False
         key = (block_basename, panel_idx, version_index)
         if key in self._mode_c_retried:
