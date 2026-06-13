@@ -3625,7 +3625,16 @@ class EpisodeChatView(QWidget):
                                            QMessageBox.ButtonRole.AcceptRole)
                 _realistic_btn = _m.addButton(tr('storyboard_style_realistic'),
                                               QMessageBox.ButtonRole.AcceptRole)
-                _m.addButton(QMessageBox.StandardButton.Cancel)
+                # 2026-06-13: видимых кнопок только две («Рисованные» /
+                # «Реалистичные»). Cancel убран из видимого ряда, но заведён
+                # СКРЫТЫМ escape-кнопкой: без RejectRole-кнопки QMessageBox
+                # игнорирует Esc и крестик (closeEvent) — попап нельзя было бы
+                # закрыть без выбора. Esc/крестик → escape → _clicked != оба
+                # style-btn → ветка else → return (генерацию НЕ стартуем,
+                # дефолтный стиль НЕ подставляем).
+                _esc_btn = _m.addButton(QMessageBox.StandardButton.Cancel)
+                _esc_btn.hide()
+                _m.setEscapeButton(_esc_btn)
                 _m.setDefaultButton(_sketch_btn)  # безопасный дефолт
                 _m.exec()
                 _clicked = _m.clickedButton()
