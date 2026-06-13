@@ -4491,6 +4491,100 @@ def next_history_index(history_dir: Path) -> int:
     return max_n + 1
 
 
+def build_shot_version_tree(history_dir: Path) -> list:
+    """2026-06-13 (дерево версий, Слой 2.1): ЧИСТЫЙ читатель структуры дерева
+    версий шота. Файлы на диске остаются ПЛОСКИМИ (v1..vN, целые номера) —
+    дерево это НАКЛЕЙКА для UI поверх sidecar'ов parent_v{N}.json. Ничего не
+    пишет, UI не трогает, никто пока не вызывает (Слой 2.1 — только читатель).
+
+    Возвращает список узлов в DISPLAY-порядке (DFS: корни по возрастанию n,
+    потомок сразу за родителем перед следующим братом родителя, дети по
+    возрастанию n). Каждый узел:
+        {
+          "n": int,            # плоский номер файла v{n}.jpg (как на диске)
+          "parent": int|None,  # номер родителя, None у корня
+          "depth": int,        # 0 корень, 1 ребёнок, 2 внук, ...
+          "dotted": str,       # 'v5' (корень=плоский номер), 'v5.1' (1-й
+                               #  ребёнок), 'v5.1.1' (внук). Буква v везде.
+          "has_children": bool,
+          "children": list,    # номера прямых детей по возрастанию
+        }
+    Устойчив к мусору (НЕ падает): отсутствующий/битый parent_v → корень;
+    parent=0 / родителя нет в версиях / сам на себя / цикл → версия = корень
+    (сирот по правилам не будет, но защищаемся). Дубли номера (Mode C
+    .prompt.txt в list_shot_versions) схлопываются — берём уникальные.
+    Формат един для 9:16 и 16:9 (history_dir общая)."""
+    history_dir = Path(history_dir)
+    # 1) уникальные плоские номера версий (дубли от .prompt.txt схлопываем)
+    nums = []
+    seen_n = set()
+    for p in list_shot_versions(history_dir):
+        try:
+            k = int(p.stem[1:])
+        except (ValueError, IndexError):
+            continue
+        if k not in seen_n:
+            seen_n.add(k)
+            nums.append(k)
+    if not nums:
+        return []
+    nums.sort()
+    numset = set(nums)
+
+    # 2) child -> parent по parent_v{N}.json (любой мусор → None = корень)
+    import json as _json
+    parent_of = {}
+    for k in nums:
+        par = None
+        f = history_dir / f"parent_v{k}.json"
+        if f.exists():
+            try:
+                data = _json.loads(f.read_text(encoding='utf-8')) or {}
+                pv = int(data.get("parent", 0) or 0)
+                if pv > 0 and pv in numset and pv != k:
+                    par = pv
+            except Exception:
+                par = None
+        parent_of[k] = par
+
+    # 3) children map (по возрастанию)
+    children = {k: [] for k in nums}
+    for k in nums:
+        par = parent_of[k]
+        if par is not None:
+            children[par].append(k)
+    for k in nums:
+        children[k].sort()
+
+    # 4) DFS из корней; visited страхует от циклов
+    out = []
+    visited = set()
+
+    def _walk(k, depth, dotted):
+        if k in visited:
+            return
+        visited.add(k)
+        kids = children[k]
+        out.append({
+            "n": k,
+            "parent": parent_of[k],
+            "depth": depth,
+            "dotted": dotted,
+            "has_children": bool(kids),
+            "children": list(kids),
+        })
+        for idx, child in enumerate(kids, start=1):
+            _walk(child, depth + 1, f"{dotted}.{idx}")
+
+    for r in [k for k in nums if parent_of[k] is None]:
+        _walk(r, 0, f"v{r}")
+    # 5) защита от циклов: непосещённые звенья → как корни, по возрастанию
+    for k in nums:
+        if k not in visited:
+            _walk(k, 0, f"v{k}")
+    return out
+
+
 def read_active_version(history_dir: Path) -> int:
     """Читает `_history/<basename>/active.txt` → N (int). 0 если файла
     нет или содержимое некорректно. Юзер: 0 = «активная версия не
