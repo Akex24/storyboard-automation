@@ -5859,6 +5859,13 @@ class MainWindow(QMainWindow):
         self._shot_window_queue: List[tuple] = []
         self._shot_window_inflight: set = set()
         self._shot_window_versions_left: Dict[tuple, int] = {}
+        # 2026-06-13 (строгий порядок блоков): буфер упорядочивания. Режиссёры
+        # камер разных блоков финишируют вразнобой → результаты копятся здесь и
+        # выпускаются в окно СТРОГО по номеру блока. _release_next — следующий
+        # ожидаемый номер; _release_ready[block_n] = (shots,n,cams) ИЛИ None
+        # (пропуск/сбой блока — продвигает порядок, ничего не enqueue'ит).
+        self._block_release_next: Optional[int] = None
+        self._block_release_ready: Dict[int, Optional[tuple]] = {}
         # 2026-06-09 (дотяжка Mode C): ключи (block,panel,version) версий, которые
         # УЖЕ повторно перезапускались — гарантия РОВНО 1 повтора (анти-задвоение).
         # Чистится в начале _spawn_mode_c_versions (новый блок = свежий бюджет).
@@ -11557,6 +11564,9 @@ class MainWindow(QMainWindow):
             self._shot_window_queue.clear()
             self._shot_window_inflight.clear()
             self._shot_window_versions_left.clear()
+            # строгий порядок блоков — сброс буфера упорядочивания
+            self._block_release_ready.clear()
+            self._block_release_next = None
         except Exception:
             pass
         self._storyboard_active_block = None
@@ -13496,6 +13506,14 @@ class MainWindow(QMainWindow):
                     f"Не смог прочитать промпт блока {block_n}: {e}")
                 return
 
+            # Конвейер по шотам (Mode C, N>1): порядок блоков строгий. Анкер
+            # счётчика выпуска на первый блок свежего прогона (всё пусто) — нужен
+            # ДО skip-ветки, чтобы пропущенный блок тоже продвигал порядок.
+            _mode_c_window = (mode_loader.get_current_mode() == 'c'
+                              and mode_c_versions_per_shot() > 1)
+            if _mode_c_window:
+                self._maybe_anchor_block_release(block_n)
+
             shots: List[tuple] = []
             for panel_idx in range(PANELS):
                 body = extract_shot_prompt(prompt_text, panel_idx, aspect=self._current_aspect)
@@ -13519,19 +13537,16 @@ class MainWindow(QMainWindow):
                     pass
 
             if not shots:
-                # В блоке нечего генерить (всё на диске или пусто) —
-                # ничего не запускаем, ничего не ставим в очередь.
-                # Если активного блока нет — ничего не происходит.
-                # Если активный есть — он сам закончит и возьмёт
-                # следующий блок из очереди.
+                # В блоке нечего генерить (всё на диске или пусто). В конвейере
+                # пропущенный блок ОБЯЗАН продвинуть порядок (None-релиз), иначе
+                # буфер застопорит выпуск следующих блоков. Legacy — как было.
+                if _mode_c_window:
+                    self._record_block_release(block_n, None)
                 return
 
-            # Конвейер по шотам (Mode C, N>1): блок НЕ занимает очередь блоков —
-            # его шоты сразу уходят в сквозное окно (throttle = пул слотов),
-            # граница блоков перестаёт быть стеной. Legacy (не-C / N==1) —
-            # прежняя блок-очередь байт-в-байт.
-            _mode_c_window = (mode_loader.get_current_mode() == 'c'
-                              and mode_c_versions_per_shot() > 1)
+            # Конвейер по шотам (Mode C, N>1): блок идёт через буфер упорядочивания
+            # (release строго по номеру) → его шоты попадут в окно когда подойдёт
+            # его очередь. Legacy (не-C / N==1) — прежняя блок-очередь байт-в-байт.
             if _mode_c_window:
                 self._start_storyboard_block(shots)
             elif self._storyboard_active_block is None:
@@ -13637,6 +13652,8 @@ class MainWindow(QMainWindow):
         _spawn_mode_c_versions. Если режиссёр не нужен/недоступен — спавним
         сразу с пустым cams (все версии = авторский ракурс, как было)."""
         block_basename = shots[0][0]
+        _bm = re.search(r'_block_(\d+)', block_basename)
+        block_n = int(_bm.group(1)) if _bm else None
         # Конвейер по шотам: карточка показывает «занято», но таймер здесь НЕ
         # стартуем и started_at НЕ ставим — отсчёт пойдёт в _pump_shot_window при
         # РЕАЛЬНОМ выходе шота из очереди (иначе секунды накручивали бы ожидание
@@ -13657,16 +13674,17 @@ class MainWindow(QMainWindow):
                 th = CameraDirectorThread(shot_contexts, n, cli, timeout_sec=120)
                 self._camera_director_threads[block_basename] = th
                 th.result_ready.connect(
-                    lambda cams, s=shots, nn=n, bn=block_basename:
-                        self._on_camera_director_ready(bn, s, nn, cams))
+                    lambda cams, s=shots, nn=n, bn=block_basename, b9=block_n:
+                        self._on_camera_director_ready(bn, s, nn, cams, b9))
                 th.start()
                 self.status_bar.showMessage(
                     f"Mode C: подбираю ракурсы для блока {block_basename}…")
                 return
             except Exception:
                 traceback.print_exc()
-        # Фолбэк: без режиссёра — сразу версии с авторским ракурсом.
-        self._spawn_mode_c_versions(shots, n, {})
+        # Фолбэк: без режиссёра — тем же путём (буфер упорядочивания, авторский
+        # ракурс), что и результат режиссёра → release строго по номеру блока.
+        self._on_camera_director_ready(block_basename, shots, n, {}, block_n)
 
     def _collect_camera_shot_contexts(self, shots: List[tuple]) -> List[dict]:
         """Контекст шотов блока для агента-режиссёра камер: по каждому шоту
@@ -13724,7 +13742,8 @@ class MainWindow(QMainWindow):
             return []
 
     def _on_camera_director_ready(self, block_basename: str,
-                                  shots: List[tuple], n: int, cams: dict):
+                                  shots: List[tuple], n: int, cams: dict,
+                                  block_n: Optional[int] = None):
         """Режиссёр вернул ракурсы (или {} при сбое). Снимаем тред из реестра
         и спавним версии с camera_override.
 
@@ -13734,7 +13753,43 @@ class MainWindow(QMainWindow):
         директора разных блоков финишируют параллельно → гонка стабильна. Через
         _retire_thread держим ссылку до isFinished() (как у GenerateThread)."""
         self._retire_thread(self._camera_director_threads.pop(block_basename, None))
-        self._spawn_mode_c_versions(shots, n, cams or {})
+        # Строгий порядок блоков: результат не сразу в окно, а в буфер
+        # упорядочивания → выпуск строго по номеру блока (_drain_block_releases).
+        self._record_block_release(block_n, (shots, n, cams or {}))
+
+    def _maybe_anchor_block_release(self, block_n: int):
+        """Строгий порядок: если конвейер полностью простаивает (окно, буфер и
+        режиссёры пусты) — это первый блок свежего прогона, ставим счётчик
+        выпуска на его номер. Среди прогона не трогаем (что-то в полёте)."""
+        if (not self._shot_window_inflight and not self._shot_window_queue
+                and not self._block_release_ready
+                and not self._camera_director_threads):
+            self._block_release_next = block_n
+
+    def _record_block_release(self, block_n, payload):
+        """Кладёт результат блока в буфер под его номером и дренирует в окно
+        строго по порядку. payload=(shots,n,cams) — реальный блок; None —
+        пропуск/сбой (двигает порядок, ничего не enqueue'ит). block_n=None
+        (номер не распарсили) — деградация: сразу в окно, без упорядочивания."""
+        if block_n is None:
+            if payload is not None:
+                self._spawn_mode_c_versions(*payload)
+            return
+        self._block_release_ready[block_n] = payload
+        self._drain_block_releases()
+
+    def _drain_block_releases(self):
+        """Выпускает в окно подряд блоки начиная с _block_release_next, пока
+        очередной номер готов в буфере. Реальный payload → _spawn_mode_c_versions
+        (enqueue в окно); None → просто пропуск номера."""
+        if self._block_release_next is None:
+            return
+        while self._block_release_next in self._block_release_ready:
+            payload = self._block_release_ready.pop(self._block_release_next)
+            self._block_release_next += 1
+            if payload is not None:
+                shots, n_ver, cams = payload
+                self._spawn_mode_c_versions(shots, n_ver, cams)
 
     def _spawn_one_mode_c_version(self, block_basename: str, panel_idx: int,
                                    v: int, camera_override):
@@ -14088,6 +14143,15 @@ class MainWindow(QMainWindow):
                 f"PromptWriter упал на блоке {block_n}: {msg[:200]}")
         except Exception:
             pass
+        # Строгий порядок блоков: упавший блок (.txt не написан, шотов не будет)
+        # ОБЯЗАН продвинуть порядок, иначе буфер застопорит выпуск следующих.
+        try:
+            if (mode_loader.get_current_mode() == 'c'
+                    and mode_c_versions_per_shot() > 1):
+                self._maybe_anchor_block_release(block_n)
+                self._record_block_release(block_n, None)
+        except Exception:
+            traceback.print_exc()
 
     def _on_storyboard_pipeline_done(self, success: int, fail: int):
         """Все блоки прошли через PromptWriter. Очередь шотов может
