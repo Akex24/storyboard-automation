@@ -13637,18 +13637,15 @@ class MainWindow(QMainWindow):
         _spawn_mode_c_versions. Если режиссёр не нужен/недоступен — спавним
         сразу с пустым cams (все версии = авторский ракурс, как было)."""
         block_basename = shots[0][0]
-        # set_loading ДО старта режиссёра — карточки светятся «занято» уже
-        # во время его работы (раньше было внутри цикла спавна).
-        _now = time.time()
+        # Конвейер по шотам: карточка показывает «занято», но таймер здесь НЕ
+        # стартуем и started_at НЕ ставим — отсчёт пойдёт в _pump_shot_window при
+        # РЕАЛЬНОМ выходе шота из очереди (иначе секунды накручивали бы ожидание
+        # в окне: режиссёр камер + слот). set_loading сам таймер не показывает.
         for _b, panel_idx in shots:
-            # started_at для всех шотов (Mode C: время старта = клик, до
-            # режиссёра камер); start_progress — только для видимых карточек.
-            self._shot_gen_started_at[(block_basename, panel_idx)] = _now
             if (self.current_block == block_basename
                     and 0 <= panel_idx < len(self.shot_cards)):
                 try:
                     self.shot_cards[panel_idx].set_loading(True)
-                    self.shot_cards[panel_idx].start_progress(_now)
                 except Exception:
                     pass
         # Контекст шотов блока из montage_card (строго по позиции массива).
@@ -13802,6 +13799,17 @@ class MainWindow(QMainWindow):
             block_basename, panel_idx, n, cams = self._shot_window_queue.pop(0)
             self._shot_window_inflight.add((block_basename, panel_idx))
             self._shot_window_versions_left[(block_basename, panel_idx)] = n
+            # Таймер шота — от РЕАЛЬНОГО старта (выход из очереди), НЕ от прихода
+            # блока: пока шот ждал слот в окне, секунды не накручиваются.
+            _now = time.time()
+            self._shot_gen_started_at[(block_basename, panel_idx)] = _now
+            if (self.current_block == block_basename
+                    and 0 <= panel_idx < len(self.shot_cards)):
+                try:
+                    self.shot_cards[panel_idx].set_loading(True)
+                    self.shot_cards[panel_idx].start_progress(_now)
+                except Exception:
+                    pass
             for v in range(1, n + 1):
                 self._spawn_one_mode_c_version(
                     block_basename, panel_idx, v, cams.get((panel_idx, v)))
