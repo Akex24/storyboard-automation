@@ -35,6 +35,9 @@ from agents.storyboard_writer_prompts import (
     SYSTEM as STORYBOARD_WRITER_SYSTEM,
     build_system as build_storyboard_writer_system,
     build_user_prompt as build_storyboard_writer_user_prompt,
+    apply_style_to_prompt_text,
+    SKETCH_STYLE_SENTENCE,
+    REALISTIC_STYLE_SENTENCE,
 )
 
 
@@ -152,6 +155,28 @@ class StoryboardPipelineThread(QThread):
             try:
                 if out_path.exists() and out_path.stat().st_size > 100:
                     skipped += 1
+                    # 2026-06-13 (смена стиля коммит 2/2): .txt уже на диске —
+                    # писателя НЕ зовём, но шапку стиля приводим к выбранному
+                    # self._style текстовой подменой (sketch<->realistic). Так
+                    # повторное «Делать сториборды» с другим стилем меняет
+                    # готовый блок без LLM. Тело/геометрия/рефы не трогаются.
+                    try:
+                        _cur = out_path.read_text(encoding='utf-8')
+                        _new, _changed = apply_style_to_prompt_text(
+                            _cur, self._style)
+                        if _changed:
+                            out_path.write_text(_new, encoding='utf-8')
+                        elif (SKETCH_STYLE_SENTENCE not in _cur
+                              and REALISTIC_STYLE_SENTENCE not in _cur):
+                            sys.stderr.write(
+                                "[storyboard_pipeline] стиль не применён к "
+                                f"{filename}: канон-шапка не найдена\n")
+                    except Exception:
+                        # Подмена best-effort: сбой чтения/записи не должен
+                        # ронять skip — блок всё равно эмитим (как раньше).
+                        sys.stderr.write(
+                            "[storyboard_pipeline] стиль: ошибка подмены в "
+                            f"{filename}\n")
                     self.block_prompt_ready.emit(n, out_path.stem)
                     continue
             except Exception:

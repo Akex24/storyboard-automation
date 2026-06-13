@@ -532,6 +532,26 @@ def build_system(aspect: str = "9:16", style: str = "sketch") -> str:
     return s
 
 
+def apply_style_to_prompt_text(text: str, style: str) -> tuple[str, bool]:
+    """Приводит шапку СТИЛЯ готового .txt-промпта блока к выбранному стилю
+    ТЕКСТОВОЙ ПОДМЕНОЙ одного предложения (без LLM). Возвращает (new_text,
+    changed).
+
+    'realistic'           → SKETCH_STYLE_SENTENCE → REALISTIC_STYLE_SENTENCE.
+    любое иное (вкл.'sketch') → обратная замена REALISTIC → SKETCH.
+    Идемпотентно: если нужное предложение уже стоит (исходного нет) →
+    (text, False). Если НИ ОДНОГО канон-предложения в тексте нет (писатель
+    перефразировал — на практике 0 случаев) → (text, False) без изменений;
+    вызывающая сторона логирует WARN. Чистая функция, без side-effect'ов."""
+    if style == "realistic":
+        src, dst = SKETCH_STYLE_SENTENCE, REALISTIC_STYLE_SENTENCE
+    else:
+        src, dst = REALISTIC_STYLE_SENTENCE, SKETCH_STYLE_SENTENCE
+    if src in text:
+        return text.replace(src, dst), True
+    return text, False
+
+
 def build_user_prompt(block: dict,
                       refs_summary: dict,
                       characters_dict: Dict[str, str],

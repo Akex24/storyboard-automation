@@ -36,6 +36,29 @@
     на следующий рестарт Windows. Studio показывает inline-баннер «нужна
     перезагрузка» вместо popup ошибки. См. секцию «Failure mode B».
 
+## Выбор стиля сториборда: Рисованные/Реалистичные (2026-06-13)
+
+Флаг `style` ('sketch'|'realistic') выбирается попапом при «Делать
+сториборды» (`episode_chat._on_montage_confirm_storyboards`), хранится
+по-блочно в `episodes.json[ep]['blocks'][str(n)]['style']` и доходит до
+писателя через `StoryboardPipelineThread(style=...)` → `build_system`.
+Канон-предложения шапки вынесены в константы `SKETCH_STYLE_SENTENCE` /
+`REALISTIC_STYLE_SENTENCE` ([agents/storyboard_writer_prompts.py](agents/storyboard_writer_prompts.py))
+— единый источник истины для `build_system` и текстовой подмены.
+
+**Нюанс idempotent-skip (важно):** pipeline пропускает блок, чей `.txt`
+уже на диске (`exists() && size>100`), НЕ зовя Opus. Раньше это «замораживало»
+старую шапку стиля. Теперь в skip-ветке
+([threads/storyboard_pipeline.py](threads/storyboard_pipeline.py)) ПЕРЕД
+`block_prompt_ready.emit` вызывается `apply_style_to_prompt_text(text,
+self._style)` — чистая текстовая подмена ОДНОГО предложения шапки
+(sketch↔realistic) БЕЗ LLM. Так повторное «Делать сториборды» с другим
+стилем перегенерирует готовый блок в выбранном стиле (тело/геометрия/рефы
+не трогаются). Fallback: если в `.txt` нет ни одного канон-предложения
+(перефраз писателя — на практике 0 из 418 файлов) → файл оставляется как
+есть + WARN в stderr. `_clear_current_block` по-прежнему `.txt` не удаляет —
+подмена этого и не требует.
+
 ## Face-grid pipeline (PNG-сетки на лица, 2026-06-02)
 
 Фича модерации Seedance: при «Сохранить сториборд» поверх записи чистого
