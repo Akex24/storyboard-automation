@@ -13728,9 +13728,15 @@ class MainWindow(QMainWindow):
 
     def _on_camera_director_ready(self, block_basename: str,
                                   shots: List[tuple], n: int, cams: dict):
-        """Режиссёр вернул ракурсы (или {} при сбое). Убираем тред из реестра
-        и спавним версии с camera_override."""
-        self._camera_director_threads.pop(block_basename, None)
+        """Режиссёр вернул ракурсы (или {} при сбое). Снимаем тред из реестра
+        и спавним версии с camera_override.
+
+        keep-alive: result_ready эмитится ПОСЛЕДНЕЙ строкой run() (изнутри, до
+        возврата), а реестр держит ЕДИНСТВЕННУЮ ссылку — голый pop в слоте даёт
+        GC живого QThread → 'Destroyed while running' → abort(). Под конвейером
+        директора разных блоков финишируют параллельно → гонка стабильна. Через
+        _retire_thread держим ссылку до isFinished() (как у GenerateThread)."""
+        self._retire_thread(self._camera_director_threads.pop(block_basename, None))
         self._spawn_mode_c_versions(shots, n, cams or {})
 
     def _spawn_one_mode_c_version(self, block_basename: str, panel_idx: int,
