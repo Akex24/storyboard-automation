@@ -3892,22 +3892,21 @@ def set_mode_c_parallel_blocks(n: int) -> None:
 
 
 def mode_c_concurrent_shots() -> int:
-    """Конвейер шотов (Этап 0): сколько шотов генерить одновременно (1-10,
-    дефолт 4), каждый со своими версиями. Пока ТОЛЬКО настройка — оркестрация
-    этот геттер ещё НЕ читает (сериализация по блокам не изменена). Ключ
+    """Конвейер шотов: сколько шотов генерить одновременно (1-20, дефолт 4),
+    каждый со своими версиями. Читается пулом слотов _pump_shot_window. Ключ
     отдельный (`mode_c/concurrent_shots`) от legacy no-op `mode_c/parallel_blocks`,
     который оставлен как есть."""
     try:
         v = QSettings(APP_ORG, APP_NAME).value("mode_c/concurrent_shots", 4)
-        return max(1, min(10, int(v)))
+        return max(1, min(20, int(v)))
     except Exception:
         return 4
 
 
 def set_mode_c_concurrent_shots(n: int) -> None:
-    """Сохраняет число одновременных шотов конвейера. Кламп 1-10."""
+    """Сохраняет число одновременных шотов конвейера. Кламп 1-20."""
     try:
-        v = max(1, min(10, int(n)))
+        v = max(1, min(20, int(n)))
         QSettings(APP_ORG, APP_NAME).setValue("mode_c/concurrent_shots", v)
     except Exception:
         traceback.print_exc()
@@ -5851,6 +5850,15 @@ class MainWindow(QMainWindow):
         # (ключ (block, panel_idx, version_index)). Не пересекается с
         # _active_regens — старые хендлеры его не видят.
         self._active_mode_c_version_threads: Dict[tuple, GenerateThread] = {}
+        # 2026-06-13 (конвейер по шотам): сквозное окно шотов эпизода. Заменяет
+        # блок-сериализацию для Mode C — до mode_c_concurrent_shots() шотов в
+        # полёте, шоты разных блоков идут единым потоком. _queue:
+        # list[(block,panel,n,cams)]; _inflight: set[(block,panel)] занятых
+        # слотов; _versions_left: сколько версий шота ещё летит (слот свободен
+        # при 0). Наполняется из block_prompt_ready → замкнуто на текущий ep_id.
+        self._shot_window_queue: List[tuple] = []
+        self._shot_window_inflight: set = set()
+        self._shot_window_versions_left: Dict[tuple, int] = {}
         # 2026-06-09 (дотяжка Mode C): ключи (block,panel,version) версий, которые
         # УЖЕ повторно перезапускались — гарантия РОВНО 1 повтора (анти-задвоение).
         # Чистится в начале _spawn_mode_c_versions (новый блок = свежий бюджет).
@@ -9174,7 +9182,7 @@ class MainWindow(QMainWindow):
             pb_row.addWidget(self.mode_c_parallel_label_lbl)
             self.mode_c_parallel_spin = _QSB_C()
             self.mode_c_parallel_spin.setMinimum(1)
-            self.mode_c_parallel_spin.setMaximum(10)
+            self.mode_c_parallel_spin.setMaximum(20)
             self.mode_c_parallel_spin.setSingleStep(1)
             self.mode_c_parallel_spin.setValue(mode_c_concurrent_shots())
             block_wheel_event(self.mode_c_parallel_spin)
@@ -11544,6 +11552,13 @@ class MainWindow(QMainWindow):
             self._storyboard_blocks_queue.clear()
         except Exception:
             pass
+        # 2b) конвейер по шотам — очистить сквозное окно (новые шоты не заводятся).
+        try:
+            self._shot_window_queue.clear()
+            self._shot_window_inflight.clear()
+            self._shot_window_versions_left.clear()
+        except Exception:
+            pass
         self._storyboard_active_block = None
         self._storyboard_active_pending = 0
         # 3) собрать (op_id, key) летящих задач ДО остановки (для серверной отмены).
@@ -13511,7 +13526,15 @@ class MainWindow(QMainWindow):
                 # следующий блок из очереди.
                 return
 
-            if self._storyboard_active_block is None:
+            # Конвейер по шотам (Mode C, N>1): блок НЕ занимает очередь блоков —
+            # его шоты сразу уходят в сквозное окно (throttle = пул слотов),
+            # граница блоков перестаёт быть стеной. Legacy (не-C / N==1) —
+            # прежняя блок-очередь байт-в-байт.
+            _mode_c_window = (mode_loader.get_current_mode() == 'c'
+                              and mode_c_versions_per_shot() > 1)
+            if _mode_c_window:
+                self._start_storyboard_block(shots)
+            elif self._storyboard_active_block is None:
                 self._start_storyboard_block(shots)
             else:
                 # Активный блок ещё идёт — в очередь
@@ -13744,22 +13767,52 @@ class MainWindow(QMainWindow):
         (как было), подставляя camera_override из cams для v2..vN. cams пустой
         → camera_override=None для всех → авторский ракурс (текущее поведение)."""
         block_basename = shots[0][0]
-        self._storyboard_active_pending = len(shots) * n
-        # Дотяжка: новый блок → свежий бюджет повторов (по 1 на версию).
-        self._mode_c_retried = set()
-        # 2026-06-11 (авто-добор): запоминаем shots/n блока + сбрасываем счётчик
-        # проходов добора (контролёр _maybe_retry_mode_c_gaps_or_advance).
-        self._mode_c_block_shots = list(shots)
-        self._mode_c_block_n = int(n)
-        self._mode_c_retry_pass = 0
-        for block_basename, panel_idx in shots:
+        # Конвейер по шотам: pending накапливается (блоки перекрываются в окне).
+        self._storyboard_active_pending += len(shots) * n
+        # Бюджет инлайн-повтора версий — свежий только на ПЕРВОМ блоке прогона
+        # (окно пусто); перекрывающиеся блоки не затирают друг другу бюджет.
+        if not self._shot_window_inflight and not self._shot_window_queue:
+            self._mode_c_retried = set()
+        # Шоты блока → в сквозную очередь окна (каждый со своим cams), пинаем пул.
+        for _b, panel_idx in shots:
+            self._shot_window_queue.append((block_basename, panel_idx, n, cams))
+        self._pump_shot_window()
+        self._refresh_block_indicator(block_basename)
+        self.status_bar.showMessage(
+            f"Сториборды (Mode C, конвейер): блок {block_basename} → "
+            f"{len(shots)} шот(ов) x {n} в сквозную очередь…")
+
+    def _pump_shot_window(self):
+        """Конвейер по шотам: держит в полёте до mode_c_concurrent_shots() шотов
+        одновременно; по мере освобождения слота заводит следующий шот из сквозной
+        очереди _shot_window_queue (шоты разных блоков текущего эпизода идут
+        подряд — граница блоков не стена). Каждый шот спавнит свои N версий через
+        существующий _spawn_one_mode_c_version."""
+        if getattr(self, '_generation_stopped', False):
+            return
+        limit = mode_c_concurrent_shots()
+        while (len(self._shot_window_inflight) < limit
+               and self._shot_window_queue):
+            block_basename, panel_idx, n, cams = self._shot_window_queue.pop(0)
+            self._shot_window_inflight.add((block_basename, panel_idx))
+            self._shot_window_versions_left[(block_basename, panel_idx)] = n
             for v in range(1, n + 1):
                 self._spawn_one_mode_c_version(
                     block_basename, panel_idx, v, cams.get((panel_idx, v)))
-        self._refresh_block_indicator(block_basename)
-        self.status_bar.showMessage(
-            f"Сториборды (Mode C): блок {block_basename} → "
-            f"{len(shots)} шот(ов) x {n} версий параллельно…")
+
+    def _note_shot_version_done(self, block_basename: str, panel_idx: int):
+        """Версия шота закрылась (успех / ошибка без повтора). Когда у шота не
+        осталось версий в полёте — слот свободен, заводим следующий шот окна.
+        При инлайн-повторе хендлер делает early-return ДО этого вызова → счётчик
+        не падает и слот держится, пока повтор летит."""
+        key = (block_basename, panel_idx)
+        left = self._shot_window_versions_left.get(key, 0) - 1
+        if left > 0:
+            self._shot_window_versions_left[key] = left
+            return
+        self._shot_window_versions_left.pop(key, None)
+        self._shot_window_inflight.discard(key)
+        self._pump_shot_window()
 
     def _on_mode_c_version_finished(self, block_basename: str,
                                      panel_idx: int, version_index: int,
@@ -13799,8 +13852,9 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
         self._storyboard_active_pending = max(
             0, self._storyboard_active_pending - 1)
-        if self._storyboard_active_pending == 0:
-            self._maybe_retry_mode_c_gaps_or_advance()
+        # Конвейер по шотам: версия закрылась → освобождаем слот шота, когда у него
+        # не осталось версий в полёте (замена блок-сериализации/добора).
+        self._note_shot_version_done(block_basename, panel_idx)
 
     def _on_mode_c_version_error(self, block_basename: str,
                                   panel_idx: int, version_index: int,
@@ -13838,8 +13892,9 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
         self._storyboard_active_pending = max(
             0, self._storyboard_active_pending - 1)
-        if self._storyboard_active_pending == 0:
-            self._maybe_retry_mode_c_gaps_or_advance()
+        # Конвейер по шотам: версия упала (без повтора) → освобождаем слот шота,
+        # когда у него не осталось версий в полёте.
+        self._note_shot_version_done(block_basename, panel_idx)
 
     def _maybe_retry_mode_c_gaps_or_advance(self):
         """Контролёр добора Mode C: при pending==0 ищет недостающие vN.jpg на
