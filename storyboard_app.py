@@ -220,8 +220,8 @@ STORAGE_BASE = "https://storage.fast-gen.ai"
 MODEL        = "NARWHAL"
 PANELS       = 4
 # 2026-06-11 (авто-добор Mode C): сколько проходов добора недостающих версий
-# делать после завершения блока (2-й проход только если после 1-го дыры остались).
-MODE_C_RETRY_MAX_PASSES = 2
+# делать. 1 = основа + один добор = 2 захода всего (минимизируем общее время).
+MODE_C_RETRY_MAX_PASSES = 1
 
 # Папки которые НЕ перезаписываются обновлением (контент пользователя)
 PRESERVE_ON_UPDATE = {".env", ".env.local", "output", "refs", "scenarios",
@@ -11904,7 +11904,11 @@ class MainWindow(QMainWindow):
                 for (b, p, _v) in self._active_mode_c_version_threads))
             if _shot_active:
                 card.set_loading(True)
-                card.start_progress(self._shot_gen_started_at.get((name, i)))
+                # redrive=True если шот сейчас в доборе (_shot_retry_pass>0) →
+                # подпись «Добор» держится на перерисовках, не мигает.
+                card.start_progress(
+                    self._shot_gen_started_at.get((name, i)),
+                    redrive=self._shot_retry_pass.get((name, i), 0) > 0)
             else:
                 card.set_loading(False)
                 card.stop_progress()
@@ -13926,9 +13930,18 @@ class MainWindow(QMainWindow):
         # версия декрементит его в своём хендлере, как при первичном спавне).
         self._shot_window_versions_left[key] = len(gaps)
         self._storyboard_active_pending += len(gaps)
-        # таймер: setdefault НЕ перезатирает живую метку (секунды не сбрасываем);
-        # если её уже сняли в version-хендлере (последняя версия) — ставим свежую.
-        self._shot_gen_started_at.setdefault(key, time.time())
+        # таймер: добор — НОВЫЙ заход → метку СБРАСЫВАЕМ на свежую (секунды с 0,
+        # не суммируем с primary). Видимой карточке — start_progress свежей меткой
+        # + режим «Добор» (redrive=True, подпись над секундами).
+        _now_redrive = time.time()
+        self._shot_gen_started_at[key] = _now_redrive
+        if (self.current_block == block_basename
+                and 0 <= panel_idx < len(self.shot_cards)):
+            try:
+                self.shot_cards[panel_idx].set_loading(True)
+                self.shot_cards[panel_idx].start_progress(_now_redrive, redrive=True)
+            except Exception:
+                pass
         for v in gaps:
             cam = self._recover_camera_override(block_basename, panel_idx, v)
             self._spawn_one_mode_c_version(block_basename, panel_idx, v, cam)

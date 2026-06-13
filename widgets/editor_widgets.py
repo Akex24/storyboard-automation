@@ -325,6 +325,14 @@ class ShotCard(QFrame):
             "QProgressBar::chunk { background:#8e6cd4; border-radius:3px; }")
         _go.addWidget(self.gen_progress_bar)
         _go.addSpacing(6)
+        # Подпись захода: добор → «Добор» (i18n), primary → скрыта.
+        self.gen_redrive_lbl = QLabel("")
+        self.gen_redrive_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gen_redrive_lbl.setStyleSheet(
+            "color:#ffb24d; font-size:11px; font-weight:600;"
+            " background: transparent;")
+        self.gen_redrive_lbl.hide()
+        _go.addWidget(self.gen_redrive_lbl)
         self.gen_seconds_lbl = QLabel("0с")
         self.gen_seconds_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.gen_seconds_lbl.setStyleSheet(
@@ -659,15 +667,25 @@ class ShotCard(QFrame):
                 f"⏱ {_sa.format_gen_duration(seconds)}")
             self.gen_time_label.show()
 
-    def start_progress(self, started_at: Optional[float] = None):
+    def start_progress(self, started_at: Optional[float] = None,
+                       redrive: bool = False):
         """Самодостаточный busy-overlay поверх картинки шота (копия механизма
         ActorCard.start_progress, минус белый текст). Показывает затемнение +
         indeterminate-полосу + тикающие секунды БЕЗ ожидания сигналов потока —
         появляется моментально при показе блока с активной генерацией.
         `started_at` (из реестра _shot_gen_started_at) → секунды не сбрасываются
-        при пересоборе / повторном заходе на блок."""
+        при пересоборе / повторном заходе на блок. redrive=True → подпись «Добор»
+        (i18n, fallback ru→ключ) над секундами; primary (redrive=False) → скрыта."""
         try:
             self._gen_started_at = started_at or time.time()
+            try:
+                if redrive:
+                    self.gen_redrive_lbl.setText(tr('shot_redrive_label'))
+                    self.gen_redrive_lbl.show()
+                else:
+                    self.gen_redrive_lbl.hide()
+            except Exception:
+                pass
             self.gen_overlay.show()
             self.gen_overlay.raise_()
             self._tick_progress()
