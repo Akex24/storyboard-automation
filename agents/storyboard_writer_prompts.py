@@ -482,14 +482,18 @@ Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels sid
 
 
 def build_system(aspect: str = "9:16", style: str = "sketch") -> str:
-    """SYSTEM писателя под формат кадра. 9:16 → строго текущий SYSTEM
-    (байт-в-байт: обе подмены no-op, target==source). 16:9 → header-предложение
-    и рус. описание заменяются на горизонтальные варианты из frame_format.
-    Подмена по точным фрагментам через str.replace.
+    """SYSTEM писателя под формат кадра + стиль. 9:16 → строго текущий SYSTEM
+    (байт-в-байт: обе формат-подмены no-op, target==source). 16:9 → header-
+    предложение и рус. описание заменяются на горизонтальные варианты из
+    frame_format. Подмена по точным фрагментам через str.replace.
 
-    `style` ('sketch'|'realistic'): КОММИТ 1 — заглушка, параметр принимается и
-    НЕ влияет на результат (для любого значения вывод идентичен текущему).
-    Фотореалистичная подмена шапки появится в коммите 2."""
+    `style` ('sketch'|'realistic'): 'sketch' (дефолт И любое НЕ-'realistic'
+    значение) → вывод БАЙТ-В-БАЙТ как раньше (style-ветка не выполняется).
+    'realistic' → ТОЛЬКО style-предложение шапки «Detailed pencil sketch,
+    comic book style, black and white, clear outlines.» заменяется на
+    фотореалистичную команду. Формат-подмены frame_format не трогаются (работают
+    для обоих стилей); «No drawing, no lines» пустых панелей и «Style reference:
+    A24 / Nordic noir» остаются для обоих."""
     import frame_format
     s = SYSTEM
     s = s.replace(
@@ -499,6 +503,31 @@ def build_system(aspect: str = "9:16", style: str = "sketch") -> str:
     s = s.replace(
         "карандашной раскадровки 16:9 из 4 вертикальных панелей.",
         frame_format.writer_intro_line(aspect))
+    if style == "realistic":
+        s = s.replace(
+            "Detailed pencil sketch, comic book style, black and white, "
+            "clear outlines.",
+            "Fully photorealistic cinematic film frame — a real photograph "
+            "shot on a camera, full color, real photographic lighting and "
+            "shadows, natural skin texture with pores, realistic hair, true "
+            "fabric weave and material reflectance, real depth of field, "
+            "cinematic color grading. ABSOLUTELY NO drawing, NO pencil "
+            "sketch, NO comic book style, NO black-and-white, NO outlines, "
+            "NO ink line-art, NO cross-hatching, NO sketchy or cartoon look "
+            "— object edges defined by real light and shadow, never by "
+            "drawn lines.")
+        # Защита: рисованная style-формулировка должна уйти из шапки. Проверяем
+        # по «Detailed pencil sketch» (есть ТОЛЬКО в оригинале :470; в фото-тексте
+        # выше его нет — там «NO pencil sketch», поэтому 'pencil sketch' как
+        # маркер НЕ годится, ложно бы срабатывал). Если осталось — подстрока :470
+        # рассинхронилась с правкой → realistic тихо рисовал бы эскиз. Логируем
+        # в stderr (видно в runtime.log/Console.app), pipeline НЕ валим.
+        if "Detailed pencil sketch" in s:
+            import sys
+            sys.stderr.write(
+                "[storyboard_writer] WARN: realistic-замена шапки не "
+                "сработала — 'Detailed pencil sketch' остался в SYSTEM "
+                "(точная подстрока :470 рассинхронилась?)\n")
     return s
 
 
