@@ -324,12 +324,12 @@ class ShotViewerDialog(QDialog):
                               int)
     """
 
-    edit_requested = pyqtSignal(int)
-    regen_requested = pyqtSignal(int)
+    edit_requested = pyqtSignal(int, int)  # (panel_idx, parent_version)
+    regen_requested = pyqtSignal(int, int)  # (panel_idx, parent_version)
     # 2026-06-01: «🎬 Сделать реалистичным» — фотореалистичный ре-рендер
     # текущей активной версии шота (edit-механизм GenerateThread с
     # realistic=True). Отдельная кнопка рядом с «Перегенерировать».
-    realistic_requested = pyqtSignal(int)
+    realistic_requested = pyqtSignal(int, int)  # (panel_idx, parent_version)
     version_use_requested = pyqtSignal(int, int)
     # 2026-06-04 (C2b): кроп при закрытии перезаписал просматриваемую версию +
     # активный файл → MW обновляет карточку грида (panel_idx).
@@ -553,8 +553,9 @@ class ShotViewerDialog(QDialog):
         # 2026-06-01: перед редактированием выделенная версия становится
         # активной (см. _activate_selected_version) — редактируется именно она.
         def _on_edit_clicked():
+            _parent = self._selected_version  # родитель ДО активации
             self._activate_selected_version()
-            self.edit_requested.emit(self.panel_idx)
+            self.edit_requested.emit(self.panel_idx, _parent)
         self.btn_edit.clicked.connect(_on_edit_clicked)
         actions.addWidget(self.btn_edit)
 
@@ -567,8 +568,9 @@ class ShotViewerDialog(QDialog):
         # 2026-06-01: перед regen выделенная версия становится активной →
         # генерация идёт от неё (для regen это смена «текущей» перед новой).
         def _on_regen_clicked():
+            _parent = self._selected_version  # родитель ДО активации
             self._activate_selected_version()
-            self.regen_requested.emit(self.panel_idx)
+            self.regen_requested.emit(self.panel_idx, _parent)
             self.close()
         self.btn_regen.clicked.connect(_on_regen_clicked)
         actions.addWidget(self.btn_regen)
@@ -585,8 +587,9 @@ class ShotViewerDialog(QDialog):
         # 2026-06-01: перед realistic выделенная версия становится активной →
         # фотореалистичный ре-рендер идёт именно от неё (база = активный файл).
         def _on_realistic_clicked():
+            _parent = self._selected_version  # родитель ДО активации
             self._activate_selected_version()
-            self.realistic_requested.emit(self.panel_idx)
+            self.realistic_requested.emit(self.panel_idx, _parent)
             self.close()
         self.btn_realistic.clicked.connect(_on_realistic_clicked)
         actions.addWidget(self.btn_realistic)

@@ -192,6 +192,7 @@ class GenerateThread(QThread):
                  edit_instruction: Optional[str] = None,
                  realistic: bool = False,
                  version_index: Optional[int] = None,
+                 parent_version: Optional[int] = None,
                  camera_override: Optional[str] = None,
                  base_image_override: Optional[Path] = None,
                  aspect: str = "9:16"):
@@ -227,6 +228,7 @@ class GenerateThread(QThread):
         self.edit_instruction = (edit_instruction or "").strip() or None
         self.realistic        = bool(realistic)
         self.version_index    = version_index
+        self.parent_version   = parent_version
         self.camera_override  = camera_override
         self.base_image_override = base_image_override
         # Этап 3.1 (формат кадра): формат шота. Дефолт "9:16" → поведение прежнее.
@@ -1035,6 +1037,19 @@ class GenerateThread(QThread):
                 shutil.copy2(str(new_version_path), str(shot_file))
                 # Помечаем активную версию.
                 _sa.set_active_version(history_dir, next_n)
+                # 2026-06-13 (дерево версий, Слой 1): родителя новой версии
+                # пишем отдельным sidecar parent_v{N}.json (НЕ общий tree.json:
+                # Mode C пишет версии параллельно → гонка read-modify-write).
+                # Префикс parent_ не ловится фильтром list_shot_versions
+                # («v»+цифра), как orig_/crop_. None/0 (Mode C / grid) → skip.
+                if self.parent_version:
+                    try:
+                        import json as _json
+                        (history_dir / f"parent_v{next_n}.json").write_text(
+                            _json.dumps({"parent": int(self.parent_version)}),
+                            encoding='utf-8')
+                    except Exception:
+                        pass
             except Exception:
                 # Fallback: если что-то пошло не так с Pillow или
                 # history — пишем оригинальный файл, чтоб не потерять шот.

@@ -12254,7 +12254,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _on_edit_shot(self, panel_idx: int):
+    def _on_edit_shot(self, panel_idx: int, parent_version: int = 0):
         """2026-05-06: Поведение полностью перепроектировано.
 
         Раньше: попап с инструкцией → NARWHAL edit-режим (правит
@@ -12344,6 +12344,7 @@ class MainWindow(QMainWindow):
             thread = GenerateThread(target_block, panel_idx,
                                      edit_instruction=short_instruction,
                                      base_image_override=marked,
+                                     parent_version=parent_version,
                                      aspect=self._current_aspect)
             self._active_regens[key] = thread
             thread.progress.connect(self.status_bar.showMessage)
@@ -12400,6 +12401,7 @@ class MainWindow(QMainWindow):
         self._shot_gen_started_at[(target_block, panel_idx)] = _now
         card.start_progress(_now)
         thread = GenerateThread(target_block, panel_idx,
+                                parent_version=parent_version,
                                 aspect=self._current_aspect)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
@@ -13333,7 +13335,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _on_regen(self, panel_idx: int):
+    def _on_regen(self, panel_idx: int, parent_version: int = 0):
         if not self.current_block:
             return
 
@@ -13354,6 +13356,7 @@ class MainWindow(QMainWindow):
         card.start_progress(_now)
 
         thread = GenerateThread(target_block, panel_idx,
+                                parent_version=parent_version,
                                 aspect=self._current_aspect)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
@@ -13369,7 +13372,7 @@ class MainWindow(QMainWindow):
         self._refresh_block_indicator(target_block)
         self.status_bar.showMessage(tr('status_regenerating', n=panel_idx + 1, block=target_block))
 
-    def _on_make_realistic(self, panel_idx: int):
+    def _on_make_realistic(self, panel_idx: int, parent_version: int = 0):
         """2026-06-01: «🎬 Сделать реалистичным» из ShotViewerDialog.
         Фотореалистичный ре-рендер текущей активной версии шота. Логика
         идентична `_on_regen`, отличие одно — поток стартует с realistic=True
@@ -13395,6 +13398,7 @@ class MainWindow(QMainWindow):
         card.start_progress(_now)
 
         thread = GenerateThread(target_block, panel_idx, realistic=True,
+                                parent_version=parent_version,
                                 aspect=self._current_aspect)
         self._active_regens[key] = thread
         thread.progress.connect(self.status_bar.showMessage)
