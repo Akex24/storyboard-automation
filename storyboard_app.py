@@ -11991,12 +11991,31 @@ class MainWindow(QMainWindow):
                 existing.raise_()
                 existing.activateWindow()
                 return
+            # 2026-06-13: стиль блока (commit 1 пишет в episodes.json
+            # blocks[str(n)]['style']). Читаем СВЕЖИМ с диска — кеш self._meta
+            # может отставать, т.к. episode_chat пишет файл напрямую. Дефолт
+            # 'sketch' при любой неудаче/старом формате/отсутствии флага →
+            # кнопка «Сделать реалистичным» показана как прежде.
+            _blk_style = 'sketch'
+            try:
+                _bm = re.match(r'(ep\d+)_block_(\d+)$', self.current_block)
+                if _bm and self._current_episode:
+                    _blk_n = _bm.group(2)
+                    _fresh_meta = read_episodes_meta(SHOW_ROOT)
+                    _braw = (_fresh_meta.get(self._current_episode, {})
+                                        .get('blocks', {})
+                                        .get(str(_blk_n)))
+                    if isinstance(_braw, dict):
+                        _blk_style = _braw.get('style', 'sketch') or 'sketch'
+            except Exception:
+                _blk_style = 'sketch'
             dlg = ShotViewerDialog(
                 panel_idx=panel_idx,
                 block_name=self.current_block,
                 active_path=active,
                 history_dir=history,
                 aspect=self._current_aspect,
+                style=_blk_style,
                 parent=self)
             # Edit/regen — те же handlers что hover-overlay имели раньше.
             dlg.edit_requested.connect(self._on_edit_shot)

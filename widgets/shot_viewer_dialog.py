@@ -338,6 +338,7 @@ class ShotViewerDialog(QDialog):
     def __init__(self, panel_idx: int, block_name: str,
                  active_path: Path, history_dir: Path,
                  aspect: str = "9:16",
+                 style: str = "sketch",
                  parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
         self.panel_idx = panel_idx
@@ -346,6 +347,10 @@ class ShotViewerDialog(QDialog):
         self.history_dir = Path(history_dir)
         # Этап (формат кадра): формат зоны просмотра. Дефолт "9:16" → как было.
         self._aspect = aspect
+        # 2026-06-13: стиль блока ('sketch'|'realistic'). При 'realistic'
+        # кнопка «Сделать реалистичным» скрывается в _build. Дефолт 'sketch'
+        # → старые блоки/любая неудача чтения = кнопка показана как прежде.
+        self._style = style
         self._selected_version: int = 0  # current selection in thumb strip
         self._active_version: int = 0    # which is actually active
         self._thumbs: List[VersionThumb] = []
@@ -585,6 +590,11 @@ class ShotViewerDialog(QDialog):
             self.close()
         self.btn_realistic.clicked.connect(_on_realistic_clicked)
         actions.addWidget(self.btn_realistic)
+        # 2026-06-13: блок целиком сгенерён фотореалом → «Сделать
+        # реалистичным» нечего делать, прячем. Атрибут создан всегда
+        # (никаких Optional-проверок в остальном коде).
+        if self._style == 'realistic':
+            self.btn_realistic.hide()
 
         # 2026-06-01: хвостовой stretch прижимает кнопки влево. Кнопку
         # «Использовать эту» убрали — теперь выделенная версия становится
