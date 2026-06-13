@@ -3613,7 +3613,7 @@ class EpisodeChatView(QWidget):
         """
         try:
             # 1) Сохраняем карту в episodes.json[ep].blocks
-            self._save_montage_card_to_episodes_json(montage_card)
+            self._save_montage_card_to_episodes_json(montage_card, style='sketch')
 
             # 1.5) 2026-05-06: Скрываем CTA-карточку «Все рефы готовы»
             # сразу после клика «🎨 Делать сториборды». Карточка свою
@@ -3646,11 +3646,12 @@ class EpisodeChatView(QWidget):
                     traceback.print_exc()
 
             # 3) Стартуем pipeline записи .txt-промптов.
-            self._start_storyboard_pipeline(montage_card)
+            self._start_storyboard_pipeline(montage_card, style='sketch')
         except Exception:
             traceback.print_exc()
 
-    def _start_storyboard_pipeline(self, montage_card: dict):
+    def _start_storyboard_pipeline(self, montage_card: dict,
+                                   style: str = "sketch"):
         """Запускает StoryboardPipelineThread и подключает сигналы к
         MainWindow (он отвечает за per-shot генерацию через
         существующий GenerateThread + UI обновление shot_cards).
@@ -3701,6 +3702,7 @@ class EpisodeChatView(QWidget):
             prompts_dir=prompts_dir,
             geometry_context=geometry_context,
             aspect=getattr(self._mw, '_current_aspect', '9:16'),
+            style=style,
             parent=self,
         )
         # Сигналы → MainWindow (он держит UI блоков/шотов и
@@ -3959,7 +3961,8 @@ class EpisodeChatView(QWidget):
         # из scene_action.
         return chars_used
 
-    def _save_montage_card_to_episodes_json(self, montage_card: dict):
+    def _save_montage_card_to_episodes_json(self, montage_card: dict,
+                                            style: str = "sketch"):
         """Записывает blocks в episodes.json в формате который ожидает
         Studio (`{n: {name, shots: {m: description_ru}}}`).
         """
@@ -3989,6 +3992,7 @@ class EpisodeChatView(QWidget):
                 blocks_out[str(n)] = {
                     'name': b.get('name', ''),
                     'shots': shots_out,
+                    'style': style,
                 }
             ep['blocks'] = blocks_out
             path.write_text(

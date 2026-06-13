@@ -91,6 +91,7 @@ class StoryboardPipelineThread(QThread):
                  prompts_dir: Path,
                  geometry_context: Optional[Dict[str, str]] = None,
                  aspect: str = "9:16",
+                 style: str = "sketch",
                  parent=None):
         super().__init__(parent)
         self._cli = claude_cli_path
@@ -100,6 +101,10 @@ class StoryboardPipelineThread(QThread):
         self._ep_id = ep_id
         # Этап 3.2 (формат кадра): формат для header писателя (build_system).
         self._aspect = aspect
+        # Стиль сториборда: 'sketch' (рисованный, дефолт) | 'realistic'
+        # (фотореалистичный). Прокидывается в build_system. Коммит 1 — только
+        # проводка; влияние на шапку появится в коммите 2.
+        self._style = style
         self._prompts_dir = Path(prompts_dir)
         # 2026-05-06: geometry_context = {location_slug: geometry_text}
         # — описание пространства локации, передаётся PromptWriter'у
@@ -214,7 +219,8 @@ class StoryboardPipelineThread(QThread):
             ep_id=self._ep_id,
             geometry=geometry_for_block,
         )
-        return self._run_claude(build_storyboard_writer_system(self._aspect), user)
+        return self._run_claude(
+            build_storyboard_writer_system(self._aspect, self._style), user)
 
     def _run_claude(self, system_prompt: str, user_prompt: str) -> str:
         if not self._cli:

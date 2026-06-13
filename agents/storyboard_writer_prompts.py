@@ -481,11 +481,15 @@ Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels sid
 # ──────────────────────────────────────────────────────────────────
 
 
-def build_system(aspect: str = "9:16") -> str:
+def build_system(aspect: str = "9:16", style: str = "sketch") -> str:
     """SYSTEM писателя под формат кадра. 9:16 → строго текущий SYSTEM
     (байт-в-байт: обе подмены no-op, target==source). 16:9 → header-предложение
     и рус. описание заменяются на горизонтальные варианты из frame_format.
-    Подмена по точным фрагментам через str.replace."""
+    Подмена по точным фрагментам через str.replace.
+
+    `style` ('sketch'|'realistic'): КОММИТ 1 — заглушка, параметр принимается и
+    НЕ влияет на результат (для любого значения вывод идентичен текущему).
+    Фотореалистичная подмена шапки появится в коммите 2."""
     import frame_format
     s = SYSTEM
     s = s.replace(
