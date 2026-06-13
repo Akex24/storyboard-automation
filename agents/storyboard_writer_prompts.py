@@ -479,6 +479,18 @@ Film storyboard layout, ONE wide horizontal sheet, EXACTLY 4 vertical panels sid
 
 
 # ──────────────────────────────────────────────────────────────────
+# Канонические предложения СТИЛЯ шапки промпта (коммит 1/2 — рефактор:
+# извлечены из инлайн-литералов build_system БАЙТ-В-БАЙТ, поведение не
+# меняется). Единый источник истины для build_system и (коммит 2/2)
+# текстовой подмены стиля в готовом .txt. Менять только синхронно с
+# подстрокой стиля внутри SYSTEM-шапки (:470).
+SKETCH_STYLE_SENTENCE = "Detailed pencil sketch, comic book style, black and white, clear outlines."
+REALISTIC_STYLE_SENTENCE = (
+    "Fully photorealistic cinematic film frame — a real photograph shot on a camera, full color, real photographic lighting and shadows, natural skin texture with pores, realistic hair, true fabric weave and material reflectance, real depth of field, cinematic color grading. ABSOLUTELY NO drawing, NO pencil sketch, NO comic book style, NO black-and-white, NO outlines, NO ink line-art, NO cross-hatching, NO sketchy or cartoon look — object edges defined by real light and shadow, never by drawn lines."
+)
+
+
+# ──────────────────────────────────────────────────────────────────
 
 
 def build_system(aspect: str = "9:16", style: str = "sketch") -> str:
@@ -504,18 +516,7 @@ def build_system(aspect: str = "9:16", style: str = "sketch") -> str:
         "карандашной раскадровки 16:9 из 4 вертикальных панелей.",
         frame_format.writer_intro_line(aspect))
     if style == "realistic":
-        s = s.replace(
-            "Detailed pencil sketch, comic book style, black and white, "
-            "clear outlines.",
-            "Fully photorealistic cinematic film frame — a real photograph "
-            "shot on a camera, full color, real photographic lighting and "
-            "shadows, natural skin texture with pores, realistic hair, true "
-            "fabric weave and material reflectance, real depth of field, "
-            "cinematic color grading. ABSOLUTELY NO drawing, NO pencil "
-            "sketch, NO comic book style, NO black-and-white, NO outlines, "
-            "NO ink line-art, NO cross-hatching, NO sketchy or cartoon look "
-            "— object edges defined by real light and shadow, never by "
-            "drawn lines.")
+        s = s.replace(SKETCH_STYLE_SENTENCE, REALISTIC_STYLE_SENTENCE)
         # Защита: рисованная style-формулировка должна уйти из шапки. Проверяем
         # по «Detailed pencil sketch» (есть ТОЛЬКО в оригинале :470; в фото-тексте
         # выше его нет — там «NO pencil sketch», поэтому 'pencil sketch' как
