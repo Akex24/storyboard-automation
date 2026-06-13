@@ -710,6 +710,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_delete_confirm_text': 'Будет удалена сама монтажная карта эпизода (поля montage_card и blocks в episodes.json).\n\nОстанутся: промпты Seedance, готовые сториборды, диагностический лог агентов.\n\nДействительно удалить?',
         'montage_delete_confirm_yes': '🗑 Удалить',
         'montage_delete_confirm_no': 'Оставить',
+        'storyboard_style_title': 'Какие сториборды делать?',
+        'storyboard_style_text': 'Выбери стиль генерации для этого эпизода.',
+        'storyboard_style_sketch': '✏️ Рисованные',
+        'storyboard_style_realistic': '📷 Реалистичные',
         'montage_delete_blocked_pipeline': 'Идёт пайплайн сторибордов или Seedance — нельзя удалить карту сейчас. Дождитесь завершения.',
         # v1.0.63: таблица таймингов в попапе сводки
         'timing_section_title': '⏱ ТАЙМИНГ ГЕНЕРАЦИИ',
@@ -1438,6 +1442,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_delete_confirm_text': 'Буде видалено саму монтажну карту епізоду (поля montage_card і blocks у episodes.json).\n\nЗалишаться: промпти Seedance, готові сториборди, діагностичний лог агентів.\n\nДійсно видалити?',
         'montage_delete_confirm_yes': '🗑 Видалити',
         'montage_delete_confirm_no': 'Залишити',
+        'storyboard_style_title': 'Які сторіборди робити?',
+        'storyboard_style_text': 'Обери стиль генерації для цього епізоду.',
+        'storyboard_style_sketch': '✏️ Намальовані',
+        'storyboard_style_realistic': '📷 Реалістичні',
         'montage_delete_blocked_pipeline': 'Йде пайплайн сториборів або Seedance — не можна видалити карту зараз. Дочекайтесь завершення.',
         # v1.0.63: таблиця таймінгів у попапі зведення
         'timing_section_title': '⏱ ТАЙМІНГ ГЕНЕРАЦІЇ',
@@ -2160,6 +2168,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_delete_confirm_text': 'The montage card of the episode will be deleted (montage_card and blocks fields in episodes.json).\n\nWill remain: Seedance prompts, existing storyboards, agent diagnostic log.\n\nReally delete?',
         'montage_delete_confirm_yes': '🗑 Delete',
         'montage_delete_confirm_no': 'Keep',
+        'storyboard_style_title': 'Which storyboards?',
+        'storyboard_style_text': 'Choose the generation style for this episode.',
+        'storyboard_style_sketch': '✏️ Sketch',
+        'storyboard_style_realistic': '📷 Realistic',
         'montage_delete_blocked_pipeline': 'Storyboard or Seedance pipeline is running — cannot delete the card right now. Wait for it to finish.',
         # v1.0.63: timing table in summary popup
         'timing_section_title': '⏱ GENERATION TIMING',

@@ -3612,8 +3612,35 @@ class EpisodeChatView(QWidget):
            запускает GenerateThread по шотам.
         """
         try:
+            # 0) 2026-06-13: Попап выбора стиля сториборда — ПЕРВЫМ
+            #    действием, ДО любых side-effect'ов (записи в episodes.json,
+            #    скрытия CTA-карточки, переключения на грид). Cancel /
+            #    крестик / Esc → return: генерацию НЕ стартуем вообще.
+            try:
+                _m = QMessageBox(self)
+                _m.setIcon(QMessageBox.Icon.Question)
+                _m.setWindowTitle(tr('storyboard_style_title'))
+                _m.setText(tr('storyboard_style_text'))
+                _sketch_btn = _m.addButton(tr('storyboard_style_sketch'),
+                                           QMessageBox.ButtonRole.AcceptRole)
+                _realistic_btn = _m.addButton(tr('storyboard_style_realistic'),
+                                              QMessageBox.ButtonRole.AcceptRole)
+                _m.addButton(QMessageBox.StandardButton.Cancel)
+                _m.setDefaultButton(_sketch_btn)  # безопасный дефолт
+                _m.exec()
+                _clicked = _m.clickedButton()
+                if _clicked is _sketch_btn:
+                    style = 'sketch'
+                elif _clicked is _realistic_btn:
+                    style = 'realistic'
+                else:
+                    return  # Cancel / крестик / Esc — ничего не делаем
+            except Exception:
+                traceback.print_exc()
+                return  # на любой сбой попапа — не стартуем вслепую
+
             # 1) Сохраняем карту в episodes.json[ep].blocks
-            self._save_montage_card_to_episodes_json(montage_card, style='sketch')
+            self._save_montage_card_to_episodes_json(montage_card, style=style)
 
             # 1.5) 2026-05-06: Скрываем CTA-карточку «Все рефы готовы»
             # сразу после клика «🎨 Делать сториборды». Карточка свою
@@ -3646,7 +3673,7 @@ class EpisodeChatView(QWidget):
                     traceback.print_exc()
 
             # 3) Стартуем pipeline записи .txt-промптов.
-            self._start_storyboard_pipeline(montage_card, style='sketch')
+            self._start_storyboard_pipeline(montage_card, style=style)
         except Exception:
             traceback.print_exc()
 
