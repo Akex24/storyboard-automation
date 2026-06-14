@@ -109,7 +109,11 @@ class VersionThumb(QFrame):
             (THUMB_W_LAND, THUMB_H_LAND) if aspect == "16:9"
             else (THUMB_W, THUMB_H))
         self.setObjectName("VersionThumb")
-        self.setFixedSize(self._thumb_w + 6, self._thumb_h + 28)
+        # 2026-06-14 (фикс наезда картинки на рамку): +6/+6 резерв под МАКС-border
+        # (3px × 2 стороны), чтобы img_lbl(thumb_w×thumb_h) влезал ВНУТРЬ рамки при
+        # активной (3px), а при 1px/2px — с зазором. Размер карточки от border не
+        # зависит → КОНСТАНТЕН для всех состояний (не прыгает). Симметрично 9:16/16:9.
+        self.setFixedSize(self._thumb_w + 6 + 6, self._thumb_h + 28 + 6)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._build()
         self._refresh_style()
@@ -549,7 +553,10 @@ class ShotViewerDialog(QDialog):
         _strip_thumb_h = (THUMB_H_LAND
                           if getattr(self, '_aspect', '9:16') == "16:9"
                           else THUMB_H)
-        self.strip_scroll.setFixedHeight(_strip_thumb_h + 50)
+        # 2026-06-14: +6 синхронно с резервом высоты карточки (см. VersionThumb
+        # setFixedSize) — сохраняет прежний вертикальный запас ленты (22px), чтоб
+        # карточка не обрезалась снизу и не появлялся лишний вертикальный скролл.
+        self.strip_scroll.setFixedHeight(_strip_thumb_h + 50 + 6)
         self.strip_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.strip_scroll.setVerticalScrollBarPolicy(
