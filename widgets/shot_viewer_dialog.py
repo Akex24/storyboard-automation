@@ -1050,12 +1050,15 @@ class ShotViewerDialog(QDialog):
 
     def _refresh_thumb_deletability(self):
         """Лёгкий пересчёт видимости крестиков (без пересоздания ленты).
-        Крестик скрыт на минимальной версии и на ВЫБРАННОЙ (selected). Зовётся
-        после смены selected без полного refresh (клик/зеркало)."""
+        Крестик скрыт на минимальной версии, на ВЫБРАННОЙ (selected) и на
+        версии С ДЕТЬМИ (удаляем только листья дерева). Зовётся после смены
+        selected без полного refresh (клик/зеркало)."""
         mn = getattr(self, '_min_version', 0)
+        _kids = getattr(self, '_has_children_set', set())
         for thumb in self._thumbs:
             thumb.set_deletable(thumb.version_n != mn
-                                and thumb.version_n != self._selected_version)
+                                and thumb.version_n != self._selected_version
+                                and thumb.version_n not in _kids)
 
     def _on_delete_version(self, version_n: int):
         """Крестик → подтверждение → delete_shot_version (удаление +
@@ -1069,6 +1072,20 @@ class ShotViewerDialog(QDialog):
         )
         if ans != QMessageBox.StandardButton.Yes:
             return
+        # 2026-06-14 (Слой 2.3a): нельзя удалить АКТИВНУЮ версию (гард
+        # delete_shot_version: n==active → -1). Если юзер кликнул ДРУГУЮ версию
+        # (она selected) и жмёт крестик на активной — сперва делаем выбранную
+        # активной СИНХРОННО (version_use_requested → MW._on_shot_version_use:
+        # копия файла + active.txt + перерисовка грида + refresh попапа,
+        # DirectConnection → отрабатывает ДО delete). Тогда version_n больше не
+        # активна на диске и гард пропустит. Edge: selected пуст / selected ==
+        # version_n / version_n != active → пред-активацию пропускаем (как
+        # сейчас; крестик на selected и так скрыт, но подстраховка).
+        if (int(version_n) == self._active_version
+                and self._selected_version
+                and self._selected_version != int(version_n)):
+            self.version_use_requested.emit(
+                self.panel_idx, self._selected_version)
         try:
             from storyboard_app import delete_shot_version
             new_active = delete_shot_version(
@@ -1182,12 +1199,17 @@ class ShotViewerDialog(QDialog):
                 _path_by_n[int(p.stem[1:])] = p
             except (ValueError, IndexError):
                 continue
+        # 2026-06-14 (Слой 2.3a): номера «с детьми» — крестик у них скрыт
+        # (удаляем только листья). Пусто при плоском/упавшем дереве → все
+        # листья → крестики как раньше.
+        self._has_children_set = {nd["n"] for nd in _nodes if nd.get("has_children")}
         for node in _nodes:
             n = node["n"]
             img = _path_by_n.get(n) or (self.history_dir / f"v{n}.jpg")
             is_active = (n == self._active_version)
             can_delete = (n != self._min_version
-                          and n != self._selected_version)
+                          and n != self._selected_version
+                          and not node.get("has_children", False))
             thumb = VersionThumb(n, img, is_active, can_delete=can_delete,
                                  aspect=self._aspect,
                                  depth=node.get("depth", 0),
