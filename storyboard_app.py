@@ -4822,21 +4822,27 @@ def set_shot_mirror(history_dir: Path, n: int, mirror: bool,
 
 
 def delete_shot_version(history_dir: Path, n: int, active_path: Path) -> int:
-    """Удаляет версию v{N} БЕЗВОЗВРАТНО (v{N}.jpg + orig_v{N}.jpg +
-    crop_v{N}.json если есть) и перенумеровывает хвост без дырок:
-    v{m}→v{m-1} для всех m>N (вместе с orig_/crop_ ЛОКСТЕП). Активная едет по
-    КАРТИНКЕ: active=A, A>N → A-1 (та же картинка, номер на 1 меньше).
-    Возвращает НОВЫЙ номер активной версии, или -1 при отказе/ошибке.
+    """Удаляет ЛИСТ-версию v{N} БЕЗВОЗВРАТНО. Слой 2.3b «дерево версий»,
+    ВАРИАНТ B: номера НЕ перенумеровываются — после удаления остаётся ДЫРА
+    (было v3,v4,v5 → удалили v4 → стало v3,v5). Это сохраняет указатели
+    parent_v{M}.json валидными (плоские номера не сдвигаются), а лента
+    (build_shot_version_tree) устойчива к дыркам и пересчитывает dotted-подписи
+    по живым братьям. Возвращает НЕИЗМЕНЁННЫЙ номер активной версии (>=1) на
+    успех, или -1 при отказе/ошибке.
+
+    Удаляются ВСЕ файлы версии N: v{N}.jpg + orig_v{N}.jpg + crop_v{N}.json +
+    parent_v{N}.json (родство удаляемой) + v{N}.prompt.txt (Mode C-диагностика) —
+    каждый через if exists(), чтобы не осталось сирот.
 
     Гарды (дублируют скрытие крестика в UI): n нет в списке / n == min(«v1») /
-    n == активная → -1, диск НЕ трогаем.
+    n == активная → -1, диск НЕ трогаем. Лист-инвариант (нет детей) обеспечен
+    UI: крестик скрыт на версии с детьми → у N нет потомков с parent==N, сирот
+    не возникает. active.txt и живой файл шота НЕ трогаются (удаляем всегда
+    НЕ активную; номера не сдвигаются → активная и её файл остаются прежними).
 
-    Безопасность: переименование в ВОЗРАСТАЮЩЕМ порядке (дырка от удаления едет
-    вверх → цель {m-1} всегда свободна) + проверка not target.exists() перед
-    каждым os.replace. Частичный сбой → log в stderr + -1 (без rollback —
-    локальная история; caller делает refresh).
-
-    Cross-platform: pathlib.Path + os.replace + shutil, без subprocess/shell."""
+    Частичный сбой → log в stderr + -1 (без rollback — локальная история;
+    caller делает refresh). Cross-platform: pathlib.Path.unlink, без
+    subprocess/shell/os.replace."""
     history_dir = Path(history_dir)
     n = int(n)
     nums = []
@@ -4851,36 +4857,17 @@ def delete_shot_version(history_dir: Path, n: int, active_path: Path) -> int:
     if n == min(nums) or n == active:
         return -1  # «v1» (минимальный) и активную удалять нельзя
 
-    def _trio(k):
-        return (history_dir / f"v{int(k)}.jpg",
-                shot_orig_path(history_dir, k),
-                shot_crop_json_path(history_dir, k))
-
     try:
-        # 1) удалить три файла версии N
-        for f in _trio(n):
+        # Удаляем ВСЕ файлы листа N (вариант B: без сдвига номеров). active.txt
+        # и живой файл шота не трогаем — удаляемая версия не активна.
+        for f in (history_dir / f"v{n}.jpg",
+                  shot_orig_path(history_dir, n),            # orig_v{n}.jpg
+                  shot_crop_json_path(history_dir, n),       # crop_v{n}.json
+                  history_dir / f"parent_v{n}.json",         # родство удаляемой
+                  history_dir / f"v{n}.prompt.txt"):         # Mode C-диагностика
             if f.exists():
                 f.unlink()
-        # 2) перенумерация хвоста m>N в ВОЗРАСТАЮЩЕМ порядке, локстеп v/orig/crop
-        for m in sorted(x for x in nums if x > n):
-            for src, dst in zip(_trio(m), _trio(m - 1)):
-                if not src.exists():
-                    continue
-                if dst.exists():
-                    # цель занята — неконсистентная история, abort без затирания
-                    sys.stderr.write(
-                        f"[del_version] target exists, abort: {dst}\n")
-                    sys.stderr.flush()
-                    return -1
-                os.replace(str(src), str(dst))
-        # 3) пересчёт active.txt — активная едет по картинке
-        new_active = active - 1 if active > n else active
-        set_active_version(history_dir, new_active)
-        # 4) синхронизировать живой файл (shot_path читают stitch/Seedance/zip)
-        new_active_v = history_dir / f"v{new_active}.jpg"
-        if new_active_v.exists():
-            shutil.copy2(str(new_active_v), str(Path(active_path)))
-        return new_active
+        return active  # номер активной не изменился (>=1)
     except Exception:
         import traceback
         sys.stderr.write(
