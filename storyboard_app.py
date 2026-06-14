@@ -12426,11 +12426,6 @@ class MainWindow(QMainWindow):
             sv = self._get_open_shot_viewer(target_block, panel_idx)
             marked = ((sv.take_pending_marked() or sv._bake_marked_image())
                       if sv is not None else None)
-            try:  # [MARKER_DIAG]
-                from widgets.shot_viewer_dialog import _marker_diag
-                _marker_diag(f"[EDIT-GEN] panel={panel_idx} base(marked)={marked}")
-            except Exception:
-                pass
             # 2026-06-14 (маркер виден при Edit): активация выбранной версии
             # УБРАНА из _on_edit_clicked → база больше НЕ «активный файл шота».
             # marked (temp с меткой) → база. Если маркера нет, а правка из попапа
@@ -12678,12 +12673,6 @@ class MainWindow(QMainWindow):
                 marked = sv._bake_marked_image() if sv is not None else None
                 _own_marked = True
             img = marked or shot_path(target_block, panel_idx)
-            try:  # [MARKER_DIAG]
-                from widgets.shot_viewer_dialog import _marker_diag
-                _marker_diag(f"[IMPROVE] panel={panel_idx} peek={_peeked} "
-                             f"own={_own_marked} final_img={img}")
-            except Exception:
-                pass
             ok_btn = btns.button(QDialogButtonBox.StandardButton.Ok)
             improve_btn.setEnabled(False)
             _improve_state['dots'] = 1

@@ -82,20 +82,6 @@ _MARKER_CURSOR_DIAM = 14
 _MARKER_CURSOR_PEN = 2
 
 
-def _marker_diag(msg):
-    """[MARKER_DIAG] ВРЕМЕННАЯ диагностика бага маркера (выпилить по grep
-    [MARKER_DIAG]). Пишет в gettempdir/sb_marker_diag.log с таймстампом —
-    .app stderr уходит в null, поэтому в файл. Best-effort, UI не роняет."""
-    try:
-        import tempfile, time
-        from pathlib import Path as _P
-        with (_P(tempfile.gettempdir()) / "sb_marker_diag.log").open(
-                "a", encoding="utf-8") as _f:
-            _f.write(f"{time.strftime('%H:%M:%S')} [MARKER_DIAG] {msg}\n")
-    except Exception:
-        pass
-
-
 class VersionThumb(QFrame):
     """Кликабельная миниатюра версии в ленте."""
 
@@ -306,13 +292,6 @@ class _MarkerItem(QGraphicsItem):
         return QCursor(pm, int(c), int(c))
 
     def clear(self):
-        try:  # [MARKER_DIAG]
-            import traceback as _tb
-            _c = _tb.extract_stack(limit=2)[0]
-            _marker_diag(f"[clear] strokes_was={len(self._strokes)} "
-                         f"from={_c.name}:{_c.lineno}")
-        except Exception:
-            pass
         self._strokes = []
         self._cur = []
         self._drawing = False
@@ -625,25 +604,15 @@ class ShotViewerDialog(QDialog):
         # 2026-06-01: перед редактированием выделенная версия становится
         # активной (см. _activate_selected_version) — редактируется именно она.
         def _on_edit_clicked():
-            _parent = self._selected_version  # родитель ДО активации
-            _cv = getattr(self, 'marker_canvas', None)  # [MARKER_DIAG]
-            _ns = len(_cv.scene_strokes()) if _cv is not None else -1
-            _marker_diag(f"[edit_click] START selected={self._selected_version} "
-                         f"active={self._active_version} strokes={_ns}")
-            # 2026-06-14 (фикс слёта маркера): запекаем маркер СЕЙЧАС — ДО
-            # _activate_selected_version. Активация → refresh → _show_version →
-            # marker_canvas.clear() стирает штрихи; если бейкать после (как в MW),
-            # они уже пусты → метка слетала. MW заберёт отпечаток через
-            # take_pending_marked(). Нет штрихов → _bake вернёт None (как раньше).
+            _parent = self._selected_version  # родитель будущего потомка
+            # 2026-06-14 (маркер виден при Edit): активацию выбранной версии НЕ
+            # вызываем — она звала refresh→_show_version→clear и стирала штрихи
+            # маркера С ЭКРАНА. Без неё маркер виден; потомок станет активным
+            # ПОСЛЕ генерации (set_active_version в GenerateThread).
+            # closeEvent/reject/regen/realistic активацию сохраняют.
+            # Пред-бейк маркера: MW заберёт отпечаток через take_pending_marked()
+            # (+ peek для «Улучшить»). Нет штрихов → _bake вернёт None.
             self._pending_marked_path = self._bake_marked_image()
-            # 2026-06-14 (маркер виден при Edit): активация выбранной версии
-            # УБРАНА из пути Edit — она звала refresh→_show_version→clear и стирала
-            # штрихи С ЭКРАНА. Без неё маркер остаётся видимым; потомок станет
-            # активным ПОСЛЕ генерации (set_active_version в GenerateThread).
-            # closeEvent/reject/regen/realistic активацию СОХРАНЯЮТ.
-            _marker_diag(  # [MARKER_DIAG]
-                f"[edit_click] after bake pending={self._pending_marked_path} "
-                f"NO-activate strokes={len(_cv.scene_strokes()) if _cv is not None else -1}")
             self.edit_requested.emit(self.panel_idx, _parent)
         self.btn_edit.clicked.connect(_on_edit_clicked)
         actions.addWidget(self.btn_edit)
@@ -1034,8 +1003,6 @@ class ShotViewerDialog(QDialog):
         # Шаг A фичи маркера: смена/перешоу версии → старые штрихи неактуальны.
         _cv = getattr(self, 'marker_canvas', None)
         if _cv is not None:
-            _marker_diag(f"[_show_version] n={n} → clear "  # [MARKER_DIAG]
-                         f"strokes_was={len(_cv.scene_strokes())}")
             _cv.clear()
         crop = None
         try:
