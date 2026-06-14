@@ -54,6 +54,14 @@ THUMB_H = 125  # 70 × (688/384) ≈ 125
 THUMB_W_LAND = 125
 THUMB_H_LAND = 70  # 125 × 9/16 ≈ 70 → 16:9
 
+# 2026-06-13 (дерево версий, Слой 2.2): фон/рамка карточки версии по depth.
+# Заметный шаг между уровнями. depth>=2 → последний элемент (повтор, не падаем).
+_VERSION_DEPTH_COLORS = [
+    ("#211a33", "#3a2f57"),  # depth 0 (корень)
+    ("#3a2e52", "#5a4a82"),  # depth 1
+    ("#564076", "#7a5fa8"),  # depth 2+
+]
+
 # Шаг горизонтальной прокрутки ленты версий колесом для классической мыши
 # (Windows): angleDelta идёт квантами ~120 на «щелчок». Сколько пикселей
 # двигать ленту за один квант. # подобрать на живой Windows-мыши.
@@ -80,7 +88,8 @@ class VersionThumb(QFrame):
     delete_requested = pyqtSignal(int)  # version_n — крестик удаления
 
     def __init__(self, version_n: int, image_path: Path, is_active: bool,
-                 can_delete: bool = False, aspect: str = "9:16", parent=None):
+                 can_delete: bool = False, aspect: str = "9:16",
+                 depth: int = 0, dotted: Optional[str] = None, parent=None):
         super().__init__(parent)
         self.version_n = version_n
         self.image_path = image_path
@@ -88,6 +97,11 @@ class VersionThumb(QFrame):
         self._is_selected = is_active  # выбран по умолчанию = активный
         self._can_delete = can_delete
         self._aspect = aspect
+        # 2026-06-13 (Слой 2.2): depth → цвет карточки; dotted → подпись
+        # (наклейка дерева). Плоский version_n остаётся ключом. Старый дефолт
+        # (depth=0, dotted=None) = прежнее поведение.
+        self._depth = depth
+        self._dotted = dotted
         # Этап (формат): 16:9 → горизонтальная миниатюра (перевёрнутая пара);
         # 9:16 → вертикальная THUMB_W×H (как было, байт-в-байт).
         self._thumb_w, self._thumb_h = (
@@ -143,7 +157,9 @@ class VersionThumb(QFrame):
         self.btn_del.raise_()
 
         active_suffix = "  ✓" if self._is_active else ""
-        self.label = QLabel(f"v{self.version_n}{active_suffix}")
+        # 2026-06-13 (Слой 2.2): подпись = dotted ('v5.1'), fallback плоский.
+        _base = self._dotted or f"v{self.version_n}"
+        self.label = QLabel(f"{_base}{active_suffix}")
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         if self._is_active:
             self.label.setStyleSheet(
@@ -164,12 +180,16 @@ class VersionThumb(QFrame):
             self.btn_del.setVisible(self._can_delete)
 
     def _refresh_style(self):
+        # 2026-06-13 (Слой 2.2): фон/рамка по depth; выбор — акцентная рамка
+        # #6e4cc4 (2px) ПОВЕРХ depth-фона (виден на любом уровне). depth>=2 →
+        # последний цвет (clamp, не падаем при глубже).
+        _d = self._depth if isinstance(self._depth, int) and self._depth >= 0 else 0
+        bg, base_border = _VERSION_DEPTH_COLORS[
+            min(_d, len(_VERSION_DEPTH_COLORS) - 1)]
         if self._is_selected:
             border = "2px solid #6e4cc4"
-            bg = "#231840"
         else:
-            border = "1px solid #322545"
-            bg = "transparent"
+            border = f"1px solid {base_border}"
         self.setStyleSheet(
             f"#VersionThumb {{ background:{bg}; border:{border};"
             f" border-radius:6px; }}")
@@ -1086,7 +1106,8 @@ class ShotViewerDialog(QDialog):
                     pass
 
         # 2) Загрузить список версий + active.
-        from storyboard_app import list_shot_versions, read_active_version
+        from storyboard_app import (list_shot_versions, read_active_version,
+                                     build_shot_version_tree)
         versions = list_shot_versions(self.history_dir)
         self._active_version = read_active_version(self.history_dir)
         _nums = []
@@ -1130,16 +1151,47 @@ class ShotViewerDialog(QDialog):
         # момент цикла _selected_version стейл из прошлого refresh. Так крестик
         # сразу скрыт на выбранной (= активной при первом построении).
         self._selected_version = self._active_version
+        # 2026-06-13 (дерево версий, Слой 2.2): порядок/depth/dotted из
+        # build_shot_version_tree (наклейка поверх плоских файлов v{n}.jpg).
+        # Плоский n остаётся ключом (клик/выбор/активная/удаление). Graceful
+        # fallback на плоский список если дерево пустое/упало — лента не пропадёт.
+        try:
+            _tree = build_shot_version_tree(self.history_dir)
+        except Exception:
+            _tree = []
+        if _tree:
+            _nodes = _tree
+        else:
+            _nodes, _seen = [], set()
+            for p in versions:
+                try:
+                    _fn = int(p.stem[1:])
+                except (ValueError, IndexError):
+                    continue
+                if _fn in _seen:
+                    continue
+                _seen.add(_fn)
+                _nodes.append({"n": _fn, "depth": 0, "dotted": None})
+        # карта n → реальный путь картинки (по image-суффиксам; .prompt.txt
+        # отсекается). Fallback на v{n}.jpg если в карте нет.
+        _path_by_n = {}
         for p in versions:
+            if p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                continue
             try:
-                n = int(p.stem[1:])
+                _path_by_n[int(p.stem[1:])] = p
             except (ValueError, IndexError):
                 continue
+        for node in _nodes:
+            n = node["n"]
+            img = _path_by_n.get(n) or (self.history_dir / f"v{n}.jpg")
             is_active = (n == self._active_version)
             can_delete = (n != self._min_version
                           and n != self._selected_version)
-            thumb = VersionThumb(n, p, is_active, can_delete=can_delete,
-                                 aspect=self._aspect)
+            thumb = VersionThumb(n, img, is_active, can_delete=can_delete,
+                                 aspect=self._aspect,
+                                 depth=node.get("depth", 0),
+                                 dotted=node.get("dotted"))
             thumb.clicked.connect(self._on_thumb_clicked)
             thumb.delete_requested.connect(self._on_delete_version)
             self.strip_layout.insertWidget(
