@@ -27,7 +27,8 @@ from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon, Q
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
-    QStackedWidget, QMessageBox, QGraphicsItem, QGraphicsView
+    QStackedWidget, QMessageBox, QGraphicsItem, QGraphicsView,
+    QGraphicsDropShadowEffect
 )
 
 from i18n import tr
@@ -59,7 +60,7 @@ THUMB_H_LAND = 70  # 125 × 9/16 ≈ 70 → 16:9
 _VERSION_DEPTH_COLORS = [
     ("#2b2142", "#4a3a6e"),  # depth 0 (корень)  — фиолетовый
     ("#5a2440", "#b3445f"),  # depth 1           — приглушённая малина (семья #e4344a)
-    ("#5e4422", "#d4a256"),  # depth 2+          — приглушённое золото (семья #d4a256)
+    ("#3a3520", "#8a7a3e"),  # depth 2+          — тёмный янтарь (чтоб золотая рамка активной не сливалась)
 ]
 
 # Шаг горизонтальной прокрутки ленты версий колесом для классической мыши
@@ -180,19 +181,37 @@ class VersionThumb(QFrame):
             self.btn_del.setVisible(self._can_delete)
 
     def _refresh_style(self):
-        # 2026-06-13 (Слой 2.2): фон/рамка по depth; выбор — акцентная рамка
-        # #6e4cc4 (2px) ПОВЕРХ depth-фона (виден на любом уровне). depth>=2 →
-        # последний цвет (clamp, не падаем при глубже).
+        # 2026-06-14: фон по depth; ПРИОРИТЕТ рамок: АКТИВНАЯ (яркое золото
+        # #ffc83a 3px + золотое свечение) > выбранная мышкой (#6e4cc4 2px) >
+        # depth-рамка. Активность ВАЖНЕЕ выбора (И активна И selected → золото).
+        # depth>=2 → последний цвет (clamp, не падаем при глубже).
         _d = self._depth if isinstance(self._depth, int) and self._depth >= 0 else 0
         bg, base_border = _VERSION_DEPTH_COLORS[
             min(_d, len(_VERSION_DEPTH_COLORS) - 1)]
-        if self._is_selected:
+        if self._is_active:
+            border = "3px solid #ffc83a"          # яркое золото — сильнейший сигнал
+        elif self._is_selected:
             border = "2px solid #6e4cc4"
         else:
             border = f"1px solid {base_border}"
         self.setStyleSheet(
             f"#VersionThumb {{ background:{bg}; border:{border};"
             f" border-radius:6px; }}")
+        # Свечение активной — QGraphicsDropShadowEffect (золото, blur 18, offset 0).
+        # Толстая золотая рамка выше — ГАРАНТ видимости даже если ореол местами
+        # подрежется соседями/краем на дробном DPR. Тень аддитивна; на любой сбой
+        # эффекта остаётся рамка. setGraphicsEffect(None) на неактивных чистит.
+        if self._is_active:
+            try:
+                _eff = QGraphicsDropShadowEffect(self)
+                _eff.setBlurRadius(18)
+                _eff.setOffset(0, 0)
+                _eff.setColor(QColor(255, 200, 58, 200))  # #ffc83a + alpha
+                self.setGraphicsEffect(_eff)
+            except Exception:
+                self.setGraphicsEffect(None)
+        else:
+            self.setGraphicsEffect(None)
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
