@@ -12431,9 +12431,21 @@ class MainWindow(QMainWindow):
                 _marker_diag(f"[EDIT-GEN] panel={panel_idx} base(marked)={marked}")
             except Exception:
                 pass
+            # 2026-06-14 (маркер виден при Edit): активация выбранной версии
+            # УБРАНА из _on_edit_clicked → база больше НЕ «активный файл шота».
+            # marked (temp с меткой) → база. Если маркера нет, а правка из попапа
+            # версий (parent_version>0) — база = ВЫБРАННАЯ версия v{parent}.jpg
+            # (то, что юзер видел/правил), НЕ активная. parent_version=0 (grid-
+            # карточка без viewer) → base_override=None → shot_path как раньше.
+            base_override = marked
+            if base_override is None and parent_version and parent_version > 0:
+                _sel_img = (shot_history_dir(target_block, panel_idx)
+                            / f"v{int(parent_version)}.jpg")
+                if _sel_img.exists():
+                    base_override = _sel_img
             thread = GenerateThread(target_block, panel_idx,
                                      edit_instruction=short_instruction,
-                                     base_image_override=marked,
+                                     base_image_override=base_override,
                                      parent_version=parent_version,
                                      aspect=self._current_aspect)
             self._active_regens[key] = thread
@@ -12446,7 +12458,9 @@ class MainWindow(QMainWindow):
             thread.error.connect(
                 lambda msg: self._on_regen_error(msg, target_block, panel_idx))
             # temp-картинка маркера живёт только на время аплоада в треде;
-            # после finished/error удаляем её (на обоих сигналах).
+            # после finished/error удаляем её (на обоих сигналах). 2026-06-14:
+            # гард `if marked is not None` КРИТИЧЕН — чистим ТОЛЬКО temp-отпечаток,
+            # НЕ постоянный v{parent}.jpg (base_override), который мимо cleanup.
             if marked is not None:
                 def _cleanup_marked(*_a, _p=marked):
                     try:

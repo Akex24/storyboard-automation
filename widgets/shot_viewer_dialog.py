@@ -636,12 +636,14 @@ class ShotViewerDialog(QDialog):
             # они уже пусты → метка слетала. MW заберёт отпечаток через
             # take_pending_marked(). Нет штрихов → _bake вернёт None (как раньше).
             self._pending_marked_path = self._bake_marked_image()
-            _marker_diag(f"[edit_click] after bake "  # [MARKER_DIAG]
-                         f"pending={self._pending_marked_path}")
-            self._activate_selected_version()
+            # 2026-06-14 (маркер виден при Edit): активация выбранной версии
+            # УБРАНА из пути Edit — она звала refresh→_show_version→clear и стирала
+            # штрихи С ЭКРАНА. Без неё маркер остаётся видимым; потомок станет
+            # активным ПОСЛЕ генерации (set_active_version в GenerateThread).
+            # closeEvent/reject/regen/realistic активацию СОХРАНЯЮТ.
             _marker_diag(  # [MARKER_DIAG]
-                f"[edit_click] after activate active={self._active_version} "
-                f"strokes={len(_cv.scene_strokes()) if _cv is not None else -1}")
+                f"[edit_click] after bake pending={self._pending_marked_path} "
+                f"NO-activate strokes={len(_cv.scene_strokes()) if _cv is not None else -1}")
             self.edit_requested.emit(self.panel_idx, _parent)
         self.btn_edit.clicked.connect(_on_edit_clicked)
         actions.addWidget(self.btn_edit)
