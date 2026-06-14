@@ -397,6 +397,11 @@ class ShotViewerDialog(QDialog):
         self._selected_version: int = 0  # current selection in thumb strip
         self._active_version: int = 0    # which is actually active
         self._thumbs: List[VersionThumb] = []
+        # 2026-06-14 (фикс слёта маркера): пред-запечённый маркер-PNG —
+        # заготавливается в _on_edit_clicked ДО _activate (пока штрихи живы),
+        # MW забирает через take_pending_marked(). One-shot; сброс при
+        # закрытии/отмене (_clear_pending_marked).
+        self._pending_marked_path = None
         self.setWindowTitle(
             tr('shot_viewer_title', n=panel_idx + 1))
         self.setModal(False)
@@ -600,6 +605,12 @@ class ShotViewerDialog(QDialog):
         # активной (см. _activate_selected_version) — редактируется именно она.
         def _on_edit_clicked():
             _parent = self._selected_version  # родитель ДО активации
+            # 2026-06-14 (фикс слёта маркера): запекаем маркер СЕЙЧАС — ДО
+            # _activate_selected_version. Активация → refresh → _show_version →
+            # marker_canvas.clear() стирает штрихи; если бейкать после (как в MW),
+            # они уже пусты → метка слетала. MW заберёт отпечаток через
+            # take_pending_marked(). Нет штрихов → _bake вернёт None (как раньше).
+            self._pending_marked_path = self._bake_marked_image()
             self._activate_selected_version()
             self.edit_requested.emit(self.panel_idx, _parent)
         self.btn_edit.clicked.connect(_on_edit_clicked)
@@ -680,6 +691,7 @@ class ShotViewerDialog(QDialog):
         делается в переопределённом reject() ниже (а не здесь)."""
         self._maybe_save_crop()
         self._activate_selected_version()
+        self._clear_pending_marked()   # 2026-06-14: несъеденный отпечаток не течёт
         super().closeEvent(ev)
 
     def reject(self):
@@ -691,6 +703,7 @@ class ShotViewerDialog(QDialog):
         вызывают). Guard в _activate_selected_version страхует в любом случае."""
         self._maybe_save_crop()
         self._activate_selected_version()
+        self._clear_pending_marked()   # 2026-06-14: несъеденный отпечаток не течёт
         super().reject()
 
     def eventFilter(self, obj, ev):
@@ -885,6 +898,28 @@ class ShotViewerDialog(QDialog):
             import traceback
             traceback.print_exc(file=sys.stderr)
         return None
+
+    def take_pending_marked(self):
+        """2026-06-14 (фикс слёта маркера): отдаёт ПРЕД-запечённый маркер-PNG
+        (заготовлен в _on_edit_clicked ДО _activate, пока штрихи живы) и
+        ЗАНУЛЯЕТ поле — one-shot, чтобы отпечаток не утёк в следующую правку.
+        None если маркера не было. MW сам чистит temp на finished/error."""
+        p = self._pending_marked_path
+        self._pending_marked_path = None
+        return p
+
+    def _clear_pending_marked(self):
+        """Сброс НЕсъеденного пред-отпечатка (отмена правки / закрытие диалога):
+        удаляет temp-PNG если остался + зануляет поле. Если уже съеден
+        (take_pending_marked вернул путь) — поле None, no-op (MW владеет
+        очисткой)."""
+        p = self._pending_marked_path
+        self._pending_marked_path = None
+        if p is not None:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _on_mirror_clicked(self, checked):
         """M-b: тогл горизонтального зеркала просматриваемой версии. Зеркало

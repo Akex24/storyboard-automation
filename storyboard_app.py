@@ -12420,8 +12420,12 @@ class MainWindow(QMainWindow):
             # temp-картинку и отдаём её как базу [@]img0 для Nano Banana
             # (модель поймёт какой объект тронуть). Нет диалога / нет
             # штрихов → marked=None → путь байт-в-байт прежний.
+            # 2026-06-14 (фикс слёта маркера): предпочитаем ПРЕД-запечённый
+            # отпечаток (заготовлен в _on_edit_clicked ДО активации, пока штрихи
+            # живы); fallback на bake для edit НЕ из btn_edit (grid-карточка).
             sv = self._get_open_shot_viewer(target_block, panel_idx)
-            marked = sv._bake_marked_image() if sv is not None else None
+            marked = ((sv.take_pending_marked() or sv._bake_marked_image())
+                      if sv is not None else None)
             thread = GenerateThread(target_block, panel_idx,
                                      edit_instruction=short_instruction,
                                      base_image_override=marked,
