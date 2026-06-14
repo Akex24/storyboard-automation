@@ -12646,8 +12646,18 @@ class MainWindow(QMainWindow):
                 return
             # marked-or-clean: размеченная картинка если открыт viewer со
             # штрихами, иначе чистый активный шот (та же база, что и edit).
+            # 2026-06-14: предпочесть ПРЕД-отпечаток (с маркером, заготовлен в
+            # _on_edit_clicked ДО активации). peek — НЕ one-shot: отпечаток
+            # остаётся для финальной edit-генерации. _own_marked=True только если
+            # бейкали САМИ — тогда и чистим (чужой pending edit'а не трогаем).
             sv = self._get_open_shot_viewer(target_block, panel_idx)
-            marked = sv._bake_marked_image() if sv is not None else None
+            _peeked = sv.peek_pending_marked() if sv is not None else None
+            if _peeked is not None:
+                marked = _peeked
+                _own_marked = False
+            else:
+                marked = sv._bake_marked_image() if sv is not None else None
+                _own_marked = True
             img = marked or shot_path(target_block, panel_idx)
             ok_btn = btns.button(QDialogButtonBox.StandardButton.Ok)
             improve_btn.setEnabled(False)
@@ -12697,8 +12707,11 @@ class MainWindow(QMainWindow):
 
             def _cleanup_marked():
                 # temp-картинка маркера живёт только на время вызова Sonnet —
-                # чистим ВСЕГДА по завершении потока (как в Шаге C edit).
-                if marked is not None:
+                # чистим по завершении потока. 2026-06-14: ТОЛЬКО если это НАШ
+                # бейк (_own_marked). Если marked — чужой пред-отпечаток edit'а
+                # (из peek) — НЕ удаляем: им владеет take_pending_marked (edit) /
+                # _clear_pending_marked (закрытие попапа).
+                if marked is not None and _own_marked:
                     try:
                         Path(marked).unlink(missing_ok=True)
                     except Exception:

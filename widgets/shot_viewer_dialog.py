@@ -903,9 +903,23 @@ class ShotViewerDialog(QDialog):
         """2026-06-14 (фикс слёта маркера): отдаёт ПРЕД-запечённый маркер-PNG
         (заготовлен в _on_edit_clicked ДО _activate, пока штрихи живы) и
         ЗАНУЛЯЕТ поле — one-shot, чтобы отпечаток не утёк в следующую правку.
-        None если маркера не было. MW сам чистит temp на finished/error."""
+        None если маркера не было. Guard «файл существует»: если temp кто-то
+        удалил → None, чтобы вызывающая сторона ре-бейкнула через
+        `or _bake_marked_image()`. MW чистит temp на finished/error."""
         p = self._pending_marked_path
         self._pending_marked_path = None
+        if p is not None and not p.exists():
+            return None
+        return p
+
+    def peek_pending_marked(self):
+        """2026-06-14 (Улучшить видит маркер): НЕ-разрушающий просмотр пред-
+        отпечатка — поле НЕ зануляет, отпечаток остаётся для финальной edit-
+        генерации (и для повторных нажатий «Улучшить»). Тот же guard «файл
+        существует» → None если temp удалён."""
+        p = self._pending_marked_path
+        if p is not None and not p.exists():
+            return None
         return p
 
     def _clear_pending_marked(self):
