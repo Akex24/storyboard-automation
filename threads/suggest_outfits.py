@@ -317,25 +317,29 @@ class SuggestOutfitsThread(QThread):
                 self.character_name, scenario_text, bible_text,
                 chat_description=self.chat_description,
                 previous_variants=self.previous_variants)
+            # 2026-06-15 Win-fix: prompt уходит через stdin, не через argv.
+            # На реальном эпизоде build_outfit_prompt(scenario=15K, bible=8K)
+            # = ~27 KB — Windows cmd.exe shim падал «The command line is
+            # too long.» ДО старта claude. См. threads/_claude_shared.py.
+            from threads._claude_shared import (
+                popen_kwargs_for_claude, send_prompt_via_stdin,
+                raise_if_died_early,
+            )
             args = [cli]
             if self.model:
                 args += ["--model", self.model]
-            args += ["-p", prompt, "--dangerously-skip-permissions"]
-            # 2026-05-08: CREATE_NO_WINDOW guard для Win10/11 (см.
-            # _WINDOWS_PREP_TODO.md P0).
-            popen_kwargs = dict(
+            args += ["-p", "--dangerously-skip-permissions"]
+            popen_kwargs = popen_kwargs_for_claude(
                 cwd=str(self.project_root),
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",      # 2026-05-09 Win-fix.
-                errors="replace",
                 bufsize=1,
             )
-            if sys.platform == 'win32':
-                popen_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
             self._proc = subprocess.Popen(args, **popen_kwargs)
             assert self._proc.stdout is not None
+            send_prompt_via_stdin(self._proc, prompt)
+            raise_if_died_early(self._proc)
             buf = self._proc.stdout.read()
             rc = self._proc.wait(timeout=10)
             if self._stop_requested:

@@ -1473,24 +1473,24 @@ class RunEpisodeThread(QThread):
                 args += ["--model", self.model]
             # 2026-06-15 Win-fix: промпт идёт через STDIN, не через argv.
             # Системный промпт в views/new_episode.py ~20-25 KB; на Windows
-            # CreateProcess лимитирован ~32 KB на всю команду → коллега
-            # ловил `The command line is too long.` ДО запуска claude.
-            # stdin-канал лимита не имеет, поведение claude CLI идентично
+            # cmd.exe shim для .cmd лимитирован ~8 KB на всю команду →
+            # коллега ловил `The command line is too long.` ДО старта
+            # claude. stdin-канал лимита не имеет; поведение CLI идентично
             # (`-p` без позиционного аргумента читает промпт из stdin).
             # На Mac лимит ARG_MAX в мегабайтах — поведение не меняется.
+            # Через общий helper _claude_shared — единая точка правды на
+            # все потоки Studio, см. threads/_claude_shared.py.
+            from threads._claude_shared import (
+                popen_kwargs_for_claude, send_prompt_via_stdin,
+            )
             args += ["-p", "--dangerously-skip-permissions"]
-            popen_kwargs = dict(
+            popen_kwargs = popen_kwargs_for_claude(
                 cwd=str(self.project_root),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",      # 2026-05-09 Win-fix: иначе на Win
-                errors="replace",      # cp1252 ловит UTF-8 stdout → crash.
                 bufsize=1,
             )
-            if sys.platform == 'win32':
-                popen_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
             self._proc = subprocess.Popen(args, **popen_kwargs)
             assert self._proc.stdout is not None
             # Пишем промпт и СРАЗУ закрываем stdin — иначе claude будет
@@ -1499,12 +1499,12 @@ class RunEpisodeThread(QThread):
             # (64 KB на Linux/Mac, 4 KB на Win, но Win сама буферизует
             # write через write() в child-pipe; при превышении блок-write
             # отдаст управление как только child прочтёт).
-            try:
-                if self._proc.stdin is not None:
-                    self._proc.stdin.write(self.prompt)
-                    self._proc.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass  # claude мог стартануть с ошибкой — поймаем по rc ниже
+            # raise_if_died_early здесь НЕ зовём — для RunEpisodeThread
+            # claude может корректно стартовать с long-running thinking, и
+            # 50мс sleep в early-check внёс бы лишний delay в hot path.
+            # «Молчаливый exit» в этом потоке всё равно пойдёт через
+            # обычный exit-rc обработчик в finished_ok/error.
+            send_prompt_via_stdin(self._proc, self.prompt)
             # 2026-05-08 TODO 6: watchdog в отдельном threading.Timer.
             # Через 120с без первого chunk → emit slow_thinking. Сигнал
             # Qt thread-safe для cross-thread emit; UI-слот добавит

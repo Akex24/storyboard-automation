@@ -302,19 +302,48 @@ Overlay держится пока в реестре есть хоть одна `
 - **`PRESERVE_ON_UPDATE` ([storyboard_app.py:134](storyboard_app.py:134))
   используется только в мёртвом `DownloadUpdateThread`** — расширять без
   причины не нужно (см. ниже секцию «Архитектура обновлений»).
-- **`RunEpisodeThread` — промпт через STDIN, не через argv** (2026-06-15).
-  Системный промпт в [views/new_episode.py:902-1213](views/new_episode.py:902)
-  ~20-25 KB; на Windows `CreateProcess` лимитирован ~32 KB на ВСЮ команду →
-  коллега ловил `The command line is too long.` ДО запуска claude. Передача
-  через stdin лимита не имеет (на Mac ARG_MAX в МБ — разницы для админа нет).
-  Реализация — [threads/generate.py:1466+](threads/generate.py:1466): `args +=
-  ["-p", "--dangerously-skip-permissions"]` (БЕЗ позиционного промпта) +
-  `Popen(stdin=PIPE, ...)` + `proc.stdin.write(prompt); proc.stdin.close()`
-  под `try/except (BrokenPipeError, OSError)`. Claude CLI с `-p` без
-  позиционного аргумента читает промпт из stdin — стрим stdout не нарушается.
-  **Аналогичный фикс не нужен** для `ImprovePromptThread` / `TranslateThread` /
-  `camera_director` — их промпты ~2-3 KB, лимит не упирается; argv-передача
-  оставлена как есть.
+- **Claude CLI: system-prompt → файл, user-prompt → stdin** (2026-06-15,
+  helper `threads/_claude_shared.py`). На Windows `.cmd`-shim запускается
+  через cmd.exe → лимит командной строки **~8 KB на ВСЮ команду**. Любой
+  system_prompt 12-22 KB (Scriptwriter / Validator / Editor /
+  ContextReviewer / Seedance / Storyboard PromptWriter) ИЛИ user_prompt
+  > 5 KB (Outfit picker до 27 KB, Soften prompt до 7 KB) валит запуск
+  до старта claude. Симптомы: «The command line is too long.» (для
+  user_prompt в argv) и **«failed to write stdin: [Errno 32] Broken pipe»**
+  (для system_prompt в argv — claude.cmd упал на старте, stdin pipe
+  закрылся прежде чем мы успели write).
+
+  Helper-API:
+  - `write_system_prompt_to_tmp(text) → Path` — `tempfile.mkstemp` UTF-8;
+    caller обязан `path.unlink(missing_ok=True)` в finally.
+  - `supports_system_prompt_file(cli) → bool` — runtime-проверка через
+    `claude --help`; **кешируется ТОЛЬКО True**. False/exception НЕ
+    кешируем — иначе медленный Win cold-start `--help` навсегда
+    зафиксировал бы False и фикс молча отвалился.
+  - `build_system_prompt_args(cli, tmp_path, raw_text)` — отдаёт
+    `["--system-prompt-file", str(path)]` если CLI поддерживает,
+    иначе fallback `["--system-prompt", raw_text]` (старое поведение).
+  - `popen_kwargs_for_claude(**extra)` — единая точка `text=True` +
+    UTF-8 + `errors='replace'` + `CREATE_NO_WINDOW` на win32.
+  - `send_prompt_via_stdin(proc, user_prompt)` — write + close + молча
+    глотает BrokenPipe (caller отдельно вызывает `raise_if_died_early`).
+  - `raise_if_died_early(proc, settle_ms=50)` — 50мс sleep + `poll()`;
+    если процесс уже exit'нул с rc≠0 → вытаскивает stderr и raise с
+    понятным «claude died immediately: rc=X stderr=…». Защита от
+    «нет ответа» через 600с при следующем Win-баге.
+
+  Применено в коммите A: `MontageOrchestrator._run_claude` +
+  `_run_claude_stream` (закрывает Scriptwriter/Validator/Editor/
+  ContextReviewer), `SuggestOutfitsThread.run` (Outfit picker),
+  `RunEpisodeThread.run` (refactor на helper без смены поведения,
+  старый локальный stdin-фикс v1.0.96 заменён на helper-API).
+
+  Коммит Б (профилактика, после подтверждения коллеги): Seedance ×3,
+  Storyboard PromptWriter, Soften, Translate, Autonomous, Improve,
+  camera_director.
+
+  **НЕ затронуто:** `ClaudeGeometryThread` (короткий `lang_phrase` < 1 KB),
+  `auth_switch` (команды claude --login/logout/status без промптов).
 
 ## Animal classification (BUG 2 fix)
 

@@ -1043,32 +1043,40 @@ class MontageOrchestratorThread(QThread):
         2026-05-09: `model` — обязательный параметр. Каждый агент
         (Scriptwriter / Validator / Editor / ContextReviewer) передаёт
         свою модель через MODEL_* class constants (см. шапку класса).
+
+        2026-06-15 Win-fix: system-prompt уходит в temp-файл через
+        `--system-prompt-file` (старый CLI без флага — fallback на
+        `--system-prompt <text>`). Без этого 12-18 KB system-prompt
+        ловил Windows command-line лимит cmd.exe shim → `claude died
+        immediately: rc=1 stderr=The command line is too long.`.
         """
         if not self._cli:
             raise RuntimeError("claude CLI not found")
-        cmd = [self._cli, "-p",
-               "--system-prompt", system_prompt,
-               "--output-format", "text",
-               "--model", model]
-        # На Windows запускаем без отдельной консоли (мы хотим тихий
-        # subprocess для backend-AI).
-        kwargs = {
-            'input': user_prompt,
-            'capture_output': True,
-            'text': True,
-            'timeout': self.SUBPROCESS_TIMEOUT_SEC,
-            'encoding': 'utf-8',
-        }
-        if sys.platform == 'win32':
-            # Скрываем консольное окно (backend-вызов, юзеру окно cmd
-            # не нужно).
-            CREATE_NO_WINDOW = 0x08000000
-            kwargs['creationflags'] = CREATE_NO_WINDOW
-        r = subprocess.run(cmd, **kwargs)
-        if r.returncode != 0:
-            stderr = (r.stderr or "")[:500]
-            raise RuntimeError(f"claude exit={r.returncode}: {stderr}")
-        return (r.stdout or "").strip()
+        from threads._claude_shared import (
+            write_system_prompt_to_tmp, build_system_prompt_args,
+            popen_kwargs_for_claude,
+        )
+        sysp = (write_system_prompt_to_tmp(system_prompt)
+                if system_prompt else None)
+        try:
+            cmd = [self._cli, "-p"]
+            cmd += build_system_prompt_args(self._cli, sysp, system_prompt)
+            cmd += ["--output-format", "text",
+                    "--model", model]
+            kwargs = popen_kwargs_for_claude(
+                input=user_prompt,
+                capture_output=True,
+                timeout=self.SUBPROCESS_TIMEOUT_SEC,
+            )
+            r = subprocess.run(cmd, **kwargs)
+            if r.returncode != 0:
+                stderr = (r.stderr or "")[:500]
+                raise RuntimeError(f"claude exit={r.returncode}: {stderr}")
+            return (r.stdout or "").strip()
+        finally:
+            if sysp is not None:
+                try: sysp.unlink(missing_ok=True)
+                except Exception: pass
 
     def _run_claude_stream(self, system_prompt: str, user_prompt: str,
                             model: str,
@@ -1117,43 +1125,45 @@ class MontageOrchestratorThread(QThread):
         # v1.0.86 (этап 4): резолвим эффективный chunk-timeout.
         # Параметр None → default 60с (Sonnet/Haiku); Opus передаёт 150с.
         timeout = chunk_timeout_sec or self.STREAM_CHUNK_TIMEOUT_SEC
-        cmd = [self._cli, "-p",
-               "--system-prompt", system_prompt,
-               "--output-format", "stream-json",
-               "--verbose",
-               "--include-partial-messages",
-               "--model", model]
+        # 2026-06-15 Win-fix: system-prompt уходит в temp-файл через
+        # `--system-prompt-file` (см. threads/_claude_shared.py). Без
+        # этого 18 KB SCRIPTWRITER_SYSTEM ловил Windows cmd.exe shim
+        # лимит → claude.cmd падал ДО открытия stdin → наш
+        # proc.stdin.write(user_prompt) бился в закрытый pipe и
+        # raise'ил «failed to write stdin: [Errno 32] Broken pipe».
+        from threads._claude_shared import (
+            write_system_prompt_to_tmp, build_system_prompt_args,
+            popen_kwargs_for_claude, send_prompt_via_stdin,
+            raise_if_died_early,
+        )
+        sysp = (write_system_prompt_to_tmp(system_prompt)
+                if system_prompt else None)
+        cmd = [self._cli, "-p"]
+        cmd += build_system_prompt_args(self._cli, sysp, system_prompt)
+        cmd += ["--output-format", "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+                "--model", model]
         # v1.0.86 (этап 5): если задан thinking effort — пробрасываем
         # в CLI. Опциональный, чтобы не ломать существующие callsite.
         if effort:
             cmd.extend(["--effort", effort])
-        popen_kwargs: dict = {
-            'stdin': subprocess.PIPE,
-            'stdout': subprocess.PIPE,
-            'stderr': subprocess.PIPE,
-            'text': True,
-            'encoding': 'utf-8',
-            'errors': 'replace',
-            'bufsize': 1,  # line-buffered — важно для своевременных JSONL чанков
-        }
-        if sys.platform == 'win32':
-            CREATE_NO_WINDOW = 0x08000000
-            popen_kwargs['creationflags'] = CREATE_NO_WINDOW
+        popen_kwargs = popen_kwargs_for_claude(
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,  # line-buffered — важно для своевременных JSONL чанков
+        )
 
         proc = subprocess.Popen(cmd, **popen_kwargs)
         self._proc = proc
         try:
             # Пишем prompt в stdin и закрываем — claude ждёт EOF.
-            try:
-                assert proc.stdin is not None
-                proc.stdin.write(user_prompt)
-                proc.stdin.close()
-            except Exception as e:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-                raise RuntimeError(f"failed to write stdin: {e}")
+            # send_prompt_via_stdin молча проглатывает BrokenPipe (claude
+            # мог упасть на старте); raise_if_died_early сразу даёт
+            # понятную ошибку с stderr вместо «нет ответа» через 600с.
+            send_prompt_via_stdin(proc, user_prompt)
+            raise_if_died_early(proc)
 
             # Reader-поток складывает строки stdout в очередь. Главный
             # поток дёргает queue.get(timeout=) — это и есть chunk-timeout.
@@ -1265,6 +1275,10 @@ class MontageOrchestratorThread(QThread):
             # Очищаем handle — даже при exception, чтобы внешний stop()
             # не дёргал terminate на уже-мёртвом процессе.
             self._proc = None
+            # 2026-06-15 Win-fix: temp-файл system-prompt чистим всегда.
+            if sysp is not None:
+                try: sysp.unlink(missing_ok=True)
+                except Exception: pass
 
     @staticmethod
     def _parse_json(raw: str) -> dict:
