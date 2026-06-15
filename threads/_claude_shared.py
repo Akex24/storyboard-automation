@@ -54,6 +54,38 @@ from typing import Optional, List, Dict, Any
 # False/exception следующий вызов попробует заново; стоимость — лишний
 # `--help` запуск раз в N callsite'ов до первого успеха.
 _SUPPORTS_SYSPROMPT_FILE: Optional[bool] = None
+# Гейт на лог feature-detect: пишем результат один раз за процесс, чтобы
+# не спамить stderr/файл при каждом claude-callsite.
+_DETECT_LOG_DONE: bool = False
+
+
+def _log_detect(msg: str) -> None:
+    """Однократный лог feature-detect результата. Пишет в stderr И в файл
+    `$TMPDIR/storyboard_studio_claude_detect.log` (append).
+
+    Зачем файл: PyInstaller .app запускается из Dock — stderr идёт в
+    /dev/null, юзер ничего не видит. Файл в TMPDIR — единое место для
+    диагностики, без зависимостей от project_root / show_slug. На Mac —
+    /var/folders/.../T/, на Win — %TEMP%. Без кириллицы и пробелов в
+    путях, кросс-платформенно.
+
+    Звать только ОДИН раз за процесс (защита через `_DETECT_LOG_DONE`).
+    """
+    global _DETECT_LOG_DONE
+    if _DETECT_LOG_DONE:
+        return
+    _DETECT_LOG_DONE = True
+    line = f"[_claude_shared] feature-detect: {msg}"
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+    try:
+        log_path = Path(tempfile.gettempdir()) / "storyboard_studio_claude_detect.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def supports_system_prompt_file(cli: str) -> bool:
@@ -63,6 +95,15 @@ def supports_system_prompt_file(cli: str) -> bool:
     Кешируем ТОЛЬКО True (см. комментарий у `_SUPPORTS_SYSPROMPT_FILE`).
     На таймаут / exit != 0 / отсутствие текста — возвращаем False БЕЗ
     кеширования: следующий callsite попробует снова.
+
+    Эвристика ищет ДВЕ формы написания флага в --help:
+      • `--system-prompt-file` — буквальная (если Anthropic исправит help).
+      • `--system-prompt[-file]` — текущая форма CLI 2.1.177, флаг
+        упоминается только в описании `--bare` со скобочной нотацией.
+        Литеральная подстрока без второй формы возвращала False даже
+        на Mac → коммит 776fdc7 везде работал через fallback `--system-
+        prompt <text>` в argv; на Mac незаметно (нет лимита), на Win
+        ловил cmd.exe 8 KB лимит. v1.0.98 это закрывает.
     """
     global _SUPPORTS_SYSPROMPT_FILE
     if _SUPPORTS_SYSPROMPT_FILE is True:
@@ -78,9 +119,20 @@ def supports_system_prompt_file(cli: str) -> bool:
         help_text = (r.stdout or "") + (r.stderr or "")
         if "--system-prompt-file" in help_text:
             _SUPPORTS_SYSPROMPT_FILE = True
+            _log_detect("--system-prompt-file SUPPORTED "
+                        "(matched: '--system-prompt-file')")
             return True
-    except Exception:
-        pass
+        if "--system-prompt[-file]" in help_text:
+            _SUPPORTS_SYSPROMPT_FILE = True
+            _log_detect("--system-prompt-file SUPPORTED "
+                        "(matched: '--system-prompt[-file]')")
+            return True
+        _log_detect("--system-prompt-file NOT SUPPORTED — using argv fallback")
+    except subprocess.TimeoutExpired:
+        _log_detect("--help timed out (>5s) — using argv fallback")
+    except Exception as e:
+        _log_detect(f"--help failed ({type(e).__name__}: {e}) "
+                    f"— using argv fallback")
     return False
 
 
