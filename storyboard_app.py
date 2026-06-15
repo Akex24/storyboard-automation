@@ -8812,6 +8812,244 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(provider_admin_frame)
 
+        # ── 🎬 РЕЖИМ МОНТАЖНОЙ КАРТЫ — переключатель A/B/C/D (виден всем) ──
+        self.sec_montage_mode_lbl = QLabel(tr('sec_montage_mode'))
+        self.sec_montage_mode_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_montage_mode_lbl)
+
+        mm_frame = QFrame()
+        mm_frame.setObjectName("settings-group")
+        mmf = QVBoxLayout(mm_frame)
+        mmf.setSpacing(0)
+        mmf.setContentsMargins(18, 14, 18, 14)
+
+        self.montage_mode_hint_lbl = QLabel(tr('montage_mode_hint'))
+        self.montage_mode_hint_lbl.setWordWrap(True)
+        self.montage_mode_hint_lbl.setStyleSheet(
+            "color:#aaa; font-size:12px; padding-bottom:10px;")
+        mmf.addWidget(self.montage_mode_hint_lbl)
+
+        mm_row = QHBoxLayout()
+        mm_row.setSpacing(12)
+        self.montage_mode_label_lbl = QLabel(tr('montage_mode_label'))
+        self.montage_mode_label_lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
+        mm_row.addWidget(self.montage_mode_label_lbl)
+
+        self.montage_mode_combo = QComboBox()
+        for _m in mode_loader.VALID_MODES:
+            self.montage_mode_combo.addItem(f"Mode {_m.upper()}", _m)
+        _cur_mode = mode_loader.get_current_mode()
+        _idx = self.montage_mode_combo.findData(_cur_mode)
+        if _idx >= 0:
+            self.montage_mode_combo.setCurrentIndex(_idx)
+        self.montage_mode_combo.activated.connect(self._on_montage_mode_changed)
+        block_wheel_event(self.montage_mode_combo)
+        mm_row.addWidget(self.montage_mode_combo, stretch=1)
+        mmf.addLayout(mm_row)
+
+        lay.addWidget(mm_frame)
+
+        # ── 🎙 СКОРОСТЬ РЕЧИ АКТЁРОВ — слайдеры (для режимов B и C) ─────
+        # 2026-05-23 (Этап 3.2): live-крутка fast/normal/slow для речи
+        # в режимах B и C (C — копия B). Значения пишутся в QSettings через
+        # set_speech_speed_b_* (Этап 3.1). Подключение к SPEECH_CONFIG —
+        # Этап 3.3. Гейтинг через mode_loader.get_current_mode(): в A/D
+        # секция вообще не создаётся (атрибутов self.* нет — retranslate
+        # пропускает блок через hasattr).
+        if mode_loader.get_current_mode() in ('b', 'c'):
+            from PyQt6.QtWidgets import QSlider
+
+            self.sec_speech_speed_b_lbl = QLabel(tr('sec_speech_speed_b'))
+            self.sec_speech_speed_b_lbl.setObjectName("settings-section")
+            lay.addWidget(self.sec_speech_speed_b_lbl)
+
+            speech_speed_b_frame = QFrame()
+            speech_speed_b_frame.setObjectName("settings-group")
+            ssb_lay = QVBoxLayout(speech_speed_b_frame)
+            ssb_lay.setContentsMargins(18, 14, 18, 14)
+            ssb_lay.setSpacing(10)
+
+            self.speech_speed_b_hint_lbl = QLabel(tr('speech_speed_b_hint'))
+            self.speech_speed_b_hint_lbl.setWordWrap(True)
+            self.speech_speed_b_hint_lbl.setStyleSheet(
+                "color:#aaa; font-size:12px; padding-bottom:10px;")
+            ssb_lay.addWidget(self.speech_speed_b_hint_lbl)
+
+            # Row Fast (3.0–6.0, default 4.0)
+            fast_row = QHBoxLayout()
+            fast_row.setSpacing(12)
+            self.speech_speed_b_fast_label_lbl = QLabel(
+                tr('speech_speed_b_fast_label'))
+            self.speech_speed_b_fast_label_lbl.setMinimumWidth(220)
+            self.speech_speed_b_fast_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            fast_row.addWidget(self.speech_speed_b_fast_label_lbl)
+
+            self.speech_speed_b_fast_slider = QSlider(Qt.Orientation.Horizontal)
+            self.speech_speed_b_fast_slider.setRange(30, 60)
+            self.speech_speed_b_fast_slider.setSingleStep(1)
+            self.speech_speed_b_fast_slider.setPageStep(5)
+            self.speech_speed_b_fast_slider.setValue(
+                int(round(speech_speed_b_fast() * 10)))
+            block_wheel_event(self.speech_speed_b_fast_slider)
+            self.speech_speed_b_fast_slider.valueChanged.connect(
+                self._on_speech_speed_b_fast_changed)
+            fast_row.addWidget(self.speech_speed_b_fast_slider, stretch=1)
+
+            self.speech_speed_b_fast_value_lbl = QLabel("")
+            self.speech_speed_b_fast_value_lbl.setStyleSheet(
+                "color:#ffd24d; font-size:13px; font-weight:600; "
+                "min-width:170px;")
+            fast_row.addWidget(self.speech_speed_b_fast_value_lbl)
+
+            self.speech_speed_b_fast_reset_btn = QPushButton(
+                tr('speech_speed_b_reset'))
+            self.speech_speed_b_fast_reset_btn.setFixedHeight(30)
+            self.speech_speed_b_fast_reset_btn.clicked.connect(
+                self._on_speech_speed_b_fast_reset)
+            fast_row.addWidget(self.speech_speed_b_fast_reset_btn)
+            ssb_lay.addLayout(fast_row)
+
+            # Row Normal (2.0–5.0, default 3.5)
+            normal_row = QHBoxLayout()
+            normal_row.setSpacing(12)
+            self.speech_speed_b_normal_label_lbl = QLabel(
+                tr('speech_speed_b_normal_label'))
+            self.speech_speed_b_normal_label_lbl.setMinimumWidth(220)
+            self.speech_speed_b_normal_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            normal_row.addWidget(self.speech_speed_b_normal_label_lbl)
+
+            self.speech_speed_b_normal_slider = QSlider(Qt.Orientation.Horizontal)
+            self.speech_speed_b_normal_slider.setRange(20, 50)
+            self.speech_speed_b_normal_slider.setSingleStep(1)
+            self.speech_speed_b_normal_slider.setPageStep(5)
+            self.speech_speed_b_normal_slider.setValue(
+                int(round(speech_speed_b_normal() * 10)))
+            block_wheel_event(self.speech_speed_b_normal_slider)
+            self.speech_speed_b_normal_slider.valueChanged.connect(
+                self._on_speech_speed_b_normal_changed)
+            normal_row.addWidget(self.speech_speed_b_normal_slider, stretch=1)
+
+            self.speech_speed_b_normal_value_lbl = QLabel("")
+            self.speech_speed_b_normal_value_lbl.setStyleSheet(
+                "color:#ffd24d; font-size:13px; font-weight:600; "
+                "min-width:170px;")
+            normal_row.addWidget(self.speech_speed_b_normal_value_lbl)
+
+            self.speech_speed_b_normal_reset_btn = QPushButton(
+                tr('speech_speed_b_reset'))
+            self.speech_speed_b_normal_reset_btn.setFixedHeight(30)
+            self.speech_speed_b_normal_reset_btn.clicked.connect(
+                self._on_speech_speed_b_normal_reset)
+            normal_row.addWidget(self.speech_speed_b_normal_reset_btn)
+            ssb_lay.addLayout(normal_row)
+
+            # Row Slow (1.0–4.0, default 2.3)
+            slow_row = QHBoxLayout()
+            slow_row.setSpacing(12)
+            self.speech_speed_b_slow_label_lbl = QLabel(
+                tr('speech_speed_b_slow_label'))
+            self.speech_speed_b_slow_label_lbl.setMinimumWidth(220)
+            self.speech_speed_b_slow_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            slow_row.addWidget(self.speech_speed_b_slow_label_lbl)
+
+            self.speech_speed_b_slow_slider = QSlider(Qt.Orientation.Horizontal)
+            self.speech_speed_b_slow_slider.setRange(10, 40)
+            self.speech_speed_b_slow_slider.setSingleStep(1)
+            self.speech_speed_b_slow_slider.setPageStep(5)
+            self.speech_speed_b_slow_slider.setValue(
+                int(round(speech_speed_b_slow() * 10)))
+            block_wheel_event(self.speech_speed_b_slow_slider)
+            self.speech_speed_b_slow_slider.valueChanged.connect(
+                self._on_speech_speed_b_slow_changed)
+            slow_row.addWidget(self.speech_speed_b_slow_slider, stretch=1)
+
+            self.speech_speed_b_slow_value_lbl = QLabel("")
+            self.speech_speed_b_slow_value_lbl.setStyleSheet(
+                "color:#ffd24d; font-size:13px; font-weight:600; "
+                "min-width:170px;")
+            slow_row.addWidget(self.speech_speed_b_slow_value_lbl)
+
+            self.speech_speed_b_slow_reset_btn = QPushButton(
+                tr('speech_speed_b_reset'))
+            self.speech_speed_b_slow_reset_btn.setFixedHeight(30)
+            self.speech_speed_b_slow_reset_btn.clicked.connect(
+                self._on_speech_speed_b_slow_reset)
+            slow_row.addWidget(self.speech_speed_b_slow_reset_btn)
+            ssb_lay.addLayout(slow_row)
+
+            lay.addWidget(speech_speed_b_frame)
+
+            # Инициализация подписей значений
+            self._refresh_speech_speed_b_fast_value()
+            self._refresh_speech_speed_b_normal_value()
+            self._refresh_speech_speed_b_slow_value()
+
+        # 2026-06-06 (Mode C): версий на шот / блоков параллельно.
+        # Секция видна ТОЛЬКО в режиме C (гейт по get_current_mode).
+        if mode_loader.get_current_mode() == 'c':
+            from PyQt6.QtWidgets import QSpinBox as _QSB_C
+
+            self.sec_mode_c_lbl = QLabel(tr('sec_mode_c_settings'))
+            self.sec_mode_c_lbl.setObjectName("settings-section")
+            lay.addWidget(self.sec_mode_c_lbl)
+
+            mode_c_frame = QFrame()
+            mode_c_frame.setObjectName("settings-group")
+            mc_lay = QVBoxLayout(mode_c_frame)
+
+            vps_row = QHBoxLayout()
+            vps_row.setSpacing(12)
+            self.mode_c_versions_label_lbl = QLabel(
+                tr('mode_c_versions_per_shot_label'))
+            self.mode_c_versions_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            vps_row.addWidget(self.mode_c_versions_label_lbl)
+            self.mode_c_versions_spin = _QSB_C()
+            self.mode_c_versions_spin.setMinimum(1)
+            self.mode_c_versions_spin.setMaximum(10)
+            self.mode_c_versions_spin.setSingleStep(1)
+            self.mode_c_versions_spin.setValue(mode_c_versions_per_shot())
+            block_wheel_event(self.mode_c_versions_spin)
+            self.mode_c_versions_spin.valueChanged.connect(
+                set_mode_c_versions_per_shot)
+            vps_row.addWidget(self.mode_c_versions_spin, stretch=1)
+            mc_lay.addLayout(vps_row)
+            self.mode_c_versions_hint_lbl = QLabel(
+                tr('mode_c_versions_per_shot_hint'))
+            self.mode_c_versions_hint_lbl.setWordWrap(True)
+            self.mode_c_versions_hint_lbl.setStyleSheet(
+                "color:rgba(255,255,255,0.45); font-size:11px;")
+            mc_lay.addWidget(self.mode_c_versions_hint_lbl)
+
+            pb_row = QHBoxLayout()
+            pb_row.setSpacing(12)
+            self.mode_c_parallel_label_lbl = QLabel(
+                tr('mode_c_parallel_blocks_label'))
+            self.mode_c_parallel_label_lbl.setStyleSheet(
+                "color:#cfcfcf; font-size:13px;")
+            pb_row.addWidget(self.mode_c_parallel_label_lbl)
+            self.mode_c_parallel_spin = _QSB_C()
+            self.mode_c_parallel_spin.setMinimum(1)
+            self.mode_c_parallel_spin.setMaximum(20)
+            self.mode_c_parallel_spin.setSingleStep(1)
+            self.mode_c_parallel_spin.setValue(mode_c_concurrent_shots())
+            block_wheel_event(self.mode_c_parallel_spin)
+            self.mode_c_parallel_spin.valueChanged.connect(
+                set_mode_c_concurrent_shots)
+            pb_row.addWidget(self.mode_c_parallel_spin, stretch=1)
+            mc_lay.addLayout(pb_row)
+            self.mode_c_parallel_hint_lbl = QLabel(
+                tr('mode_c_parallel_blocks_hint'))
+            self.mode_c_parallel_hint_lbl.setWordWrap(True)
+            self.mode_c_parallel_hint_lbl.setStyleSheet(
+                "color:rgba(255,255,255,0.45); font-size:11px;")
+            mc_lay.addWidget(self.mode_c_parallel_hint_lbl)
+
+            lay.addWidget(mode_c_frame)
+
         # ── АДМИН-СЕКЦИИ: видны только админу (`_is_admin`) ─────────────────
         # Большая визуальная разделительная плашка чтобы юзер сразу понимал
         # что ниже — настройки которые НЕ уйдут к коллегам (у них этих
@@ -9053,244 +9291,6 @@ class MainWindow(QMainWindow):
             self.stats_label.setWordWrap(True)
             ai.addWidget(self.stats_label)
             lay.addWidget(admin_frame)
-
-        # ── 🎬 РЕЖИМ МОНТАЖНОЙ КАРТЫ — переключатель A/B/C/D (виден всем) ──
-        self.sec_montage_mode_lbl = QLabel(tr('sec_montage_mode'))
-        self.sec_montage_mode_lbl.setObjectName("settings-section")
-        lay.addWidget(self.sec_montage_mode_lbl)
-
-        mm_frame = QFrame()
-        mm_frame.setObjectName("settings-group")
-        mmf = QVBoxLayout(mm_frame)
-        mmf.setSpacing(0)
-        mmf.setContentsMargins(18, 14, 18, 14)
-
-        self.montage_mode_hint_lbl = QLabel(tr('montage_mode_hint'))
-        self.montage_mode_hint_lbl.setWordWrap(True)
-        self.montage_mode_hint_lbl.setStyleSheet(
-            "color:#aaa; font-size:12px; padding-bottom:10px;")
-        mmf.addWidget(self.montage_mode_hint_lbl)
-
-        mm_row = QHBoxLayout()
-        mm_row.setSpacing(12)
-        self.montage_mode_label_lbl = QLabel(tr('montage_mode_label'))
-        self.montage_mode_label_lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
-        mm_row.addWidget(self.montage_mode_label_lbl)
-
-        self.montage_mode_combo = QComboBox()
-        for _m in mode_loader.VALID_MODES:
-            self.montage_mode_combo.addItem(f"Mode {_m.upper()}", _m)
-        _cur_mode = mode_loader.get_current_mode()
-        _idx = self.montage_mode_combo.findData(_cur_mode)
-        if _idx >= 0:
-            self.montage_mode_combo.setCurrentIndex(_idx)
-        self.montage_mode_combo.activated.connect(self._on_montage_mode_changed)
-        block_wheel_event(self.montage_mode_combo)
-        mm_row.addWidget(self.montage_mode_combo, stretch=1)
-        mmf.addLayout(mm_row)
-
-        lay.addWidget(mm_frame)
-
-        # ── 🎙 СКОРОСТЬ РЕЧИ АКТЁРОВ — слайдеры (для режимов B и C) ─────
-        # 2026-05-23 (Этап 3.2): live-крутка fast/normal/slow для речи
-        # в режимах B и C (C — копия B). Значения пишутся в QSettings через
-        # set_speech_speed_b_* (Этап 3.1). Подключение к SPEECH_CONFIG —
-        # Этап 3.3. Гейтинг через mode_loader.get_current_mode(): в A/D
-        # секция вообще не создаётся (атрибутов self.* нет — retranslate
-        # пропускает блок через hasattr).
-        if mode_loader.get_current_mode() in ('b', 'c'):
-            from PyQt6.QtWidgets import QSlider
-
-            self.sec_speech_speed_b_lbl = QLabel(tr('sec_speech_speed_b'))
-            self.sec_speech_speed_b_lbl.setObjectName("settings-section")
-            lay.addWidget(self.sec_speech_speed_b_lbl)
-
-            speech_speed_b_frame = QFrame()
-            speech_speed_b_frame.setObjectName("settings-group")
-            ssb_lay = QVBoxLayout(speech_speed_b_frame)
-            ssb_lay.setContentsMargins(18, 14, 18, 14)
-            ssb_lay.setSpacing(10)
-
-            self.speech_speed_b_hint_lbl = QLabel(tr('speech_speed_b_hint'))
-            self.speech_speed_b_hint_lbl.setWordWrap(True)
-            self.speech_speed_b_hint_lbl.setStyleSheet(
-                "color:#aaa; font-size:12px; padding-bottom:10px;")
-            ssb_lay.addWidget(self.speech_speed_b_hint_lbl)
-
-            # Row Fast (3.0–6.0, default 4.0)
-            fast_row = QHBoxLayout()
-            fast_row.setSpacing(12)
-            self.speech_speed_b_fast_label_lbl = QLabel(
-                tr('speech_speed_b_fast_label'))
-            self.speech_speed_b_fast_label_lbl.setMinimumWidth(220)
-            self.speech_speed_b_fast_label_lbl.setStyleSheet(
-                "color:#cfcfcf; font-size:13px;")
-            fast_row.addWidget(self.speech_speed_b_fast_label_lbl)
-
-            self.speech_speed_b_fast_slider = QSlider(Qt.Orientation.Horizontal)
-            self.speech_speed_b_fast_slider.setRange(30, 60)
-            self.speech_speed_b_fast_slider.setSingleStep(1)
-            self.speech_speed_b_fast_slider.setPageStep(5)
-            self.speech_speed_b_fast_slider.setValue(
-                int(round(speech_speed_b_fast() * 10)))
-            block_wheel_event(self.speech_speed_b_fast_slider)
-            self.speech_speed_b_fast_slider.valueChanged.connect(
-                self._on_speech_speed_b_fast_changed)
-            fast_row.addWidget(self.speech_speed_b_fast_slider, stretch=1)
-
-            self.speech_speed_b_fast_value_lbl = QLabel("")
-            self.speech_speed_b_fast_value_lbl.setStyleSheet(
-                "color:#ffd24d; font-size:13px; font-weight:600; "
-                "min-width:170px;")
-            fast_row.addWidget(self.speech_speed_b_fast_value_lbl)
-
-            self.speech_speed_b_fast_reset_btn = QPushButton(
-                tr('speech_speed_b_reset'))
-            self.speech_speed_b_fast_reset_btn.setFixedHeight(30)
-            self.speech_speed_b_fast_reset_btn.clicked.connect(
-                self._on_speech_speed_b_fast_reset)
-            fast_row.addWidget(self.speech_speed_b_fast_reset_btn)
-            ssb_lay.addLayout(fast_row)
-
-            # Row Normal (2.0–5.0, default 3.5)
-            normal_row = QHBoxLayout()
-            normal_row.setSpacing(12)
-            self.speech_speed_b_normal_label_lbl = QLabel(
-                tr('speech_speed_b_normal_label'))
-            self.speech_speed_b_normal_label_lbl.setMinimumWidth(220)
-            self.speech_speed_b_normal_label_lbl.setStyleSheet(
-                "color:#cfcfcf; font-size:13px;")
-            normal_row.addWidget(self.speech_speed_b_normal_label_lbl)
-
-            self.speech_speed_b_normal_slider = QSlider(Qt.Orientation.Horizontal)
-            self.speech_speed_b_normal_slider.setRange(20, 50)
-            self.speech_speed_b_normal_slider.setSingleStep(1)
-            self.speech_speed_b_normal_slider.setPageStep(5)
-            self.speech_speed_b_normal_slider.setValue(
-                int(round(speech_speed_b_normal() * 10)))
-            block_wheel_event(self.speech_speed_b_normal_slider)
-            self.speech_speed_b_normal_slider.valueChanged.connect(
-                self._on_speech_speed_b_normal_changed)
-            normal_row.addWidget(self.speech_speed_b_normal_slider, stretch=1)
-
-            self.speech_speed_b_normal_value_lbl = QLabel("")
-            self.speech_speed_b_normal_value_lbl.setStyleSheet(
-                "color:#ffd24d; font-size:13px; font-weight:600; "
-                "min-width:170px;")
-            normal_row.addWidget(self.speech_speed_b_normal_value_lbl)
-
-            self.speech_speed_b_normal_reset_btn = QPushButton(
-                tr('speech_speed_b_reset'))
-            self.speech_speed_b_normal_reset_btn.setFixedHeight(30)
-            self.speech_speed_b_normal_reset_btn.clicked.connect(
-                self._on_speech_speed_b_normal_reset)
-            normal_row.addWidget(self.speech_speed_b_normal_reset_btn)
-            ssb_lay.addLayout(normal_row)
-
-            # Row Slow (1.0–4.0, default 2.3)
-            slow_row = QHBoxLayout()
-            slow_row.setSpacing(12)
-            self.speech_speed_b_slow_label_lbl = QLabel(
-                tr('speech_speed_b_slow_label'))
-            self.speech_speed_b_slow_label_lbl.setMinimumWidth(220)
-            self.speech_speed_b_slow_label_lbl.setStyleSheet(
-                "color:#cfcfcf; font-size:13px;")
-            slow_row.addWidget(self.speech_speed_b_slow_label_lbl)
-
-            self.speech_speed_b_slow_slider = QSlider(Qt.Orientation.Horizontal)
-            self.speech_speed_b_slow_slider.setRange(10, 40)
-            self.speech_speed_b_slow_slider.setSingleStep(1)
-            self.speech_speed_b_slow_slider.setPageStep(5)
-            self.speech_speed_b_slow_slider.setValue(
-                int(round(speech_speed_b_slow() * 10)))
-            block_wheel_event(self.speech_speed_b_slow_slider)
-            self.speech_speed_b_slow_slider.valueChanged.connect(
-                self._on_speech_speed_b_slow_changed)
-            slow_row.addWidget(self.speech_speed_b_slow_slider, stretch=1)
-
-            self.speech_speed_b_slow_value_lbl = QLabel("")
-            self.speech_speed_b_slow_value_lbl.setStyleSheet(
-                "color:#ffd24d; font-size:13px; font-weight:600; "
-                "min-width:170px;")
-            slow_row.addWidget(self.speech_speed_b_slow_value_lbl)
-
-            self.speech_speed_b_slow_reset_btn = QPushButton(
-                tr('speech_speed_b_reset'))
-            self.speech_speed_b_slow_reset_btn.setFixedHeight(30)
-            self.speech_speed_b_slow_reset_btn.clicked.connect(
-                self._on_speech_speed_b_slow_reset)
-            slow_row.addWidget(self.speech_speed_b_slow_reset_btn)
-            ssb_lay.addLayout(slow_row)
-
-            lay.addWidget(speech_speed_b_frame)
-
-            # Инициализация подписей значений
-            self._refresh_speech_speed_b_fast_value()
-            self._refresh_speech_speed_b_normal_value()
-            self._refresh_speech_speed_b_slow_value()
-
-        # 2026-06-06 (Mode C): версий на шот / блоков параллельно.
-        # Секция видна ТОЛЬКО в режиме C (гейт по get_current_mode).
-        if mode_loader.get_current_mode() == 'c':
-            from PyQt6.QtWidgets import QSpinBox as _QSB_C
-
-            self.sec_mode_c_lbl = QLabel(tr('sec_mode_c_settings'))
-            self.sec_mode_c_lbl.setObjectName("settings-section")
-            lay.addWidget(self.sec_mode_c_lbl)
-
-            mode_c_frame = QFrame()
-            mode_c_frame.setObjectName("settings-group")
-            mc_lay = QVBoxLayout(mode_c_frame)
-
-            vps_row = QHBoxLayout()
-            vps_row.setSpacing(12)
-            self.mode_c_versions_label_lbl = QLabel(
-                tr('mode_c_versions_per_shot_label'))
-            self.mode_c_versions_label_lbl.setStyleSheet(
-                "color:#cfcfcf; font-size:13px;")
-            vps_row.addWidget(self.mode_c_versions_label_lbl)
-            self.mode_c_versions_spin = _QSB_C()
-            self.mode_c_versions_spin.setMinimum(1)
-            self.mode_c_versions_spin.setMaximum(10)
-            self.mode_c_versions_spin.setSingleStep(1)
-            self.mode_c_versions_spin.setValue(mode_c_versions_per_shot())
-            block_wheel_event(self.mode_c_versions_spin)
-            self.mode_c_versions_spin.valueChanged.connect(
-                set_mode_c_versions_per_shot)
-            vps_row.addWidget(self.mode_c_versions_spin, stretch=1)
-            mc_lay.addLayout(vps_row)
-            self.mode_c_versions_hint_lbl = QLabel(
-                tr('mode_c_versions_per_shot_hint'))
-            self.mode_c_versions_hint_lbl.setWordWrap(True)
-            self.mode_c_versions_hint_lbl.setStyleSheet(
-                "color:rgba(255,255,255,0.45); font-size:11px;")
-            mc_lay.addWidget(self.mode_c_versions_hint_lbl)
-
-            pb_row = QHBoxLayout()
-            pb_row.setSpacing(12)
-            self.mode_c_parallel_label_lbl = QLabel(
-                tr('mode_c_parallel_blocks_label'))
-            self.mode_c_parallel_label_lbl.setStyleSheet(
-                "color:#cfcfcf; font-size:13px;")
-            pb_row.addWidget(self.mode_c_parallel_label_lbl)
-            self.mode_c_parallel_spin = _QSB_C()
-            self.mode_c_parallel_spin.setMinimum(1)
-            self.mode_c_parallel_spin.setMaximum(20)
-            self.mode_c_parallel_spin.setSingleStep(1)
-            self.mode_c_parallel_spin.setValue(mode_c_concurrent_shots())
-            block_wheel_event(self.mode_c_parallel_spin)
-            self.mode_c_parallel_spin.valueChanged.connect(
-                set_mode_c_concurrent_shots)
-            pb_row.addWidget(self.mode_c_parallel_spin, stretch=1)
-            mc_lay.addLayout(pb_row)
-            self.mode_c_parallel_hint_lbl = QLabel(
-                tr('mode_c_parallel_blocks_hint'))
-            self.mode_c_parallel_hint_lbl.setWordWrap(True)
-            self.mode_c_parallel_hint_lbl.setStyleSheet(
-                "color:rgba(255,255,255,0.45); font-size:11px;")
-            mc_lay.addWidget(self.mode_c_parallel_hint_lbl)
-
-            lay.addWidget(mode_c_frame)
 
         lay.addStretch()
         self._refresh_settings_versions()
