@@ -302,6 +302,19 @@ Overlay держится пока в реестре есть хоть одна `
 - **`PRESERVE_ON_UPDATE` ([storyboard_app.py:134](storyboard_app.py:134))
   используется только в мёртвом `DownloadUpdateThread`** — расширять без
   причины не нужно (см. ниже секцию «Архитектура обновлений»).
+- **`RunEpisodeThread` — промпт через STDIN, не через argv** (2026-06-15).
+  Системный промпт в [views/new_episode.py:902-1213](views/new_episode.py:902)
+  ~20-25 KB; на Windows `CreateProcess` лимитирован ~32 KB на ВСЮ команду →
+  коллега ловил `The command line is too long.` ДО запуска claude. Передача
+  через stdin лимита не имеет (на Mac ARG_MAX в МБ — разницы для админа нет).
+  Реализация — [threads/generate.py:1466+](threads/generate.py:1466): `args +=
+  ["-p", "--dangerously-skip-permissions"]` (БЕЗ позиционного промпта) +
+  `Popen(stdin=PIPE, ...)` + `proc.stdin.write(prompt); proc.stdin.close()`
+  под `try/except (BrokenPipeError, OSError)`. Claude CLI с `-p` без
+  позиционного аргумента читает промпт из stdin — стрим stdout не нарушается.
+  **Аналогичный фикс не нужен** для `ImprovePromptThread` / `TranslateThread` /
+  `camera_director` — их промпты ~2-3 KB, лимит не упирается; argv-передача
+  оставлена как есть.
 
 ## Animal classification (BUG 2 fix)
 

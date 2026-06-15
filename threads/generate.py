@@ -1471,10 +1471,17 @@ class RunEpisodeThread(QThread):
                 args.append("--continue")
             if self.model:
                 args += ["--model", self.model]
-            args += ["-p", self.prompt, "--dangerously-skip-permissions"]
-            # 2026-05-08: CREATE_NO_WINDOW guard для Win10/11.
+            # 2026-06-15 Win-fix: промпт идёт через STDIN, не через argv.
+            # Системный промпт в views/new_episode.py ~20-25 KB; на Windows
+            # CreateProcess лимитирован ~32 KB на всю команду → коллега
+            # ловил `The command line is too long.` ДО запуска claude.
+            # stdin-канал лимита не имеет, поведение claude CLI идентично
+            # (`-p` без позиционного аргумента читает промпт из stdin).
+            # На Mac лимит ARG_MAX в мегабайтах — поведение не меняется.
+            args += ["-p", "--dangerously-skip-permissions"]
             popen_kwargs = dict(
                 cwd=str(self.project_root),
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -1486,6 +1493,18 @@ class RunEpisodeThread(QThread):
                 popen_kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
             self._proc = subprocess.Popen(args, **popen_kwargs)
             assert self._proc.stdout is not None
+            # Пишем промпт и СРАЗУ закрываем stdin — иначе claude будет
+            # ждать EOF и не начнёт обработку. Закрытие до чтения stdout
+            # безопасно: промпт целиком умещается в pipe buffer ОС
+            # (64 KB на Linux/Mac, 4 KB на Win, но Win сама буферизует
+            # write через write() в child-pipe; при превышении блок-write
+            # отдаст управление как только child прочтёт).
+            try:
+                if self._proc.stdin is not None:
+                    self._proc.stdin.write(self.prompt)
+                    self._proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass  # claude мог стартануть с ошибкой — поймаем по rc ниже
             # 2026-05-08 TODO 6: watchdog в отдельном threading.Timer.
             # Через 120с без первого chunk → emit slow_thinking. Сигнал
             # Qt thread-safe для cross-thread emit; UI-слот добавит
