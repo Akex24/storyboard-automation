@@ -813,13 +813,13 @@ class GenerateThread(QThread):
                 "aspect_ratio": frame_format.payload_aspect_ratio(self.aspect),  # формат шота
             }
             if ref_hashes:
-                if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > 2:
-                    # OpenAI flow ломается на 3+ рефах. Режем до первых 2
+                if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > _sa.OPENAI_MAX_REFS:
+                    # OpenAI v4 принимает до OPENAI_MAX_REFS рефов (10 — проверено живым тестом). Режем по лимиту
                     # (по порядку обработки они уже упорядочены: img1=локация,
                     # img2=объект или первый персонаж — самые важные).
                     self.progress.emit(
-                        f"OpenAI режет рефы до 2 (было {len(ref_hashes)})")
-                    ref_hashes = ref_hashes[:2]
+                        f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
+                    ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 payload["reference_images"] = ref_hashes
 
             endpoint = ("/api/v4/openai/image/generate"
@@ -927,8 +927,8 @@ class GenerateThread(QThread):
                         ref_hashes = self._reupload_shot_refs(
                             session, filtered_refs, sorted_tags, existing_path)
                         if (provider == _sa.IMAGE_PROVIDER_OPENAI
-                                and len(ref_hashes) > 2):
-                            ref_hashes = ref_hashes[:2]
+                                and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
+                            ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                         payload["reference_images"] = ref_hashes
                         continue
                     raise
@@ -1242,9 +1242,9 @@ class RefGenerateThread(QThread):
             }
             if ref_hashes:
                 if (provider == _sa.IMAGE_PROVIDER_OPENAI
-                        and len(ref_hashes) > 2):
-                    # OpenAI режет до 2 рефов (тот же баг что в GenerateThread)
-                    ref_hashes = ref_hashes[:2]
+                        and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
+                    # OpenAI режет до OPENAI_MAX_REFS рефов (лимит v4, проверено живьём)
+                    ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 payload["reference_images"] = ref_hashes
 
             endpoint = ("/api/v4/openai/image/generate"
@@ -1804,10 +1804,10 @@ class GenerateActorRefThread(QThread):
                 "aspect_ratio": "16:9",
             }
             if ref_hashes:
-                if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > 2:
+                if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > _sa.OPENAI_MAX_REFS:
                     self.progress.emit(
-                        f"OpenAI режет рефы до 2 (было {len(ref_hashes)})")
-                    ref_hashes = ref_hashes[:2]
+                        f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
+                    ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 payload["reference_images"] = ref_hashes
             endpoint = ("/api/v4/openai/image/generate"
                         if provider == _sa.IMAGE_PROVIDER_OPENAI
@@ -2132,8 +2132,8 @@ class EditActorRefThread(QThread):
             }
             if ref_hashes:
                 if (provider == _sa.IMAGE_PROVIDER_OPENAI
-                        and len(ref_hashes) > 2):
-                    ref_hashes = ref_hashes[:2]
+                        and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
+                    ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 payload["reference_images"] = ref_hashes
             endpoint = ("/api/v4/openai/image/generate"
                         if provider == _sa.IMAGE_PROVIDER_OPENAI

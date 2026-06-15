@@ -3610,6 +3610,9 @@ def sync_api_key_to_env(project_root: Path, key: str) -> None:
 # людей — для криминальных сцен не сработает, нужно знать.
 IMAGE_PROVIDER_NARWHAL = "narwhal"
 IMAGE_PROVIDER_OPENAI  = "openai"
+# Потолок reference_images для OpenAI v4 (/api/v4/openai/image/generate):
+# сервер принимает 0-10 (maxItems:10) — проверено живым тестом (10 OK, 11 отбой).
+OPENAI_MAX_REFS = 10
 
 
 def image_provider() -> str:
