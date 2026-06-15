@@ -7699,6 +7699,21 @@ class MainWindow(QMainWindow):
                     1, tr('image_provider_openai'))
             except Exception:
                 traceback.print_exc()
+        # Секция «Провайдер для сторибордов / локаций / объектов» (видна всем)
+        if hasattr(self, 'sec_image_provider_admin_lbl'):
+            try:
+                self.sec_image_provider_admin_lbl.setText(
+                    tr('sec_image_provider_admin'))
+                self.image_provider_admin_hint_lbl.setText(
+                    tr('image_provider_admin_hint'))
+                self.image_provider_admin_label_lbl.setText(
+                    tr('image_provider_label'))
+                self.image_provider_admin_combo.setItemText(
+                    0, tr('image_provider_narwhal'))
+                self.image_provider_admin_combo.setItemText(
+                    1, tr('image_provider_openai'))
+            except Exception:
+                traceback.print_exc()
         # Секция «Скорость речи актёров» (только режим B)
         if hasattr(self, 'sec_speech_speed_b_lbl'):
             try:
@@ -7725,17 +7740,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'sec_admin_div_lbl'):
             try:
                 self.sec_admin_div_lbl.setText(tr('sec_admin_divider'))
-                self.sec_image_provider_admin_lbl.setText(
-                    tr('sec_image_provider_admin'))
-                self.image_provider_admin_hint_lbl.setText(
-                    tr('image_provider_admin_hint'))
-                self.image_provider_admin_label_lbl.setText(
-                    tr('image_provider_label'))
-                # Items в QComboBox: пересоздать тексты с сохранением data
-                self.image_provider_admin_combo.setItemText(
-                    0, tr('image_provider_narwhal'))
-                self.image_provider_admin_combo.setItemText(
-                    1, tr('image_provider_openai'))
                 self.sec_anim_lbl.setText(tr('sec_anim'))
                 self.anim_hint_lbl.setText(tr('anim_speed_hint'))
                 self.anim_speed_label_lbl.setText(tr('anim_speed_label'))
@@ -8757,6 +8761,57 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(provider_actors_frame)
 
+        # ── ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ (виден всем юзерам) ─
+        # 2026-06-15: блок раскрыт всем (раньше был под `if self._is_admin`).
+        # Влияет на: GenerateThread (шоты), RefGenerateThread (когда путь
+        # /locations/ или /objects/), + bridge-файл `image_provider.txt`
+        # для batch-скриптов pipeline.py / generate_storyboards.py.
+        # На рефы актёров НЕ влияет — для них отдельный переключатель выше.
+        self.sec_image_provider_admin_lbl = QLabel(
+            tr('sec_image_provider_admin'))
+        self.sec_image_provider_admin_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_image_provider_admin_lbl)
+
+        provider_admin_frame = QFrame()
+        provider_admin_frame.setObjectName("settings-group")
+        pf = QVBoxLayout(provider_admin_frame)
+        pf.setSpacing(0)
+        pf.setContentsMargins(18, 14, 18, 14)
+
+        self.image_provider_admin_hint_lbl = QLabel(
+            tr('image_provider_admin_hint'))
+        self.image_provider_admin_hint_lbl.setWordWrap(True)
+        self.image_provider_admin_hint_lbl.setStyleSheet(
+            "color:#aaa; font-size:12px; padding-bottom:10px;")
+        pf.addWidget(self.image_provider_admin_hint_lbl)
+
+        provider_admin_row = QHBoxLayout()
+        provider_admin_row.setSpacing(12)
+        self.image_provider_admin_label_lbl = QLabel(
+            tr('image_provider_label'))
+        self.image_provider_admin_label_lbl.setStyleSheet(
+            "color:#cfcfcf; font-size:13px;")
+        provider_admin_row.addWidget(self.image_provider_admin_label_lbl)
+
+        self.image_provider_admin_combo = QComboBox()
+        self.image_provider_admin_combo.addItem(
+            tr('image_provider_narwhal'), IMAGE_PROVIDER_NARWHAL)
+        self.image_provider_admin_combo.addItem(
+            tr('image_provider_openai'), IMAGE_PROVIDER_OPENAI)
+        cur_provider_admin = image_provider_admin()
+        idx = self.image_provider_admin_combo.findData(cur_provider_admin)
+        if idx >= 0:
+            self.image_provider_admin_combo.setCurrentIndex(idx)
+        self.image_provider_admin_combo.currentIndexChanged.connect(
+            self._on_image_provider_admin_changed)
+        # КРИТИЧНО: блокируем колесо мыши, иначе прокрутка страницы
+        # курсором над комбобоксом МЕНЯЕТ провайдера случайно.
+        block_wheel_event(self.image_provider_admin_combo)
+        provider_admin_row.addWidget(self.image_provider_admin_combo, stretch=1)
+        pf.addLayout(provider_admin_row)
+
+        lay.addWidget(provider_admin_frame)
+
         # ── АДМИН-СЕКЦИИ: видны только админу (`_is_admin`) ─────────────────
         # Большая визуальная разделительная плашка чтобы юзер сразу понимал
         # что ниже — настройки которые НЕ уйдут к коллегам (у них этих
@@ -8909,58 +8964,6 @@ class MainWindow(QMainWindow):
             mrf.addWidget(self.montage_runtime_restart_hint_lbl)
 
             lay.addWidget(montage_rt_frame)
-
-            # ── ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ (только админ) ──
-            # 2026-05-23: разделение из единого `image_provider`. Влияет на:
-            # GenerateThread (шоты), RefGenerateThread (когда путь
-            # /locations/ или /objects/), + bridge-файл `image_provider.txt`
-            # для batch-скриптов pipeline.py / generate_storyboards.py.
-            # На рефы актёров НЕ влияет — для них отдельный переключатель
-            # выше (виден всем).
-            self.sec_image_provider_admin_lbl = QLabel(
-                tr('sec_image_provider_admin'))
-            self.sec_image_provider_admin_lbl.setObjectName("settings-section")
-            lay.addWidget(self.sec_image_provider_admin_lbl)
-
-            provider_admin_frame = QFrame()
-            provider_admin_frame.setObjectName("settings-group")
-            pf = QVBoxLayout(provider_admin_frame)
-            pf.setSpacing(0)
-            pf.setContentsMargins(18, 14, 18, 14)
-
-            self.image_provider_admin_hint_lbl = QLabel(
-                tr('image_provider_admin_hint'))
-            self.image_provider_admin_hint_lbl.setWordWrap(True)
-            self.image_provider_admin_hint_lbl.setStyleSheet(
-                "color:#aaa; font-size:12px; padding-bottom:10px;")
-            pf.addWidget(self.image_provider_admin_hint_lbl)
-
-            provider_admin_row = QHBoxLayout()
-            provider_admin_row.setSpacing(12)
-            self.image_provider_admin_label_lbl = QLabel(
-                tr('image_provider_label'))
-            self.image_provider_admin_label_lbl.setStyleSheet(
-                "color:#cfcfcf; font-size:13px;")
-            provider_admin_row.addWidget(self.image_provider_admin_label_lbl)
-
-            self.image_provider_admin_combo = QComboBox()
-            self.image_provider_admin_combo.addItem(
-                tr('image_provider_narwhal'), IMAGE_PROVIDER_NARWHAL)
-            self.image_provider_admin_combo.addItem(
-                tr('image_provider_openai'), IMAGE_PROVIDER_OPENAI)
-            cur_provider_admin = image_provider_admin()
-            idx = self.image_provider_admin_combo.findData(cur_provider_admin)
-            if idx >= 0:
-                self.image_provider_admin_combo.setCurrentIndex(idx)
-            self.image_provider_admin_combo.currentIndexChanged.connect(
-                self._on_image_provider_admin_changed)
-            # КРИТИЧНО: блокируем колесо мыши, иначе прокрутка страницы
-            # курсором над комбобоксом МЕНЯЕТ провайдера случайно.
-            block_wheel_event(self.image_provider_admin_combo)
-            provider_admin_row.addWidget(self.image_provider_admin_combo, stretch=1)
-            pf.addLayout(provider_admin_row)
-
-            lay.addWidget(provider_admin_frame)
 
             # ── АНИМАЦИИ — слайдер скорости fade-переходов ─────────────────
             self.sec_anim_lbl = QLabel(tr('sec_anim'))

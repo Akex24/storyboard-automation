@@ -370,13 +370,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_runtime_restart_later': 'Позже',
         'montage_runtime_save_no_restart_notice': 'Настройки сохранены. Будут применены при следующем запуске Studio.',
         'sec_image_provider': 'ПРОВАЙДЕР КАРТИНОК',
-        'image_provider_hint': 'Чем рисовать шоты сторибордов. Nano Banana 2 — основной (до 10 рефов, мягче content-фильтр, дороже). OpenAI — fallback (макс 2 рефа, content-фильтр блокирует огнестрел и узнаваемых людей, дешевле). Применяется со следующего шота, перезапуск не нужен.',
+        'image_provider_hint': 'Чем рисовать шоты сторибордов. Nano Banana 2 — основной (до 10 рефов, мягче content-фильтр, дороже). OpenAI — fallback (до 10 рефов, content-фильтр блокирует огнестрел и узнаваемых людей, дешевле). Применяется со следующего шота, перезапуск не нужен.',
         'image_provider_label': 'Провайдер:',
         'image_provider_narwhal': 'Nano Banana 2 (основной)',
         'image_provider_openai': 'OpenAI (fallback)',
         # 2026-05-23: разделение провайдера на actors (видим всем) и admin (только админ).
         'sec_image_provider_actors': 'ПРОВАЙДЕР ДЛЯ РЕФЕРЕНСОВ ПЕРСОНАЖЕЙ',
-        'image_provider_actors_hint': 'Какой моделью генерировать референсы актёров. Nano Banana 2 — основной. OpenAI — fallback (макс 2 рефа, дешевле, строгий content-фильтр блокирует огнестрел и узнаваемых людей).',
+        'image_provider_actors_hint': 'Какой моделью генерировать референсы актёров. Nano Banana 2 — основной. OpenAI — fallback (до 10 рефов, дешевле, строгий content-фильтр блокирует огнестрел и узнаваемых людей).',
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ',
         'image_provider_admin_hint': 'Какой моделью генерировать шоты сторибордов, рефы локаций и объектов. На референсы актёров НЕ влияет — для них отдельная настройка выше.',
         # 2026-05-23 (Этап 3.2): UI слайдеры скоростей речи для режима B.
@@ -1117,13 +1117,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_runtime_restart_later': 'Пізніше',
         'montage_runtime_save_no_restart_notice': 'Налаштування збережені. Будуть застосовані при наступному запуску Studio.',
         'sec_image_provider': 'ПРОВАЙДЕР КАРТИНОК',
-        'image_provider_hint': 'Чим малювати шоти сторибордів. Nano Banana 2 — основний (до 10 рефів, м\'якший content-фільтр, дорожчий). OpenAI — fallback (макс 2 рефи, content-фільтр блокує вогнепальну зброю та впізнаваних людей, дешевший). Застосовується з наступного шота, перезапуск не потрібен.',
+        'image_provider_hint': 'Чим малювати шоти сторибордів. Nano Banana 2 — основний (до 10 рефів, м\'якший content-фільтр, дорожчий). OpenAI — fallback (до 10 рефів, content-фільтр блокує вогнепальну зброю та впізнаваних людей, дешевший). Застосовується з наступного шота, перезапуск не потрібен.',
         'image_provider_label': 'Провайдер:',
         'image_provider_narwhal': 'Nano Banana 2 (основний)',
         'image_provider_openai': 'OpenAI (fallback)',
         # 2026-05-23: розділення провайдера на actors (видно всім) і admin (тільки адмін).
         'sec_image_provider_actors': 'ПРОВАЙДЕР ДЛЯ РЕФЕРЕНСІВ ПЕРСОНАЖІВ',
-        'image_provider_actors_hint': 'Якою моделлю генерувати референси акторів. Nano Banana 2 — основний. OpenAI — fallback (макс 2 рефи, дешевший, суворий content-фільтр блокує вогнепальну зброю та впізнаваних людей).',
+        'image_provider_actors_hint': 'Якою моделлю генерувати референси акторів. Nano Banana 2 — основний. OpenAI — fallback (до 10 рефів, дешевший, суворий content-фільтр блокує вогнепальну зброю та впізнаваних людей).',
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДІВ, ЛОКАЦІЙ ТА ОБ\'ЄКТІВ',
         'image_provider_admin_hint': 'Якою моделлю генерувати шоти сторибордів, рефи локацій та об\'єктів. На референси акторів НЕ впливає — для них окреме налаштування вище.',
         # 2026-05-23 (Этап 3.2): UI слайдери швидкостей мовлення для режиму B.
@@ -1843,13 +1843,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_runtime_restart_later': 'Later',
         'montage_runtime_save_no_restart_notice': 'Settings saved. Will apply on next Studio launch.',
         'sec_image_provider': 'IMAGE PROVIDER',
-        'image_provider_hint': 'Which engine renders storyboard shots. Nano Banana 2 — primary (up to 10 refs, softer content filter, costs more). OpenAI — fallback (max 2 refs, content filter blocks firearms and recognizable people, cheaper). Applied to next shot, no restart needed.',
+        'image_provider_hint': 'Which engine renders storyboard shots. Nano Banana 2 — primary (up to 10 refs, softer content filter, costs more). OpenAI — fallback (up to 10 refs, content filter blocks firearms and recognizable people, cheaper). Applied to next shot, no restart needed.',
         'image_provider_label': 'Provider:',
         'image_provider_narwhal': 'Nano Banana 2 (primary)',
         'image_provider_openai': 'OpenAI (fallback)',
         # 2026-05-23: split image_provider into actors (visible to all) and admin (admin only).
         'sec_image_provider_actors': 'IMAGE PROVIDER FOR CHARACTER REFS',
-        'image_provider_actors_hint': 'Which model generates actor reference sheets. Nano Banana 2 — primary. OpenAI — fallback (max 2 refs, cheaper, strict content filter blocks firearms and recognizable people).',
+        'image_provider_actors_hint': 'Which model generates actor reference sheets. Nano Banana 2 — primary. OpenAI — fallback (up to 10 refs, cheaper, strict content filter blocks firearms and recognizable people).',
         'sec_image_provider_admin': 'IMAGE PROVIDER FOR STORYBOARDS, LOCATIONS & OBJECTS',
         'image_provider_admin_hint': 'Which model renders storyboard shots, location and object refs. Does NOT affect actor refs — they have a separate setting above.',
         # 2026-05-23 (Этап 3.2): UI sliders for speech rate in mode B.
