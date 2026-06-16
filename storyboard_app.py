@@ -100,6 +100,8 @@ from widgets import (
     ProviderToggle,
     # mode_segment.py (2026-06-16): N-сегментный контрол режима монтажки
     ModeSegment,
+    # stepper.py (2026-06-16): числовой степпер [− N +] для зоны Mode C
+    Stepper,
 )
 
 import requests
@@ -8985,8 +8987,6 @@ class MainWindow(QMainWindow):
         # 2026-06-06 (Mode C): версий на шот / блоков параллельно.
         # Секция видна ТОЛЬКО в режиме C (гейт по get_current_mode).
         if mode_loader.get_current_mode() == 'c':
-            from PyQt6.QtWidgets import QSpinBox as _QSB_C
-
             self.sec_mode_c_lbl = QLabel(tr('sec_mode_c_settings'))
             self.sec_mode_c_lbl.setObjectName("settings-section")
             lay.addWidget(self.sec_mode_c_lbl)
@@ -8995,53 +8995,67 @@ class MainWindow(QMainWindow):
             mode_c_frame.setObjectName("settings-group")
             mc_lay = QVBoxLayout(mode_c_frame)
 
-            vps_row = QHBoxLayout()
-            vps_row.setSpacing(12)
+            # 2026-06-16 (Коммит 5): два поля в ДВЕ КОЛОНКИ рядом (по макету).
+            # В каждой колонке: подпись СВЕРХУ → spin под ней → hint под полем.
+            # Логика полей не меняется — только раскладка. Имена виджетов те же.
+            fields_row = QHBoxLayout()
+            fields_row.setSpacing(16)
+
+            # ── Левая колонка: «Версий на шот» ──
             self.mode_c_versions_label_lbl = QLabel(
                 tr('mode_c_versions_per_shot_label'))
             self.mode_c_versions_label_lbl.setStyleSheet(
                 "color:#cfcfcf; font-size:13px;")
-            vps_row.addWidget(self.mode_c_versions_label_lbl)
-            self.mode_c_versions_spin = _QSB_C()
-            self.mode_c_versions_spin.setMinimum(1)
-            self.mode_c_versions_spin.setMaximum(10)
-            self.mode_c_versions_spin.setSingleStep(1)
-            self.mode_c_versions_spin.setValue(mode_c_versions_per_shot())
-            block_wheel_event(self.mode_c_versions_spin)
-            self.mode_c_versions_spin.valueChanged.connect(
+            # 2026-06-16 (Коммит 5b): QSpinBox → степпер [− N +] (ручной ввод
+            # запрещён, только кнопки). Логика сохранения не меняется.
+            self.mode_c_versions_stepper = Stepper()
+            self.mode_c_versions_stepper.set_range(1, 10)
+            self.mode_c_versions_stepper.set_value(mode_c_versions_per_shot())
+            self.mode_c_versions_stepper.valueChanged.connect(
                 set_mode_c_versions_per_shot)
-            vps_row.addWidget(self.mode_c_versions_spin, stretch=1)
-            mc_lay.addLayout(vps_row)
             self.mode_c_versions_hint_lbl = QLabel(
                 tr('mode_c_versions_per_shot_hint'))
             self.mode_c_versions_hint_lbl.setWordWrap(True)
             self.mode_c_versions_hint_lbl.setStyleSheet(
                 "color:rgba(255,255,255,0.45); font-size:11px;")
-            mc_lay.addWidget(self.mode_c_versions_hint_lbl)
 
-            pb_row = QHBoxLayout()
-            pb_row.setSpacing(12)
+            col_versions = QVBoxLayout()
+            col_versions.setSpacing(4)
+            col_versions.addWidget(self.mode_c_versions_label_lbl)
+            col_versions.addWidget(self.mode_c_versions_stepper)
+            col_versions.addWidget(self.mode_c_versions_hint_lbl)
+            col_versions_widget = QWidget()
+            col_versions_widget.setMinimumWidth(260)
+            col_versions_widget.setLayout(col_versions)
+            fields_row.addWidget(col_versions_widget, stretch=1)
+
+            # ── Правая колонка: «Шотов одновременно» ──
             self.mode_c_parallel_label_lbl = QLabel(
                 tr('mode_c_parallel_blocks_label'))
             self.mode_c_parallel_label_lbl.setStyleSheet(
                 "color:#cfcfcf; font-size:13px;")
-            pb_row.addWidget(self.mode_c_parallel_label_lbl)
-            self.mode_c_parallel_spin = _QSB_C()
-            self.mode_c_parallel_spin.setMinimum(1)
-            self.mode_c_parallel_spin.setMaximum(20)
-            self.mode_c_parallel_spin.setSingleStep(1)
-            self.mode_c_parallel_spin.setValue(mode_c_concurrent_shots())
-            block_wheel_event(self.mode_c_parallel_spin)
-            self.mode_c_parallel_spin.valueChanged.connect(
+            self.mode_c_parallel_stepper = Stepper()
+            self.mode_c_parallel_stepper.set_range(1, 20)
+            self.mode_c_parallel_stepper.set_value(mode_c_concurrent_shots())
+            self.mode_c_parallel_stepper.valueChanged.connect(
                 set_mode_c_concurrent_shots)
-            pb_row.addWidget(self.mode_c_parallel_spin, stretch=1)
-            mc_lay.addLayout(pb_row)
             self.mode_c_parallel_hint_lbl = QLabel(
                 tr('mode_c_parallel_blocks_hint'))
             self.mode_c_parallel_hint_lbl.setWordWrap(True)
             self.mode_c_parallel_hint_lbl.setStyleSheet(
                 "color:rgba(255,255,255,0.45); font-size:11px;")
-            mc_lay.addWidget(self.mode_c_parallel_hint_lbl)
+
+            col_parallel = QVBoxLayout()
+            col_parallel.setSpacing(4)
+            col_parallel.addWidget(self.mode_c_parallel_label_lbl)
+            col_parallel.addWidget(self.mode_c_parallel_stepper)
+            col_parallel.addWidget(self.mode_c_parallel_hint_lbl)
+            col_parallel_widget = QWidget()
+            col_parallel_widget.setMinimumWidth(260)
+            col_parallel_widget.setLayout(col_parallel)
+            fields_row.addWidget(col_parallel_widget, stretch=1)
+
+            mc_lay.addLayout(fields_row)
 
             lay.addWidget(mode_c_frame)
 

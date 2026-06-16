@@ -40,6 +40,7 @@ from widgets.active_gens_panel import ActiveGensPanel
 from widgets.shot_viewer_dialog import ShotViewerDialog
 from widgets.provider_toggle import ProviderToggle
 from widgets.mode_segment import ModeSegment
+from widgets.stepper import Stepper
 
 __all__ = [
     # dialogs.py
@@ -79,4 +80,6 @@ __all__ = [
     'ProviderToggle',
     # mode_segment.py (2026-06-16 — N-сегментный контрол режима монтажки)
     'ModeSegment',
+    # stepper.py (2026-06-16 — числовой степпер [− N +] для зоны Mode C)
+    'Stepper',
 ]
