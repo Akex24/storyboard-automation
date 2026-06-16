@@ -3480,27 +3480,12 @@ QMenu#lang-menu::item:selected {
     background: rgba(70, 55, 105, 0.7); color: #fff;
 }
 
-/* Сегмент-контрол провайдера генерации (ProviderToggle) в Настройках.
-   2026-06-16: замена QComboBox. Две checkable-кнопки вплотную: активная —
-   светлая заливка с тонкой обводкой и тёмным текстом, неактивная — серый
-   текст без фона (как вкладки в макете). Стилистика — родственна #pill. */
-QPushButton#provider-toggle-btn {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px; padding: 8px 14px;
-    color: rgba(255, 255, 255, 0.55);
-    font-size: 13px; font-weight: 500;
-}
-QPushButton#provider-toggle-btn:hover:!checked {
-    background: rgba(255, 255, 255, 0.07);
-    color: rgba(255, 255, 255, 0.85);
-}
-QPushButton#provider-toggle-btn:checked {
-    background: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.85);
-    color: #1a1424; font-weight: 600;
-}
-QPushButton#provider-toggle-btn:focus { outline: none; }
+/* Сегмент-контрол провайдера генерации (ProviderToggle) — БЕЗ QSS.
+   2026-06-16: виджет рисует себя сам кастомным paintEvent (ванна+пилюля),
+   потому что нативный macOS-QStyle перебивал QSS background/border на
+   checkable-QPushButton (см. widgets/provider_toggle.py, секцию «ПОЧЕМУ
+   КАСТОМНЫЙ paintEvent»). Палитра захардкожена в самом виджете —
+   кроссплатформенно идентична. Здесь стилей для него нет намеренно. */
 """
 
 # ─── Утилиты — промпты ────────────────────────────────────────────────────────
