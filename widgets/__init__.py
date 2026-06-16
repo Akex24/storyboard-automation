@@ -38,6 +38,7 @@ from widgets.montage_cta import MontageCTA
 from widgets.montage_summary_dialog import MontageSummaryDialog
 from widgets.active_gens_panel import ActiveGensPanel
 from widgets.shot_viewer_dialog import ShotViewerDialog
+from widgets.provider_toggle import ProviderToggle
 
 __all__ = [
     # dialogs.py
@@ -73,4 +74,6 @@ __all__ = [
     'ActiveGensPanel',
     # shot_viewer_dialog.py (2026-05-07 — попап просмотра шота с версиями)
     'ShotViewerDialog',
+    # provider_toggle.py (2026-06-16 — сегмент-контрол провайдера в Настройках)
+    'ProviderToggle',
 ]

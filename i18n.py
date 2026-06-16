@@ -379,6 +379,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'image_provider_actors_hint': 'Nano Banana 2 — до 10 рефов. OpenAI — до 10 рефов.',
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ',
         'image_provider_admin_hint': 'Nano Banana 2 — до 10 рефов. OpenAI — до 10 рефов.',
+        # 2026-06-16 (Коммит 3): один общий заголовок секции + короткие титулы карточек.
+        'sec_image_providers': 'ПРОВАЙДЕРЫ ГЕНЕРАЦИИ',
+        'image_provider_actors_card_title': 'Референсы актёров',
+        'image_provider_admin_card_title': 'Сториборды, локации, объекты',
         # 2026-05-23 (Этап 3.2): UI слайдеры скоростей речи для режима B.
         'sec_speech_speed_b': 'СКОРОСТЬ РЕЧИ АКТЁРОВ (РЕЖИМ B/C)',
         'speech_speed_b_hint': 'Скорость произнесения реплик актёрами в слов/сек. Применяется со следующей сгенерированной монтажной карты — рестарт программы не нужен.',
@@ -1126,6 +1130,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'image_provider_actors_hint': 'Nano Banana 2 — до 10 рефів. OpenAI — до 10 рефів.',
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДІВ, ЛОКАЦІЙ ТА ОБ\'ЄКТІВ',
         'image_provider_admin_hint': 'Nano Banana 2 — до 10 рефів. OpenAI — до 10 рефів.',
+        # 2026-06-16 (Коміт 3): один спільний заголовок секції + короткі титули карток.
+        'sec_image_providers': 'ПРОВАЙДЕРИ ГЕНЕРАЦІЇ',
+        'image_provider_actors_card_title': 'Референси акторів',
+        'image_provider_admin_card_title': 'Сториборди, локації, об\'єкти',
         # 2026-05-23 (Этап 3.2): UI слайдери швидкостей мовлення для режиму B.
         'sec_speech_speed_b': 'ШВИДКІСТЬ МОВЛЕННЯ АКТОРІВ (РЕЖИМ B/C)',
         'speech_speed_b_hint': 'Швидкість вимови реплік акторами в слів/сек. Застосовується з наступної згенерованої монтажної карти — перезапуск програми не потрібен.',
@@ -1852,6 +1860,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'image_provider_actors_hint': 'Nano Banana 2 — up to 10 refs. OpenAI — up to 10 refs.',
         'sec_image_provider_admin': 'IMAGE PROVIDER FOR STORYBOARDS, LOCATIONS & OBJECTS',
         'image_provider_admin_hint': 'Nano Banana 2 — up to 10 refs. OpenAI — up to 10 refs.',
+        # 2026-06-16 (Commit 3): one shared section heading + short card titles.
+        'sec_image_providers': 'IMAGE PROVIDERS',
+        'image_provider_actors_card_title': 'Character refs',
+        'image_provider_admin_card_title': 'Storyboards, locations, objects',
         # 2026-05-23 (Этап 3.2): UI sliders for speech rate in mode B.
         'sec_speech_speed_b': 'ACTOR SPEECH RATE (MODE B/C)',
         'speech_speed_b_hint': 'Speed at which actors deliver lines, in words/sec. Applies to next generated montage card — no restart needed.',

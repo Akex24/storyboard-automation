@@ -96,6 +96,8 @@ from widgets import (
     ShotCard,
     RoundedTopImage,
     RefCard,
+    # provider_toggle.py (2026-06-16): сегмент-контрол провайдера в Настройках
+    ProviderToggle,
 )
 
 import requests
@@ -3477,6 +3479,28 @@ QMenu#lang-menu::item {
 QMenu#lang-menu::item:selected {
     background: rgba(70, 55, 105, 0.7); color: #fff;
 }
+
+/* Сегмент-контрол провайдера генерации (ProviderToggle) в Настройках.
+   2026-06-16: замена QComboBox. Две checkable-кнопки вплотную: активная —
+   светлая заливка с тонкой обводкой и тёмным текстом, неактивная — серый
+   текст без фона (как вкладки в макете). Стилистика — родственна #pill. */
+QPushButton#provider-toggle-btn {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px; padding: 8px 14px;
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 13px; font-weight: 500;
+}
+QPushButton#provider-toggle-btn:hover:!checked {
+    background: rgba(255, 255, 255, 0.07);
+    color: rgba(255, 255, 255, 0.85);
+}
+QPushButton#provider-toggle-btn:checked {
+    background: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    color: #1a1424; font-weight: 600;
+}
+QPushButton#provider-toggle-btn:focus { outline: none; }
 """
 
 # ─── Утилиты — промпты ────────────────────────────────────────────────────────
@@ -7684,34 +7708,23 @@ class MainWindow(QMainWindow):
                     tr('settings_context_reviewer_hint'))
             except Exception:
                 traceback.print_exc()
-        # Секция «Провайдер для референсов персонажей» (видна всем)
-        if hasattr(self, 'sec_image_provider_actors_lbl'):
+        # Секция «Провайдеры генерации» (один заголовок + две карточки, видна всем)
+        if hasattr(self, 'sec_image_providers_lbl'):
             try:
-                self.sec_image_provider_actors_lbl.setText(
-                    tr('sec_image_provider_actors'))
+                self.sec_image_providers_lbl.setText(
+                    tr('sec_image_providers'))
+                self.image_provider_actors_card_title_lbl.setText(
+                    tr('image_provider_actors_card_title'))
                 self.image_provider_actors_hint_lbl.setText(
                     tr('image_provider_actors_hint'))
-                self.image_provider_actors_label_lbl.setText(
-                    tr('image_provider_label'))
-                self.image_provider_actors_combo.setItemText(
-                    0, tr('image_provider_narwhal'))
-                self.image_provider_actors_combo.setItemText(
-                    1, tr('image_provider_openai'))
-            except Exception:
-                traceback.print_exc()
-        # Секция «Провайдер для сторибордов / локаций / объектов» (видна всем)
-        if hasattr(self, 'sec_image_provider_admin_lbl'):
-            try:
-                self.sec_image_provider_admin_lbl.setText(
-                    tr('sec_image_provider_admin'))
+                self.image_provider_actors_toggle.set_labels(
+                    tr('image_provider_narwhal'), tr('image_provider_openai'))
+                self.image_provider_admin_card_title_lbl.setText(
+                    tr('image_provider_admin_card_title'))
                 self.image_provider_admin_hint_lbl.setText(
                     tr('image_provider_admin_hint'))
-                self.image_provider_admin_label_lbl.setText(
-                    tr('image_provider_label'))
-                self.image_provider_admin_combo.setItemText(
-                    0, tr('image_provider_narwhal'))
-                self.image_provider_admin_combo.setItemText(
-                    1, tr('image_provider_openai'))
+                self.image_provider_admin_toggle.set_labels(
+                    tr('image_provider_narwhal'), tr('image_provider_openai'))
             except Exception:
                 traceback.print_exc()
         # Секция «Скорость речи актёров» (только режим B)
@@ -8714,20 +8727,36 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(montage_frame)
 
-        # ── ПРОВАЙДЕР ДЛЯ РЕФЕРЕНСОВ ПЕРСОНАЖЕЙ (виден всем юзерам) ─────────
-        # 2026-05-23: разделение из единого `image_provider` (см. settings
-        # layer). Влияет на: GenerateActorRefThread, EditActorRefThread,
-        # и RefGenerateThread когда путь содержит /characters/.
-        self.sec_image_provider_actors_lbl = QLabel(
-            tr('sec_image_provider_actors'))
-        self.sec_image_provider_actors_lbl.setObjectName("settings-section")
-        lay.addWidget(self.sec_image_provider_actors_lbl)
+        # ── ПРОВАЙДЕРЫ ГЕНЕРАЦИИ (видны всем юзерам) ──────────────────────
+        # 2026-06-16 (Коммит 3): по макету — один общий заголовок секции +
+        # две карточки рядом (QHBoxLayout), в каждой свой сегмент-контрол
+        # ProviderToggle вместо QComboBox.
+        #   • actors — провайдер актёрских рефов (`image_provider_actors`).
+        #     Влияет на: GenerateActorRefThread, EditActorRefThread,
+        #     RefGenerateThread когда путь содержит /characters/.
+        #   • admin  — провайдер шотов / локаций / объектов
+        #     (`image_provider_admin`). Влияет на: GenerateThread (шоты),
+        #     RefGenerateThread (/locations/ или /objects/), + bridge-файл
+        #     `image_provider.txt` для batch-скриптов pipeline.py /
+        #     generate_storyboards.py. (2026-06-15: раскрыт всем, раньше
+        #     был под `if self._is_admin`.)
+        self.sec_image_providers_lbl = QLabel(tr('sec_image_providers'))
+        self.sec_image_providers_lbl.setObjectName("settings-section")
+        lay.addWidget(self.sec_image_providers_lbl)
 
+        # ── Карточка: референсы актёров ──
         provider_actors_frame = QFrame()
         provider_actors_frame.setObjectName("settings-group")
         paf = QVBoxLayout(provider_actors_frame)
         paf.setSpacing(0)
         paf.setContentsMargins(18, 14, 18, 14)
+
+        self.image_provider_actors_card_title_lbl = QLabel(
+            tr('image_provider_actors_card_title'))
+        self.image_provider_actors_card_title_lbl.setStyleSheet(
+            "color:#e0e0e0; font-size:13px; font-weight:600; "
+            "padding-bottom:4px;")
+        paf.addWidget(self.image_provider_actors_card_title_lbl)
 
         self.image_provider_actors_hint_lbl = QLabel(
             tr('image_provider_actors_hint'))
@@ -8736,47 +8765,29 @@ class MainWindow(QMainWindow):
             "color:#aaa; font-size:12px; padding-bottom:10px;")
         paf.addWidget(self.image_provider_actors_hint_lbl)
 
-        provider_actors_row = QHBoxLayout()
-        provider_actors_row.setSpacing(12)
-        self.image_provider_actors_label_lbl = QLabel(tr('image_provider_label'))
-        self.image_provider_actors_label_lbl.setStyleSheet(
-            "color:#cfcfcf; font-size:13px;")
-        provider_actors_row.addWidget(self.image_provider_actors_label_lbl)
-
-        self.image_provider_actors_combo = QComboBox()
-        self.image_provider_actors_combo.addItem(
-            tr('image_provider_narwhal'), IMAGE_PROVIDER_NARWHAL)
-        self.image_provider_actors_combo.addItem(
-            tr('image_provider_openai'), IMAGE_PROVIDER_OPENAI)
-        cur_provider_actors = image_provider_actors()
-        idx = self.image_provider_actors_combo.findData(cur_provider_actors)
-        if idx >= 0:
-            self.image_provider_actors_combo.setCurrentIndex(idx)
-        self.image_provider_actors_combo.currentIndexChanged.connect(
+        self.image_provider_actors_toggle = ProviderToggle(self)
+        self.image_provider_actors_toggle.set_options(
+            IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI)
+        self.image_provider_actors_toggle.set_labels(
+            tr('image_provider_narwhal'), tr('image_provider_openai'))
+        self.image_provider_actors_toggle.set_value(image_provider_actors())
+        self.image_provider_actors_toggle.valueChanged.connect(
             self._on_image_provider_actors_changed)
-        # КРИТИЧНО: блокируем колесо мыши (см. CRITICAL_RULES.md).
-        block_wheel_event(self.image_provider_actors_combo)
-        provider_actors_row.addWidget(self.image_provider_actors_combo, stretch=1)
-        paf.addLayout(provider_actors_row)
+        paf.addWidget(self.image_provider_actors_toggle)
 
-        lay.addWidget(provider_actors_frame)
-
-        # ── ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ (виден всем юзерам) ─
-        # 2026-06-15: блок раскрыт всем (раньше был под `if self._is_admin`).
-        # Влияет на: GenerateThread (шоты), RefGenerateThread (когда путь
-        # /locations/ или /objects/), + bridge-файл `image_provider.txt`
-        # для batch-скриптов pipeline.py / generate_storyboards.py.
-        # На рефы актёров НЕ влияет — для них отдельный переключатель выше.
-        self.sec_image_provider_admin_lbl = QLabel(
-            tr('sec_image_provider_admin'))
-        self.sec_image_provider_admin_lbl.setObjectName("settings-section")
-        lay.addWidget(self.sec_image_provider_admin_lbl)
-
+        # ── Карточка: сториборды, локации, объекты ──
         provider_admin_frame = QFrame()
         provider_admin_frame.setObjectName("settings-group")
         pf = QVBoxLayout(provider_admin_frame)
         pf.setSpacing(0)
         pf.setContentsMargins(18, 14, 18, 14)
+
+        self.image_provider_admin_card_title_lbl = QLabel(
+            tr('image_provider_admin_card_title'))
+        self.image_provider_admin_card_title_lbl.setStyleSheet(
+            "color:#e0e0e0; font-size:13px; font-weight:600; "
+            "padding-bottom:4px;")
+        pf.addWidget(self.image_provider_admin_card_title_lbl)
 
         self.image_provider_admin_hint_lbl = QLabel(
             tr('image_provider_admin_hint'))
@@ -8785,32 +8796,24 @@ class MainWindow(QMainWindow):
             "color:#aaa; font-size:12px; padding-bottom:10px;")
         pf.addWidget(self.image_provider_admin_hint_lbl)
 
-        provider_admin_row = QHBoxLayout()
-        provider_admin_row.setSpacing(12)
-        self.image_provider_admin_label_lbl = QLabel(
-            tr('image_provider_label'))
-        self.image_provider_admin_label_lbl.setStyleSheet(
-            "color:#cfcfcf; font-size:13px;")
-        provider_admin_row.addWidget(self.image_provider_admin_label_lbl)
-
-        self.image_provider_admin_combo = QComboBox()
-        self.image_provider_admin_combo.addItem(
-            tr('image_provider_narwhal'), IMAGE_PROVIDER_NARWHAL)
-        self.image_provider_admin_combo.addItem(
-            tr('image_provider_openai'), IMAGE_PROVIDER_OPENAI)
-        cur_provider_admin = image_provider_admin()
-        idx = self.image_provider_admin_combo.findData(cur_provider_admin)
-        if idx >= 0:
-            self.image_provider_admin_combo.setCurrentIndex(idx)
-        self.image_provider_admin_combo.currentIndexChanged.connect(
+        self.image_provider_admin_toggle = ProviderToggle(self)
+        self.image_provider_admin_toggle.set_options(
+            IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI)
+        self.image_provider_admin_toggle.set_labels(
+            tr('image_provider_narwhal'), tr('image_provider_openai'))
+        self.image_provider_admin_toggle.set_value(image_provider_admin())
+        self.image_provider_admin_toggle.valueChanged.connect(
             self._on_image_provider_admin_changed)
-        # КРИТИЧНО: блокируем колесо мыши, иначе прокрутка страницы
-        # курсором над комбобоксом МЕНЯЕТ провайдера случайно.
-        block_wheel_event(self.image_provider_admin_combo)
-        provider_admin_row.addWidget(self.image_provider_admin_combo, stretch=1)
-        pf.addLayout(provider_admin_row)
+        pf.addWidget(self.image_provider_admin_toggle)
 
-        lay.addWidget(provider_admin_frame)
+        # ── Две карточки рядом ──
+        providers_row = QHBoxLayout()
+        providers_row.setSpacing(12)
+        provider_actors_frame.setMinimumWidth(280)
+        provider_admin_frame.setMinimumWidth(280)
+        providers_row.addWidget(provider_actors_frame, stretch=1)
+        providers_row.addWidget(provider_admin_frame, stretch=1)
+        lay.addLayout(providers_row)
 
         # ── 🎬 РЕЖИМ МОНТАЖНОЙ КАРТЫ — переключатель A/B/C/D (виден всем) ──
         self.sec_montage_mode_lbl = QLabel(tr('sec_montage_mode'))
@@ -15841,8 +15844,8 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
-    def _on_image_provider_actors_changed(self, idx: int):
-        """Слот переключателя «Провайдер для референсов персонажей»
+    def _on_image_provider_actors_changed(self, value: str):
+        """Слот сигнала ProviderToggle.valueChanged для «Референсы актёров»
         (виден всем). Сохраняет в QSettings ключ `image_provider_actors`.
         GenerateActorRefThread / EditActorRefThread / RefGenerateThread
         (когда путь содержит /characters/) читают значение на каждый
@@ -15850,16 +15853,13 @@ class MainWindow(QMainWindow):
         не нужен.
         """
         try:
-            if idx < 0:
-                return
-            value = self.image_provider_actors_combo.itemData(idx)
             set_image_provider_actors(value or IMAGE_PROVIDER_NARWHAL)
         except Exception:
             traceback.print_exc()
 
-    def _on_image_provider_admin_changed(self, idx: int):
-        """Слот переключателя «Провайдер для сторибордов, локаций и
-        объектов» (только админ). Сохраняет в QSettings ключ
+    def _on_image_provider_admin_changed(self, value: str):
+        """Слот сигнала ProviderToggle.valueChanged для «Сториборды,
+        локации, объекты» (виден всем). Сохраняет в QSettings ключ
         `image_provider_admin` + синхронизирует bridge-файл
         `image_provider.txt` для batch-скриптов pipeline.py /
         generate_storyboards.py. GenerateThread читает значение на каждый
@@ -15867,9 +15867,6 @@ class MainWindow(QMainWindow):
         не нужен.
         """
         try:
-            if idx < 0:
-                return
-            value = self.image_provider_admin_combo.itemData(idx)
             set_image_provider_admin(value or IMAGE_PROVIDER_NARWHAL)
         except Exception:
             traceback.print_exc()
