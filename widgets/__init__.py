@@ -39,6 +39,7 @@ from widgets.montage_summary_dialog import MontageSummaryDialog
 from widgets.active_gens_panel import ActiveGensPanel
 from widgets.shot_viewer_dialog import ShotViewerDialog
 from widgets.provider_toggle import ProviderToggle
+from widgets.mode_segment import ModeSegment
 
 __all__ = [
     # dialogs.py
@@ -76,4 +77,6 @@ __all__ = [
     'ShotViewerDialog',
     # provider_toggle.py (2026-06-16 — сегмент-контрол провайдера в Настройках)
     'ProviderToggle',
+    # mode_segment.py (2026-06-16 — N-сегментный контрол режима монтажки)
+    'ModeSegment',
 ]

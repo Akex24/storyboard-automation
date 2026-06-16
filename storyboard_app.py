@@ -98,6 +98,8 @@ from widgets import (
     RefCard,
     # provider_toggle.py (2026-06-16): сегмент-контрол провайдера в Настройках
     ProviderToggle,
+    # mode_segment.py (2026-06-16): N-сегментный контрол режима монтажки
+    ModeSegment,
 )
 
 import requests
@@ -7712,6 +7714,15 @@ class MainWindow(QMainWindow):
                     tr('image_provider_narwhal'), tr('image_provider_openai'))
             except Exception:
                 traceback.print_exc()
+        # Секция «Режим монтажной карты» (2026-06-16, Коммит 4: чиним retranslate
+        # зоны режима — раньше не переводилась). Подписи сегментов «Mode A/B/C/D» —
+        # литералы, не переводятся.
+        if hasattr(self, 'sec_montage_mode_lbl'):
+            try:
+                self.sec_montage_mode_lbl.setText(tr('sec_montage_mode'))
+                self.montage_mode_hint_lbl.setText(tr('montage_mode_hint'))
+            except Exception:
+                traceback.print_exc()
         # Секция «Скорость речи актёров» (только режим B)
         if hasattr(self, 'sec_speech_speed_b_lbl'):
             try:
@@ -8817,23 +8828,19 @@ class MainWindow(QMainWindow):
             "color:#aaa; font-size:12px; padding-bottom:10px;")
         mmf.addWidget(self.montage_mode_hint_lbl)
 
-        mm_row = QHBoxLayout()
-        mm_row.setSpacing(12)
-        self.montage_mode_label_lbl = QLabel(tr('montage_mode_label'))
-        self.montage_mode_label_lbl.setStyleSheet("color:#cfcfcf; font-size:13px;")
-        mm_row.addWidget(self.montage_mode_label_lbl)
-
-        self.montage_mode_combo = QComboBox()
-        for _m in mode_loader.VALID_MODES:
-            self.montage_mode_combo.addItem(f"Mode {_m.upper()}", _m)
-        _cur_mode = mode_loader.get_current_mode()
-        _idx = self.montage_mode_combo.findData(_cur_mode)
-        if _idx >= 0:
-            self.montage_mode_combo.setCurrentIndex(_idx)
-        self.montage_mode_combo.activated.connect(self._on_montage_mode_changed)
-        block_wheel_event(self.montage_mode_combo)
-        mm_row.addWidget(self.montage_mode_combo, stretch=1)
-        mmf.addLayout(mm_row)
+        # 2026-06-16 (Коммит 4): выбор режима — N-сегментный контрол
+        # ModeSegment (ванна+пилюля, кастомный paintEvent) вместо QComboBox.
+        # Кастомная отрисовка, т.к. нативный macOS-скин QPushButton перебивает
+        # и QSS :checked, и property [active] (см. widgets/mode_segment.py).
+        # Логика выбора (рестарт-диалог, mode_loader) не меняется — только вид.
+        self.montage_mode_segment = ModeSegment(self)
+        self.montage_mode_segment.set_options(list(mode_loader.VALID_MODES))
+        self.montage_mode_segment.set_labels(
+            [f"Mode {m.upper()}" for m in mode_loader.VALID_MODES])
+        self.montage_mode_segment.set_value(mode_loader.get_current_mode())
+        self.montage_mode_segment.valueChanged.connect(
+            self._on_montage_mode_changed)
+        mmf.addWidget(self.montage_mode_segment)
 
         lay.addWidget(mm_frame)
 
@@ -16106,14 +16113,14 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
-    def _on_montage_mode_changed(self, idx: int):
-        """Обработчик QComboBox.activated. Если режим действительно меняется —
-        показывает диалог рестарта с двумя кнопками. ESC/крестик откатывает
-        выбор в combobox обратно на текущий режим без записи в QSettings."""
+    def _on_montage_mode_changed(self, mode: str):
+        """Клик по сегменту режима монтажки (Коммит 4: ModeSegment вместо combo).
+        Если режим меняется — показывает диалог рестарта (now/later). ВАЖНО:
+        ModeSegment при клике УЖЕ переключил пилюлю на новый сегмент, поэтому
+        при ESC надо вернуть её на текущий режим (set_value(cur_mode))."""
         try:
-            new_mode = self.montage_mode_combo.itemData(idx)
             cur_mode = mode_loader.get_current_mode()
-            if not new_mode or new_mode == cur_mode:
+            if not mode or mode == cur_mode:
                 return  # тот же режим — ничего не делаем
             m = QMessageBox(self)
             m.setIcon(QMessageBox.Icon.Information)
@@ -16127,13 +16134,12 @@ class MainWindow(QMainWindow):
             m.exec()
             clicked = m.clickedButton()
             if clicked is None:
-                # ESC / крестик — юзер передумал, откатываем combobox
-                _idx_cur = self.montage_mode_combo.findData(cur_mode)
-                if _idx_cur >= 0:
-                    self.montage_mode_combo.setCurrentIndex(_idx_cur)
+                # ESC / крестик — юзер передумал. Пилюля уже уехала на новый
+                # сегмент — возвращаем её на текущий режим (set_value без сигнала).
+                self.montage_mode_segment.set_value(cur_mode)
                 return
-            # юзер нажал одну из кнопок — сохраняем выбор
-            mode_loader.set_current_mode(new_mode)
+            # юзер нажал одну из кнопок — сохраняем выбор (пилюля уже на месте)
+            mode_loader.set_current_mode(mode)
             if clicked is now_btn:
                 QTimer.singleShot(0, QApplication.quit)
             else:
