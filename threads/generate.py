@@ -1264,10 +1264,29 @@ class RefGenerateThread(QThread):
             endpoint = ("/api/v4/openai/image/generate"
                         if provider == _sa.IMAGE_PROVIDER_OPENAI
                         else "/api/v4/flow/image/generate")
-            r = session.post(f"{_sa.API_BASE}{endpoint}",
-                             json=payload, timeout=60)
-            r.raise_for_status()
-            data = r.json()
+            # 2026-06-17 (Коммит F): 404-перезаливка протухшего рефа. send_path мог
+            # быть залит ранее в этой сессии → серверный file_hash протух (короткий
+            # TTL), а в payload ушёл мёртвый хеш из _upload_cache → POST отдаёт 404
+            # file_not_found_or_expired. Перезаливаем send_path (инвалидация кеша +
+            # повторный upload) и повторяем POST РОВНО один раз. Анти-цикл: range(2).
+            # regen-ветку ретрай не трогает: там ref_hashes пуст (guard `and ref_hashes`).
+            data = None
+            for _submit_attempt in range(2):
+                try:
+                    r = session.post(f"{_sa.API_BASE}{endpoint}",
+                                     json=payload, timeout=60)
+                    r.raise_for_status()
+                    data = r.json()
+                    break
+                except Exception as _post_e:
+                    if (_submit_attempt == 0 and ref_hashes
+                            and _is_ref_expired_error(_post_e)):
+                        _sa._upload_cache.pop(str(send_path.resolve()), None)
+                        self.step.emit("Перезагружаю картинку (404 на сервере)…", 12)
+                        ref_hashes = [self._upload(session, send_path)]
+                        payload["reference_images"] = ref_hashes
+                        continue
+                    raise
             if not data.get("operation_id"):
                 self.error.emit(f"No operation_id: {data}")
                 return
