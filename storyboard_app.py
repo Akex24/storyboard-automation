@@ -3426,6 +3426,19 @@ QLabel#stats-label { font-size: 10px; color: #6d5d8c; }
 QLabel#admin-send-title { font-size: 13px; color: #c090ff; font-weight: 500; }
 QLabel#admin-send-desc  { font-size: 11px; color: #6d5d8c; }
 
+/* Админ-зона (Коммит 6, 2026-06-16) — все админ-блоки в одной красной рамке
+   с бейджем-плашкой «АДМИН-НАСТРОЙКИ» первой строкой внутри. Видна только
+   админу (ветка if self._is_admin). */
+QFrame#admin-zone {
+    background: rgba(228, 52, 74, 0.06);
+    border: 2px solid rgba(228, 52, 74, 0.85);
+    border-radius: 12px;
+}
+QLabel#admin-zone-badge {
+    color: #ffffff; background: #e4344a; border-radius: 6px;
+    padding: 4px 12px; font-size: 12px; font-weight: 700; letter-spacing: 1px;
+}
+
 /* Show selector (dropdown) */
 /* QComboBox — селектор сериала. 2026-05-08 редизайн: LUMZ-стиль —
    приглушённый фон bg_subtle, граница border_strong, radius 8px,
@@ -9064,20 +9077,34 @@ class MainWindow(QMainWindow):
         # что ниже — настройки которые НЕ уйдут к коллегам (у них этих
         # секций просто не существует — ветка if self._is_admin не сработает).
         if self._is_admin:
-            # Тонкая разделительная линия + заголовок «АДМИН-НАСТРОЙКИ»
+            # 2026-06-16 (Коммит 6): все админ-блоки обёрнуты в ОДНУ красную
+            # рамку #admin-zone с бейджем «АДМИН-НАСТРОЙКИ» первой строкой внутри
+            # (по макету). Старая оранжевая разделительная линия убрана — рамка
+            # её заменяет. Гейтинг _is_admin и содержимое блоков не меняются.
             lay.addSpacing(8)
-            admin_div = QFrame()
-            admin_div.setObjectName("admin-divider-line")
-            admin_div.setFixedHeight(1)
-            admin_div.setStyleSheet(
-                "QFrame#admin-divider-line { background: rgba(255,170,68,0.4); border:none; }")
-            lay.addWidget(admin_div)
-            lay.addSpacing(8)
+            admin_zone = QFrame()
+            admin_zone.setObjectName("admin-zone")
+            az = QVBoxLayout(admin_zone)
+            az.setContentsMargins(16, 14, 16, 16)
+            az.setSpacing(10)
+            # Лёгкое красное свечение вокруг рамки (box-shadow в QSS Qt не
+            # поддерживает надёжно → через QGraphicsDropShadowEffect).
+            from PyQt6.QtWidgets import QGraphicsDropShadowEffect as _QGDSE
+            _admin_glow = _QGDSE(admin_zone)
+            _admin_glow.setBlurRadius(24)
+            _admin_glow.setColor(QColor(228, 52, 74, 140))
+            _admin_glow.setOffset(0, 0)
+            admin_zone.setGraphicsEffect(_admin_glow)
 
             self.sec_admin_div_lbl = QLabel(tr('sec_admin_divider'))
-            self.sec_admin_div_lbl.setStyleSheet(
-                "color:#ffaa44; font-size:12px; font-weight:700; letter-spacing:1.2px;")
-            lay.addWidget(self.sec_admin_div_lbl)
+            self.sec_admin_div_lbl.setObjectName("admin-zone-badge")
+            # WA_StyledBackground — чтобы QSS-фон плашки прокрасился на QLabel.
+            self.sec_admin_div_lbl.setAttribute(
+                Qt.WidgetAttribute.WA_StyledBackground, True)
+            # Компактная плашка по размеру текста, выровнена влево (не на всю ширину).
+            self.sec_admin_div_lbl.setSizePolicy(
+                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            az.addWidget(self.sec_admin_div_lbl, alignment=Qt.AlignmentFlag.AlignLeft)
 
             # ── 🧠 МОНТАЖКА — модели и таймауты (v1.0.86 этап 6) ───────
             # Три runtime-настройки оркестратора:
@@ -9089,7 +9116,7 @@ class MainWindow(QMainWindow):
             # перезапуске Studio (поток создаётся заново на каждый клик).
             self.sec_montage_runtime_lbl = QLabel(tr('sec_montage_runtime'))
             self.sec_montage_runtime_lbl.setObjectName("settings-section")
-            lay.addWidget(self.sec_montage_runtime_lbl)
+            az.addWidget(self.sec_montage_runtime_lbl)
 
             montage_rt_frame = QFrame()
             montage_rt_frame.setObjectName("settings-group")
@@ -9210,12 +9237,12 @@ class MainWindow(QMainWindow):
             self.montage_runtime_restart_hint_lbl.setWordWrap(True)
             mrf.addWidget(self.montage_runtime_restart_hint_lbl)
 
-            lay.addWidget(montage_rt_frame)
+            az.addWidget(montage_rt_frame)
 
             # ── АНИМАЦИИ — слайдер скорости fade-переходов ─────────────────
             self.sec_anim_lbl = QLabel(tr('sec_anim'))
             self.sec_anim_lbl.setObjectName("settings-section")
-            lay.addWidget(self.sec_anim_lbl)
+            az.addWidget(self.sec_anim_lbl)
 
             anim_frame = QFrame()
             anim_frame.setObjectName("settings-group")
@@ -9269,7 +9296,7 @@ class MainWindow(QMainWindow):
             # Сразу показать текущее значение в подписи
             self._refresh_anim_speed_value()
 
-            lay.addWidget(anim_frame)
+            az.addWidget(anim_frame)
 
             # ── Админ: отправить обновление + статистика ──────────────────
             admin_frame = QFrame()
@@ -9299,7 +9326,10 @@ class MainWindow(QMainWindow):
             self.stats_label.setObjectName("stats-label")
             self.stats_label.setWordWrap(True)
             ai.addWidget(self.stats_label)
-            lay.addWidget(admin_frame)
+            az.addWidget(admin_frame)
+
+            # Вся админ-зона — одной красной рамкой в главный layout.
+            lay.addWidget(admin_zone)
 
         lay.addStretch()
         self._refresh_settings_versions()
