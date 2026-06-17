@@ -12937,13 +12937,14 @@ class MainWindow(QMainWindow):
         return None
 
     def _start_ref_thread(self, image_path: Path, mode: str,
-                          instruction: Optional[str] = None):
+                          instruction: Optional[str] = None,
+                          reference_path: Optional[Path] = None):
         """Запускает RefGenerateThread (regen или edit) с UI-callback'ами.
         На карточке сразу показывается прогресс-бар (set_loading)."""
         if not hasattr(self, '_ref_threads'):
             self._ref_threads: List[QThread] = []
 
-        thread = RefGenerateThread(image_path, mode, instruction)
+        thread = RefGenerateThread(image_path, mode, instruction, reference_path)
         # 2026-05-07: помечаем тред эпизодом в котором его запустили —
         # для per-episode фильтрации в `_refs_busy(ep_id)`. Без этого
         # точки на пилюле «Референсы» бежали на всех эпизодах сразу.
@@ -13120,11 +13121,31 @@ class MainWindow(QMainWindow):
 
     def _on_ref_edit(self, image_path: Path, kind: str):
         """Кнопка «Изменить» на refs-карточке (location/object).
-        Открывает диалог инструкции → FastGen с картинкой как ref → перезапись."""
-        instruction = self._ask_ref_edit_instruction(image_path)
-        if not instruction:
+        Открывает RefEditDialog (один слот картинки + опц. замена картинки на
+        другой реф эпизода того же типа) → FastGen → перезапись файла рефа.
+        2026-06-17 (Коммит C): заменил старый _ask_ref_edit_instruction-попап."""
+        from widgets.ref_edit_dialog import RefEditDialog
+        from PyQt6.QtWidgets import QDialog
+
+        ep_id = self._current_episode
+        if not ep_id:
             return
-        self._start_ref_thread(image_path, 'edit', instruction)
+        refs_map = list_episode_refs(ep_id)
+        if kind == 'location':
+            episode_refs = list(refs_map.get('locations', []))
+        elif kind == 'object':
+            episode_refs = list(refs_map.get('objects', []))
+        else:
+            # character / неизвестный тип — edit ✏️ для них на UI нет; защита.
+            return
+
+        dlg = RefEditDialog(image_path, episode_refs, kind, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not dlg.instruction:
+            return
+        self._start_ref_thread(
+            image_path, 'edit', dlg.instruction, dlg.reference_path)
 
     def _on_ref_delete(self, image_path: Path, kind: str):
         """Кнопка «🗑 Удалить» на refs-карточке (location/object).
@@ -13191,45 +13212,6 @@ class MainWindow(QMainWindow):
                 self._build_refs_view(ep_id)
         except Exception:
             traceback.print_exc()
-
-    def _ask_ref_edit_instruction(self, image_path: Path) -> Optional[str]:
-        """Маленький модальный попап для edit-инструкции (аналог _ask_edit_instruction
-        для шотов, но с другими текстами)."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle(tr('ref_edit_dialog_title', name=image_path.stem))
-        dlg.setFixedSize(460, 240)
-        v = QVBoxLayout(dlg)
-        v.setSpacing(12)
-        v.setContentsMargins(20, 18, 20, 16)
-
-        title = QLabel(tr('ref_edit_dialog_q'))
-        title.setStyleSheet("color:#ddd; font-size:14px; font-weight:500;")
-        v.addWidget(title)
-
-        hint = QLabel(tr('ref_edit_dialog_hint'))
-        hint.setStyleSheet("color:#888; font-size:11px;")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
-
-        text = QPlainTextEdit()
-        text.setPlaceholderText(tr('ref_edit_dialog_placeholder'))
-        text.setStyleSheet(
-            "QPlainTextEdit { background:#15101e; border:1px solid #2c2240; "
-            "border-radius:6px; color:#ddd; padding:8px; font-size:13px; }")
-        v.addWidget(text, stretch=1)
-
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.button(QDialogButtonBox.StandardButton.Ok).setText(tr('edit_dialog_send'))
-        btns.button(QDialogButtonBox.StandardButton.Cancel).setText(tr('edit_dialog_cancel'))
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        v.addWidget(btns)
-
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return None
-        instr = text.toPlainText().strip()
-        return instr or None
 
     def _on_ref_done(self, image_path: Path, mode: str,
                        source_ep_id: Optional[str] = None):
