@@ -1185,19 +1185,19 @@ class RefGenerateThread(QThread):
                 pf = _sa.ref_prompt_path(self.image_path)
                 if not pf.exists():
                     self.error.emit(
-                        f"Нет файла промпта: {pf.name}. Сначала сгенерируй "
+                        f"[regen/prompt] Нет файла промпта: {pf.name}. Сначала сгенерируй "
                         f"локацию через ассистента в чате (он создаст промпт).")
                     return
                 prompt_text = pf.read_text(encoding="utf-8").strip()
                 if not prompt_text:
-                    self.error.emit(f"Файл промпта пустой: {pf.name}")
+                    self.error.emit(f"[regen/prompt] Файл промпта пустой: {pf.name}")
                     return
                 self.step.emit("Отправляю запрос…", 20)
 
             elif self.mode == "edit":
                 if not self.image_path.exists():
                     self.error.emit(
-                        f"Нет исходной картинки: {self.image_path.name}")
+                        f"[edit/precheck] Нет исходной картинки: {self.image_path.name}")
                     return
                 # 2026-06-17 (Коммит B-fix): один слот картинки. В FastGen
                 # уходит ЛИБО reference_path (юзер заменил картинку в слоте),
@@ -1209,7 +1209,7 @@ class RefGenerateThread(QThread):
                              else self.image_path)
                 if not send_path.exists():
                     self.error.emit(
-                        f"Нет картинки для отправки: {send_path.name}")
+                        f"[edit/precheck send_path] Нет картинки для отправки: {send_path.name}")
                     return
                 self.step.emit("Загружаю картинку…", 10)
                 ref_hashes = [self._upload(session, send_path)]
@@ -1225,7 +1225,7 @@ class RefGenerateThread(QThread):
                         f"\n\nInstruction: {self.instruction}"
                     )
             else:
-                self.error.emit(f"Unknown mode: {self.mode}")
+                self.error.emit(f"[dispatch] Unknown mode: {self.mode}")
                 return
 
             # 2026-05-07: Edit-режим использует ВЫБОР ПРОВАЙДЕРА (как
@@ -1288,7 +1288,7 @@ class RefGenerateThread(QThread):
                         continue
                     raise
             if not data.get("operation_id"):
-                self.error.emit(f"No operation_id: {data}")
+                self.error.emit(f"[POST] No operation_id: {data}")
                 return
 
             op_id      = data["operation_id"]
@@ -1303,7 +1303,7 @@ class RefGenerateThread(QThread):
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
                     self.error.emit(
-                        f"API timeout: статус «{last_status or 'unknown'}»"
+                        f"[polling] API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
                     return
                 r = session.get(f"{_sa.API_BASE}/api/v4/operations/{op_id}", timeout=30)
@@ -1332,7 +1332,7 @@ class RefGenerateThread(QThread):
                         image_bytes = r2.content
                     break
                 if status == "error":
-                    self.error.emit(f"API error: {data.get('error')}")
+                    self.error.emit(f"[polling status=error] API error: {data.get('error')}")
                     return
 
             self.step.emit("Сохраняю…", 92)
@@ -1358,7 +1358,7 @@ class RefGenerateThread(QThread):
             _msg = str(e)
             if _detail:
                 _msg = f"{_msg} | server: {_detail}"
-            self.error.emit(_msg)
+            self.error.emit(f"[run/except] {_msg}")
             # 2026-06-09 (задача Б): виновный ключ 429/401/403 — вывести из
             # ротации. 5xx/таймаут/сеть → None, ключ не трогаем. Изолировано.
             try:

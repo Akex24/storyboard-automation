@@ -10563,6 +10563,28 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _log_ref_error(self, image_path, msg: str) -> None:
+        """Коммит E: персистентный лог ошибок рефов в
+        `shows/<active>/_studio_diag.log` (тег [REF-ERROR]). Текст ошибки —
+        ПОЛНОСТЬЮ (не обрезаем). Тихо проглатывает ошибки — _on_ref_error
+        не должен падать из-за логирования. Зеркалит _log_close_diag."""
+        try:
+            import datetime
+            cur = getattr(self, '_current_show', None)
+            root = getattr(self, '_project_root', None)
+            if not cur or root is None:
+                return
+            try:
+                fname = image_path.name if hasattr(image_path, 'name') else str(image_path)
+            except Exception:
+                fname = str(image_path)
+            log_path = root / "shows" / cur / "_studio_diag.log"
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} [REF-ERROR] {fname}: {msg}\n")
+        except Exception:
+            pass
+
     def _on_delete_episode_clicked(self):
         """Обработчик кнопки «🗑 Удалить эпизод».
         Показывает диалог подтверждения. При Yes — удаляет всё что относится
@@ -13491,8 +13513,14 @@ class MainWindow(QMainWindow):
                     short = (str(msg).splitlines() or [""])[0][:120]
                 except Exception:
                     short = str(msg)[:120]
+            # Коммит E: персистентный лог ПОЛНОГО текста ошибки в _studio_diag.log.
             try:
-                self.status_bar.showMessage(f"✗ {fname}: {short}", 10000)
+                self._log_ref_error(image_path, str(msg) if msg else "(no message)")
+            except Exception:
+                pass
+            # Коммит E: статус-бар без автоскрытия (0) — раньше исчезало за 10с.
+            try:
+                self.status_bar.showMessage(f"✗ {fname}: {short}", 0)
             except Exception:
                 pass
             try:
