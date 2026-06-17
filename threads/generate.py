@@ -1111,11 +1111,15 @@ class RefGenerateThread(QThread):
     key_used = pyqtSignal(int)        # idx выданного ключа (лампочка round-robin)
 
     def __init__(self, image_path: Path, mode: str,
-                 instruction: Optional[str] = None):
+                 instruction: Optional[str] = None,
+                 reference_path: Optional[Path] = None):
         super().__init__()
         self.image_path  = image_path
         self.mode        = mode  # 'regen' | 'edit'
         self.instruction = (instruction or "").strip() or None
+        # 2026-06-17 (Коммит B): опциональный второй реф — «образец стиля».
+        # Только для mode='edit'; в 'regen' игнорируется (защита от misuse).
+        self.reference_path = reference_path
 
     def _upload(self, session: requests.Session, path: Path) -> str:
         cache_key = str(path.resolve())
@@ -1191,25 +1195,37 @@ class RefGenerateThread(QThread):
                 self.step.emit("Отправляю запрос…", 20)
 
             elif self.mode == "edit":
-                if not self.instruction:
-                    self.error.emit("Edit без инструкции — нечего применять")
-                    return
                 if not self.image_path.exists():
                     self.error.emit(
                         f"Нет исходной картинки: {self.image_path.name}")
                     return
                 self.step.emit("Загружаю текущую картинку…", 10)
+                # Исходник всегда грузится первым → [@]img1 (объект правки).
                 ref_hashes = [self._upload(session, self.image_path)]
-                # Edit-промпт для локации (и других «полных» рефов): сохранить
-                # композицию/стиль, изменить ТОЛЬКО запрошенное.
-                prompt_text = (
-                    "[@]img1 is the current reference image (location / object). "
-                    f"MODIFICATION REQUESTED: {self.instruction}\n\n"
-                    "Apply ONLY the requested modification. Keep ALL other "
-                    "elements EXACTLY identical to [@]img1: composition, framing, "
-                    "lighting, perspective, background, art style. Do NOT redraw "
-                    "or restyle. Same aspect ratio as [@]img1."
-                )
+                # 2026-06-17 (Коммит B): edit-промпт переписан под опциональный
+                # «образец стиля». Никаких «keep identical» — две явные формулы.
+                if not self.instruction:
+                    # Защита от падения: UI диалога не пускает пустую инструкцию,
+                    # но если дошло — трактуем как Variant A без эталона.
+                    prompt_text = (
+                        "Edit this image [@]img1."
+                        "\n\nInstruction: regenerate as is"
+                    )
+                elif self.reference_path is not None:
+                    # Variant B: исходник [@]img1 + образец стиля [@]img2.
+                    # ПОРЯДОК важен: модель понимает, что правит img1.
+                    self.step.emit("Загружаю образец стиля…", 14)
+                    ref_hashes.append(self._upload(session, self.reference_path))
+                    prompt_text = (
+                        "Edit image [@]img1 using [@]img2 as a style reference."
+                        f"\n\nInstruction: {self.instruction}"
+                    )
+                else:
+                    # Variant A: только исходник [@]img1.
+                    prompt_text = (
+                        "Edit this image [@]img1."
+                        f"\n\nInstruction: {self.instruction}"
+                    )
             else:
                 self.error.emit(f"Unknown mode: {self.mode}")
                 return
