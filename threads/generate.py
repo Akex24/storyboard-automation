@@ -1199,29 +1199,27 @@ class RefGenerateThread(QThread):
                     self.error.emit(
                         f"Нет исходной картинки: {self.image_path.name}")
                     return
-                self.step.emit("Загружаю текущую картинку…", 10)
-                # Исходник всегда грузится первым → [@]img1 (объект правки).
-                ref_hashes = [self._upload(session, self.image_path)]
-                # 2026-06-17 (Коммит B): edit-промпт переписан под опциональный
-                # «образец стиля». Никаких «keep identical» — две явные формулы.
+                # 2026-06-17 (Коммит B-fix): один слот картинки. В FastGen
+                # уходит ЛИБО reference_path (юзер заменил картинку в слоте),
+                # ЛИБО сам image_path. Результат всё равно пишется в
+                # self.image_path ниже — filename/tag/привязки рефа сохраняются;
+                # reference_path как файл не трогается (только input в FastGen).
+                send_path = (self.reference_path
+                             if self.reference_path is not None
+                             else self.image_path)
+                if not send_path.exists():
+                    self.error.emit(
+                        f"Нет картинки для отправки: {send_path.name}")
+                    return
+                self.step.emit("Загружаю картинку…", 10)
+                ref_hashes = [self._upload(session, send_path)]
                 if not self.instruction:
-                    # Защита от падения: UI диалога не пускает пустую инструкцию,
-                    # но если дошло — трактуем как Variant A без эталона.
+                    # Защита от падения: UI диалога не пускает пустую инструкцию.
                     prompt_text = (
                         "Edit this image [@]img1."
                         "\n\nInstruction: regenerate as is"
                     )
-                elif self.reference_path is not None:
-                    # Variant B: исходник [@]img1 + образец стиля [@]img2.
-                    # ПОРЯДОК важен: модель понимает, что правит img1.
-                    self.step.emit("Загружаю образец стиля…", 14)
-                    ref_hashes.append(self._upload(session, self.reference_path))
-                    prompt_text = (
-                        "Edit image [@]img1 using [@]img2 as a style reference."
-                        f"\n\nInstruction: {self.instruction}"
-                    )
                 else:
-                    # Variant A: только исходник [@]img1.
                     prompt_text = (
                         "Edit this image [@]img1."
                         f"\n\nInstruction: {self.instruction}"
