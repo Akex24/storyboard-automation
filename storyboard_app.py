@@ -3337,6 +3337,12 @@ QLabel#gen-time         { font-size: 10px; color: #5a8aaa; }
 QFrame#settings-group {
     background: rgba(20, 16, 30, 0.5); border: 1px solid #2a2238; border-radius: 12px;
 }
+/* Тёмная «ванна»-карточка (Коммит 7, 2026-06-17) — ТОЛЬКО для трёх верхних
+   карточек Настроек (Проект / О приложении / AI-аккаунт). Стиль ванны
+   ProviderToggle/ModeSegment. #settings-group глобально НЕ трогаем. */
+QFrame#settings-group-tile {
+    background: #241c34; border: 1px solid #3a2f52; border-radius: 12px;
+}
 QLabel#settings-section {
     font-size: 11px; font-weight: 700; color: #5a5070; letter-spacing: 2.5px;
 }
@@ -3348,6 +3354,21 @@ QPushButton#settings-row-btn {
 }
 QPushButton#settings-row-btn:hover  { background: rgba(60, 48, 90, 0.25); color: #fff; }
 QPushButton#settings-row-btn:pressed { background: rgba(60, 48, 90, 0.4); }
+
+/* Светлая компактная кнопка настроек (Коммит 7, 2026-06-17) — единый стиль
+   кнопок в колонках Проект/О приложении/AI-аккаунт. Светлая #ececf0 как пилюля
+   Mode C / ProviderToggle. НЕ checkable → QSS на macOS берётся (#aspect-seg-btn). */
+QPushButton#settings-light-btn {
+    background: #ececf0; color: #1a1424;
+    border: 1px solid #ececf0; border-radius: 6px;
+    padding: 8px 14px; font-size: 13px; font-weight: 600;
+    text-align: center;
+}
+QPushButton#settings-light-btn:hover { background: #ffffff; border-color: #ffffff; }
+QPushButton#settings-light-btn:pressed { background: #d8d4e0; border-color: #d8d4e0; }
+QPushButton#settings-light-btn:disabled {
+    background: rgba(236,236,240,0.30); color: rgba(26,20,36,0.40); border-color: transparent;
+}
 
 /* Строка ключ-значение внутри about (Версия приложения  v1.0.12) */
 QWidget#settings-row     { background: transparent; }
@@ -8257,7 +8278,14 @@ class MainWindow(QMainWindow):
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         w = QWidget()
-        w.setStyleSheet("background: transparent;")
+        # 2026-06-17 (Коммит 7 фикс): скоупим прозрачность ID-селектором.
+        # Раньше bare-правило "background: transparent;" каскадило прозрачный
+        # фон на ВСЕХ потомков → непрозрачные карточки/кнопки внутри Настроек
+        # не прокрашивались (только border). С #id-селектором правило бьёт
+        # только сам w, потомки красятся своими #id-правилами app-DARK.
+        w.setObjectName("settings-scroll-content")
+        w.setStyleSheet(
+            "QWidget#settings-scroll-content { background: transparent; }")
         lay = QVBoxLayout(w)
         lay.setSpacing(22)
         lay.setContentsMargins(28, 26, 28, 26)
@@ -8265,43 +8293,43 @@ class MainWindow(QMainWindow):
         # ── ПРОЕКТ — одна кнопка «Открыть папку проекта» ────────────────────
         self.sec_project_lbl = QLabel(tr('sec_project'))
         self.sec_project_lbl.setObjectName("settings-section")
-        lay.addWidget(self.sec_project_lbl)
 
         proj_frame = QFrame()
-        proj_frame.setObjectName("settings-group")
+        proj_frame.setObjectName("settings-group-tile")
         pf = QVBoxLayout(proj_frame)
-        pf.setSpacing(0)
-        pf.setContentsMargins(0, 0, 0, 0)
+        pf.setSpacing(8)
+        pf.setContentsMargins(12, 12, 12, 12)
+        # 2026-06-17 (Коммит 7 фикс): stretch первым → обе кнопки прижаты к низу
+        # карточки (нижние кнопки трёх колонок на одной линии).
+        pf.addStretch()
         self.open_folder_btn = QPushButton(tr('open_folder'))
-        self.open_folder_btn.setObjectName("settings-row-btn")
+        self.open_folder_btn.setObjectName("settings-light-btn")
         self.open_folder_btn.clicked.connect(self._open_folder)
         pf.addWidget(self.open_folder_btn)
         # 2026-05-08: кнопка «Открыть лог» — показывает runtime.log
         # с диагностикой ошибок (stdout+stderr Studio пишутся туда).
         self.open_log_btn = QPushButton(tr('open_log_btn'))
-        self.open_log_btn.setObjectName("settings-row-btn")
+        self.open_log_btn.setObjectName("settings-light-btn")
         self.open_log_btn.setToolTip(tr('open_log_btn_tooltip'))
         self.open_log_btn.clicked.connect(self._open_studio_log)
         pf.addWidget(self.open_log_btn)
-        lay.addWidget(proj_frame)
 
         # ── О ПРИЛОЖЕНИИ — версии (две строки с тонкой разделительной) ─────
         self.sec_about_lbl = QLabel(tr('sec_about'))
         self.sec_about_lbl.setObjectName("settings-section")
-        lay.addWidget(self.sec_about_lbl)
 
         about_frame = QFrame()
-        about_frame.setObjectName("settings-group")
+        about_frame.setObjectName("settings-group-tile")
         af = QVBoxLayout(about_frame)
-        af.setSpacing(0)
-        af.setContentsMargins(0, 0, 0, 0)
+        af.setSpacing(8)
+        af.setContentsMargins(12, 12, 12, 12)
 
         # Версия приложения (одна строка — раньше были 2: app + project,
         # 2026-05-08 объединили в одну, поле version в version.json устарело)
         row_app = QWidget()
         row_app.setObjectName("settings-row")
         ra = QHBoxLayout(row_app)
-        ra.setContentsMargins(18, 14, 18, 14)
+        ra.setContentsMargins(0, 0, 0, 0)
         self.app_ver_key_lbl = QLabel(tr('app_version'))
         self.app_ver_key_lbl.setObjectName("settings-row-key")
         ra.addWidget(self.app_ver_key_lbl)
@@ -8310,6 +8338,8 @@ class MainWindow(QMainWindow):
         self.app_ver_val_lbl.setObjectName("settings-row-val")
         ra.addWidget(self.app_ver_val_lbl)
         af.addWidget(row_app)
+        # 2026-06-17 (Коммит 7 фикс): версия сверху, кнопка прижата к низу.
+        af.addStretch()
 
         # 2026-05-12 (v1.0.53): кнопка ручной проверки обновлений.
         # Auto-check работает только при старте Studio (QTimer.singleShot
@@ -8319,13 +8349,11 @@ class MainWindow(QMainWindow):
         # Особенно полезна для коллег после обновления через Installer:
         # «нажми эту кнопку чтобы убедиться что auto-update работает».
         self.check_updates_btn = QPushButton(tr('check_updates_btn'))
-        self.check_updates_btn.setObjectName("settings-row-btn")
+        self.check_updates_btn.setObjectName("settings-light-btn")
         self.check_updates_btn.setToolTip(tr('check_updates_btn_tooltip'))
         self.check_updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.check_updates_btn.clicked.connect(self._on_manual_check_updates)
         af.addWidget(self.check_updates_btn)
-
-        lay.addWidget(about_frame)
 
         # ── AI-АККАУНТ ──────────────────────────────────────────────────
         # Показывает email текущего залогиненного claude CLI аккаунта.
@@ -8335,19 +8363,18 @@ class MainWindow(QMainWindow):
         # только через AuthBanner (только при детекции quota/logged_out).
         self.sec_ai_account_lbl = QLabel(tr('sec_ai_account'))
         self.sec_ai_account_lbl.setObjectName("settings-section")
-        lay.addWidget(self.sec_ai_account_lbl)
 
         claude_acc_frame = QFrame()
-        claude_acc_frame.setObjectName("settings-group")
+        claude_acc_frame.setObjectName("settings-group-tile")
         cf = QVBoxLayout(claude_acc_frame)
-        cf.setSpacing(0)
-        cf.setContentsMargins(0, 0, 0, 0)
+        cf.setSpacing(8)
+        cf.setContentsMargins(12, 12, 12, 12)
 
         # Строка с email — повторяет стиль строки версии в about_frame.
         row_acc = QWidget()
         row_acc.setObjectName("settings-row")
         ra2 = QHBoxLayout(row_acc)
-        ra2.setContentsMargins(18, 14, 18, 14)
+        ra2.setContentsMargins(0, 0, 0, 0)
         self.claude_acc_key_lbl = QLabel(tr('ai_account_current'))
         self.claude_acc_key_lbl.setObjectName("settings-row-key")
         ra2.addWidget(self.claude_acc_key_lbl)
@@ -8356,14 +8383,50 @@ class MainWindow(QMainWindow):
         self.claude_acc_email_lbl.setObjectName("settings-row-val")
         ra2.addWidget(self.claude_acc_email_lbl)
         cf.addWidget(row_acc)
+        # 2026-06-17 (Коммит 7 фикс): email сверху, кнопка прижата к низу.
+        cf.addStretch()
 
-        # Кнопка «Сменить аккаунт» — стилизована как settings-row-btn.
+        # Кнопка «Сменить аккаунт» — светлый стиль (settings-light-btn).
         self.claude_acc_switch_btn = QPushButton(tr('ai_account_switch_btn'))
-        self.claude_acc_switch_btn.setObjectName("settings-row-btn")
+        self.claude_acc_switch_btn.setObjectName("settings-light-btn")
         self.claude_acc_switch_btn.clicked.connect(self._on_auth_switch_requested)
         cf.addWidget(self.claude_acc_switch_btn)
 
-        lay.addWidget(claude_acc_frame)
+        # 2026-06-17 (Коммит 7): три колонки рядом — «Проект» | «О приложении» |
+        # «AI-аккаунт». В каждой свой заголовок секции + frame. Карточки
+        # растягиваются на одну высоту через frame со stretch=1 (выравнивание
+        # высоты); кнопки внутри прижаты к низу (addStretch внутри frame'ов).
+        info_row = QHBoxLayout()
+        info_row.setSpacing(12)
+
+        col_proj = QVBoxLayout()
+        col_proj.setSpacing(6)
+        col_proj.addWidget(self.sec_project_lbl)
+        col_proj.addWidget(proj_frame, stretch=1)
+        col_proj_widget = QWidget()
+        col_proj_widget.setMinimumWidth(220)
+        col_proj_widget.setLayout(col_proj)
+        info_row.addWidget(col_proj_widget, stretch=1)
+
+        col_about = QVBoxLayout()
+        col_about.setSpacing(6)
+        col_about.addWidget(self.sec_about_lbl)
+        col_about.addWidget(about_frame, stretch=1)
+        col_about_widget = QWidget()
+        col_about_widget.setMinimumWidth(220)
+        col_about_widget.setLayout(col_about)
+        info_row.addWidget(col_about_widget, stretch=1)
+
+        col_account = QVBoxLayout()
+        col_account.setSpacing(6)
+        col_account.addWidget(self.sec_ai_account_lbl)
+        col_account.addWidget(claude_acc_frame, stretch=1)
+        col_account_widget = QWidget()
+        col_account_widget.setMinimumWidth(220)
+        col_account_widget.setLayout(col_account)
+        info_row.addWidget(col_account_widget, stretch=1)
+
+        lay.addLayout(info_row)
 
         # Инициализируем email актуальным значением. _last_known_auth_email
         # уже populated initial-tick'ом при старте Studio (см. __init__).
