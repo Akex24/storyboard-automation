@@ -234,8 +234,18 @@ class _ReplaceableImageSlot(QFrame):
         self._btn_hover = False
 
     def _btn_rect(self) -> QRect:
-        return QRect(self.width() - self._BTN - self._BTN_MARGIN,
-                     self._BTN_MARGIN, self._BTN, self._BTN)
+        # Якорь к правому ВЕРХНЕМУ углу самой картинки (она центрирована и из-за
+        # KeepAspectRatio имеет поля по бокам/сверху). Нет картинки (плейсхолдер)
+        # → fallback на угол слота.
+        if self._pixmap is not None:
+            x_img_right = (self.width() + self._pixmap.width()) / 2
+            y_img_top = (self.height() - self._pixmap.height()) / 2
+            x = int(x_img_right - self._BTN - self._BTN_MARGIN)
+            y = int(y_img_top + self._BTN_MARGIN)
+        else:
+            x = self.width() - self._BTN - self._BTN_MARGIN
+            y = self._BTN_MARGIN
+        return QRect(x, y, self._BTN, self._BTN)
 
     def set_pixmap(self, pm: Optional[QPixmap]):
         """Внешний API: задать картинку (None → плейсхолдер «—»). Масштабируем
