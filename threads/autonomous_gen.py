@@ -253,9 +253,42 @@ class AutonomousGenThread(QThread):
             except Exception:
                 pass
 
+    def _diag_log(self, msg: str) -> None:
+        """Персистентный лог автономной генерации в
+        `shows/<show>/_studio_diag.log` (тег [AUTOGEN-ERROR]). Зеркалит
+        `_log_ref_error` из storyboard_app.py, но thread-side (как
+        `GenerateActorRefThread._diag_log`) — без этого autonomous-путь
+        падает молча: нет файла, нет decision, нет лога. Тихо проглатывает
+        свои ошибки (логирование не должно ронять генерацию). Cross-platform:
+        open(..., encoding='utf-8') + pathlib, без subprocess/shell."""
+        try:
+            import datetime
+            show = self.show_slug
+            if not show:
+                try:
+                    show = _sa.get_current_show(self.project_root)
+                except Exception:
+                    show = None
+            if not show:
+                raise RuntimeError("no show slug")
+            log_path = self.project_root / "shows" / show / "_studio_diag.log"
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} [AUTOGEN-ERROR] "
+                        f"{self.gen_type}/{self.name}: {msg}\n")
+        except Exception:
+            try:
+                sys.stderr.write(
+                    f"[AUTOGEN-ERROR] {self.gen_type}/{self.name}: {msg}\n")
+            except Exception:
+                pass
+
     def run(self):
         cli = _sa.find_claude_cli()
         if not cli:
+            self._diag_log("claude_cli_not_found — Claude CLI не найден на "
+                           "PATH/стандартных путях (частая причина: .app "
+                           "запущен из Finder с урезанным PATH)")
             self.error.emit("claude_cli_not_found")
             return
         try:
@@ -321,9 +354,13 @@ class AutonomousGenThread(QThread):
                 self.stopped.emit()
                 return
             if err_msg:
+                self._diag_log(f"agent reported error: "
+                               f"{err_msg or last_line or 'unknown error'}")
                 self.error.emit(err_msg or last_line or "unknown error")
                 return
             if rc != 0 and not done_path:
+                self._diag_log(f"exit {rc} без '✓ done' "
+                               f"(last_line: {last_line[:200]})")
                 self.error.emit(f"exit {rc}: {last_line[:200]}")
                 return
             self.finished_ok.emit(done_path or self.name)
@@ -331,4 +368,6 @@ class AutonomousGenThread(QThread):
             if self._stop_requested:
                 self.stopped.emit()
                 return
+            import traceback as _tb
+            self._diag_log(f"exception: {e}\n{_tb.format_exc()}")
             self.error.emit(str(e)[:500])
