@@ -73,7 +73,7 @@ _DIALOG_QSS = (
     " border:1px solid rgba(255,255,255,0.06); border-radius:8px; }"
     "QFrame#img-slot:hover { border-color:rgba(228,52,74,0.40); }"
     "QPushButton#slot-replace { background:#e4344a; color:#ffffff;"
-    " border:none; border-radius:12px; font-size:14px; font-weight:600; }"
+    " border:none; border-radius:8px; font-size:22px; font-weight:700; }"
     "QPushButton#slot-replace:hover { background:#d92d44; }"
     "QPlainTextEdit#instruction-edit { background:#15101e;"
     " border:1px solid #2c2240; border-radius:6px; color:#ddd;"
@@ -224,9 +224,9 @@ class _ReplaceableImageSlot(QFrame):
             "color:rgba(255,255,255,0.35); font-size:14px; background:transparent;")
 
         # Плюсик-оверлей «заменить картинку» — виден всегда (не на hover).
-        self.replace_btn = QPushButton("＋", self)
+        self.replace_btn = QPushButton("+", self)
         self.replace_btn.setObjectName("slot-replace")
-        self.replace_btn.setFixedSize(24, 24)
+        self.replace_btn.setFixedSize(36, 36)
         self.replace_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.replace_btn.clicked.connect(self._fire)
 
@@ -239,7 +239,8 @@ class _ReplaceableImageSlot(QFrame):
     def resizeEvent(self, ev):
         m = 6
         self._img.setGeometry(m, m, self.width() - 2 * m, self.height() - 2 * m)
-        self.replace_btn.move(self.width() - self.replace_btn.width() - m, m)
+        bm = 8  # отступ плюсика от края слота (картинка остаётся на m=6)
+        self.replace_btn.move(self.width() - self.replace_btn.width() - bm, bm)
         self.replace_btn.raise_()
         super().resizeEvent(ev)
 
@@ -401,6 +402,7 @@ class RefEditDialog(QDialog):
 
     def _build_buttons(self) -> QHBoxLayout:
         row = QHBoxLayout()
+        row.setSpacing(12)
         row.addStretch()
         cancel = QPushButton(tr('ref_edit_dialog_cancel'))
         cancel.setObjectName("btn-secondary")
