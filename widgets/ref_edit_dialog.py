@@ -24,8 +24,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QSize, QRect, QRectF, QPointF
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPlainTextEdit, QPushButton, QScrollArea, QWidget, QFrame,
@@ -72,9 +72,6 @@ _DIALOG_QSS = (
     "QFrame#img-slot { background:#0e0a16;"
     " border:1px solid rgba(255,255,255,0.06); border-radius:8px; }"
     "QFrame#img-slot:hover { border-color:rgba(228,52,74,0.40); }"
-    "QPushButton#slot-replace { background:#e4344a; color:#ffffff;"
-    " border:none; border-radius:8px; font-size:22px; font-weight:700; }"
-    "QPushButton#slot-replace:hover { background:#d92d44; }"
     "QPlainTextEdit#instruction-edit { background:#15101e;"
     " border:1px solid #2c2240; border-radius:6px; color:#ddd;"
     " padding:8px; font-size:13px; }"
@@ -207,55 +204,112 @@ class _StylePickerDialog(QDialog):
 
 
 class _ReplaceableImageSlot(QFrame):
-    """Слот картинки для генерации. По умолчанию — редактируемый реф; клик
-    по картинке ИЛИ по плюсику (правый верхний угол, виден постоянно)
-    открывает picker замены. Кнопки сброса нет."""
+    """Слот картинки — всё рисует сам через paintEvent (без QPushButton/QLabel/
+    QSS). Картинка scaled KeepAspectRatio по центру + плюсик-оверлей в правом
+    верхнем углу (квадрат с закруглением, accent, белый «+» нарисован QPainter).
+
+    Почему paintEvent: маленькая QPushButton с одним символом по центру на
+    macOS ломается через QSS (font-metrics/native padding) — тот же приём, что
+    ProviderToggle/ModeSegment в Настройках. Клик по картинке ИЛИ по плюсику
+    открывает picker замены; кнопки сброса нет.
+
+    Контракт (не менялся): __init__(width, height, on_click), set_pixmap(pm),
+    клик ЛКМ где угодно по слоту → on_click()."""
+
+    _BTN = 32           # сторона плюсика
+    _BTN_MARGIN = 12    # отступ плюсика от правого / верхнего края слота
+    _BTN_RADIUS = 8     # закругление плюсика (как btn-primary/secondary)
+    _IMG_INSET = 12     # поле картинки от края слота (slot − 2·12)
+    _PLUS_LEN = 14      # длина линий плюса
+    _PLUS_WIDTH = 2.5   # толщина линий плюса
 
     def __init__(self, width: int, height: int, on_click, parent=None):
         super().__init__(parent)
         self.setObjectName("img-slot")
         self.setFixedSize(width, height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
         self._on_click = on_click
+        self._pixmap: Optional[QPixmap] = None   # уже масштабированная под слот
+        self._btn_hover = False
 
-        self._img = QLabel(self)
-        self._img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img.setStyleSheet(
-            "color:rgba(255,255,255,0.35); font-size:14px; background:transparent;")
-
-        # Плюсик-оверлей «заменить картинку» — виден всегда (не на hover).
-        self.replace_btn = QPushButton("+", self)
-        self.replace_btn.setObjectName("slot-replace")
-        self.replace_btn.setFixedSize(36, 36)
-        self.replace_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.replace_btn.clicked.connect(self._fire)
+    def _btn_rect(self) -> QRect:
+        return QRect(self.width() - self._BTN - self._BTN_MARGIN,
+                     self._BTN_MARGIN, self._BTN, self._BTN)
 
     def set_pixmap(self, pm: Optional[QPixmap]):
-        if pm is not None:
-            self._img.setPixmap(pm)
+        """Внешний API: задать картинку (None → плейсхолдер «—»). Масштабируем
+        под (w−24, h−24) KeepAspectRatio один раз тут — paintEvent только рисует
+        готовый pixmap по центру."""
+        if pm is not None and not pm.isNull():
+            self._pixmap = pm.scaled(
+                QSize(self.width() - 2 * self._IMG_INSET,
+                      self.height() - 2 * self._IMG_INSET),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
         else:
-            self._img.setText("—")
+            self._pixmap = None
+        self.update()
 
-    def resizeEvent(self, ev):
-        m = 6
-        self._img.setGeometry(m, m, self.width() - 2 * m, self.height() - 2 * m)
-        bm = 8  # отступ плюсика от края слота (картинка остаётся на m=6)
-        self.replace_btn.move(self.width() - self.replace_btn.width() - bm, bm)
-        self.replace_btn.raise_()
-        super().resizeEvent(ev)
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-    def _fire(self):
-        if self._on_click:
+            # Фон слота #0e0a16 (виден по бокам картинки) + тонкая рамка.
+            slot = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+            p.setBrush(QColor("#0e0a16"))
+            p.setPen(QPen(QColor(255, 255, 255, 16), 1))
+            p.drawRoundedRect(slot, 8, 8)
+
+            # Картинка по центру (или плейсхолдер «—»).
+            if self._pixmap is not None:
+                x = (self.width() - self._pixmap.width()) // 2
+                y = (self.height() - self._pixmap.height()) // 2
+                p.drawPixmap(int(x), int(y), self._pixmap)
+            else:
+                p.setPen(QColor(255, 255, 255, 90))
+                p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "—")
+
+            # Плюсик-оверлей: квадрат с закруглением + белый «+».
+            r = QRectF(self._btn_rect())
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#d92d44" if self._btn_hover else "#e4344a"))
+            p.drawRoundedRect(r, self._BTN_RADIUS, self._BTN_RADIUS)
+
+            cx, cy = r.center().x(), r.center().y()
+            half = self._PLUS_LEN / 2.0
+            plus = QPen(QColor("#ffffff"))
+            plus.setWidthF(self._PLUS_WIDTH)
+            plus.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(plus)
+            p.drawLine(QPointF(cx - half, cy), QPointF(cx + half, cy))
+            p.drawLine(QPointF(cx, cy - half), QPointF(cx, cy + half))
+        finally:
+            p.end()
+
+    def mouseMoveEvent(self, ev):
+        # Hover-подсветка только плюсика (фон темнее).
+        inside = self._btn_rect().contains(ev.position().toPoint())
+        if inside != self._btn_hover:
+            self._btn_hover = inside
+            self.update()
+        super().mouseMoveEvent(ev)
+
+    def leaveEvent(self, ev):
+        if self._btn_hover:
+            self._btn_hover = False
+            self.update()
+        super().leaveEvent(ev)
+
+    def mousePressEvent(self, ev):
+        # Клик ЛКМ где угодно по слоту (включая плюсик) → on_click.
+        if ev.button() == Qt.MouseButton.LeftButton and self._on_click:
             try:
                 self._on_click()
             except Exception:
                 pass
-
-    def mousePressEvent(self, ev):
-        # Плюсик — отдельная QPushButton (поглощает свой клик); картинка
-        # (QLabel) клики не ловит → доходят сюда.
-        if ev.button() == Qt.MouseButton.LeftButton:
-            self._fire()
         super().mousePressEvent(ev)
 
 
