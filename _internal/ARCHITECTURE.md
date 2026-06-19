@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-19 (фикс SIGABRT — teardown soften-треда в PromptRetryDialog; ранее — движение камеры Seedance, модуль `agents/camera_movement_rules.py`, handheld не дефолт)
+**Последнее обновление:** 2026-06-19 (FastGen v5 — частичная миграция: RefGenerateThread на /api/v5/generations + model/inputs; остальные пути пока v4)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -2177,6 +2177,23 @@ content-фильтр, отдельный pool от OpenAI). При `openai` =
 `/api/v4/openai/image/generate` (cost=1). Поле `model` НЕ передаётся
 ни в одном случае (иначе NARWHAL flow маршрутизирует обратно в
 OpenAI — см. коммент в [threads/generate.py:242](threads/generate.py:242)).
+
+**FastGen v5 — частичная миграция (2026-06-19, начато с RefGenerateThread).**
+`RefGenerateThread` (перегенерация/правка существующего рефа локации/объекта —
+кнопки 🔄/✏️ в РЕФЕРЕНСАХ) переведён на v5: единый эндпоинт
+`POST /api/v5/generations?result_format=ref` (провайдер уже НЕ в пути), провайдер
+задаётся полем `payload["model"]` (`nano-banana-2`=flow / `openai-image`=openai),
+рефы — `payload["inputs"]=[{name,input}]` (биндинг ПОЗИЦИОННЫЙ, name произвольный,
+старое `reference_images` убрано), op_id в `data["id"]` (не `operation_id`),
+poll `GET /api/v5/generations/{id}?result_format=ref`, статусы-множества
+(succeeded/success/completed/done = готово; failed/error/cancelled = ошибка;
+queued/running = поллим), storage_id из `results[0].metadata.storage_id` (+fallback
+на v4-разбор). Граница `image_bytes`/сохранение и `{STORAGE}/upload`+`/file/{id}/raw`
+НЕ менялись. Описание v4-эндпоинтов ВЫШЕ относится к НЕмигрированным путям:
+`GenerateThread` (шоты), `GenerateActorRefThread`/`EditActorRefThread` (актёры) в
+`threads/generate.py`, а также `pipeline.py` (новые локации/объекты из чата, CLI),
+`server_check.py`/`cancel.py` (служебные) и ручной `generate_storyboards.py` —
+ВСЁ это пока v4.
 
 ## Cross-platform (Mac / Win 10-11)
 
