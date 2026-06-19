@@ -1229,13 +1229,11 @@ class RefGenerateThread(QThread):
                 return
 
             # 2026-05-07: Edit-режим использует ВЫБОР ПРОВАЙДЕРА (как
-            # GenerateThread у шотов). Раньше хардкодом OpenAI — но он
-            # ломается pydantic-ошибкой на reference_images. NARWHAL
-            # (`/api/v4/flow/image/generate`) корректно принимает refs.
-            # Default провайдер — NARWHAL (см. storyboard_app.image_provider).
-            # Локации/объекты — 16:9 landscape. Поля `model`/`resolution`
-            # не передаём (NARWHAL flow маршрутизирует обратно в OpenAI
-            # если есть `model` → ломается тот же pydantic).
+            # GenerateThread у шотов). Default провайдер — NARWHAL
+            # (см. storyboard_app.image_provider). Локации/объекты — 16:9 landscape.
+            # v5 (2026-06-19): провайдер задаётся полем payload["model"]
+            # ("nano-banana-2" / "openai-image"), единый эндпоинт /api/v5/generations,
+            # рефы — payload["inputs"]. (Прежде v4: путь /flow|/openai + reference_images.)
             # 2026-05-23: разделение провайдеров. RefGenerateThread —
             # мульти-kind (локация / объект / персонаж сериала). Определяем
             # kind по пути (`Path.parts`, кроссплатформенно):
@@ -1250,20 +1248,25 @@ class RefGenerateThread(QThread):
             else:
                 # 'locations', 'objects', либо неожиданный путь → админский
                 provider = _sa.image_provider_admin()
+            # v5: провайдер выбирается полем "model" (НЕ путём эндпоинта).
             payload: Dict = {
                 "prompt":       prompt_text,
                 "aspect_ratio": "16:9",
+                "model":        ("openai-image"
+                                 if provider == _sa.IMAGE_PROVIDER_OPENAI
+                                 else "nano-banana-2"),
             }
             if ref_hashes:
                 if (provider == _sa.IMAGE_PROVIDER_OPENAI
                         and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
-                    # OpenAI режет до OPENAI_MAX_REFS рефов (лимит v4, проверено живьём)
+                    # OpenAI-обрезка: мёртвая ветка здесь (refs<=1), оставлена как есть.
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                payload["reference_images"] = ref_hashes
+                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
+                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                     for i, h in enumerate(ref_hashes)]
 
-            endpoint = ("/api/v4/openai/image/generate"
-                        if provider == _sa.IMAGE_PROVIDER_OPENAI
-                        else "/api/v4/flow/image/generate")
+            # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (P4/P7).
+            endpoint = "/api/v5/generations"
             # 2026-06-17 (Коммит F): 404-перезаливка протухшего рефа. send_path мог
             # быть залит ранее в этой сессии → серверный file_hash протух (короткий
             # TTL), а в payload ушёл мёртвый хеш из _upload_cache → POST отдаёт 404
@@ -1274,24 +1277,29 @@ class RefGenerateThread(QThread):
             for _submit_attempt in range(2):
                 try:
                     r = session.post(f"{_sa.API_BASE}{endpoint}",
+                                     params={"result_format": "ref"},
                                      json=payload, timeout=60)
                     r.raise_for_status()
                     data = r.json()
                     break
                 except Exception as _post_e:
+                    # v5: ref-expired detection (_is_ref_expired_error) — v4-формат тела,
+                    # ТРЕБУЕТ ПРОВЕРКИ НА ЖИВОМ v5-ОТВЕТЕ (не переписываем сейчас).
                     if (_submit_attempt == 0 and ref_hashes
                             and _is_ref_expired_error(_post_e)):
                         _sa._upload_cache.pop(str(send_path.resolve()), None)
                         self.step.emit("Перезагружаю картинку (404 на сервере)…", 12)
                         ref_hashes = [self._upload(session, send_path)]
-                        payload["reference_images"] = ref_hashes
+                        payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                             for i, h in enumerate(ref_hashes)]
                         continue
                     raise
-            if not data.get("operation_id"):
-                self.error.emit(f"[POST] No operation_id: {data}")
+            # v5: op_id в поле "id" (operation_id в v5 НЕТ — был бы KeyError).
+            if not data.get("id"):
+                self.error.emit(f"[POST] No id: {data}")
                 return
 
-            op_id      = data["operation_id"]
+            op_id      = data["id"]
             poll_count = 0
             self.step.emit("Генерирую…", 30)
 
@@ -1306,7 +1314,8 @@ class RefGenerateThread(QThread):
                         f"[polling] API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
                     return
-                r = session.get(f"{_sa.API_BASE}/api/v4/operations/{op_id}", timeout=30)
+                r = session.get(f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                                params={"result_format": "ref"}, timeout=30)
                 r.raise_for_status()
                 data   = r.json()
                 status = data.get("status")
@@ -1316,23 +1325,31 @@ class RefGenerateThread(QThread):
                 self.step.emit(f"Генерирую… ({poll_count * 4}с)", pct)
                 self.progress.emit(f"Статус: {status}…")
 
-                if status == "success":
-                    result = data.get("result") or []
-                    uri    = result[0] if isinstance(result, list) else result
-                    if isinstance(uri, dict):
-                        uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
-                    uri = str(uri)
-                    if uri.startswith("data:"):
-                        _, b64 = uri.split(",", 1)
+                # v5: успешные статусы — множество.
+                if status in ("succeeded", "success", "completed", "done"):
+                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                    results = data.get("results") or data.get("result") or []
+                    sid = ""
+                    if results and isinstance(results[0], dict):
+                        sid = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                    if not sid:
+                        # FALLBACK (v4-форма): result[0] → url/ref/file_hash.
+                        uri = results[0] if (isinstance(results, list) and results) else results
+                        if isinstance(uri, dict):
+                            uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
+                        sid = str(uri)
+                    if sid.startswith("data:"):
+                        _, b64 = sid.split(",", 1)
                         image_bytes = base64.b64decode(b64)
                     else:
-                        fh  = uri[5:] if uri.startswith("file:") else uri
-                        r2  = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw", timeout=120)
+                        sid = sid[5:] if sid.startswith("file:") else sid
+                        r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
                     break
-                if status == "error":
-                    self.error.emit(f"[polling status=error] API error: {data.get('error')}")
+                # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
+                if status in ("failed", "error", "cancelled"):
+                    self.error.emit(f"[polling status={status}] API error: {data.get('error')}")
                     return
 
             self.step.emit("Сохраняю…", 92)
