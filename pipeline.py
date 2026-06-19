@@ -232,7 +232,16 @@ def main() -> None:
             sys.exit(1)
         name = args[0]
         prompt = args[1]
-        key = load_key()
+        # 2026-06-19: ключ через round-robin пул (key_pool), как в
+        # generate_storyboards.py:160-161. Ленивый импорт + fallback на
+        # load_key(): если key_pool.py не докопировался рядом (старая
+        # установка) или next_key кинул — работаем на одиночном .env-ключе
+        # (старое поведение сохраняется при любых проблемах с пулом).
+        try:
+            from key_pool import next_key
+            key = next_key() or load_key()
+        except Exception:
+            key = load_key()
         target_dir = OBJECTS_DIR if kind == "object" else LOCATIONS_DIR
         existing = list(target_dir.glob(f"{name}.*"))
         if existing and not force:
