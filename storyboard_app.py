@@ -6444,6 +6444,51 @@ class MainWindow(QMainWindow):
             ep_id = info.get('ep_id', '')
             gen_type = info.get('gen_type', '')
             name = info.get('name', '')
+            # 2026-06-18: disk-check ДО записи linked — закрывает «ложный
+            # finished_ok» (агент рапортует ✓ done, но провайдер картинок
+            # упал и .jpg не создан). Без проверки decision=linked писался
+            # на несуществующий файл → карточка уходила, в РЕФЕРЕНСАХ пусто
+            # (list_episode_refs disk-check скрывает), в логе тишина.
+            file_on_disk = True
+            try:
+                if gen_type in ('location', 'object') and name:
+                    cur_show = get_current_show(self._project_root)
+                    if cur_show:
+                        sub = ('locations' if gen_type == 'location'
+                               else 'objects')
+                        base = (self._project_root / "shows" / cur_show
+                                / "refs" / sub)
+                        file_on_disk = any(
+                            (base / f"{name}{ext}").exists()
+                            for ext in ('.jpg', '.jpeg', '.png', '.webp'))
+            except Exception:
+                # Ошибка проверки → не ломаем старое поведение (как раньше).
+                file_on_disk = True
+            if ep_id and gen_type and name and not file_on_disk:
+                # Ложный finished_ok: файла нет. НЕ пишем linked (иначе
+                # карточка молча исчезает), логируем причину, показываем
+                # ошибку в попапе. Карточка вернётся к нажатию после
+                # перезагрузки/переключения сериала (_gen_seen_names
+                # сбрасывается в EpisodeChatView.set_episode).
+                sub = ('locations' if gen_type == 'location' else 'objects')
+                try:
+                    self._log_autogen_error(
+                        gen_type, name,
+                        f"finished_ok но файл не создан (refs/{sub}/{name}.* "
+                        f"отсутствует) — вероятно провайдер картинок упал, "
+                        f"агент ложно отрапортовал done")
+                except Exception:
+                    pass
+                panel = self._active_gens_panel
+                if panel is not None:
+                    try:
+                        panel.set_error(
+                            key, "файл не создан — повторите генерацию")
+                    except Exception:
+                        pass
+                self._active_gens.pop(key, None)
+                self._refresh_active_gens_button()
+                return
             # Auto-link decision: записать в episodes.json[ep_id].refs_decisions.
             try:
                 if ep_id and gen_type and name:
@@ -10582,6 +10627,26 @@ class MainWindow(QMainWindow):
             ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"{ts} [REF-ERROR] {fname}: {msg}\n")
+        except Exception:
+            pass
+
+    def _log_autogen_error(self, gen_type: str, name: str, msg: str) -> None:
+        """2026-06-18: MW-side лог ошибок autonomous-генерации в
+        `shows/<active>/_studio_diag.log` (тег [AUTOGEN-ERROR]). Формат
+        идентичен thread-side `AutonomousGenThread._diag_log`, чтобы ВСЕ
+        autogen-сбои шли единообразно: error-путь логируется в треде, а
+        «ложный finished_ok» (агент сказал done, но файла нет) — здесь.
+        Зеркалит `_log_ref_error`. Тихо проглатывает свои ошибки."""
+        try:
+            import datetime
+            cur = getattr(self, '_current_show', None)
+            root = getattr(self, '_project_root', None)
+            if not cur or root is None:
+                return
+            log_path = root / "shows" / cur / "_studio_diag.log"
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} [AUTOGEN-ERROR] {gen_type}/{name}: {msg}\n")
         except Exception:
             pass
 
