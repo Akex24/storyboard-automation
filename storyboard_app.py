@@ -10650,6 +10650,25 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _log_shot_regen(self, msg: str) -> None:
+        """2026-06-19: MW-side лог одиночной перегенерации шота в
+        `shows/<active>/_studio_diag.log` (тег [SHOT-REGEN]). Зеркалит
+        `_log_autogen_error`/`_log_ref_error`. Тихо проглатывает свои
+        ошибки — regen-flow не должен падать из-за логирования.
+        Cross-platform: pathlib + open(encoding='utf-8'), без subprocess."""
+        try:
+            import datetime
+            cur = getattr(self, '_current_show', None)
+            root = getattr(self, '_project_root', None)
+            if not cur or root is None:
+                return
+            log_path = root / "shows" / cur / "_studio_diag.log"
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} [SHOT-REGEN] {msg}\n")
+        except Exception:
+            pass
+
     def _on_delete_episode_clicked(self):
         """Обработчик кнопки «🗑 Удалить эпизод».
         Показывает диалог подтверждения. При Yes — удаляет всё что относится
@@ -13663,6 +13682,14 @@ class MainWindow(QMainWindow):
         thread.error.connect(
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
+        # 2026-06-19: пользовательский одиночный regen — свежее намерение
+        # генерации. Снимаем залипший глобальный стоп-флаг (иначе
+        # _refresh_stop_btn держит кнопку «Остановить» в тексте «Останавливаю…»)
+        # и обновляем её под активный regen.
+        self._generation_stopped = False
+        self._refresh_stop_btn()
+        self._log_shot_regen(
+            f"start block={target_block} panel={panel_idx} parent={parent_version}")
         # Показать ⋯ возле блока в списке (идёт регенерация)
         self._refresh_block_indicator(target_block)
         self.status_bar.showMessage(tr('status_regenerating', n=panel_idx + 1, block=target_block))
@@ -13705,6 +13732,12 @@ class MainWindow(QMainWindow):
         thread.error.connect(
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
+        # 2026-06-19: realistic — тоже пользовательский regen: снимаем стоп-флаг
+        # и обновляем кнопку (как в _on_regen). diag-старт для симметрии с done/error.
+        self._generation_stopped = False
+        self._refresh_stop_btn()
+        self._log_shot_regen(
+            f"start block={target_block} panel={panel_idx} parent={parent_version} realistic=1")
         self._refresh_block_indicator(target_block)
         self.status_bar.showMessage(tr('status_regenerating', n=panel_idx + 1, block=target_block))
 
@@ -13720,6 +13753,14 @@ class MainWindow(QMainWindow):
         # Помечаем шот «непросмотренным» — на карточке появится бейдж NEW.
         # Очистится когда юзер переключится с этого блока на другой.
         self._unseen_shots.add((target_block, panel_idx))
+        # 2026-06-19: diag-лог завершения одиночного regen ([SHOT-REGEN]).
+        try:
+            _vers = list_shot_versions(shot_history_dir(target_block, panel_idx))
+            _new_v = _vers[-1].stem[1:] if _vers else "?"
+        except Exception:
+            _new_v = "?"
+        self._log_shot_regen(
+            f"done block={target_block} panel={panel_idx} new_version={_new_v}")
 
         # Сохраняем длительность генерации в QSettings (показывается на карточке)
         if elapsed_seconds > 0:
@@ -13763,6 +13804,9 @@ class MainWindow(QMainWindow):
     def _on_regen_error(self, msg: str, target_block: str, panel_idx: int):
         self._retire_thread(self._active_regens.pop((target_block, panel_idx), None))
         self._shot_gen_started_at.pop((target_block, panel_idx), None)
+        # 2026-06-19: diag-лог ошибки одиночного regen ([SHOT-REGEN]).
+        self._log_shot_regen(
+            f"error block={target_block} panel={panel_idx} reason={(msg or '')[:200]}")
 
         # Перерисовываем текущий блок ТОЛЬКО если есть смысл (см. _on_regen_done
         # выше — та же логика, иначе моргание у юзера на чужом блоке).
