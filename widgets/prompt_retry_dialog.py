@@ -288,18 +288,70 @@ class PromptRetryDialog(QDialog):
             self.retry_with.emit(text or "")
         except Exception:
             pass
+        self._stop_soften_sync()
         self.accept()
 
-    def reject(self):
-        """Перед закрытием стопаем тред если он ещё бежит."""
-        try:
-            if (self._soften_thread is not None
-                    and self._soften_thread.isRunning()):
-                self._soften_thread.stop()
-        except Exception:
-            pass
+    def _stop_soften_sync(self):
+        """Останавливает soften-тред и ЖДЁТ его реального завершения перед
+        разрушением диалога. Вызывается на ВСЕХ путях закрытия (reject /
+        accept / closeEvent) — иначе живой QThread-ребёнок (parent=self)
+        попадает в teardown QDialog → «QThread: Destroyed while thread is
+        still running» → SIGABRT. Никогда не падает."""
         try:
             self._dot_timer.stop()
         except Exception:
             pass
+        th = self._soften_thread
+        if th is None:
+            return
+        try:
+            if not th.isRunning():
+                return
+            th.stop()                       # terminate подпроцесса + флаг
+            if not th.wait(2000):           # ждём до 2с реального выхода run()
+                self._diag_log_soften_timeout(
+                    "soften thread did not stop within 2000ms after terminate")
+        except Exception:
+            pass
+
+    def _diag_log_soften_timeout(self, msg: str):
+        """Best-effort лог [SOFTEN-STOP-TIMEOUT] в
+        `shows/<active>/_studio_diag.log`; при любой проблеме — stderr.
+        Никогда не падает. Cross-platform: pathlib + open(encoding='utf-8'),
+        без subprocess/shell. `import storyboard_app` — ленивый (внутри
+        функции), чтобы не словить циклический импорт в subpackage."""
+        try:
+            from datetime import datetime as _dt
+            ts = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+            line = f"{ts} [SOFTEN-STOP-TIMEOUT] {msg}\n"
+            wrote = False
+            try:
+                if self.project_root is not None:
+                    import storyboard_app as _sa  # lazy — без module-level импорта
+                    show = _sa.get_current_show(self.project_root)
+                    if show:
+                        log_path = (Path(self.project_root)
+                                    / "shows" / show / "_studio_diag.log")
+                        log_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(line)
+                        wrote = True
+            except Exception:
+                pass
+            if not wrote:
+                import sys as _sys
+                _sys.stderr.write(line)
+        except Exception:
+            pass
+
+    def reject(self):
+        """Перед закрытием стопаем И ЖДЁМ тред (см. _stop_soften_sync)."""
+        self._stop_soften_sync()
         super().reject()
+
+    def closeEvent(self, event):
+        """Закрытие крестиком окна (✕) идёт через closeEvent, НЕ через
+        reject(). Гасим soften-тред перед teardown QDialog — иначе живой
+        QThread-ребёнок → SIGABRT (тот же путь что reject/accept)."""
+        self._stop_soften_sync()
+        super().closeEvent(event)

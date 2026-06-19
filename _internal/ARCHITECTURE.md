@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-19 (движение камеры Seedance — единый модуль `agents/camera_movement_rules.py`, handheld больше НЕ дефолт)
+**Последнее обновление:** 2026-06-19 (фикс SIGABRT — teardown soften-треда в PromptRetryDialog; ранее — движение камеры Seedance, модуль `agents/camera_movement_rules.py`, handheld не дефолт)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -35,6 +35,47 @@
     `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` планирует подмену bundle
     на следующий рестарт Windows. Studio показывает inline-баннер «нужна
     перезагрузка» вместо popup ошибки. См. секцию «Failure mode B».
+
+## Правило parent для QThread, запущенного из QDialog (2026-06-19, фикс SIGABRT)
+
+Qt-инвариант: если QThread ещё `isRunning()` в момент разрушения владельца,
+Qt-destructor зовёт `qFatal` → SIGABRT («QThread: Destroyed while thread is
+still running»). Для тредов, ЗАПУСКАЕМЫХ из диалога, это даёт стабильный
+краш при закрытии диалога крестиком до конца работы треда. Есть ДВА
+жизнеспособных паттерна — при добавлении нового диалога с фоновым QThread
+ОБЯЗАТЕЛЬНО выбрать один:
+
+**Паттерн A — `parent=None` + хранение ссылки на долгоживущем объекте (view).**
+Тред создаётся `parent=None`, ссылка кладётся в список на view (переживает
+диалог). Диалог закрылся — тред дописывает в фоне, его сигналы безопасно
+отваливаются при удалении получателя. Эталон: `views/actors.py`
+`start_ref_generation` — `GenerateActorRefThread(..., parent=None)` +
+`self._ref_threads` (с явным комментарием-предупреждением, :1518). Совместим
+с graceful-shutdown окна (см. ниже «closeEvent graceful thread shutdown»,
+v1.0.45 — дренаж реестров stop()→wait()).
+
+**Паттерн B — `parent=self` (тред — Qt-ребёнок диалога) + teardown на ВСЕХ
+путях закрытия.** Жизнеспособен ТОЛЬКО если диалог гарантированно
+останавливает И ДОЖИДАЕТСЯ (`wait()`) тред перед `super().closeEvent()`.
+Путей закрытия ТРИ, и ВСЕ обязательны:
+  • `reject()` — кнопка «Закрыть» + Escape;
+  • `accept()` — позитивное закрытие (выбор варианта и т.п.);
+  • `closeEvent()` — КРЕСТИК ОКНА (✕). Крестик идёт через `closeEvent`,
+    НЕ через `reject()`; без переопределённого `closeEvent` тред не
+    остановится → SIGABRT.
+Эталон: `widgets/prompt_retry_dialog.py` `PromptRetryDialog` — soften-тред
+`SoftenPromptThread(parent=self)` гасится единым `_stop_soften_sync()`
+(`_dot_timer.stop()` + `stop()` + `wait(2000)` + diag-лог
+`[SOFTEN-STOP-TIMEOUT]` при таймауте), вызываемым из reject/accept/closeEvent.
+`SoftenPromptThread.stop()` делает `terminate()` + `wait(timeout=1)`
+подпроцессу, чтобы `run()` вышел быстро и `wait(2000)` не блокировал GUI.
+
+ОПАСНАЯ ТОЧКА: новый QDialog с фоновым QThread БЕЗ переопределённого
+`closeEvent` — мина. Крестик окна разрушит диалог с живым тредом → SIGABRT.
+До фикса 2026-06-19 на этом падал PromptRetryDialog: soften-тред `parent=self`,
+но `reject()` стопал без `wait()`, `accept()` не стопал, `closeEvent`
+отсутствовал. Перед добавлением нового диалога с тредом — СНАЧАЛА выбери
+паттерн A или B.
 
 ## Движение камеры Seedance — единый модуль camera_movement_rules.py (2026-06-19)
 

@@ -152,6 +152,7 @@ class SoftenPromptThread(QThread):
         if proc and proc.poll() is None:
             try:
                 proc.terminate()
+                proc.wait(timeout=1)   # дать подпроцессу реально умереть до возврата
             except Exception:
                 pass
 
