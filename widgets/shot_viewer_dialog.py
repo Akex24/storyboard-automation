@@ -367,7 +367,7 @@ class ShotViewerDialog(QDialog):
                               int)
     """
 
-    edit_requested = pyqtSignal(int, int)  # (panel_idx, parent_version)
+    edit_requested = pyqtSignal(int, int, str)  # (panel_idx, parent_version, block_name)
     regen_requested = pyqtSignal(int, int, str)  # (panel_idx, parent_version, block_name)
     # 2026-06-01: «🎬 Сделать реалистичным» — фотореалистичный ре-рендер
     # текущей активной версии шота (edit-механизм GenerateThread с
@@ -613,7 +613,7 @@ class ShotViewerDialog(QDialog):
             # Пред-бейк маркера: MW заберёт отпечаток через take_pending_marked()
             # (+ peek для «Улучшить»). Нет штрихов → _bake вернёт None.
             self._pending_marked_path = self._bake_marked_image()
-            self.edit_requested.emit(self.panel_idx, _parent)
+            self.edit_requested.emit(self.panel_idx, _parent, self.block_name)
         self.btn_edit.clicked.connect(_on_edit_clicked)
         actions.addWidget(self.btn_edit)
 

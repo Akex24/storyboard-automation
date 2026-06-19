@@ -12549,7 +12549,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _on_edit_shot(self, panel_idx: int, parent_version: int = 0):
+    def _on_edit_shot(self, panel_idx: int, parent_version: int = 0,
+                      block_name: Optional[str] = None):
         """2026-05-06: Поведение полностью перепроектировано.
 
         Раньше: попап с инструкцией → NARWHAL edit-режим (правит
@@ -12567,9 +12568,17 @@ class MainWindow(QMainWindow):
         картинки нет) — потому что промпт читается ИЗ .txt а не из
         изображения.
         """
-        if not self.current_block:
+        # 2026-06-19 (Вариант 2, edit): блок ИЗ СИГНАЛА (block_name) — попап
+        # ShotViewerDialog не-модальный, current_block мог занулиться/смениться
+        # к моменту клика «Редактировать» (был «немой» ранний return → edit не
+        # запускался). Fallback на current_block — для карточки грида (она
+        # эмитит edit_requested без block_name).
+        target_block = block_name or self.current_block
+        if not target_block:
+            self._log_shot_regen(
+                f"skip-no-block action=edit panel={panel_idx} "
+                f"block_name={block_name!r} current_block={self.current_block!r}")
             return
-        target_block = self.current_block
         key = (target_block, panel_idx)
         if key in self._active_regens:
             self.status_bar.showMessage(tr('status_already_genning', n=panel_idx + 1))
@@ -12624,11 +12633,14 @@ class MainWindow(QMainWindow):
                     f"«короткая инструкция» пустым).")
                 return
             # Запускаем GenerateThread в edit-режиме.
-            card = self.shot_cards[panel_idx]
-            card.set_loading(True)
             _now = time.time()
             self._shot_gen_started_at[(target_block, panel_idx)] = _now
-            card.start_progress(_now)
+            # Карточку грида трогаем ТОЛЬКО если открыт именно target_block
+            # (он мог прийти из сигнала и отличаться от current_block).
+            if self.current_block == target_block and 0 <= panel_idx < len(self.shot_cards):
+                card = self.shot_cards[panel_idx]
+                card.set_loading(True)
+                card.start_progress(_now)
             # 2026-06-07 (фича маркера, Шаг C): если открыт ShotViewerDialog
             # и юзер нарисовал маркером поверх шота — запекаем штрихи в
             # temp-картинку и отдаём её как базу [@]img0 для Nano Banana
@@ -12708,11 +12720,12 @@ class MainWindow(QMainWindow):
                 return
 
         # Запускаем обычный regen — GenerateThread прочитает обновлённый .txt
-        card = self.shot_cards[panel_idx]
-        card.set_loading(True)
         _now = time.time()
         self._shot_gen_started_at[(target_block, panel_idx)] = _now
-        card.start_progress(_now)
+        if self.current_block == target_block and 0 <= panel_idx < len(self.shot_cards):
+            card = self.shot_cards[panel_idx]
+            card.set_loading(True)
+            card.start_progress(_now)
         thread = GenerateThread(target_block, panel_idx,
                                 parent_version=parent_version,
                                 aspect=self._current_aspect)
