@@ -13656,9 +13656,22 @@ class MainWindow(QMainWindow):
         target_block = self.current_block
         key = (target_block, panel_idx)
 
+        # 2026-06-19: пользовательский regen = свежее намерение генерации.
+        # Снимаем залипший глобальный стоп-флаг В САМОМ НАЧАЛЕ — чтобы ЛЮБОЙ
+        # последующий _refresh_stop_btn (в т.ч. на раннем return ниже) видел
+        # stopped=False. Корень бага e7e4868: [SHOT-REGEN] start не писался →
+        # _on_regen уходил в ранний return (guard двойного клика) ДО прежней
+        # точки сброса после thread.start().
+        self._generation_stopped = False
+
         # Защита от двойного клика на один и тот же шот
         if key in self._active_regens:
             self.status_bar.showMessage(tr('status_already_genning', n=panel_idx + 1))
+            # Кнопку всё равно обновляем (флаг уже снят) — иначе она залипнет
+            # в «Останавливаю…» именно на этом раннем return.
+            self._refresh_stop_btn()
+            self._log_shot_regen(
+                f"skip-already-active block={target_block} panel={panel_idx}")
             return
 
         # Дизейблим только КОНКРЕТНУЮ карточку (другие шоты остаются доступны
@@ -13682,11 +13695,7 @@ class MainWindow(QMainWindow):
         thread.error.connect(
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
-        # 2026-06-19: пользовательский одиночный regen — свежее намерение
-        # генерации. Снимаем залипший глобальный стоп-флаг (иначе
-        # _refresh_stop_btn держит кнопку «Остановить» в тексте «Останавливаю…»)
-        # и обновляем её под активный regen.
-        self._generation_stopped = False
+        # Стоп-флаг уже снят в начале метода; кнопку обновляем под активный regen.
         self._refresh_stop_btn()
         self._log_shot_regen(
             f"start block={target_block} panel={panel_idx} parent={parent_version}")
@@ -13707,10 +13716,17 @@ class MainWindow(QMainWindow):
         target_block = self.current_block
         key = (target_block, panel_idx)
 
+        # 2026-06-19: см. _on_regen — снимаем стоп-флаг В НАЧАЛЕ (до guard),
+        # чтобы любой последующий _refresh_stop_btn видел stopped=False.
+        self._generation_stopped = False
+
         # Защита от двойного клика (та же блокировка что у обычного regen —
         # один шот не может генериться дважды параллельно).
         if key in self._active_regens:
             self.status_bar.showMessage(tr('status_already_genning', n=panel_idx + 1))
+            self._refresh_stop_btn()
+            self._log_shot_regen(
+                f"skip-already-active block={target_block} panel={panel_idx} realistic=1")
             return
 
         card = self.shot_cards[panel_idx]
@@ -13732,9 +13748,7 @@ class MainWindow(QMainWindow):
         thread.error.connect(
             lambda msg: self._on_regen_error(msg, target_block, panel_idx))
         thread.start()
-        # 2026-06-19: realistic — тоже пользовательский regen: снимаем стоп-флаг
-        # и обновляем кнопку (как в _on_regen). diag-старт для симметрии с done/error.
-        self._generation_stopped = False
+        # Стоп-флаг уже снят в начале метода; кнопку обновляем под активный regen.
         self._refresh_stop_btn()
         self._log_shot_regen(
             f"start block={target_block} panel={panel_idx} parent={parent_version} realistic=1")
