@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-11 (троттлинг ключей — ≤25 одновременных запросов на ключ)
+**Последнее обновление:** 2026-06-19 (движение камеры Seedance — единый модуль `agents/camera_movement_rules.py`, handheld больше НЕ дефолт)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -35,6 +35,67 @@
     `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` планирует подмену bundle
     на следующий рестарт Windows. Studio показывает inline-баннер «нужна
     перезагрузка» вместо popup ошибки. См. секцию «Failure mode B».
+
+## Движение камеры Seedance — единый модуль camera_movement_rules.py (2026-06-19)
+
+Раньше дефолтный handheld был жёстко вшит в `agents/seedance_prompts.py`
+(SYSTEM, блок 风格: `手持纪录片风格`) → ВСЕ Seedance-промпты получали
+дрожащую ручную камеру по умолчанию, плюс ПРАВИЛО 7 запрещало любое
+движение внутри шота (шоты статичны на стыке). Теперь правила движения
+вынесены в отдельный leaf-модуль, handheld перестал быть дефолтом, а
+движение внутри шота разрешено (с замиранием за 0.5с до hard cut).
+
+**`agents/camera_movement_rules.py`** — единый источник правил движения
+камеры. Лист-модуль: импортирует только stdlib, сам никого из приложения
+не тянет → нет циклических импортов (см. [PyInstaller circular imports]);
+PyInstaller подхватывает статически через
+`from agents.camera_movement_rules import …` в `seedance_prompts.py`
+(в `agents/__init__.py` НЕ экспортируется — приватная зависимость
+seedance). Экспортирует:
+- `CAMERA_MOVEMENT_RULES` — методический RU/ZH-блок для Opus: ЧАСТЬ 1
+  (движение внутри шота по содержанию кадра), ЧАСТЬ 2 (4 типа межшотового
+  перехода), ЧАСТЬ 3 (10 режиссёрских приёмов). Полной статики нет
+  (микро-дыхание 1-2%); `author_camera` всегда приоритетнее правил.
+- `CAMERA_BLOCK_HEADER` = `运镜：` — заголовок пер-шот секции движения в
+  ВЫХОДНОМ промпте (sentinel; стиль как 镜头：/动作：).
+- `TRANSITION_MARKERS` = `[HARD CUT` / `[MATCH CUT` /
+  `[CONTINUOUS CAMERA MOVE` / `[CONTINUOUS HANDHELD`.
+- `PROTECT_MARKERS` = `CAMERA_BLOCK_HEADER` + `TRANSITION_MARKERS` —
+  манифест того, что compress не режет.
+
+**Сборка SYSTEM** (`seedance_prompts.py`): шаблон переименован в
+`_SYSTEM_TEMPLATE` с плейсхолдером `〈CAMERA_MOVEMENT_RULES〉`; на module-load
+`SYSTEM = _SYSTEM_TEMPLATE.replace("〈CAMERA_MOVEMENT_RULES〉",
+CAMERA_MOVEMENT_RULES)`. `.replace`, а НЕ f-string — в SYSTEM полно
+китайских скобок, f-string рискован. В пер-шот шаблоне добавлена строка
+`运镜：` после блока `镜头`; `[HARD CUT]` заменён на
+`[ТИП ПЕРЕХОДА — обоснование]` (дефолта нет, выбор по ЧАСТИ 2). ПРАВИЛО 7
+переформулировано: движение ВНУТРИ шота разрешено, но перед `[HARD CUT]`
+обязано замереть за 0.5с до конца (`结束前0.5秒停止`); сквозной проезд через
+границу — только в CONTINUOUS-режимах.
+
+**Защита в compress** (`SYSTEM_COMPRESS`): по той же схеме —
+`_SYSTEM_COMPRESS_TEMPLATE` с токеном `〈CAMERA_HDR〉`, на module-load
+`.replace("〈CAMERA_HDR〉", CAMERA_BLOCK_HEADER)`. Важен порядок: `.replace`
+на module-load ДО рантайм-`.format(target/limit/current)` в
+[threads/seedance_pipeline.py](threads/seedance_pipeline.py) — токен без
+`{}`, format не ломает. Добавлен 12-й пункт нерушимого списка: блок `运镜`
+и маркеры переходов копируются символ в символ, НЕ входят в очередь резки.
+Пункт 2 обобщён с одного `[HARD CUT]` на все 4 типа перехода. Очередь
+резки (1)风格 (2)свет-技术参数 (3)场景设置 движение камеры не трогает.
+
+**Будущая правка правил движения = правка ТОЛЬКО
+`camera_movement_rules.py`.** Это и есть цель выноса.
+
+**Reference-доки** (в рантайме НЕ читаются, правлены для согласованности):
+`instructions/ИНСТРУКЦИЯ_ИДЕАЛЬНЫЙ_ПРОМПТ_SEEDANCE 2.0.txt` (секции про
+handheld/переходы, примеры промптов) и
+`instructions/АНТИТЕАТРАЛЬНЫЙ СЛОВАРЬ — ЗАМЕНЫ EMOJI-ЭМОЦИЙ НА МИКРОМИМИКУ.txt:197`.
+
+Mode A (`agents/montage_rules.py` / `agents/validator_prefilter.py` /
+`instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md`) НЕ затронут — `seedance_prompts.py`
+общий для всех режимов A/B/C/D (mode_loader разводит только montage_rules_*),
+поэтому правка камеры работает во всех режимах из одного места.
 
 ## Выбор стиля сториборда: Рисованные/Реалистичные (2026-06-13)
 
