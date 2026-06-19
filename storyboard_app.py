@@ -13649,11 +13649,20 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _on_regen(self, panel_idx: int, parent_version: int = 0):
-        if not self.current_block:
+    def _on_regen(self, panel_idx: int, parent_version: int = 0,
+                  block_name: Optional[str] = None):
+        # 2026-06-19 (Вариант 2): блок берём ИЗ СИГНАЛА (block_name), а не из
+        # self.current_block — попап ShotViewerDialog НЕ модальный, current_block
+        # мог занулиться/смениться к моменту клика «Перегенерировать» (был
+        # «немой» ранний return → regen не стартовал). Fallback на current_block —
+        # для карточки грида (она эмитит regen_requested без block_name).
+        target_block = block_name or self.current_block
+        if not target_block:
+            self._log_shot_regen(
+                f"skip-no-block panel={panel_idx} "
+                f"block_name={block_name!r} current_block={self.current_block!r}")
             return
 
-        target_block = self.current_block
         key = (target_block, panel_idx)
 
         # 2026-06-19: пользовательский regen = свежее намерение генерации.
@@ -13676,11 +13685,14 @@ class MainWindow(QMainWindow):
 
         # Дизейблим только КОНКРЕТНУЮ карточку (другие шоты остаются доступны
         # для параллельной регенерации, в том числе в других блоках).
-        card = self.shot_cards[panel_idx]
-        card.set_loading(True)
         _now = time.time()
         self._shot_gen_started_at[(target_block, panel_idx)] = _now
-        card.start_progress(_now)
+        # Карточку грида трогаем ТОЛЬКО если сейчас открыт именно target_block
+        # (он мог прийти из сигнала и отличаться от current_block).
+        if self.current_block == target_block and 0 <= panel_idx < len(self.shot_cards):
+            card = self.shot_cards[panel_idx]
+            card.set_loading(True)
+            card.start_progress(_now)
 
         thread = GenerateThread(target_block, panel_idx,
                                 parent_version=parent_version,
@@ -13703,17 +13715,22 @@ class MainWindow(QMainWindow):
         self._refresh_block_indicator(target_block)
         self.status_bar.showMessage(tr('status_regenerating', n=panel_idx + 1, block=target_block))
 
-    def _on_make_realistic(self, panel_idx: int, parent_version: int = 0):
+    def _on_make_realistic(self, panel_idx: int, parent_version: int = 0,
+                           block_name: Optional[str] = None):
         """2026-06-01: «🎬 Сделать реалистичным» из ShotViewerDialog.
         Фотореалистичный ре-рендер текущей активной версии шота. Логика
         идентична `_on_regen`, отличие одно — поток стартует с realistic=True
         (внутри GenerateThread это edit-механика + фотореалистичный промпт).
         Переиспользует тот же реестр `_active_regens` и те же callback'и
         `_on_regen_step / _on_regen_done / _on_regen_error`."""
-        if not self.current_block:
+        # 2026-06-19 (Вариант 2): блок из сигнала (см. _on_regen).
+        target_block = block_name or self.current_block
+        if not target_block:
+            self._log_shot_regen(
+                f"skip-no-block panel={panel_idx} realistic=1 "
+                f"block_name={block_name!r} current_block={self.current_block!r}")
             return
 
-        target_block = self.current_block
         key = (target_block, panel_idx)
 
         # 2026-06-19: см. _on_regen — снимаем стоп-флаг В НАЧАЛЕ (до guard),
@@ -13729,11 +13746,12 @@ class MainWindow(QMainWindow):
                 f"skip-already-active block={target_block} panel={panel_idx} realistic=1")
             return
 
-        card = self.shot_cards[panel_idx]
-        card.set_loading(True)
         _now = time.time()
         self._shot_gen_started_at[(target_block, panel_idx)] = _now
-        card.start_progress(_now)
+        if self.current_block == target_block and 0 <= panel_idx < len(self.shot_cards):
+            card = self.shot_cards[panel_idx]
+            card.set_loading(True)
+            card.start_progress(_now)
 
         thread = GenerateThread(target_block, panel_idx, realistic=True,
                                 parent_version=parent_version,

@@ -368,11 +368,11 @@ class ShotViewerDialog(QDialog):
     """
 
     edit_requested = pyqtSignal(int, int)  # (panel_idx, parent_version)
-    regen_requested = pyqtSignal(int, int)  # (panel_idx, parent_version)
+    regen_requested = pyqtSignal(int, int, str)  # (panel_idx, parent_version, block_name)
     # 2026-06-01: «🎬 Сделать реалистичным» — фотореалистичный ре-рендер
     # текущей активной версии шота (edit-механизм GenerateThread с
     # realistic=True). Отдельная кнопка рядом с «Перегенерировать».
-    realistic_requested = pyqtSignal(int, int)  # (panel_idx, parent_version)
+    realistic_requested = pyqtSignal(int, int, str)  # (panel_idx, parent_version, block_name)
     version_use_requested = pyqtSignal(int, int)
     # 2026-06-04 (C2b): кроп при закрытии перезаписал просматриваемую версию +
     # активный файл → MW обновляет карточку грида (panel_idx).
@@ -628,7 +628,7 @@ class ShotViewerDialog(QDialog):
         def _on_regen_clicked():
             _parent = self._selected_version  # родитель ДО активации
             self._activate_selected_version()
-            self.regen_requested.emit(self.panel_idx, _parent)
+            self.regen_requested.emit(self.panel_idx, _parent, self.block_name)
             self.close()
         self.btn_regen.clicked.connect(_on_regen_clicked)
         actions.addWidget(self.btn_regen)
@@ -647,7 +647,7 @@ class ShotViewerDialog(QDialog):
         def _on_realistic_clicked():
             _parent = self._selected_version  # родитель ДО активации
             self._activate_selected_version()
-            self.realistic_requested.emit(self.panel_idx, _parent)
+            self.realistic_requested.emit(self.panel_idx, _parent, self.block_name)
             self.close()
         self.btn_realistic.clicked.connect(_on_realistic_clicked)
         actions.addWidget(self.btn_realistic)
