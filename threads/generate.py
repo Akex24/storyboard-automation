@@ -125,6 +125,12 @@ def _http_error_detail(exc):
                 code = data.get('code') or ''
                 if err or code:
                     detail = f"{err} [{code}]".strip()
+                # v5: pydantic-валидация кладёт поле-уровневые ошибки в "detail"
+                # (напр. inputs.0.input → string_pattern_mismatch). Без него видно
+                # только «Validation error» без указания КАКОГО поля — дописываем.
+                _fld = data.get('detail')
+                if _fld:
+                    detail = (detail + " | detail=" + str(_fld)[:300]).strip(" |")
         except Exception:
             detail = ''
         if not detail:
@@ -286,6 +292,9 @@ class GenerateThread(QThread):
         r.raise_for_status()
         data = r.json()
         fh   = data.get("file_hash") or data.get("file") or data.get("hash") or ""
+        # v5: inputs.input требует ГОЛЫЙ 32-hex; /upload отдаёт file_hash с
+        # префиксом "file:" → срезаем (v4 срезал сам, v5 даёт 422 на префиксе).
+        fh   = fh[5:] if fh.startswith("file:") else fh
         _sa._upload_cache[cache_key] = fh   # перезапись свежим хешем (force)
         return fh
 
@@ -1180,6 +1189,9 @@ class RefGenerateThread(QThread):
         r.raise_for_status()
         data = r.json()
         fh   = data.get("file_hash") or data.get("file") or data.get("hash") or ""
+        # v5: inputs.input требует ГОЛЫЙ 32-hex; /upload отдаёт file_hash с
+        # префиксом "file:" → срезаем (v4 срезал сам, v5 даёт 422 на префиксе).
+        fh   = fh[5:] if fh.startswith("file:") else fh
         _sa._upload_cache[cache_key] = fh
         return fh
 
@@ -1865,6 +1877,8 @@ class GenerateActorRefThread(QThread):
                       or data.get("hash"))
                 if not fh:
                     raise RuntimeError(f"upload missing hash: {data}")
+                # v5: inputs.input требует ГОЛЫЙ 32-hex — срезаем "file:" (v5 422 на префиксе).
+                fh = fh[5:] if fh.startswith("file:") else fh
                 ref_hashes.append(fh)
 
             # 2026-05-22 (v1.0.78): лог photos_uploaded — какие фото
@@ -2243,6 +2257,8 @@ class EditActorRefThread(QThread):
                   or upload_data.get("hash"))
             if not fh:
                 raise RuntimeError(f"upload missing hash: {upload_data}")
+            # v5: inputs.input требует ГОЛЫЙ 32-hex — срезаем "file:" (v5 422 на префиксе).
+            fh = fh[5:] if fh.startswith("file:") else fh
             ref_hashes = [fh]
 
             # 2. Целевая папка + collision-free имя на основе source-stem.

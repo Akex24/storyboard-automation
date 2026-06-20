@@ -88,6 +88,8 @@ def upload_ref(path: Path, session: requests.Session) -> str:
     file_hash = data.get("file_hash") or data.get("file") or data.get("hash")
     if not file_hash:
         raise RuntimeError(f"upload missing file_hash: {data}")
+    # v5: inputs.input требует ГОЛЫЙ 32-hex — срезаем "file:" (v5 422 на префиксе).
+    file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
     _upload_cache[key] = file_hash
     print(f"    uploaded {path.name} → {file_hash[:35]}...")
     return file_hash
