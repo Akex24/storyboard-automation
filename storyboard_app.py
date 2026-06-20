@@ -8531,7 +8531,7 @@ class MainWindow(QMainWindow):
         def _mk_key_status_lbl():
             _l = QLabel("")
             _l.setStyleSheet(
-                "color:#888; font-size:11px; padding:0 0 4px 20px;")
+                "color:#888; font-size:11px; padding:0 0 9px 20px;")
             # Резерв высоты в одну строку — появление статуса («не работает —
             # замени» и т.п.) не дёргает высоту ряда ключа.
             _l.setMinimumHeight(_l.fontMetrics().height() + 4)
@@ -16698,7 +16698,7 @@ class MainWindow(QMainWindow):
                 if lbl is not None:
                     lbl.setText(status)
                     lbl.setStyleSheet(
-                        "color:%s; font-size:11px; padding:0 0 4px 20px;"
+                        "color:%s; font-size:11px; padding:0 0 9px 20px;"
                         % (color if status else "#888"))
             except Exception:
                 continue
