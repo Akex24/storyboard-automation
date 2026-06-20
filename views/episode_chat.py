@@ -1760,12 +1760,28 @@ class EpisodeChatView(QWidget):
         if picker is None:
             self._outfit_threads.pop(ep_id, None)
             return
+        # 2026-06-20: первым вариантом — ДОСЛОВНЫЙ канон-текст персонажа из
+        # манифеста (тот что под кнопкой «Сгенерировать»), без парсинга/чистки/
+        # обрезки. Канон НЕ попадает в _outfit_seen_variants (ниже итерируется
+        # ТОЛЬКО `variants` = AI-список) — AI про канон не знает и не «уходит»
+        # от него на retry «Ещё 3 варианта». Дубль-защита: если AI-вариант ==
+        # канону (трим/регистр) — не дублируем. Канон пуст/пробелы → чисто AI.
+        ai_variants = list(variants or [])
+        canon_raw = self._outfit_descriptions.get(ep_id) or ""
+        canon_key = canon_raw.strip()
+        if canon_key:
+            ai_no_dup = [v for v in ai_variants
+                         if (v or "").strip().casefold() != canon_key.casefold()]
+            display_variants = ([canon_raw] + ai_no_dup)[:3]
+        else:
+            display_variants = ai_variants[:3]
         try:
-            picker.set_variants(list(variants))
+            picker.set_variants(display_variants)
         except Exception:
             traceback.print_exc()
         # 2026-05-07: накапливаем все показанные варианты — следующий
-        # retry передаст их в `previous_variants`.
+        # retry передаст их в `previous_variants`. ВАЖНО: итерируем `variants`
+        # (ТОЛЬКО AI), НЕ display_variants — канон в seen НЕ попадает.
         try:
             seen = self._outfit_seen_variants.setdefault(ep_id, [])
             for v in variants or []:
