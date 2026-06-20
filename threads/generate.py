@@ -1885,26 +1885,33 @@ class GenerateActorRefThread(QThread):
             # через `image_provider_actors` (виден всем юзерам, не
             # только админу).
             provider = _sa.image_provider_actors()
+            # v5: провайдер выбирается полем "model" (НЕ путём эндпоинта).
             payload = {
                 "prompt": self.prompt_text,
                 "aspect_ratio": "16:9",
+                "model": ("openai-image"
+                          if provider == _sa.IMAGE_PROVIDER_OPENAI
+                          else "nano-banana-2"),
             }
             if ref_hashes:
                 if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > _sa.OPENAI_MAX_REFS:
                     self.progress.emit(
                         f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                payload["reference_images"] = ref_hashes
-            endpoint = ("/api/v4/openai/image/generate"
-                        if provider == _sa.IMAGE_PROVIDER_OPENAI
-                        else "/api/v4/flow/image/generate")
+                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
+                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                     for i, h in enumerate(ref_hashes)]
+            # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
+            endpoint = "/api/v5/generations"
             r = session.post(f"{_sa.API_BASE}{endpoint}",
+                             params={"result_format": "ref"},
                              json=payload, timeout=60)
             r.raise_for_status()
             data = r.json()
-            op_id = data.get("operation_id")
+            # v5: op_id в поле "id" (operation_id в v5 НЕТ — был бы KeyError).
+            op_id = data.get("id")
             if not op_id:
-                self.error.emit(f"No operation_id: {data}")
+                self.error.emit(f"No id: {data}")
                 return
             # 2026-05-22 (v1.0.78): лог generate_response — что именно
             # ушло в /generate (prompt + ref_hashes + endpoint) и какой
@@ -1966,7 +1973,8 @@ class GenerateActorRefThread(QThread):
                     return
                 try:
                     r = session.get(
-                        f"{_sa.API_BASE}/api/v4/operations/{op_id}",
+                        f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                        params={"result_format": "ref"},
                         timeout=30)
                     r.raise_for_status()
                     d = r.json()
@@ -1977,13 +1985,21 @@ class GenerateActorRefThread(QThread):
                     return
                 status = (d.get("status") or "").lower()
                 last_status = status
-                if status == "success":
-                    result = d.get("result") or []
-                    uri = result[0] if isinstance(result, list) else result
-                    if isinstance(uri, dict):
-                        uri = (uri.get("url") or uri.get("ref")
-                               or uri.get("file_hash") or "")
-                    uri = str(uri)
+                # v5: успешные статусы — множество (status уже .lower()).
+                if status in ("succeeded", "success", "completed", "done"):
+                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                    # var uri СОХРАНЕНА — downstream result_saved-лог ссылается на uri
+                    # (переименование в sid дало бы NameError).
+                    results = d.get("results") or d.get("result") or []
+                    uri = ""
+                    if results and isinstance(results[0], dict):
+                        uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                    if not uri:
+                        uri = results[0] if (isinstance(results, list) and results) else results
+                        if isinstance(uri, dict):
+                            uri = (uri.get("url") or uri.get("ref")
+                                   or uri.get("file_hash") or "")
+                        uri = str(uri)
                     if uri.startswith("data:"):
                         _, b64 = uri.split(",", 1)
                         image_bytes = base64.b64decode(b64)
@@ -2028,7 +2044,8 @@ class GenerateActorRefThread(QThread):
                         pass
                     self.finished.emit(str(target))
                     return
-                if status == "error":
+                # v5: queued/running/pending — НЕ матчатся, цикл продолжает поллинг.
+                if status in ("failed", "error", "cancelled"):
                     self.error.emit(f"API error: {d.get('error')}")
                     return
                 # Любой другой status (queued/pending/processing/...) —
@@ -2212,25 +2229,32 @@ class EditActorRefThread(QThread):
             prompt_text = self._EDIT_PROMPT_TEMPLATE.format(
                 instruction=self.instruction)
             provider = _sa.image_provider_actors()
+            # v5: провайдер выбирается полем "model" (НЕ путём эндпоинта).
             payload = {
                 "prompt": prompt_text,
                 "aspect_ratio": "16:9",
+                "model": ("openai-image"
+                          if provider == _sa.IMAGE_PROVIDER_OPENAI
+                          else "nano-banana-2"),
             }
             if ref_hashes:
                 if (provider == _sa.IMAGE_PROVIDER_OPENAI
                         and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                payload["reference_images"] = ref_hashes
-            endpoint = ("/api/v4/openai/image/generate"
-                        if provider == _sa.IMAGE_PROVIDER_OPENAI
-                        else "/api/v4/flow/image/generate")
+                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
+                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                     for i, h in enumerate(ref_hashes)]
+            # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
+            endpoint = "/api/v5/generations"
             r = session.post(f"{_sa.API_BASE}{endpoint}",
+                             params={"result_format": "ref"},
                              json=payload, timeout=60)
             r.raise_for_status()
             data = r.json()
-            op_id = data.get("operation_id")
+            # v5: op_id в поле "id" (operation_id в v5 НЕТ — был бы KeyError).
+            op_id = data.get("id")
             if not op_id:
-                self.error.emit(f"No operation_id: {data}")
+                self.error.emit(f"No id: {data}")
                 return
 
             # Diag-лог формата, который просил юзер.
@@ -2255,7 +2279,8 @@ class EditActorRefThread(QThread):
                     return
                 try:
                     r = session.get(
-                        f"{_sa.API_BASE}/api/v4/operations/{op_id}",
+                        f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                        params={"result_format": "ref"},
                         timeout=30)
                     r.raise_for_status()
                     d = r.json()
@@ -2264,13 +2289,19 @@ class EditActorRefThread(QThread):
                     return
                 status = (d.get("status") or "").lower()
                 last_status = status
-                if status == "success":
-                    result = d.get("result") or []
-                    uri = result[0] if isinstance(result, list) else result
-                    if isinstance(uri, dict):
-                        uri = (uri.get("url") or uri.get("ref")
-                               or uri.get("file_hash") or "")
-                    uri = str(uri)
+                # v5: успешные статусы — множество (status уже .lower()).
+                if status in ("succeeded", "success", "completed", "done"):
+                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                    results = d.get("results") or d.get("result") or []
+                    uri = ""
+                    if results and isinstance(results[0], dict):
+                        uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                    if not uri:
+                        uri = results[0] if (isinstance(results, list) and results) else results
+                        if isinstance(uri, dict):
+                            uri = (uri.get("url") or uri.get("ref")
+                                   or uri.get("file_hash") or "")
+                        uri = str(uri)
                     if uri.startswith("data:"):
                         _, b64 = uri.split(",", 1)
                         image_bytes = base64.b64decode(b64)
@@ -2291,7 +2322,8 @@ class EditActorRefThread(QThread):
                         pass
                     self.finished.emit(str(target))
                     return
-                if status == "error":
+                # v5: queued/running/pending — НЕ матчатся, цикл продолжает поллинг.
+                if status in ("failed", "error", "cancelled"):
                     self.error.emit(f"API error: {d.get('error')}")
                     return
                 self.progress.emit(
