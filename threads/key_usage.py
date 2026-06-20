@@ -25,6 +25,47 @@ from PyQt6.QtCore import QThread, pyqtSignal
 API_BASE = "https://googler.fast-gen.ai"
 USAGE_TIMEOUT_SEC = 15
 
+# Цвета usage-строки (тёмная тема): базовый приглушённо-светлый + пороги
+# подсветки. ВАЖНО: красный — СТРОГО при исчерпании (used >= limit, 100%+),
+# жёлтый — 75%..<100%. Порог по ПРОЦЕНТУ (лимиты разные), кроме крайнего 100%.
+USAGE_BASE_COLOR = "#b0b0c0"   # < 75% (или limit=0) — базовый
+USAGE_WARN_COLOR = "#e0b020"   # >= 75% и < 100% — жёлтый
+USAGE_CRIT_COLOR = "#ff4040"   # used >= limit (100% и выше) — красный
+
+
+def _seg_color(used, limit) -> str:
+    """Цвет куска x/y (IMG/VID/потоки) по used/limit. limit<=0 → базовый (БЕЗ
+    деления на 0; напр. VID 0/0 не красим). used >= limit (исчерпан, 100%+) →
+    красный; иначе >=75% → жёлтый; иначе базовый."""
+    try:
+        if not limit or float(limit) <= 0:
+            return USAGE_BASE_COLOR
+        u = float(used)
+        l = float(limit)
+        if u >= l:                       # 100% и выше — лимит исчерпан
+            return USAGE_CRIT_COLOR
+        if (u / l) * 100.0 >= 75:        # 75%..<100%
+            return USAGE_WARN_COLOR
+        return USAGE_BASE_COLOR
+    except Exception:
+        return USAGE_BASE_COLOR
+
+
+def _exp_color(exp_ts) -> str:
+    """Цвет exp по остатку дней до истечения: <=1 день → красный, <=5 дней →
+    жёлтый, иначе базовый. Нет/битый ts → базовый. (Уже истёк → days<=1 → красный.)"""
+    try:
+        if not exp_ts:
+            return USAGE_BASE_COLOR
+        days = (float(exp_ts) - time.time()) / 86400.0
+        if days <= 1:
+            return USAGE_CRIT_COLOR
+        if days <= 5:
+            return USAGE_WARN_COLOR
+        return USAGE_BASE_COLOR
+    except Exception:
+        return USAGE_BASE_COLOR
+
 
 class KeyUsageThread(QThread):
     """GET /api/v5/usage по списку ключей. Per-key emit готовой строки, в конце done."""
@@ -79,9 +120,12 @@ class KeyUsageThread(QThread):
 
     @staticmethod
     def _format(data: dict) -> str:
-        """Собрать строку по ПОДТВЕРЖДЁННОЙ форме /api/v5/usage. Защитно:
-        image_generation/video_generation МОГУТ быть null (нет генераций в окне)
-        → используется 0; если у обоих нет window_start → reset='—'."""
+        """Собрать HTML rich-text строку по ПОДТВЕРЖДЁННОЙ форме /api/v5/usage.
+        Базовый цвет — outer span (USAGE_BASE_COLOR, перекрывает stylesheet лейбла).
+        КРАШЕНЫЕ куски: IMG, VID и ПОТОКИ (I x/y, V x/y) — по _seg_color
+        (>=75% жёлтый, used>=limit красный, limit=0 базовый); EXP — по _exp_color
+        (<=5 дней жёлтый, <=1 день красный). RESET и слово 'threads' — базовый.
+        Защитно: image/video_generation МОГУТ быть null → 0; нет window_start → reset='—'."""
         try:
             lim = data.get("account_limits") or {}
             cur = data.get("current_usage") or {}
@@ -112,8 +156,29 @@ class KeyUsageThread(QThread):
             except Exception:
                 exp = "—"
 
-            return ("IMG %s/%s · VID %s/%s · threads I %s/%s V %s/%s · reset %s · exp %s"
-                    % (img_used, img_lim, vid_used, vid_lim,
-                       it, it_lim, vt, vt_lim, reset, exp))
+            img_c = _seg_color(img_used, img_lim)
+            vid_c = _seg_color(vid_used, vid_lim)
+            it_c = _seg_color(it, it_lim)        # поток image: I x/y
+            vt_c = _seg_color(vt, vt_lim)        # поток video: V x/y
+            exp_c = _exp_color(exp_ts)
+            # Крашеные span'ы: IMG · VID · I(threads) · V(threads) · exp.
+            # Базовый: слово 'threads', разделители '·', 'reset {reset}'.
+            # Всё в outer span базового цвета → QLabel рендерит rich-text,
+            # inline-цвет перекрывает color из stylesheet лейбла.
+            return (
+                '<span style="color:%s">'
+                '<span style="color:%s">IMG %s/%s</span> · '
+                '<span style="color:%s">VID %s/%s</span> · '
+                'threads <span style="color:%s">I %s/%s</span> '
+                '<span style="color:%s">V %s/%s</span> · '
+                'reset %s · '
+                '<span style="color:%s">exp %s</span></span>'
+                % (USAGE_BASE_COLOR,
+                   img_c, img_used, img_lim,
+                   vid_c, vid_used, vid_lim,
+                   it_c, it, it_lim,
+                   vt_c, vt, vt_lim,
+                   reset,
+                   exp_c, exp))
         except Exception:
             return "usage: parse error"
