@@ -2,12 +2,16 @@
 """
 threads/cancel.py — фоновая best-effort отмена задач генерации на сервере FastGen
 при нажатии «Остановить генерацию». Для каждой пары (op_id, key) шлём
-POST /api/v4/operations/cancel с X-API-Key ЭТОЙ задачи (операции привязаны к
-ключу, которым созданы). Ошибки молча глотаем — локальный стоп уже произошёл,
+DELETE /api/v5/generations/{id} с X-API-Key ЭТОЙ задачи (операции привязаны к
+ключу, которым созданы) и ПУСТЫМ телом. Локальный стоп уже произошёл —
 серверная отмена лишь освобождает кредиты/слоты быстрее.
 
-⚠️ Точная форма запроса cancel (body {operation_id} vs query / cancel-all) пока
-НЕ подтверждена живьём (FastGen в ремонте) — проверить при оживлении сервера.
+v5 (2026-06-20, форма подтверждена живым прозвоном коллеги): отмена —
+DELETE /api/v5/generations/{id} (id в URL, тела нет). HTTP 200 ≠ «отменено» —
+читать поле "cancelled" в теле (приходит СТРОКОЙ "True"/"False"). Старый v4
+POST /api/v4/operations/cancel с body {"operation_id": …} больше НЕ работает
+(поле operation_id не принимается → 422). Результат каждой отмены пишем в
+runtime.log тегом [CANCEL] (print → studio tee); сам ключ в лог НЕ пишем.
 
 Cross-platform: чистый requests, без subprocess/shell.
 """
@@ -34,10 +38,22 @@ class CancelThread(QThread):
             if not op_id or not key:
                 continue
             try:
-                requests.post(
-                    f"{API_BASE}/api/v4/operations/cancel",
+                # v5: отмена — DELETE /api/v5/generations/{id}, X-API-Key
+                # ключа-создателя, ПУСТОЕ тело (без json=). raise_for_status
+                # НЕ зовём — 4xx/5xx по одной паре не должны ронять остальные.
+                r = requests.delete(
+                    f"{API_BASE}/api/v5/generations/{op_id}",
                     headers={"X-API-Key": str(key)},
-                    json={"operation_id": str(op_id)},
                     timeout=CANCEL_TIMEOUT_SEC)
-            except Exception:
-                pass
+                # v5: HTTP 200 ≠ отменено. Поле "cancelled" — СТРОКА "True"/"False".
+                cancelled = False
+                try:
+                    cancelled = str(r.json().get("cancelled")).lower() == "true"
+                except Exception:
+                    pass  # ответ не-JSON/пустой → cancelled=False, http залогируем
+                # Лог в runtime.log (studio tee, тег [CANCEL]). Ключ НЕ пишем.
+                print(f"[CANCEL] op_id={op_id} http={r.status_code} "
+                      f"cancelled={cancelled}")
+            except Exception as e:
+                # Сеть/таймаут — best-effort: логируем и продолжаем остальные пары.
+                print(f"[CANCEL] op_id={op_id} FAILED: {e}")
