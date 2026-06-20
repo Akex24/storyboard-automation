@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QComboBox, QPlainTextEdit,
     QVBoxLayout, QHBoxLayout, QScrollArea, QSizePolicy,
@@ -165,6 +166,10 @@ class GeneratorPage(QWidget):
         il.addWidget(empty)
         il.addStretch()
         area.setWidget(inner)
+        # ссылки для _show_result (MVP: одна картинка вместо заглушки)
+        self._results_inner_layout = il
+        self._results_empty = empty
+        self._result_widget = None
         return area
 
     # ── (D) поле промпта снизу — все элементы enabled, без обработчиков ──
@@ -220,9 +225,16 @@ class GeneratorPage(QWidget):
             self.run_btn.setIconSize(QSize(20, 20))
         else:
             self.run_btn.setText("➤")  # fallback если иконка не нашлась
+        self.run_btn.clicked.connect(self._on_run)   # MVP: запуск генерации
         ctl.addWidget(self.run_btn)
 
         outer.addLayout(ctl)
+
+        # Статус/прогресс/ошибка (MVP). Пусто по умолчанию.
+        self.status_lbl = QLabel("")
+        self.status_lbl.setObjectName("gen-status")
+        self.status_lbl.setWordWrap(True)
+        outer.addWidget(self.status_lbl)
         return bar
 
     # ── helpers ─────────────────────────────────────────────────────────
@@ -253,3 +265,80 @@ class GeneratorPage(QWidget):
         self.model_combo.clear()
         for label, mid in MODELS_BY_MODE.get(mode, []):
             self.model_combo.addItem(label, mid)
+
+    # ── MVP сквозная генерация (текст → wand-2 → картинка) ─────────────
+    def _active_seg_key(self, btns) -> Optional[str]:
+        """Ключ активного сегмента (по property active). None если нет."""
+        for key, b in btns.items():
+            if b.property("active"):
+                return key
+        return None
+
+    def _set_status(self, text: str, error: bool = False):
+        self.status_lbl.setText(text or "")
+        self.status_lbl.setStyleSheet(
+            "color:%s; font-size:11px; background:transparent;"
+            % ("#e08a8a" if error else "#9a9aa8"))
+
+    def _on_run(self):
+        """MVP: prompt → nano-banana-2 (формат из активного сегмента) →
+        файл в shows/<slug>/generator/ → показ. Без рефов/холстов/×N."""
+        th = getattr(self, "_gen_thread", None)
+        if th is not None and th.isRunning():
+            return
+        prompt = self.prompt_input.toPlainText().strip()
+        if not prompt:
+            self._set_status("Введи описание картинки", error=True)
+            return
+        import storyboard_app as _sa
+        root = _sa.get_stored_root()
+        slug = _sa.get_current_show(root) if root else None
+        if not root or not slug:
+            # Картинки сохраняются в папку сериала — без него генерация невозможна.
+            self._set_status("Чтобы генерировать, создай любой сериал", error=True)
+            return
+        model_id = self.model_combo.currentData()
+        if not model_id:
+            self._set_status("Модель недоступна", error=True)
+            return
+        aspect = self._active_seg_key(self.fmt_btns) or "16:9"
+        out_dir = root / "shows" / slug / "generator"
+        from generator.generator_thread import GeneratorImageThread
+        self.run_btn.setEnabled(False)
+        self._set_status("Генерирую…")
+        # Pattern A: parent=None + ссылка на долгоживущей странице (не диалог).
+        self._gen_thread = GeneratorImageThread(prompt, aspect, model_id,
+                                                out_dir, parent=None)
+        self._gen_thread.progress.connect(self._set_status)
+        self._gen_thread.finished.connect(self._on_gen_finished)
+        self._gen_thread.error.connect(self._on_gen_error)
+        self._gen_thread.start()
+
+    def _on_gen_finished(self, path: str):
+        self.run_btn.setEnabled(True)
+        self._set_status("Готово")
+        self._show_result(path)
+
+    def _on_gen_error(self, msg: str):
+        self.run_btn.setEnabled(True)
+        self._set_status((msg or "Ошибка")[:200], error=True)
+
+    def _show_result(self, path: str):
+        """MVP: одна картинка 16:9 вместо заглушки (сетку добавим позже)."""
+        pix = QPixmap(path)
+        if pix.isNull():
+            self._set_status("Не удалось открыть результат", error=True)
+            return
+        if getattr(self, "_result_widget", None) is not None:
+            self._result_widget.setParent(None)
+            self._result_widget = None
+        self._results_empty.hide()
+        lbl = QLabel()
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet("background:#0d0913; border:1px solid #221a33;"
+                          " border-radius:8px; padding:4px;")
+        lbl.setPixmap(pix.scaled(480, 270, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation))
+        self._results_inner_layout.insertWidget(
+            1, lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._result_widget = lbl
