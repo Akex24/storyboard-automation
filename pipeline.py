@@ -83,7 +83,7 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
     while True:
         time.sleep(4)
         r = requests.get(
-            f"{FASTGEN_BASE}/api/v4/operations/{op_id}",
+            f"{FASTGEN_BASE}/api/v5/generations/{op_id}",
             headers=headers,
             params={"result_format": "ref"},
             timeout=30,
@@ -92,9 +92,11 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
         data = r.json()
         status = data.get("status")
         print(f"    status: {status}")
-        if status == "success" and data.get("result"):
+        # v5: успешные статусы — множество; result-разбор делает caller.
+        if status in ("succeeded", "success", "completed", "done"):
             return data
-        if status == "error":
+        # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
+        if status in ("failed", "error", "cancelled"):
             raise RuntimeError(f"Fast Gen error: {data}")
 
 
@@ -128,31 +130,42 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     #   • cost_charged=1. Без полей `model`/`resolution`.
     #   • Content-policy блокирует огнестрел/узнаваемых людей.
     provider = load_provider()
-    endpoint = ("/api/v4/flow/image/generate"
-                if provider == "narwhal"
-                else "/api/v4/openai/image/generate")
-    print(f"  provider: {provider} ({endpoint})")
+    # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Строковый
+    # провайдер из image_provider.txt: "narwhal" → nano-banana-2, иначе openai-image.
+    model = "nano-banana-2" if provider == "narwhal" else "openai-image"
+    # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (ниже).
+    endpoint = "/api/v5/generations"
+    print(f"  provider: {provider} (model={model}, {endpoint})")
     r = requests.post(
         f"{FASTGEN_BASE}{endpoint}",
         headers=headers,
         params={"result_format": "ref"},
-        json={"prompt": prompt, "aspect_ratio": "16:9"},
+        json={"prompt": prompt, "aspect_ratio": "16:9", "model": model},
         timeout=30,
     )
     r.raise_for_status()
     data = r.json()
-    if not data.get("success") or not data.get("operation_id"):
+    # v5: op_id в поле "id" (полей "success"/"operation_id" в v5 НЕТ — старая
+    # проверка `not data.get("success")` всегда валила бы запуск генерации).
+    if not data.get("id"):
         raise RuntimeError(f"Failed to start generation: {data}")
 
-    op_id = data["operation_id"]
+    op_id = data["id"]
     print(f"  op_id: {op_id}")
     result_data = _fastgen_poll(op_id, headers)
 
-    result = result_data["result"]
-    ref = result[0] if isinstance(result, list) else result
-    if isinstance(ref, dict):
-        ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
-    file_hash = ref[5:] if str(ref).startswith("file:") else ref
+    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+    results = result_data.get("results") or result_data.get("result") or []
+    file_hash = ""
+    if results and isinstance(results[0], dict):
+        file_hash = ((results[0].get("metadata") or {}).get("storage_id") or "")
+    if not file_hash:
+        # FALLBACK (v4-форма): result[0] → ref/url/file_hash, file:-префикс.
+        ref = results[0] if (isinstance(results, list) and results) else results
+        if isinstance(ref, dict):
+            ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
+        file_hash = str(ref)
+    file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
 
     r = requests.get(
         f"{FASTGEN_STORAGE}/file/{file_hash}/raw",
