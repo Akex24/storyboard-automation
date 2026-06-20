@@ -8534,7 +8534,7 @@ class MainWindow(QMainWindow):
                 "color:#888; font-size:11px; padding:0 0 9px 20px;")
             # Резерв высоты в одну строку — появление статуса («не работает —
             # замени» и т.п.) не дёргает высоту ряда ключа.
-            _l.setMinimumHeight(_l.fontMetrics().height() + 4)
+            _l.setFixedHeight(_l.fontMetrics().height() + 11)
             return _l
         def _mk_key_toggle(_idx):
             _t = QCheckBox(tr('key_use_toggle'))
