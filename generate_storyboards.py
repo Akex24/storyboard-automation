@@ -96,17 +96,24 @@ def upload_ref(path: Path, session: requests.Session) -> str:
 def poll_operation(op_id: str, session: requests.Session) -> bytes:
     while True:
         time.sleep(4)
-        r = session.get(f"{API_BASE}/api/v4/operations/{op_id}", timeout=30)
+        r = session.get(f"{API_BASE}/api/v5/generations/{op_id}",
+                        params={"result_format": "ref"}, timeout=30)
         r.raise_for_status()
         data = r.json()
         status = data.get("status")
         print(f"    status: {status}")
-        if status == "success":
-            result = data.get("result") or []
-            uri = result[0] if isinstance(result, list) else result
-            if isinstance(uri, dict):
-                uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
-            uri = str(uri)
+        # v5: успешные статусы — множество.
+        if status in ("succeeded", "success", "completed", "done"):
+            # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+            results = data.get("results") or data.get("result") or []
+            uri = ""
+            if results and isinstance(results[0], dict):
+                uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+            if not uri:
+                uri = results[0] if (isinstance(results, list) and results) else results
+                if isinstance(uri, dict):
+                    uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
+                uri = str(uri)
             if uri.startswith("data:"):
                 _, b64 = uri.split(",", 1)
                 return base64.b64decode(b64)
@@ -114,7 +121,8 @@ def poll_operation(op_id: str, session: requests.Session) -> bytes:
             r2 = session.get(f"{STORAGE_BASE}/file/{file_hash}/raw", timeout=120)
             r2.raise_for_status()
             return r2.content
-        if status == "error":
+        # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
+        if status in ("failed", "error", "cancelled"):
             raise RuntimeError(f"Generation error: {data.get('error')}")
 
 
@@ -212,29 +220,36 @@ def main():
         # flow без него работает как Nano Banana 2; с ним маршрутизирует
         # обратно в OpenAI с pydantic-ошибкой).
         provider = load_provider()
+        # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Строковый
+        # провайдер из image_provider.txt: "narwhal" → nano-banana-2, иначе openai-image.
+        model = "nano-banana-2" if provider == "narwhal" else "openai-image"
         payload = {
             "prompt": clean_prompt,
             "aspect_ratio": "16:9",
+            "model": model,
         }
         if ref_hashes:
             if provider == "openai" and len(ref_hashes) > 2:
                 print(f"  OpenAI режет рефы до 2 (было {len(ref_hashes)})")
                 ref_hashes = ref_hashes[:2]
-            payload["reference_images"] = ref_hashes
+            # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
+            payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                 for i, h in enumerate(ref_hashes)]
 
-        endpoint = ("/api/v4/flow/image/generate"
-                    if provider == "narwhal"
-                    else "/api/v4/openai/image/generate")
+        # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
+        endpoint = "/api/v5/generations"
         print(f"  Prompt length: {len(clean_prompt)} chars | "
               f"Refs: {len(ref_hashes)} | Provider: {provider}")
         r = session.post(f"{API_BASE}{endpoint}",
+                         params={"result_format": "ref"},
                          json=payload, timeout=60)
         r.raise_for_status()
         data = r.json()
-        if not data.get("operation_id"):
-            raise RuntimeError(f"No operation_id: {data}")
+        # v5: op_id в поле "id" (operation_id в v5 НЕТ — был бы KeyError).
+        if not data.get("id"):
+            raise RuntimeError(f"No id: {data}")
 
-        op_id = data["operation_id"]
+        op_id = data["id"]
         print(f"  op_id: {op_id}")
         image_bytes = poll_operation(op_id, session)
 
