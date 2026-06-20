@@ -982,6 +982,12 @@ class GenerateThread(QThread):
                     return
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
+                    print(f"[FASTGEN] path=GenerateThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={last_status or 'unknown'} "
+                          f"time={elapsed} result=error error=timeout")
                     self.error.emit(
                         f"API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
@@ -1363,6 +1369,12 @@ class RefGenerateThread(QThread):
                 time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
+                    print(f"[FASTGEN] path=RefGenerateThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={last_status or 'unknown'} "
+                          f"time={elapsed} result=error error=timeout")
                     self.error.emit(
                         f"[polling] API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
@@ -2018,6 +2030,12 @@ class GenerateActorRefThread(QThread):
                 time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
+                    print(f"[FASTGEN] path=GenerateActorRefThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={last_status or 'unknown'} "
+                          f"time={elapsed} result=error error=timeout")
                     self.error.emit(
                         f"API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
@@ -2339,6 +2357,12 @@ class EditActorRefThread(QThread):
                 time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
+                    print(f"[FASTGEN] path=EditActorRefThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={last_status or 'unknown'} "
+                          f"time={elapsed} result=error error=timeout")
                     self.error.emit(
                         f"API timeout: статус «{last_status or 'unknown'}» "
                         f"оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
