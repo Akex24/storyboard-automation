@@ -6163,6 +6163,11 @@ class MainWindow(QMainWindow):
         # health-потоков для graceful shutdown.
         self._key_health_status: dict = {}
         self._key_health_threads: list = []
+        # 2026-06-20 (usage-статистика): строка лимитов/потоков/reset/exp на КАЖДОЕ
+        # поле ключа (field_idx → str); живёт между refresh'ами, отрисовка — в
+        # _refresh_key_status_indicators. + реестр usage-потоков для shutdown.
+        self._key_usage: dict = {}
+        self._key_usage_threads: list = []
         # 2026-06-10 (очередь #1): одиночный поток боевой проверки сервера FastGen.
         self._server_check_thread = None
         self._server_check_timer = None      # UI-таймер секунд (не из потока)
@@ -10296,6 +10301,7 @@ class MainWindow(QMainWindow):
             threads.extend(getattr(self, '_geometry_threads', []) or [])
             threads.extend(getattr(self, '_seedance_regen_threads', []) or [])
             threads.extend(getattr(self, '_key_health_threads', []) or [])
+            threads.extend(getattr(self, '_key_usage_threads', []) or [])
             threads.extend(getattr(self, '_cancel_threads', []) or [])
             t = getattr(self, '_server_check_thread', None)
             if t is not None:
@@ -16672,7 +16678,12 @@ class MainWindow(QMainWindow):
                     else:
                         # 2026-06-10 (лампочки v2): по умолчанию ПОГАШЕНА (серая);
                         # зелёный — только ВСПЫШКА (health-alive / key_used).
-                        color, status = self._KEY_COL_GREY, ""
+                        # 2026-06-20: для live-ключа в лейбле — usage-статистика
+                        # (если уже загружена), иначе пусто. error-состояния ВЫШЕ
+                        # (manual-off/limit/dead/temp) имеют приоритет — usage их НЕ
+                        # затирает (ветка else сюда не доходит при error).
+                        color = self._KEY_COL_GREY
+                        status = (getattr(self, '_key_usage', {}).get(i) or "")
                     if tgl is not None:
                         tgl.blockSignals(True)
                         tgl.setChecked(not is_off)
@@ -16755,6 +16766,7 @@ class MainWindow(QMainWindow):
             # 2026-06-10 (health check): после сохранения — асинхронная проверка
             # живости ключей (лёгкий запрос без генерации). Не блокирует UI.
             self._start_key_health_check()
+            self._start_key_usage_check()
         except Exception:
             traceback.print_exc()
 
@@ -16846,6 +16858,45 @@ class MainWindow(QMainWindow):
             self._refresh_key_status_indicators()
             if status == 'alive':
                 self._blink_key_indicator(field_idx)   # зелёная вспышка «живой»
+        except Exception:
+            traceback.print_exc()
+
+    def _start_key_usage_check(self):
+        """2026-06-20: usage-статистика (GET /api/v5/usage) по КАЖДОМУ непустому
+        полю ключа — ВКЛЮЧАЯ выключенные чекбоксом «использовать» (статистика
+        полезна и для них). Только пустые поля пропускаем. ОДИН поток
+        последовательно (KeyUsageThread). Косметика — ошибки молча проглатываются."""
+        try:
+            from threads.key_usage import KeyUsageThread
+            fields = getattr(self, '_apikey_fields', [])
+            pairs = []
+            for i, fld in enumerate(fields):
+                txt = (fld.text() or "").strip()
+                if not txt:
+                    self._key_usage.pop(i, None)   # пустое поле — без статистики
+                    continue
+                pairs.append((i, txt))
+                self._key_usage[i] = "usage…"       # loading-плейсхолдер
+            self._refresh_key_status_indicators()
+            if not pairs:
+                return
+            th = KeyUsageThread(pairs, self)
+            th.key_usage.connect(self._on_key_usage)
+            th.finished.connect(
+                lambda t=th: (self._key_usage_threads.remove(t)
+                              if t in self._key_usage_threads else None))
+            self._key_usage_threads.append(th)
+            th.start()
+        except Exception:
+            traceback.print_exc()
+
+    def _on_key_usage(self, field_idx: int, usage_str: str):
+        """Результат usage по одному ключу → строка под полем. Хранится в
+        self._key_usage (переживает refresh'ы); отрисовку делает
+        _refresh_key_status_indicators (usage для live-ключа; error-приоритеты выше)."""
+        try:
+            self._key_usage[int(field_idx)] = str(usage_str or "")
+            self._refresh_key_status_indicators()
         except Exception:
             traceback.print_exc()
 
