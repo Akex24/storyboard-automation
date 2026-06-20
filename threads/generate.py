@@ -163,24 +163,34 @@ def _classify_key_error(exc):
 
 
 def _is_ref_expired_error(exc):
-    """True если ответ 404 `resource.file_not_found_or_expired` — реф-картинка,
-    ранее загруженная в FastGen storage, протухла/удалена на сервере, а в payload
-    ушёл её СТАРЫЙ file-hash (из in-memory _upload_cache). Отдельно от
-    _classify_key_error (404 — НЕ вина ключа). Изолировано, не кидает."""
+    """True если 404 с кодом `resource.file_not_found_or_expired` — реф, ранее
+    залитый в FastGen storage, протух/удалён, а в payload ушёл его старый
+    file-hash (из in-memory _upload_cache). v5: тело — структурированный JSON
+    {"error","code",...}, парсим напрямую (code/error). 422
+    (validation.invalid_request) сюда НЕ попадает — отсекается status!=404 ДО
+    разбора тела. Отдельно от _classify_key_error (404 — НЕ вина ключа).
+    Изолировано, не кидает."""
     try:
         resp = getattr(exc, 'response', None)
         if resp is None or getattr(resp, 'status_code', None) != 404:
             return False
-        blob = _http_error_detail(exc) or ''
-        if not blob:
+        # v5: структурированное тело — берём code/error напрямую.
+        code = err = ''
+        try:
+            body = resp.json()
+            if isinstance(body, dict):
+                code = str(body.get('code') or '')
+                err  = str(body.get('error') or '')
+        except Exception:
+            pass
+        blob = (code + ' ' + err).lower()
+        if not blob.strip():
+            # fallback: тело не-JSON → сырой текст ответа.
             try:
-                blob = resp.text or ''
+                blob = (resp.text or '').lower()
             except Exception:
                 blob = ''
-        blob = blob.lower()
-        return ('file_not_found_or_expired' in blob
-                or 'resource.file_not_found' in blob
-                or ('file not found' in blob and 'expired' in blob))
+        return 'file_not_found_or_expired' in blob
     except Exception:
         return False
 
@@ -914,7 +924,7 @@ class GenerateThread(QThread):
             # 2026-06-10 (404-перезаливка рефа): submit с ОДНИМ ретраем. Если
             # сервер вернул 404 file_not_found_or_expired (реф-картинка протухла
             # на сервере, а в payload ушёл её мёртвый кешированный file-hash) —
-            # перезаливаем рефы шота (force) + пересобираем reference_images +
+            # перезаливаем рефы шота (force) + пересобираем inputs +
             # повторяем POST РОВНО один раз. Анти-цикл: range(2).
             if self._stop:
                 return
@@ -1325,8 +1335,8 @@ class RefGenerateThread(QThread):
                     data = r.json()
                     break
                 except Exception as _post_e:
-                    # v5: ref-expired detection (_is_ref_expired_error) — v4-формат тела,
-                    # ТРЕБУЕТ ПРОВЕРКИ НА ЖИВОМ v5-ОТВЕТЕ (не переписываем сейчас).
+                    # 404-перезаливка протухшего рефа (_is_ref_expired_error — v5,
+                    # парсит JSON code/error). 422 сюда не попадает (status!=404).
                     if (_submit_attempt == 0 and ref_hashes
                             and _is_ref_expired_error(_post_e)):
                         _sa._upload_cache.pop(str(send_path.resolve()), None)
