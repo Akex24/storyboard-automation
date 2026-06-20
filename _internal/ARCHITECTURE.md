@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-19 (FastGen v5 — частичная миграция: RefGenerateThread на /api/v5/generations + model/inputs; остальные пути пока v4)
+**Последнее обновление:** 2026-06-20 (FastGen v5 — миграция ЗАВЕРШЕНА: весь стек генерации/отмены/проверки на /api/v5/generations; см. секцию «FastGen v5»)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к
@@ -2178,22 +2178,37 @@ content-фильтр, отдельный pool от OpenAI). При `openai` =
 ни в одном случае (иначе NARWHAL flow маршрутизирует обратно в
 OpenAI — см. коммент в [threads/generate.py:242](threads/generate.py:242)).
 
-**FastGen v5 — частичная миграция (2026-06-19, начато с RefGenerateThread).**
-`RefGenerateThread` (перегенерация/правка существующего рефа локации/объекта —
-кнопки 🔄/✏️ в РЕФЕРЕНСАХ) переведён на v5: единый эндпоинт
-`POST /api/v5/generations?result_format=ref` (провайдер уже НЕ в пути), провайдер
-задаётся полем `payload["model"]` (`nano-banana-2`=flow / `openai-image`=openai),
-рефы — `payload["inputs"]=[{name,input}]` (биндинг ПОЗИЦИОННЫЙ, name произвольный,
-старое `reference_images` убрано), op_id в `data["id"]` (не `operation_id`),
-poll `GET /api/v5/generations/{id}?result_format=ref`, статусы-множества
+**FastGen v5 — миграция ЗАВЕРШЕНА (2026-06-20). Весь стек на v5.** Описание
+v4-эндпоинтов ВЫШЕ — ИСТОРИЧЕСКОЕ (прежняя схема `/api/v4/flow|openai/image/generate`).
+
+КОНТРАКТ v5 (единый по всем путям): submit
+`POST /api/v5/generations?result_format=ref` — провайдер НЕ в пути, задаётся полем
+`payload["model"]` (`nano-banana-2`=NARWHAL/flow, `openai-image`=OpenAI); рефы —
+`payload["inputs"]=[{"name":f"img{i+1}","input":h}]` (биндинг ПОЗИЦИОННЫЙ, name
+произвольный; старое `reference_images` убрано); хэш рефа — ГОЛЫЙ 32-hex (префикс
+`file:` срезается в 5 upload-методах — v5 даёт `422 string_pattern_mismatch` на
+префиксе, v4 срезал сам); `op_id = data["id"]` (не `operation_id`); poll
+`GET /api/v5/generations/{id}?result_format=ref`, статусы-множества
 (succeeded/success/completed/done = готово; failed/error/cancelled = ошибка;
-queued/running = поллим), storage_id из `results[0].metadata.storage_id` (+fallback
-на v4-разбор). Граница `image_bytes`/сохранение и `{STORAGE}/upload`+`/file/{id}/raw`
-НЕ менялись. Описание v4-эндпоинтов ВЫШЕ относится к НЕмигрированным путям:
+queued/running = поллим); storage_id из `results[0].metadata.storage_id` (+fallback
+на старый url/ref/file_hash-разбор). Граница `image_bytes`/сохранение и
+`{STORAGE}/upload`+`/file/{id}/raw` НЕ менялись.
+
+МИГРИРОВАННЫЕ ПУТИ (все): `RefGenerateThread` (рефы локаций/объектов 🔄/✏️),
 `GenerateThread` (шоты), `GenerateActorRefThread`/`EditActorRefThread` (актёры) в
-`threads/generate.py`, а также `pipeline.py` (новые локации/объекты из чата, CLI),
-`server_check.py`/`cancel.py` (служебные) и ручной `generate_storyboards.py` —
-ВСЁ это пока v4.
+`threads/generate.py`; CLI `pipeline.py` (локации/объекты из чата) и
+`generate_storyboards.py` (batch-шоты, ручной/агентский); служебные
+`threads/cancel.py` (серверная отмена → `DELETE /api/v5/generations/{id}`, читает
+поле `cancelled` СТРОКОЙ "True"/"False") и `threads/server_check.py` («Проверить
+сервер» — ДВА теста подряд model=`nano-banana-2`+`openai-image`, у каждого свой
+потолок CEILING_SEC и свой замер времени; результат — две строки `results`-сигнала).
+
+ДИАГНОСТИКА/прочее: каждый путь пишет `[FASTGEN] path=… api=v5 … op_id=… status=…
+result=ok|error [error=<причина>]` (GUI → runtime.log через studio tee; CLI → stdout;
+ключ НЕ логируется — только `auth=X-API-Key`). Поллинг ускорен 4с→1.5с (GenerateThread
+`for _ in range(3): sleep(0.5)` со stop-проверкой). `_is_ref_expired_error` — v5
+(404 + JSON `code/error` `resource.file_not_found_or_expired`). `_http_error_detail`
+дописывает поле-уровневый pydantic `detail`.
 
 ## Cross-platform (Mac / Win 10-11)
 

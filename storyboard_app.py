@@ -16894,7 +16894,7 @@ class MainWindow(QMainWindow):
             self._server_check_timer.timeout.connect(self._tick_server_check)
             self._server_check_timer.start()
             th = ServerCheckThread(key, self)
-            th.result.connect(self._on_server_check_result)
+            th.results.connect(self._on_server_check_result)
             th.finished.connect(self._on_server_check_finished)
             self._server_check_thread = th
             th.start()
@@ -16946,35 +16946,49 @@ class MainWindow(QMainWindow):
             lbl = getattr(self, 'server_check_result_lbl', None)
             if lbl is None:
                 return
-            lbl.setMinimumHeight(lbl.fontMetrics().lineSpacing() * 4 + 12)
+            lbl.setMinimumHeight(lbl.fontMetrics().lineSpacing() * 6 + 12)
         except Exception:
             pass
 
-    def _on_server_check_result(self, outcome: str, sec: int, op_id: str = ""):
-        """Итог (sec — реальное время потока по monotonic): ok зелёный /
-        down красный (+ время + строка op_id + указание на техподдержку) /
-        noconn оранжевый. При down запоминаем {n, op_id} для письма в
-        техподдержку. Заменяет пояснение, висит до следующего теста."""
+    def _on_server_check_result(self, results: list):
+        """Итог ДВУХ тестов (nano-banana-2, openai-image) — две цветные строки
+        в server_check_result_lbl (HTML rich-text, цвет на строку: ok зелёный /
+        down красный / noconn оранж). Письмо в техподдержку (_server_check_down_info)
+        заполняем ТОЛЬКО по nano-banana-2 down (он = индикатор живости сервера;
+        провал только openai = модерация, техподдержку НЕ триггерит). Заменяет
+        пояснение, висит до следующего теста."""
         self._stop_server_check_timer()
         try:
-            op_id = str(op_id or "")
-            if outcome == 'ok':
-                txt = tr('server_check_ok').format(n=int(sec))
-                col = "#46d160"
-                self._server_check_down_info = None
-            elif outcome == 'noconn':
-                txt = tr('server_check_noconn')
-                col = "#e0913a"
-                self._server_check_down_info = None
-            else:
-                txt = tr('server_check_down').format(n=int(sec))
-                if op_id:
-                    txt += "\n" + tr('server_check_task_id').format(op_id=op_id)
-                col = "#ff2b2b"
-                self._server_check_down_info = {'n': int(sec), 'op_id': op_id}
-            self.server_check_result_lbl.setText(txt)
+            _COL = {'ok': '#46d160', 'down': '#ff2b2b', 'noconn': '#e0913a'}
+            _SYM = {'ok': '✓', 'down': '✗', 'noconn': '⚠'}
+
+            def _esc(s):
+                return (str(s or "").replace('&', '&amp;')
+                        .replace('<', '&lt;').replace('>', '&gt;'))
+
+            self._server_check_down_info = None
+            _lines = []
+            for _r in (results or []):
+                _out = _r.get('outcome')
+                _prov = _esc(_r.get('provider'))
+                _sec = int(_r.get('sec') or 0)
+                _reason = _esc(_r.get('reason'))
+                _col = _COL.get(_out, '#9a8fb0')
+                _sym = _SYM.get(_out, '?')
+                if _out == 'noconn':
+                    _body = "%s: %s %s" % (_prov, _sym, _esc(tr('server_check_noconn')))
+                else:
+                    _body = "%s: %s %ds" % (_prov, _sym, _sec)
+                    if _out == 'down' and _reason:
+                        _body += " — %s" % _reason
+                _lines.append('<span style="color:%s">%s</span>' % (_col, _body))
+                # Письмо в техподдержку — ТОЛЬКО по nano-banana-2 down (живость сервера).
+                if _r.get('provider') == 'nano-banana-2' and _out == 'down':
+                    self._server_check_down_info = {
+                        'n': _sec, 'op_id': str(_r.get('op_id') or "")}
+            self.server_check_result_lbl.setText("<br>".join(_lines))
             self.server_check_result_lbl.setStyleSheet(
-                "color:%s; font-size:12px; padding-top:6px;" % col)
+                "font-size:12px; padding-top:6px;")
         except Exception:
             traceback.print_exc()
 
