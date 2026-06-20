@@ -42,6 +42,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     'ru': {
         'tab_editor': 'Редактор', 'tab_settings': 'Настройки',
         'tab_new_episode': 'Новый эпизод', 'tab_actors': 'Актёры',
+        'tab_generator': 'Генератор',
         'actors_section_admin': 'УПРАВЛЕНИЕ АКТЁРАМИ',
         'actors_drop_label': '📥  Перетащи фото актёра сюда',
         'actors_drop_hint': '.jpg / .png — спрошу в какую папку положить',
@@ -811,6 +812,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     'uk': {
         'tab_editor': 'Редактор', 'tab_settings': 'Налаштування',
         'tab_new_episode': 'Новий епізод', 'tab_actors': 'Актори',
+        'tab_generator': 'Генератор',
         'actors_section_admin': 'УПРАВЛІННЯ АКТОРАМИ',
         'actors_drop_label': '📥  Перетягни фото актора сюди',
         'actors_drop_hint': '.jpg / .png — запитаю в яку папку покласти',
@@ -1557,6 +1559,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     'en': {
         'tab_editor': 'Editor', 'tab_settings': 'Settings',
         'tab_new_episode': 'New episode', 'tab_actors': 'Actors',
+        'tab_generator': 'Generator',
         'actors_section_admin': 'ACTORS MANAGEMENT',
         'actors_drop_label': '📥  Drop actor photos here',
         'actors_drop_hint': '.jpg / .png — I will ask which folder',

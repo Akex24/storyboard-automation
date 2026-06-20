@@ -77,6 +77,8 @@ from views import (
     NewEpisodeView,
 )
 
+from generator import GeneratorPage
+
 # widgets/ — диалоги. Шаги 3 (2026-05-04, dialogs.py) и 4A (actor_dialogs.py).
 from widgets import (
     # dialogs.py (шаг 3)
@@ -3253,6 +3255,18 @@ QPushButton#tab-pill:hover {
 /* Активный таб — приглушённый светлый фон + белый текст */
 QPushButton#tab-pill[active="true"] {
     background: rgba(255, 255, 255, 0.06); color: #ffffff;
+}
+/* 2026-06-20: акцентная pill «Генератор» — тёплый янтарь (#d4a256, accent_gold
+   из палитры), выделяется среди серых табов. Через [accent="true"] поверх
+   objectName tab-pill, чтобы не ломать общий _sync_header_tab_active. */
+QPushButton#tab-pill[accent="true"] {
+    color: #d4a256;
+}
+QPushButton#tab-pill[accent="true"]:hover {
+    color: #e8b86a;
+}
+QPushButton#tab-pill[accent="true"][active="true"] {
+    background: rgba(212, 162, 86, 0.16); color: #ffd9a0;
 }
 /* Этап 2 (формат): сегмент-переключатель 9:16 | 16:9 в шапке. Активная
    половина — фирменный красный (#e63946, как точка в логотипе), неактивная
@@ -6899,6 +6913,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.actors_view, tr('tab_actors'))
         self._actors_tab_idx = self.tabs.count() - 1  # для мигания
         self.tabs.addTab(self._build_settings_tab(), tr('tab_settings'))
+        # 2026-06-20: страница «Генератор» — append в КОНЕЦ (idx 3), чтобы НЕ
+        # двигать хардкод-индексы (Editor==0, Actors==1, Settings==2). В ряду
+        # шапки pill «Генератор» рисуется ПЕРВЫМ (см. _build_header, явный _tab_idx).
+        self.generator_view = GeneratorPage(self)
+        self.tabs.addTab(self.generator_view, tr('tab_generator'))
         # Скрываем нативный QTabBar — переключение через pill в шапке.
         try:
             self.tabs.tabBar().hide()
@@ -7410,15 +7429,24 @@ class MainWindow(QMainWindow):
         tg_lay = QHBoxLayout(tabs_group)
         tg_lay.setContentsMargins(3, 3, 3, 3)
         tg_lay.setSpacing(0)
-        for idx, key in enumerate(('tab_editor', 'tab_actors', 'tab_settings')):
+        # 2026-06-20: ЯВНЫЙ маппинг pill→страница по _tab_idx (НЕ позиционный).
+        # Визуальный порядок ряда ≠ порядок страниц: «Генератор» рисуется ПЕРВЫМ
+        # слева, но его страница — idx 3 (append в addTab, чтобы не двигать
+        # хардкоды Editor==0/Settings==2). page_idx → _tab_idx; по нему же
+        # _sync_header_tab_active подсвечивает активную. На старте активен
+        # Редактор (active = page_idx == 0), не Генератор.
+        for page_idx, key in ((3, 'tab_generator'), (0, 'tab_editor'),
+                              (1, 'tab_actors'), (2, 'tab_settings')):
             btn = QPushButton(tr(key))
             btn.setObjectName("tab-pill")
-            btn.setProperty("active", idx == 0)
+            btn.setProperty("active", page_idx == 0)
+            if key == 'tab_generator':
+                btn.setProperty("accent", True)   # янтарная акцентная pill
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setProperty("_tab_idx", idx)
+            btn.setProperty("_tab_idx", page_idx)
             btn.setProperty("_i18n_key", key)
             btn.clicked.connect(
-                lambda _checked=False, i=idx: self._on_header_tab_clicked(i))
+                lambda _checked=False, i=page_idx: self._on_header_tab_clicked(i))
             self._header_tab_buttons.append(btn)
             tg_lay.addWidget(btn)
         lay.addWidget(tabs_group, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -7481,8 +7509,10 @@ class MainWindow(QMainWindow):
         btns = getattr(self, '_header_tab_buttons', None)
         if not btns:
             return
-        for i, btn in enumerate(btns):
-            btn.setProperty("active", i == idx)
+        # 2026-06-20: сравнение по сохранённому _tab_idx кнопки, НЕ по позиции
+        # в ряду — визуальный порядок pill (Генератор первым) ≠ порядок страниц.
+        for btn in btns:
+            btn.setProperty("active", btn.property("_tab_idx") == idx)
             # Перезапускаем styling — Qt не подхватывает property changes
             # без явного unpolish/polish.
             try:
