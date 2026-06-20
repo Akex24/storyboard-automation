@@ -953,11 +953,12 @@ class GenerateThread(QThread):
             poll_started = time.monotonic()
             last_status = ""
             while True:
-                # Дробим сон на 1с-кванты для быстрого отклика на stop.
-                for _ in range(4):
+                # Дробим сон на 0.5с-кванты (v5: интервал поллинга 1.5с) —
+                # отклик на stop сохранён (проверка каждые 0.5с, чаще прежнего).
+                for _ in range(3):
                     if self._stop:
                         return
-                    time.sleep(1)
+                    time.sleep(0.5)
                 if self._stop:
                     return
                 elapsed = int(time.monotonic() - poll_started)
@@ -974,7 +975,7 @@ class GenerateThread(QThread):
                 last_status = status
                 poll_count += 1
                 pct = min(85, 30 + int(poll_count / 20 * 55))
-                self.step.emit(f"Генерирую… ({poll_count * 4}с)", pct)
+                self.step.emit(f"Генерирую… ({elapsed}с)", pct)
                 self.progress.emit(f"Статус: {status}…")
 
                 # v5: успешные статусы — множество.
@@ -998,9 +999,21 @@ class GenerateThread(QThread):
                         r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                    # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
+                    print(f"[FASTGEN] path=GenerateThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} storage_id={str(sid)[:8]} "
+                          f"time={elapsed} result=ok")
                     break
                 # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
+                    print(f"[FASTGEN] path=GenerateThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} time={elapsed} result=error")
                     self.error.emit(f"API error: {data.get('error')}")
                     return
 
@@ -1324,7 +1337,7 @@ class RefGenerateThread(QThread):
             poll_started = time.monotonic()
             last_status = ""
             while True:
-                time.sleep(4)
+                time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
                     self.error.emit(
@@ -1339,7 +1352,7 @@ class RefGenerateThread(QThread):
                 last_status = status
                 poll_count += 1
                 pct = min(85, 30 + int(poll_count / 20 * 55))
-                self.step.emit(f"Генерирую… ({poll_count * 4}с)", pct)
+                self.step.emit(f"Генерирую… ({elapsed}с)", pct)
                 self.progress.emit(f"Статус: {status}…")
 
                 # v5: успешные статусы — множество.
@@ -1363,9 +1376,21 @@ class RefGenerateThread(QThread):
                         r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                    # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
+                    print(f"[FASTGEN] path=RefGenerateThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} storage_id={str(sid)[:8]} "
+                          f"time={elapsed} result=ok")
                     break
                 # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
+                    print(f"[FASTGEN] path=RefGenerateThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} time={elapsed} result=error")
                     self.error.emit(f"[polling status={status}] API error: {data.get('error')}")
                     return
 
@@ -1964,7 +1989,7 @@ class GenerateActorRefThread(QThread):
             poll_started = time.monotonic()
             last_status = ""
             while True:
-                time.sleep(4)
+                time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
                     self.error.emit(
@@ -2009,6 +2034,13 @@ class GenerateActorRefThread(QThread):
                                          timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                    # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
+                    print(f"[FASTGEN] path=GenerateActorRefThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} storage_id={str(uri)[:8]} "
+                          f"time={elapsed} result=ok")
                     target.write_bytes(image_bytes)
                     # 2026-05-22 (v1.0.78): лог result_saved — какой uri
                     # отдал polling и какой реально файл сохранили.
@@ -2046,6 +2078,11 @@ class GenerateActorRefThread(QThread):
                     return
                 # v5: queued/running/pending — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
+                    print(f"[FASTGEN] path=GenerateActorRefThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} time={elapsed} result=error")
                     self.error.emit(f"API error: {d.get('error')}")
                     return
                 # Любой другой status (queued/pending/processing/...) —
@@ -2270,7 +2307,7 @@ class EditActorRefThread(QThread):
             poll_started = time.monotonic()
             last_status = ""
             while True:
-                time.sleep(4)
+                time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
                     self.error.emit(
@@ -2312,6 +2349,13 @@ class EditActorRefThread(QThread):
                             timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                    # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
+                    print(f"[FASTGEN] path=EditActorRefThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} storage_id={str(uri)[:8]} "
+                          f"time={elapsed} result=ok")
                     target.write_bytes(image_bytes)
                     # Лампочка round-robin: мигаем ТОЛЬКО на успехе, сохранённым idx.
                     try:
@@ -2324,6 +2368,11 @@ class EditActorRefThread(QThread):
                     return
                 # v5: queued/running/pending — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
+                    print(f"[FASTGEN] path=EditActorRefThread api=v5 "
+                          f"endpoint={endpoint} auth=X-API-Key "
+                          f"model={payload.get('model')} provider={provider} "
+                          f"result_format=ref inputs={len(payload.get('inputs', []))} "
+                          f"op_id={op_id} status={status} time={elapsed} result=error")
                     self.error.emit(f"API error: {d.get('error')}")
                     return
                 self.progress.emit(

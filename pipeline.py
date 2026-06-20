@@ -81,7 +81,7 @@ def load_provider() -> str:
 
 def _fastgen_poll(op_id: str, headers: dict) -> dict:
     while True:
-        time.sleep(4)
+        time.sleep(1.5)
         r = requests.get(
             f"{FASTGEN_BASE}/api/v5/generations/{op_id}",
             headers=headers,
@@ -97,6 +97,8 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
             return data
         # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
         if status in ("failed", "error", "cancelled"):
+            print(f"[FASTGEN] path=pipeline.generate_image api=v5 "
+                  f"op_id={op_id} status={status} result=error")
             raise RuntimeError(f"Fast Gen error: {data}")
 
 
@@ -136,6 +138,7 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (ниже).
     endpoint = "/api/v5/generations"
     print(f"  provider: {provider} (model={model}, {endpoint})")
+    _fastgen_t0 = time.monotonic()  # [FASTGEN] засечка времени генерации
     r = requests.post(
         f"{FASTGEN_BASE}{endpoint}",
         headers=headers,
@@ -167,6 +170,14 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
         file_hash = str(ref)
     file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
 
+    # [FASTGEN] диаг-строка успеха (stdout → читает агент). inputs=0 (чистый text2img).
+    print(f"[FASTGEN] path=pipeline.generate_image api=v5 "
+          f"endpoint={endpoint} auth=X-API-Key "
+          f"model={model} provider={provider} "
+          f"result_format=ref inputs=0 "
+          f"op_id={op_id} status={result_data.get('status')} "
+          f"storage_id={str(file_hash)[:8]} "
+          f"time={int(time.monotonic() - _fastgen_t0)} result=ok")
     r = requests.get(
         f"{FASTGEN_STORAGE}/file/{file_hash}/raw",
         headers={"X-API-Key": fastgen_key},

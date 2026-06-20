@@ -95,7 +95,7 @@ def upload_ref(path: Path, session: requests.Session) -> str:
 
 def poll_operation(op_id: str, session: requests.Session) -> bytes:
     while True:
-        time.sleep(4)
+        time.sleep(1.5)
         r = session.get(f"{API_BASE}/api/v5/generations/{op_id}",
                         params={"result_format": "ref"}, timeout=30)
         r.raise_for_status()
@@ -123,6 +123,8 @@ def poll_operation(op_id: str, session: requests.Session) -> bytes:
             return r2.content
         # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
         if status in ("failed", "error", "cancelled"):
+            print(f"[FASTGEN] path=generate_storyboards.main api=v5 "
+                  f"op_id={op_id} status={status} result=error")
             raise RuntimeError(f"Generation error: {data.get('error')}")
 
 
@@ -240,6 +242,7 @@ def main():
         endpoint = "/api/v5/generations"
         print(f"  Prompt length: {len(clean_prompt)} chars | "
               f"Refs: {len(ref_hashes)} | Provider: {provider}")
+        _fastgen_t0 = time.monotonic()  # [FASTGEN] засечка времени генерации
         r = session.post(f"{API_BASE}{endpoint}",
                          params={"result_format": "ref"},
                          json=payload, timeout=60)
@@ -252,6 +255,14 @@ def main():
         op_id = data["id"]
         print(f"  op_id: {op_id}")
         image_bytes = poll_operation(op_id, session)
+        # [FASTGEN] диаг-строка успеха (stdout → читает агент). status=succeeded
+        # (poll_operation вернул без raise ⇒ успех); storage_id опущен (внутри poll).
+        print(f"[FASTGEN] path=generate_storyboards.main api=v5 "
+              f"endpoint={endpoint} auth=X-API-Key "
+              f"model={model} provider={provider} "
+              f"result_format=ref inputs={len(payload.get('inputs', []))} "
+              f"op_id={op_id} status=succeeded "
+              f"time={int(time.monotonic() - _fastgen_t0)} result=ok")
 
         out_jpg.write_bytes(image_bytes)
         print(f"  → Saved: output/storyboards/{out_jpg.name} ({len(image_bytes)} bytes)")
