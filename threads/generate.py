@@ -808,9 +808,13 @@ class GenerateThread(QThread):
             # 2026-05-23: разделение провайдеров — шоты идут через
             # админский переключатель (`image_provider_admin`).
             provider = _sa.image_provider_admin()
+            # v5: провайдер выбирается полем "model" (НЕ путём эндпоинта).
             payload: Dict = {
                 "prompt":       clean,
                 "aspect_ratio": frame_format.payload_aspect_ratio(self.aspect),  # формат шота
+                "model":        ("openai-image"
+                                 if provider == _sa.IMAGE_PROVIDER_OPENAI
+                                 else "nano-banana-2"),
             }
             if ref_hashes:
                 if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > _sa.OPENAI_MAX_REFS:
@@ -820,11 +824,12 @@ class GenerateThread(QThread):
                     self.progress.emit(
                         f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                payload["reference_images"] = ref_hashes
+                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
+                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                     for i, h in enumerate(ref_hashes)]
 
-            endpoint = ("/api/v4/openai/image/generate"
-                        if provider == _sa.IMAGE_PROVIDER_OPENAI
-                        else "/api/v4/flow/image/generate")
+            # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
+            endpoint = "/api/v5/generations"
 
             # ── 2026-05-15 DIAG DUMP (временно, для расследования) ────
             # Дамп ровно того payload что улетел в Fast Gen. Контекст:
@@ -908,6 +913,7 @@ class GenerateThread(QThread):
             for _submit_attempt in range(2):
                 try:
                     r = session.post(f"{_sa.API_BASE}{endpoint}",
+                                     params={"result_format": "ref"},
                                      json=payload, timeout=60)
                     r.raise_for_status()
                     data = r.json()
@@ -929,15 +935,17 @@ class GenerateThread(QThread):
                         if (provider == _sa.IMAGE_PROVIDER_OPENAI
                                 and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                             ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                        payload["reference_images"] = ref_hashes
+                        payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                             for i, h in enumerate(ref_hashes)]
                         continue
                     raise
-            if not data.get("operation_id"):
-                self.error.emit(f"No operation_id: {data}")
+            # v5: op_id в поле "id" (operation_id в v5 НЕТ — был бы KeyError).
+            if not data.get("id"):
+                self.error.emit(f"No id: {data}")
                 return
 
-            op_id      = data["operation_id"]
-            self._op_id = op_id
+            op_id      = data["id"]
+            self._op_id = op_id   # серверная отмена (cancel) — НЕ терять
             poll_count = 0
             self.step.emit("Генерирую…", 30)
 
@@ -958,7 +966,8 @@ class GenerateThread(QThread):
                         f"API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
                     return
-                r = session.get(f"{_sa.API_BASE}/api/v4/operations/{op_id}", timeout=30)
+                r = session.get(f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                                params={"result_format": "ref"}, timeout=30)
                 r.raise_for_status()
                 data   = r.json()
                 status = data.get("status")
@@ -968,22 +977,30 @@ class GenerateThread(QThread):
                 self.step.emit(f"Генерирую… ({poll_count * 4}с)", pct)
                 self.progress.emit(f"Статус: {status}…")
 
-                if status == "success":
-                    result = data.get("result") or []
-                    uri    = result[0] if isinstance(result, list) else result
-                    if isinstance(uri, dict):
-                        uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
-                    uri = str(uri)
-                    if uri.startswith("data:"):
-                        _, b64 = uri.split(",", 1)
+                # v5: успешные статусы — множество.
+                if status in ("succeeded", "success", "completed", "done"):
+                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                    results = data.get("results") or data.get("result") or []
+                    sid = ""
+                    if results and isinstance(results[0], dict):
+                        sid = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                    if not sid:
+                        # FALLBACK (v4-форма): result[0] → url/ref/file_hash.
+                        uri = results[0] if (isinstance(results, list) and results) else results
+                        if isinstance(uri, dict):
+                            uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
+                        sid = str(uri)
+                    if sid.startswith("data:"):
+                        _, b64 = sid.split(",", 1)
                         image_bytes = base64.b64decode(b64)
                     else:
-                        fh  = uri[5:] if uri.startswith("file:") else uri
-                        r2  = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw", timeout=120)
+                        sid = sid[5:] if sid.startswith("file:") else sid
+                        r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
                     break
-                if status == "error":
+                # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
+                if status in ("failed", "error", "cancelled"):
                     self.error.emit(f"API error: {data.get('error')}")
                     return
 
