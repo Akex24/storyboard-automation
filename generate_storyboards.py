@@ -126,7 +126,8 @@ def poll_operation(op_id: str, session: requests.Session) -> bytes:
         # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
         if status in ("failed", "error", "cancelled"):
             print(f"[FASTGEN] path=generate_storyboards.main api=v5 "
-                  f"op_id={op_id} status={status} result=error")
+                  f"op_id={op_id} status={status} result=error "
+                  f"error={str(data.get('error') or '<none>')[:120]}")
             raise RuntimeError(f"Generation error: {data.get('error')}")
 
 

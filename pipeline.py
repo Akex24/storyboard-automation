@@ -98,7 +98,8 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
         # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
         if status in ("failed", "error", "cancelled"):
             print(f"[FASTGEN] path=pipeline.generate_image api=v5 "
-                  f"op_id={op_id} status={status} result=error")
+                  f"op_id={op_id} status={status} result=error "
+                  f"error={str(data.get('error') or '<none>')[:120]}")
             raise RuntimeError(f"Fast Gen error: {data}")
 
 

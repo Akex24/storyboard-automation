@@ -1032,7 +1032,8 @@ class GenerateThread(QThread):
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
-                          f"op_id={op_id} status={status} time={elapsed} result=error")
+                          f"op_id={op_id} status={status} time={elapsed} result=error "
+                          f"error={str(data.get('error') or '<none>')[:120]}")
                     self.error.emit(f"API error: {data.get('error')}")
                     return
 
@@ -1412,7 +1413,8 @@ class RefGenerateThread(QThread):
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
-                          f"op_id={op_id} status={status} time={elapsed} result=error")
+                          f"op_id={op_id} status={status} time={elapsed} result=error "
+                          f"error={str(data.get('error') or '<none>')[:120]}")
                     self.error.emit(f"[polling status={status}] API error: {data.get('error')}")
                     return
 
@@ -2106,7 +2108,8 @@ class GenerateActorRefThread(QThread):
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
-                          f"op_id={op_id} status={status} time={elapsed} result=error")
+                          f"op_id={op_id} status={status} time={elapsed} result=error "
+                          f"error={str(d.get('error') or '<none>')[:120]}")
                     self.error.emit(f"API error: {d.get('error')}")
                     return
                 # Любой другой status (queued/pending/processing/...) —
@@ -2398,7 +2401,8 @@ class EditActorRefThread(QThread):
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
-                          f"op_id={op_id} status={status} time={elapsed} result=error")
+                          f"op_id={op_id} status={status} time={elapsed} result=error "
+                          f"error={str(d.get('error') or '<none>')[:120]}")
                     self.error.emit(f"API error: {d.get('error')}")
                     return
                 self.progress.emit(
