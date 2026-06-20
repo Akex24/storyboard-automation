@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QPlainTextEdit, QComboBox, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
     QScrollArea, QStackedWidget, QMessageBox, QDialogButtonBox,
-    QSlider,
+    QSlider, QGraphicsOpacityEffect,
 )
 
 from i18n import tr
@@ -848,7 +848,7 @@ class CreateActorRefDialog(QDialog):
         # НЕ должен иметь диалог как родителя — иначе при close() диалога
         # Qt удалит работающий QThread → qFatal → краш всего приложения.
         self.owner_view = owner_view
-        self._selected_variant = "detailed"  # default
+        self._selected_variant = "simple"  # default (Базовый; «Расширенный» заглушён)
 
         self.setWindowTitle(tr('create_ref_title', name=display_name))
         self.setModal(True)
@@ -1029,6 +1029,15 @@ class CreateActorRefDialog(QDialog):
             tr('create_ref_variant_detailed_title'),
             tr('create_ref_variant_detailed_hint'),
             14)
+        # 2026-06-20: «Расширенный» — заглушка (видно, но недоступно).
+        # setEnabled(False) → mousePressEvent не доходит, клик невозможен.
+        # QGraphicsOpacityEffect 0.4 → визуально приглушён; эффект НЕ зависит
+        # от stylesheet карточки, поэтому _apply_style (дёргается setSelected
+        # при клике по «Базовому») его НЕ затирает.
+        self.card_detailed.setEnabled(False)
+        _detailed_dim = QGraphicsOpacityEffect(self.card_detailed)
+        _detailed_dim.setOpacity(0.4)
+        self.card_detailed.setGraphicsEffect(_detailed_dim)
         self.card_simple = _LayoutVariantCard(
             "simple",
             tr('create_ref_variant_simple_title'),
@@ -1039,8 +1048,8 @@ class CreateActorRefDialog(QDialog):
         var_row.addWidget(self.card_detailed, stretch=1)
         var_row.addWidget(self.card_simple, stretch=1)
         outer.addLayout(var_row)
-        # По дефолту выбран detailed
-        self.card_detailed.setSelected(True)
+        # По дефолту выбран simple (Базовый) — «Расширенный» заглушён выше.
+        self.card_simple.setSelected(True)
 
         # ── Низ: статус + кнопки ────────────────────────────────────────
         outer.addStretch()
