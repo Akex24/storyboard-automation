@@ -65,11 +65,12 @@ class ShimmerCell(QFrame):
         self._w, self._h = width, height
         self._aspect = aspect        # формат плитки ("16:9"/"9:16") — для перераскладки
         self.setFixedSize(width, height)
-        self._state = "loading"      # loading | image | error
+        self._state = "loading"      # loading | image | video | error
         self._angle = 0.0            # фаза в радианах [0, 2π) — ставит общий таймер страницы
         self._original_pix = None    # оригинал картинки (для перемасштаба при смене размера)
         self._pixmap = None          # масштабированная под ячейку (рисуется в paintEvent)
         self._model_label = ""       # читаемое имя модели — бейдж поверх картинки (UI-only)
+        self._video_path = None      # путь к .mp4 (state "video"); кадр-превью — позже (cv2)
 
         v = QVBoxLayout(self)
         # Поля для ТЕКСТА (loading «{n}с» / error-причина). Картинка рисуется
@@ -139,6 +140,15 @@ class ShimmerCell(QFrame):
         self._rescale_pixmap()
         self.update()
 
+    def set_video_placeholder(self, path: str):
+        """Готовое ВИДЕО: останавливаем shimmer/счётчик, рисуем тёмный фон + ▶ + бейдж.
+        QPixmap не открывает .mp4 — кадр-превью (cv2) добавим отдельным шагом."""
+        self._finish_common()
+        self._state = "video"
+        self._video_path = path
+        self._info_lbl.hide()
+        self.update()
+
     def set_model_label(self, text: str):
         """Читаемое имя модели для бейджа в левом нижнем углу плитки. Рисуется
         ПОВЕРХ плитки (UI-only, в файл НЕ вшивается) — и на loading, и на image
@@ -182,6 +192,24 @@ class ShimmerCell(QFrame):
         self._info_lbl.show()
         self.update()
 
+    # ── play-треугольник по центру (плитка готового видео, заглушка до кадра) ──
+    def _draw_play_triangle(self, p: QPainter):
+        """Полупрозрачный тёмный круг + белый ▶ по центру плитки."""
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        r = max(16.0, min(self.width(), self.height()) * 0.16)   # радиус круга
+        circle = QPainterPath()
+        circle.addEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+        p.fillPath(circle, QColor(0, 0, 0, 110))
+        # Равнобедренный треугольник «play», вписанный в круг (чуть сдвинут вправо
+        # для оптической центровки).
+        s = r * 0.9
+        tri = QPainterPath()
+        tri.moveTo(cx - s * 0.4, cy - s * 0.55)
+        tri.lineTo(cx - s * 0.4, cy + s * 0.55)
+        tri.lineTo(cx + s * 0.6, cy)
+        tri.closeSubpath()
+        p.fillPath(tri, QColor(255, 255, 255, 230))
+
     # ── бейдж модели поверх картинки (UI-only, в файл не вшивается) ──────
     def _draw_model_badge(self, p: QPainter):
         """Имя модели в левом нижнем углу: белый текст ~10px на полупрозрачной
@@ -219,6 +247,15 @@ class ShimmerCell(QFrame):
             x = (self.width() - pm.width()) // 2
             y = (self.height() - pm.height()) // 2
             p.drawPixmap(int(x), int(y), pm)
+            if self._model_label:
+                self._draw_model_badge(p)
+            p.end()
+            return
+
+        # ── VIDEO: тёмный фон + ▶ по центру (кадр-превью добавим через cv2 позже). ──
+        if self._state == "video":
+            p.fillPath(path, _BASE_COLOR)
+            self._draw_play_triangle(p)
             if self._model_label:
                 self._draw_model_badge(p)
             p.end()

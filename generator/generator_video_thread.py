@@ -1,0 +1,219 @@
+# -*- coding: utf-8 -*-
+"""
+generator/generator_video_thread.py — поток генерации ВИДЕО для «Генератора»
+(2026-06-21).
+
+Копия generator/generator_thread.py (GeneratorImageThread) с отличиями под видео:
+  • duration: None для Veo ("flow-video-fast" — всегда ~8с, duration_seconds НЕ слать,
+    иначе 422); int (4/6/8/10) для Omni ("flow-video-omni-flash" — обязателен).
+  • POLL_TIMEOUT_SEC = 600 (видео генерится дольше картинок).
+  • сохранение .mp4 (не .jpg); download /raw c бОльшим таймаутом (файлы крупнее).
+v5-контракт (эндпоинт, op_id, poll, storage download, [FASTGEN]-диаг) — тот же.
+
+storyboard_app тянется ЛЕНИВО внутри run() (API_BASE / STORAGE_BASE / next_api_key) —
+circular-import защита для frozen .app (как в image-потоке).
+
+Cross-platform: requests + pathlib.Path + datetime, БЕЗ subprocess/shell/open() —
+никаких console-window нюансов Win; путь строится через Path, не f-string-слешами.
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime
+from pathlib import Path
+
+import requests
+from PyQt6.QtCore import QThread, pyqtSignal
+
+
+POLL_TIMEOUT_SEC = 600   # видео дольше картинок (генерация 60-180с; потолок 10 мин)
+_OK_STATUSES = ("succeeded", "success", "completed", "done")
+_FAIL_STATUSES = ("failed", "error", "cancelled")
+
+
+class GeneratorVideoThread(QThread):
+    """Одно видео через FastGen v5. Сигналы: progress(str)/finished(path .mp4)/error(str)."""
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(str)   # абсолютный путь к сохранённому .mp4
+    error = pyqtSignal(str)
+
+    def __init__(self, prompt: str, aspect_ratio: str, model_id: str,
+                 duration, out_dir: Path, parent=None):
+        super().__init__(parent)
+        self.prompt = (prompt or "").strip()
+        self.aspect_ratio = aspect_ratio or "16:9"
+        self.model_id = model_id
+        self.duration = duration         # None для Veo; int (4/6/8/10) для Omni
+        self.out_dir = Path(out_dir)
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def _fastgen(self, op_id, status, elapsed, result, extra=""):
+        """Диаг-строка [FASTGEN] (→ runtime.log через studio tee). provider=generator-video."""
+        print(f"[FASTGEN] path=GeneratorVideoThread api=v5 "
+              f"endpoint=/api/v5/generations auth=X-API-Key "
+              f"model={self.model_id} provider=generator-video result_format=ref "
+              f"duration={self.duration} inputs=0 op_id={op_id} status={status} "
+              f"time={elapsed} result={result}{extra}")
+
+    def run(self):
+        import storyboard_app as _sa
+        try:
+            # Сколько живых ключей — столько максимум попыток submit (часть ключей
+            # может быть без видео-доступа → 403, или с исчерпанным лимитом → 429).
+            try:
+                import key_pool
+                attempts = max(1, int(key_pool.live_key_count()))
+            except Exception:
+                attempts = 5
+
+            # v5: провайдер выбирается полем model; duration_seconds — ТОЛЬКО для omni
+            # (для Veo None → не слать, иначе 422).
+            payload = {
+                "prompt": self.prompt,
+                "aspect_ratio": self.aspect_ratio,
+                "model": self.model_id,
+            }
+            if self.duration is not None:
+                payload["duration_seconds"] = self.duration
+
+            # ── SUBMIT с перебором ключей при КЛЮЧЕ-СПЕЦИФИЧНЫХ ошибках (401/403/429) ──
+            # Рабочий ключ держим в session и ИМ же поллим/качаем (чужой ключ на
+            # poll = 404, op_id привязан к ключу submit). disable_key НЕ зовём —
+            # ключ валиден для картинок; скип чисто локальный, в этом потоке.
+            session = None
+            op_id = None
+            tried = set()
+            spins = 0
+            max_spins = attempts * 4   # предохранитель от бесконечного round-robin
+            while op_id is None and len(tried) < attempts and spins < max_spins:
+                spins += 1
+                if self._stop:
+                    return
+                key, idx = _sa.next_api_key()
+                if not key:
+                    self.error.emit("Нет доступного API-ключа")
+                    return
+                tkey = idx if idx is not None else f"_fb_{spins}"   # ключ попытки
+                if tkey in tried:
+                    continue   # этот ключ уже пробован — крутим round-robin дальше
+                s = requests.Session()
+                s.headers.update({"X-API-Key": key})
+                try:
+                    r = s.post(f"{_sa.API_BASE}/api/v5/generations",
+                               params={"result_format": "ref"},
+                               json=payload, timeout=60)
+                except requests.exceptions.RequestException as e:
+                    # Сетевой сбой — НЕ ключевая проблема, не перебираем.
+                    self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
+                    return
+                code = r.status_code
+                if code in (401, 403, 429):
+                    # Нет видео-доступа / лимит ключа — пробуем следующий ключ.
+                    self._fastgen("-", "submit", 0, "error",
+                                  f" error=http_{code} key_idx={idx}")
+                    tried.add(tkey)
+                    continue
+                if not r.ok:
+                    # Не ключевая (400 битый payload, 5xx и т.п.) — обычная ошибка.
+                    self.error.emit(f"Ошибка отправки запроса: HTTP {code}")
+                    return
+                data = r.json()
+                op_id = data.get("id")
+                if not op_id:
+                    self.error.emit(f"Сервер не вернул id: {str(data)[:200]}")
+                    return
+                session = s   # рабочий ключ — им поллим и качаем
+
+            if op_id is None:
+                self.error.emit("Все ключи недоступны для видео (нет доступа или лимит)")
+                return
+
+            self.progress.emit("Генерирую видео…")
+            t0 = time.monotonic()
+            last_status = ""
+            while True:
+                if self._stop:
+                    return
+                time.sleep(1.5)
+                if self._stop:
+                    return
+                elapsed = int(time.monotonic() - t0)
+                if elapsed > POLL_TIMEOUT_SEC:
+                    self._fastgen(op_id, last_status or "unknown", elapsed,
+                                  "error", " error=timeout")
+                    self.error.emit(
+                        f"API timeout: статус «{last_status or 'unknown'}» "
+                        f"оставался {elapsed}с (>10 мин). Попробуй ещё раз.")
+                    return
+                try:
+                    rr = session.get(f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                                     params={"result_format": "ref"}, timeout=30)
+                    rr.raise_for_status()
+                except requests.exceptions.HTTPError as e:
+                    # op_id привязан к ключу submit → переключить ключ на poll НЕЛЬЗЯ.
+                    pc = getattr(getattr(e, "response", None), "status_code", None)
+                    self._fastgen(op_id, last_status or "poll", elapsed,
+                                  "error", f" error=poll_http_{pc}")
+                    if pc in (401, 403, 429):
+                        self.error.emit("Ключ исчерпал доступ во время генерации видео — "
+                                        "попробуй ещё раз.")
+                    else:
+                        self.error.emit(f"Ошибка опроса статуса: HTTP {pc}")
+                    return
+                except requests.exceptions.RequestException as e:
+                    self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
+                    return
+                d = rr.json()
+                status = (d.get("status") or "").lower()
+                last_status = status
+                self.progress.emit(f"Генерирую видео… ({elapsed}с · {status or '...'})")
+
+                if status in _OK_STATUSES:
+                    # v5: storage_id = results[0].metadata.storage_id; fallback v4-разбор.
+                    results = d.get("results") or d.get("result") or []
+                    uri = ""
+                    if results and isinstance(results[0], dict):
+                        uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                    if not uri:
+                        uri = results[0] if (isinstance(results, list) and results) else results
+                        if isinstance(uri, dict):
+                            uri = (uri.get("url") or uri.get("ref")
+                                   or uri.get("file_hash") or "")
+                        uri = str(uri)
+                    fh = uri[5:] if uri.startswith("file:") else uri
+                    # видео крупнее картинок → больше таймаут на скачивание.
+                    r2 = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw", timeout=300)
+                    r2.raise_for_status()
+                    video_bytes = r2.content
+                    self._fastgen(op_id, status, elapsed, "ok",
+                                  f" storage_id={str(fh)[:8]}")
+                    break
+
+                if status in _FAIL_STATUSES:
+                    self._fastgen(op_id, status, elapsed, "error",
+                                  f" error={str(d.get('error') or '<none>')[:120]}")
+                    self.error.emit(f"Ошибка генерации: {d.get('error')}")
+                    return
+                # queued / running / processing / pending — продолжаем poll
+
+            if self._stop:
+                return
+            # Сохранение: shows/<slug>/generator/gen_YYYYmmdd_HHMMSS.mp4 (уникально)
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = self.out_dir / f"gen_{ts}.mp4"
+            i = 2
+            while target.exists():
+                target = self.out_dir / f"gen_{ts}_{i}.mp4"
+                i += 1
+            target.write_bytes(video_bytes)
+            self.finished.emit(str(target))
+        except Exception as e:
+            if self._stop:
+                return
+            self.error.emit(str(e)[:300])

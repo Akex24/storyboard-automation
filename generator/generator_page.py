@@ -517,11 +517,6 @@ class GeneratorPage(QWidget):
             # Картинки сохраняются в папку сериала — без него генерация невозможна.
             self._show_hint("Чтобы генерировать, создай любой сериал")
             return
-        # Видео — отдельный этап (Veo/Omni пока заглушки, model_id=None). Проверка
-        # ВИДЕО до проверки model_id — иначе video-режим упрётся в «Модель недоступна».
-        if self._mode == "video":
-            self._show_hint("Видео скоро будет")
-            return
         model_id = self.model_combo.current_model_id()
         if not model_id:
             self._show_hint("Модель недоступна")
@@ -534,14 +529,24 @@ class GeneratorPage(QWidget):
             count = 1
         model_label = self.model_combo.current_label()   # читаемое имя для бейджа
         out_dir = root / "shows" / slug / "generator"
-        from generator.generator_thread import GeneratorImageThread
+        is_video = (self._mode == "video")
+        # Veo (flow-video-fast) — без duration; Omni — текущая длительность сегмента.
+        duration_arg = None if model_id == "flow-video-fast" else self._duration
+        if is_video:
+            from generator.generator_video_thread import GeneratorVideoThread
+        else:
+            from generator.generator_thread import GeneratorImageThread
         # ×N независимых параллельных генераций → N плиток. Pattern A: parent=None +
         # ссылка в списке. Захват своей ячейки и потока (default-arg → без late-binding):
         # каждая генерация заменит ИМЕННО свою плитку, даже при параллельных финишах.
         for _ in range(count):
             cell = self._add_cell(aspect)
-            cell.set_model_label(model_label)   # бейдж появится когда плитка покажет картинку
-            th = GeneratorImageThread(prompt, aspect, model_id, out_dir, parent=None)
+            cell.set_model_label(model_label)   # бейдж виден сразу (loading) и далее
+            if is_video:
+                th = GeneratorVideoThread(prompt, aspect, model_id, duration_arg,
+                                          out_dir, parent=None)
+            else:
+                th = GeneratorImageThread(prompt, aspect, model_id, out_dir, parent=None)
             self._gen_threads.append(th)
             th.finished.connect(lambda pth, c=cell, t=th: self._on_gen_done(c, t, pth))
             th.error.connect(lambda msg, c=cell, t=th: self._on_gen_fail(c, t, msg))
@@ -678,7 +683,10 @@ class GeneratorPage(QWidget):
 
     def _on_gen_done(self, cell, th, path: str):
         try:
-            cell.set_image(path)
+            if path.lower().endswith(".mp4"):
+                cell.set_video_placeholder(path)   # видео: ▶ на тёмном фоне (кадр — кусок 3)
+            else:
+                cell.set_image(path)
         except Exception:
             pass
         if th in self._gen_threads:
