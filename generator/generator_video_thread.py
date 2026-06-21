@@ -22,6 +22,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -212,8 +213,40 @@ class GeneratorVideoThread(QThread):
                 target = self.out_dir / f"gen_{ts}_{i}.mp4"
                 i += 1
             target.write_bytes(video_bytes)
+            # best-effort: первый кадр → gen_*.jpg рядом (плитка покажет как превью).
+            # Не-ASCII путь / cv2 не смог → None, плитка останется на ▶ (не падаем).
+            self._extract_first_frame(target)
             self.finished.emit(str(target))
         except Exception as e:
             if self._stop:
                 return
             self.error.emit(str(e)[:300])
+
+    def _extract_first_frame(self, mp4_path: Path) -> Optional[Path]:
+        """Первый кадр .mp4 → .jpg рядом (то же имя, расширение .jpg) — превью плитки.
+
+        cv2 тянется ЛЕНИВО (паттерн detector.py — модуль не должен падать без
+        opencv). Запись — через cv2.imencode(".jpg") + Path.write_bytes, НЕ
+        cv2.imwrite: imwrite (как imread) спотыкается на не-ASCII путях Windows;
+        write_bytes Unicode-путь переваривает. На не-ASCII пути VideoCapture может
+        не открыть файл → возвращаем None (плитка покажет ▶). Любая ошибка → None:
+        превью необязательно, генерация уже успешна.
+        """
+        try:
+            import cv2
+            import numpy as np  # noqa: F401  (cv2 возвращает numpy-массив кадра)
+            cap = cv2.VideoCapture(str(mp4_path))
+            try:
+                ok, frame = cap.read()
+            finally:
+                cap.release()
+            if not ok or frame is None or getattr(frame, "size", 0) == 0:
+                return None
+            ok2, buf = cv2.imencode(".jpg", frame)
+            if not ok2:
+                return None
+            jpg_path = mp4_path.with_suffix(".jpg")
+            jpg_path.write_bytes(buf.tobytes())
+            return jpg_path
+        except Exception:
+            return None

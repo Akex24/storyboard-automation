@@ -141,12 +141,25 @@ class ShimmerCell(QFrame):
         self.update()
 
     def set_video_placeholder(self, path: str):
-        """Готовое ВИДЕО: останавливаем shimmer/счётчик, рисуем тёмный фон + ▶ + бейдж.
-        QPixmap не открывает .mp4 — кадр-превью (cv2) добавим отдельным шагом."""
+        """Готовое ВИДЕО: останавливаем shimmer/счётчик. Если видео-поток положил
+        рядом кадр-превью gen_*.jpg (то же имя, .jpg) — грузим его фоном плитки через
+        QPixmap (Qt понимает не-ASCII пути → отображение надёжно на Windows). Нет .jpg
+        (не-ASCII путь и cv2 не смог) → тёмный фон + ▶. ▶ рисуется поверх в любом случае."""
         self._finish_common()
         self._state = "video"
         self._video_path = path
         self._info_lbl.hide()
+        # Кадр-превью рядом с .mp4: то же имя, расширение .jpg. Чтение через Qt —
+        # кириллица в пути не мешает (в отличие от cv2 на стороне видео-потока).
+        try:
+            from pathlib import Path
+            jpg = str(Path(path).with_suffix(".jpg"))
+            pix = QPixmap(jpg)
+            if not pix.isNull():
+                self._original_pix = pix
+                self._rescale_pixmap()
+        except Exception:
+            pass
         self.update()
 
     def set_model_label(self, text: str):
@@ -166,7 +179,7 @@ class ShimmerCell(QFrame):
         счётчик секунд и дыхание сохраняются; картинка перемасштабируется из оригинала."""
         self._w, self._h = width, height
         self.setFixedSize(width, height)
-        if self._state == "image" and self._original_pix is not None:
+        if self._state in ("image", "video") and self._original_pix is not None:
             self._rescale_pixmap()
         self.update()
 
@@ -252,9 +265,18 @@ class ShimmerCell(QFrame):
             p.end()
             return
 
-        # ── VIDEO: тёмный фон + ▶ по центру (кадр-превью добавим через cv2 позже). ──
+        # ── VIDEO: кадр-превью (если поток извлёк gen_*.jpg) ИЛИ тёмный фон;
+        # ▶ ВСЕГДА поверх (маркер «это видео») + бейдж. ──
         if self._state == "video":
-            p.fillPath(path, _BASE_COLOR)
+            if self._pixmap is not None:
+                p.setClipPath(path)
+                pm = self._pixmap
+                x = (self.width() - pm.width()) // 2
+                y = (self.height() - pm.height()) // 2
+                p.drawPixmap(int(x), int(y), pm)
+                p.setClipping(False)
+            else:
+                p.fillPath(path, _BASE_COLOR)
             self._draw_play_triangle(p)
             if self._model_label:
                 self._draw_model_badge(p)
