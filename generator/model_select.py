@@ -84,7 +84,7 @@ class ModelSelect(QWidget):
         # Enter/Leave кнопки в eventFilter (надёжнее хрупкого parent:hover child).
         self.setStyleSheet(
             "QPushButton#model-combo { background:#100b18; border:none;"
-            " border-radius:10px; min-width:150px; }"
+            " border-radius:10px; min-width:120px; }"
             "QLabel#model-combo-label { color:rgba(255,255,255,0.55);"
             " font-size:13px; background:transparent; }"
             "QLabel#model-combo-arrow { color:#9a8fb0; font-size:11px;"
@@ -148,9 +148,9 @@ class ModelSelect(QWidget):
             "QLabel#model-popup-text { background:transparent; }"
             "QLabel#model-popup-check { color:#d4a256; background:transparent; }")
         self._rows_box = QVBoxLayout(self._popup)
-        # Симметричные отступы вокруг строк: ховер-пилюля первой и последней строки
-        # одинаково отстоит от скруглённой рамки поповера (низ не липнет к краю).
-        self._rows_box.setContentsMargins(8, 10, 8, 10)
+        # Узкие гориз. отступы (4) + вертикальные (8): попап = ширине кнопки, текст
+        # пунктов на 12px от края (4 контейнер + 8 строка) — как у текста кнопки.
+        self._rows_box.setContentsMargins(4, 8, 4, 8)
         self._rows_box.setSpacing(8)   # воздух между строками: ховер не лижет соседа
 
     def _build_rows(self):
@@ -175,7 +175,7 @@ class ModelSelect(QWidget):
             # padding строки задаём margins layout'а (надёжнее QSS-padding на
             # кнопке с дочерним layout): текст слева, ✓ справа.
             rrow = QHBoxLayout(row)
-            rrow.setContentsMargins(12, 8, 12, 8)
+            rrow.setContentsMargins(8, 8, 8, 8)
             rrow.setSpacing(8)
             txt = QLabel(label, row)
             txt.setObjectName("model-popup-text")
@@ -199,8 +199,8 @@ class ModelSelect(QWidget):
         self._build_rows()
         popup = self._popup
         popup.adjustSize()
-        # Ширина = max(ширина кнопки, естественная ширина строк).
-        w = max(self.width(), popup.sizeHint().width())
+        # Ширина попапа = ширине свёрнутой кнопки (узкие отступы пунктов это позволяют).
+        w = self.width()
         popup.resize(w, popup.sizeHint().height())
         # Позиция: ВВЕРХ над кнопкой, левый край по кнопке; кламп в окно (как _tr_popup).
         win = self.window()

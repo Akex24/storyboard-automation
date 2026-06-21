@@ -36,11 +36,12 @@ from generator.model_select import ModelSelect
 
 
 # Модели по режиму: (отображаемое имя, внутренний id для payload["model"]).
-# image-id реальные (см. pipeline.py / threads/generate.py). video-id пока
-# TBD — привяжем когда подключим видео-провайдеров.
+# id реальные из /api/v5/models. ВНИМАНИЕ: генерация видео пока НЕ подключена —
+# в _on_run режим "video" возвращает «Видео скоро будет» ДО использования id.
 MODELS_BY_MODE = {
     "image": [("Nano Banana 2", "nano-banana-2"), ("OpenAI", "openai-image")],
-    "video": [("Veo 3.1", None), ("Omni Flash", None)],
+    "video": [("Veo 3.1 Fast (8s)", "flow-video-fast"),
+              ("Omni Flash", "flow-video-omni-flash")],
 }
 
 # Число плиток 9:16 в ряду — ЖЁСТКО по режиму (_grid_cols). Ширина 9:16 подгоняется
@@ -59,6 +60,7 @@ class GeneratorPage(QWidget):
         super().__init__(parent)
         self.setObjectName("generator-page")
         self._mode = "image"   # активный режим (пока статично, без переключения)
+        self._duration = 8     # длительность видео (сек); видна только для Omni Flash
         # Параллельные генерации: список активных потоков (Pattern A: parent=None
         # + ссылка тут, Qt не соберёт; убираются по finished/error). Кнопку НЕ блокируем.
         self._gen_threads = []
@@ -121,14 +123,14 @@ class GeneratorPage(QWidget):
             "QFrame#seg-group { background:#100b18; border:none;"
             " border-radius:10px; }"
             "QPushButton#seg { background:transparent; color:rgba(255,255,255,0.55);"
-            " border:none; border-radius:6px; padding:0px 14px; font-size:12px; }"
+            " border:none; border-radius:6px; padding:0px 11px; font-size:12px; }"
             "QPushButton#seg:hover { color:rgba(255,255,255,0.85); }"
             "QPushButton#seg[active=\"true\"] { background:rgba(255,255,255,0.08);"
             " color:#fff; border-radius:7px; }"
             # Акцентный сегмент (режим Картинка/Видео): активная — янтарь
             "QPushButton#seg-accent { background:transparent;"
             " color:rgba(255,255,255,0.55); border:none; border-radius:6px;"
-            " padding:0px 14px; font-size:12px; }"
+            " padding:0px 11px; font-size:12px; }"
             "QPushButton#seg-accent:hover { color:rgba(255,255,255,0.85); }"
             "QPushButton#seg-accent[active=\"true\"] { background:#d4a256;"
             " color:#15101e; border-radius:7px; }"
@@ -154,6 +156,7 @@ class GeneratorPage(QWidget):
         root.addWidget(self._build_canvas_row())
         root.addWidget(self._build_results_area(), stretch=1)
         root.addWidget(self._build_prompt_bar())
+        self._update_duration_visibility()   # стартово скрыт (дефолт — режим image)
 
     # ── (B) ряд холстов — вкладки браузерного типа (только ВИД; логика — заход 2) ──
     def _build_canvas_row(self) -> QWidget:
@@ -303,8 +306,24 @@ class GeneratorPage(QWidget):
         # на кнопке-триггере ВНУТРИ виджета; высоту ряда (34) держим снаружи.
         self.model_combo = ModelSelect()
         self.model_combo.setFixedHeight(34)
+        # Фикс ширины ВПРИТЫК к самому длинному лейблу «Veo 3.1 Fast (8s)» (~142px):
+        # 146 = текст + стрелка + поля, без большого зазора. (min-width триггера в
+        # model_select.py снижен до 120, иначе пол 150 не дал бы сжаться.)
+        self.model_combo.setFixedWidth(146)
         self._populate_models(self._mode)
+        # Смена модели в выпадашке → пересчёт видимости сегмента длительности.
+        self.model_combo.changed.connect(self._update_duration_visibility)
         ctl.addWidget(self.model_combo)
+
+        # Длительность видео 4/6/8/10 (видна ТОЛЬКО для Omni Flash — show/hide в
+        # _update_duration_visibility). Дефолт 8. Между моделью и форматом.
+        self.dur_seg, self.dur_btns = self._seg_group(
+            [("4s", "4"), ("6s", "6"), ("8s", "8"), ("10s", "10")],
+            active_key=str(self._duration))
+        for _k, _b in self.dur_btns.items():
+            _b.clicked.connect(
+                lambda _checked=False, key=_k: self._on_duration_change(key))
+        ctl.addWidget(self.dur_seg)
 
         # Формат: 16:9 / 9:16 (16:9 активен)
         self.fmt_seg, self.fmt_btns = self._seg_group(
@@ -444,6 +463,22 @@ class GeneratorPage(QWidget):
         self._on_seg_click(self.mode_btns, key)
         self._mode = key
         self._populate_models(key)
+        self._update_duration_visibility()
+
+    def _on_duration_change(self, key: str):
+        """Клик 4/6/8/10: подсветка активной + запомнить длительность (сек)."""
+        self._on_seg_click(self.dur_btns, key)
+        try:
+            self._duration = int(key)
+        except Exception:
+            pass
+
+    def _update_duration_visibility(self):
+        """Сегмент длительности виден ТОЛЬКО для video + Omni Flash (omni требует
+        duration_seconds). Для image и video+Veo — скрыт."""
+        show = (self._mode == "video"
+                and self.model_combo.current_model_id() == "flow-video-omni-flash")
+        self.dur_seg.setVisible(show)
 
     def _show_hint(self, text: str):
         """Транзиентная подсказка-тост поверх prompt-bar (4с). НЕ в layout → геометрию
