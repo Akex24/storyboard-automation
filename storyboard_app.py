@@ -3247,7 +3247,7 @@ QFrame#lang-wrapper {
 QPushButton#tab-pill {
     background: transparent; color: rgba(255, 255, 255, 0.55);
     border: none; border-radius: 6px;
-    padding: 6px 14px; font-size: 12px;
+    padding: 5px 14px; font-size: 12px;
 }
 QPushButton#tab-pill:hover {
     color: rgba(255, 255, 255, 0.85);
@@ -3266,7 +3266,7 @@ QPushButton#tab-pill[accent="true"]:hover {
     color: #e8b86a;
 }
 QPushButton#tab-pill[accent="true"][active="true"] {
-    background: rgba(212, 162, 86, 0.16); color: #ffd9a0;
+    background: #d4a256; color: #15101e;
 }
 /* Этап 2 (формат): сегмент-переключатель 9:16 | 16:9 в шапке. Активная
    половина — фирменный красный (#e63946, как точка в логотипе), неактивная
