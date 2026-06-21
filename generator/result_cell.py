@@ -29,7 +29,7 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QPixmap
+from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QPixmap, QFont
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
 
@@ -59,15 +59,17 @@ class ShimmerCell(QFrame):
     """Плитка результата. Создаётся в loading; page — для (un)register общего shimmer."""
 
     def __init__(self, page, width: int = 480, height: int = 270,
-                 parent: Optional[QFrame] = None):
+                 aspect: str = "16:9", parent: Optional[QFrame] = None):
         super().__init__(parent)
         self._page = page
         self._w, self._h = width, height
+        self._aspect = aspect        # формат плитки ("16:9"/"9:16") — для перераскладки
         self.setFixedSize(width, height)
         self._state = "loading"      # loading | image | error
         self._angle = 0.0            # фаза в радианах [0, 2π) — ставит общий таймер страницы
         self._original_pix = None    # оригинал картинки (для перемасштаба при смене размера)
         self._pixmap = None          # масштабированная под ячейку (рисуется в paintEvent)
+        self._model_label = ""       # читаемое имя модели — бейдж поверх картинки (UI-only)
 
         v = QVBoxLayout(self)
         # Поля для ТЕКСТА (loading «{n}с» / error-причина). Картинка рисуется
@@ -137,6 +139,17 @@ class ShimmerCell(QFrame):
         self._rescale_pixmap()
         self.update()
 
+    def set_model_label(self, text: str):
+        """Читаемое имя модели для бейджа в левом нижнем углу плитки. Рисуется
+        ПОВЕРХ картинки (UI-only, в файл НЕ вшивается); виден только в image."""
+        self._model_label = (text or "").strip()
+        if self._state == "image":
+            self.update()
+
+    def aspect(self) -> str:
+        """Формат плитки ("16:9"/"9:16") — сетка берёт его для пересчёта размера."""
+        return self._aspect
+
     def set_size(self, width: int, height: int):
         """Изменить размер ячейки (перераскладка сетки 2/3/4 колонки). Состояние,
         счётчик секунд и дыхание сохраняются; картинка перемасштабируется из оригинала."""
@@ -168,6 +181,28 @@ class ShimmerCell(QFrame):
         self._info_lbl.show()
         self.update()
 
+    # ── бейдж модели поверх картинки (UI-only, в файл не вшивается) ──────
+    def _draw_model_badge(self, p: QPainter):
+        """Имя модели в левом нижнем углу: белый текст ~10px на полупрозрачной
+        тёмной скруглённой подложке (контраст на светлых картинках)."""
+        margin = 8
+        pad_x, pad_y = 4, 2
+        font = QFont()
+        font.setPixelSize(10)
+        p.setFont(font)
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(self._model_label)
+        th = fm.height()
+        rect_w = tw + pad_x * 2
+        rect_h = th + pad_y * 2
+        x = margin
+        y = self.height() - margin - rect_h
+        bg = QPainterPath()
+        bg.addRoundedRect(QRectF(x, y, rect_w, rect_h), 4, 4)
+        p.fillPath(bg, QColor(0, 0, 0, 140))   # rgba(0,0,0,≈0.55)
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(int(x + pad_x), int(y + pad_y + fm.ascent()), self._model_label)
+
     # ── отрисовка базы/блика/ошибки ─────────────────────────────────────
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -183,6 +218,8 @@ class ShimmerCell(QFrame):
             x = (self.width() - pm.width()) // 2
             y = (self.height() - pm.height()) // 2
             p.drawPixmap(int(x), int(y), pm)
+            if self._model_label:
+                self._draw_model_badge(p)
             p.end()
             return
 

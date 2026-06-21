@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QEvent
+from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QEvent, QPoint
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
@@ -266,6 +266,7 @@ class GeneratorPage(QWidget):
     def _build_prompt_bar(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("prompt-bar")
+        self._prompt_bar = bar   # ссылка для позиционирования тост-подсказки
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(14, 12, 14, 12)
         outer.setSpacing(8)
@@ -292,6 +293,10 @@ class GeneratorPage(QWidget):
         # Режим: Картинка / Видео (Картинка активна)
         self.mode_seg, self.mode_btns = self._seg_group(
             [("Картинка", "image"), ("Видео", "video")], active_key="image", accent=True)
+        # Клик по режиму: подсветка + смена списка моделей (см. _on_mode_change).
+        for _k, _b in self.mode_btns.items():
+            _b.clicked.connect(
+                lambda _checked=False, key=_k: self._on_mode_change(key))
         ctl.addWidget(self.mode_seg)
 
         # Модель — ВТОРАЯ, сразу после режима (зависит от режима).
@@ -306,11 +311,17 @@ class GeneratorPage(QWidget):
         # Формат: 16:9 / 9:16 (16:9 активен)
         self.fmt_seg, self.fmt_btns = self._seg_group(
             [("16:9", "16:9"), ("9:16", "9:16")], active_key="16:9")
+        for _k, _b in self.fmt_btns.items():
+            _b.clicked.connect(
+                lambda _checked=False, key=_k: self._on_seg_click(self.fmt_btns, key))
         ctl.addWidget(self.fmt_seg)
 
         # Количество: ×1..×4 (×1 активно)
         self.count_seg, self.count_btns = self._seg_group(
             [("×1", "1"), ("×2", "2"), ("×3", "3"), ("×4", "4")], active_key="1")
+        for _k, _b in self.count_btns.items():
+            _b.clicked.connect(
+                lambda _checked=False, key=_k: self._on_seg_click(self.count_btns, key))
         ctl.addWidget(self.count_seg)
 
         # Размер сетки: 2 / 3 / 4 в ряд. ЖИВОЙ переключатель (в отличие от прочих
@@ -335,16 +346,14 @@ class GeneratorPage(QWidget):
 
         outer.addLayout(ctl)
 
-        # Транзиентная подсказка (пустой промпт / нет сериала / модель). СКРЫТА по
-        # умолчанию → постоянной строки статуса НЕТ (прогресс/ошибки видны на плитках).
-        # Появляется на 4с при валидации и сама прячется; hidden QLabel схлопывается в layout.
-        self._hint_lbl = QLabel("")
+        # Транзиентная подсказка — ТОСТ поверх (родитель = страница, НЕ в layout),
+        # чтобы НЕ двигать геометрию prompt-bar. Всплывает над панелью на 4с.
+        self._hint_lbl = QLabel("", self)
         self._hint_lbl.setObjectName("gen-hint")
-        self._hint_lbl.setWordWrap(True)
         self._hint_lbl.setStyleSheet(
-            "color:#e0b06a; font-size:12px; background:transparent;")
+            "color:#15101e; font-size:12px; font-weight:600;"
+            " background:#d4a256; border-radius:8px; padding:6px 12px;")
         self._hint_lbl.hide()
-        outer.addWidget(self._hint_lbl)
         self._hint_timer = QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.timeout.connect(self._hide_hint)
@@ -420,21 +429,48 @@ class GeneratorPage(QWidget):
                 return key
         return None
 
+    def _on_seg_click(self, btns, key: str):
+        """Активировать сегмент key в группе btns: снять active с прочих, поставить
+        на выбранную + реполиш (иначе QSS [active] не перерисуется динамически)."""
+        for k, b in btns.items():
+            b.setProperty("active", k == key)
+            try:
+                b.style().unpolish(b)
+                b.style().polish(b)
+            except Exception:
+                pass
+
+    def _on_mode_change(self, key: str):
+        """Смена режима Картинка/Видео: подсветка сегмента + список моделей под режим."""
+        self._on_seg_click(self.mode_btns, key)
+        self._mode = key
+        self._populate_models(key)
+
     def _show_hint(self, text: str):
-        """Короткая транзиентная подсказка (валидация перед запуском). Авто-скрытие
-        через 4с. Постоянной строки статуса нет — прогресс/ошибки на плитках."""
-        self._hint_lbl.setText(text or "")
-        self._hint_lbl.setVisible(bool(text))
-        if text:
-            self._hint_timer.start(4000)
+        """Транзиентная подсказка-тост поверх prompt-bar (4с). НЕ в layout → геометрию
+        панели не двигает. Позиционируется над панелью по центру."""
+        if not text:
+            self._hint_lbl.hide()
+            return
+        self._hint_lbl.setText(text)
+        self._hint_lbl.adjustSize()
+        bar = getattr(self, "_prompt_bar", None)
+        if bar is not None:
+            tl = bar.mapTo(self, QPoint(0, 0))
+            x = tl.x() + max(0, (bar.width() - self._hint_lbl.width()) // 2)
+            y = max(4, tl.y() - self._hint_lbl.height() - 6)
+            self._hint_lbl.move(x, y)
+        self._hint_lbl.show()
+        self._hint_lbl.raise_()
+        self._hint_timer.start(4000)
 
     def _hide_hint(self):
         self._hint_lbl.hide()
 
     def _on_run(self):
-        """Запуск генерации. ПАРАЛЛЕЛЬНО: кнопку НЕ блокируем; каждый запуск —
-        свой поток (round-robin ключ берётся в run() потока) и СВОЯ плитка в сетке.
-        Формат из активного сегмента (16:9), модель из выпадашки, ×1, без рефов."""
+        """Запуск генерации. ПАРАЛЛЕЛЬНО: кнопку НЕ блокируем; ×N → N потоков и N
+        плиток (каждый поток берёт свой round-robin ключ в run()). Формат и
+        количество — из активных сегментов; модель из выпадашки; без рефов."""
         prompt = self.prompt_input.toPlainText().strip()
         if not prompt:
             self.prompt_input.setFocus()
@@ -447,35 +483,48 @@ class GeneratorPage(QWidget):
             # Картинки сохраняются в папку сериала — без него генерация невозможна.
             self._show_hint("Чтобы генерировать, создай любой сериал")
             return
+        # Видео — отдельный этап (Veo/Omni пока заглушки, model_id=None). Проверка
+        # ВИДЕО до проверки model_id — иначе video-режим упрётся в «Модель недоступна».
+        if self._mode == "video":
+            self._show_hint("Видео скоро будет")
+            return
         model_id = self.model_combo.current_model_id()
         if not model_id:
             self._show_hint("Модель недоступна")
             return
         aspect = self._active_seg_key(self.fmt_btns) or "16:9"
+        count_key = self._active_seg_key(self.count_btns) or "1"
+        try:
+            count = int(count_key)
+        except Exception:
+            count = 1
+        model_label = self.model_combo.current_label()   # читаемое имя для бейджа
         out_dir = root / "shows" / slug / "generator"
         from generator.generator_thread import GeneratorImageThread
-        # Своя плитка-плейсхолдер в следующей свободной ячейке (shimmer + счётчик секунд).
-        cell = self._add_cell()
-        # Pattern A: parent=None + ссылка в списке (несколько параллельно).
-        th = GeneratorImageThread(prompt, aspect, model_id, out_dir, parent=None)
-        self._gen_threads.append(th)
-        # Захват своей ячейки и потока (default-arg → без late-binding): каждая
-        # генерация заменит ИМЕННО свою плитку, даже при параллельных финишах.
-        th.finished.connect(lambda pth, c=cell, t=th: self._on_gen_done(c, t, pth))
-        th.error.connect(lambda msg, c=cell, t=th: self._on_gen_fail(c, t, msg))
-        th.start()
+        # ×N независимых параллельных генераций → N плиток. Pattern A: parent=None +
+        # ссылка в списке. Захват своей ячейки и потока (default-arg → без late-binding):
+        # каждая генерация заменит ИМЕННО свою плитку, даже при параллельных финишах.
+        for _ in range(count):
+            cell = self._add_cell(aspect)
+            cell.set_model_label(model_label)   # бейдж появится когда плитка покажет картинку
+            th = GeneratorImageThread(prompt, aspect, model_id, out_dir, parent=None)
+            self._gen_threads.append(th)
+            th.finished.connect(lambda pth, c=cell, t=th: self._on_gen_done(c, t, pth))
+            th.error.connect(lambda msg, c=cell, t=th: self._on_gen_fail(c, t, msg))
+            th.start()
 
     # ── сетка результатов + параллельные плитки ───────────────────────
-    def _add_cell(self) -> ShimmerCell:
+    def _add_cell(self, aspect: str = "16:9") -> ShimmerCell:
         """Loading-плитка в следующей свободной ячейке (слева-направо, N в ряд).
-        Первая ячейка прячет заглушку и показывает сетку. Размер — под текущие колонки."""
+        Первая ячейка прячет заглушку и показывает сетку. Размер — под текущие колонки.
+        (aspect принимается для совместимости с _on_run; сетка пока 16:9.)"""
         if self._cell_count == 0:
             self._empty_host.hide()
             self._grid_host.show()
         cols = self._grid_cols
         row, col = divmod(self._cell_count, cols)
         w, h = self._cell_size(cols)
-        cell = ShimmerCell(self, w, h)
+        cell = ShimmerCell(self, w, h, aspect=aspect)
         self._cells.append(cell)
         self._grid.addWidget(cell, row, col,
                              Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)

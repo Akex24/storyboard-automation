@@ -148,7 +148,9 @@ class ModelSelect(QWidget):
             "QLabel#model-popup-text { background:transparent; }"
             "QLabel#model-popup-check { color:#d4a256; background:transparent; }")
         self._rows_box = QVBoxLayout(self._popup)
-        self._rows_box.setContentsMargins(6, 8, 6, 8)
+        # Симметричные отступы вокруг строк: ховер-пилюля первой и последней строки
+        # одинаково отстоит от скруглённой рамки поповера (низ не липнет к краю).
+        self._rows_box.setContentsMargins(8, 10, 8, 10)
         self._rows_box.setSpacing(8)   # воздух между строками: ховер не лижет соседа
 
     def _build_rows(self):
