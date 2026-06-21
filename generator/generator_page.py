@@ -561,7 +561,11 @@ class GeneratorPage(QWidget):
             self._grid_host.show()
         w, h = self._cell_wh(aspect)
         cell = ShimmerCell(self, w, h, aspect=aspect)
-        self._cells.append(cell)
+        # В НАЧАЛО списка → новая генерация сверху, предыдущие съезжают вниз (как
+        # Google Flow). _relayout_grid раскладывает строго по порядку _cells
+        # (начало→верх); привязка thread↔cell по объекту (c=cell), не по индексу —
+        # вставка в начало безопасна для параллельных ×N генераций.
+        self._cells.insert(0, cell)
         self._cell_count += 1
         self._relayout_grid()   # перестроить ряды (включая новую плитку)
         return cell
