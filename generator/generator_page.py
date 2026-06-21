@@ -90,17 +90,25 @@ class GeneratorPage(QWidget):
     def _build_ui(self):
         self.setStyleSheet(
             "QWidget#generator-page { background:#15101e; }"
-            # Холст-чипы
-            "QFrame#canvas-chip { background:#1a1424; border:1px solid #2a1f3d;"
-            " border-radius:8px; }"
-            "QFrame#canvas-chip[active=\"true\"] { background:#2a1f3d;"
-            " border:1px solid #8e6cd4; }"
-            "QLabel#canvas-title { color:#cfcfcf; font-size:12px;"
+            # Холст-вкладки (браузерный тип): без коробки; активная — мягкая
+            # подложка #181222 + янтарное подчёркивание 2px, садится на линию.
+            "QFrame#canvas-chip { background:transparent; border:none;"
+            " border-top-left-radius:9px; border-top-right-radius:9px;"
+            " border-bottom:2px solid transparent; }"
+            "QFrame#canvas-chip:hover { background:#140f1e; }"
+            "QFrame#canvas-chip[active=\"true\"] { background:#181222;"
+            " border-bottom:2px solid #d4a256; }"
+            "QLabel#canvas-title { color:rgba(255,255,255,0.5); font-size:12px;"
             " background:transparent; }"
-            "QPushButton#canvas-new { background:transparent; color:#a8c8ff;"
-            " border:1px dashed #4d6a8a; border-radius:8px; padding:6px 12px;"
-            " font-size:12px; }"
-            "QPushButton#canvas-close { background:transparent; border:none; }"
+            "QFrame#canvas-chip[active=\"true\"] QLabel#canvas-title { color:#f2eef8; }"
+            "QPushButton#canvas-new { background:transparent; color:#7a7488;"
+            " border:none; border-radius:8px; padding:0px; font-size:18px; }"
+            "QPushButton#canvas-new:hover { color:#cfcfcf; background:#140f1e; }"
+            "QPushButton#canvas-new:disabled { color:#4a4458; background:transparent; }"
+            "QFrame#canvas-divider { background:#2a2438; border:none; }"
+            "QPushButton#canvas-close { background:transparent; border:none;"
+            " border-radius:4px; }"
+            "QPushButton#canvas-close:hover { background:#2c2438; }"
             # Область результатов
             "QScrollArea#results { background:transparent; border:none; }"
             "QLabel#results-empty { color:#6a6a78; font-size:13px;"
@@ -147,31 +155,48 @@ class GeneratorPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(10)
-        root.addLayout(self._build_canvas_row())
+        root.addWidget(self._build_canvas_row())
         root.addWidget(self._build_results_area(), stretch=1)
         root.addWidget(self._build_prompt_bar())
 
-    # ── (B) ряд холстов — заглушки ──────────────────────────────────────
-    def _build_canvas_row(self) -> QHBoxLayout:
+    # ── (B) ряд холстов — вкладки браузерного типа (только ВИД; логика — заход 2) ──
+    def _build_canvas_row(self) -> QWidget:
+        # Обёртка: ряд вкладок + тонкая линия-разделитель под ним.
+        wrap = QWidget()
+        outer = QVBoxLayout(wrap)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        # Ряд вкладок (chips + «+»), прижат к низу — вкладки садятся на линию.
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
-        # Холст 1 активен (без ✕), 2 и 3 — с ✕. Пока ничего не переключают.
-        for i in range(1, 4):
-            row.addWidget(self._canvas_chip(f"Холст {i}", active=(i == 1)))
-        new_btn = QPushButton("+ Новый")
+        row.setAlignment(Qt.AlignmentFlag.AlignBottom)
+        # Пока ОДИН холст (мультихолст-логика отложена). Активный — без ✕.
+        row.addWidget(self._canvas_chip("Холст 1", active=True))
+        new_btn = QPushButton("+")
         new_btn.setObjectName("canvas-new")
         new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_btn.setFixedSize(32, 34)
+        new_btn.setEnabled(False)   # неактивна (логика добавления — позже)
         # заглушка: без обработчика
         row.addWidget(new_btn)
         row.addStretch()
-        return row
+        outer.addLayout(row)
+        # Линия-разделитель 1px (активная вкладка разрывает её янтарным подчёркиванием).
+        divider = QFrame()
+        divider.setObjectName("canvas-divider")
+        divider.setFixedHeight(1)
+        outer.addWidget(divider)
+        return wrap
 
     def _canvas_chip(self, title: str, active: bool) -> QFrame:
         chip = QFrame()
         chip.setObjectName("canvas-chip")
         chip.setProperty("active", active)
+        chip.setCursor(Qt.CursorShape.PointingHandCursor)   # кликабельность — заход 2
+        chip.setFixedHeight(34)   # вровень с сегментами нижней панели (#seg = 34)
         lay = QHBoxLayout(chip)
-        lay.setContentsMargins(12, 6, 8 if not active else 12, 6)
+        lay.setContentsMargins(16, 0, 16, 0)   # вертикаль держит setFixedHeight, текст по центру
         lay.setSpacing(8)
         lbl = QLabel(title)
         lbl.setObjectName("canvas-title")
