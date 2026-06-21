@@ -43,6 +43,11 @@ MODELS_BY_MODE = {
     "video": [("Veo 3.1", None), ("Omni Flash", None)],
 }
 
+# Число плиток 9:16 в ряду — ЖЁСТКО по режиму (_grid_cols). Ширина 9:16 подгоняется
+# под доступную ширину так, чтобы ровно n_v штук легли без дыры справа; высота 9:16 —
+# производная (w*16//9, выше 16:9). 16:9 при этом не меняется (как было).
+N_VERT_BY_COLS = {2: 5, 3: 8, 4: 11}
+
 
 class GeneratorPage(QWidget):
     """Каркас страницы генератора. Заглушки без логики (этот шаг — только UI)."""
@@ -64,19 +69,10 @@ class GeneratorPage(QWidget):
         # Счётчик заполненных ячеек + ссылки на ВСЕ плитки (для перераскладки).
         self._cell_count = 0
         self._cells = []
-        # Число колонок сетки (2/3/4), восстанавливается из QSettings.
-        self._grid_cols = self._load_grid_cols()
+        # Размер плиток: ВСЕГДА стартуем с M (3 колонки), игнорируя прошлые сессии
+        # (по требованию). Переключение S/M/L работает в рамках сессии через _grid_cols.
+        self._grid_cols = 3
         self._build_ui()
-
-    # ── настройка числа колонок (QSettings, как другие настройки проекта) ──
-    def _load_grid_cols(self) -> int:
-        try:
-            import storyboard_app as _sa
-            v = int(QSettings(_sa.APP_ORG, _sa.APP_NAME).value(
-                "generator_grid_cols", 3, type=int))
-            return v if v in (2, 3, 4) else 3
-        except Exception:
-            return 3
 
     # ── ленивый Lucide-иконкозагрузчик (без module-level import storyboard_app) ──
     def _icon(self, name: str):
@@ -223,7 +219,11 @@ class GeneratorPage(QWidget):
         area.setWidgetResizable(True)
         # ФИКС: горизонтального скролла НЕТ; перенос по рядам, скролл только вертикальный.
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Вертикальный скроллбар ВСЕГДА зарезервирован (не AsNeeded): иначе viewport().width()
+        # прыгает на ~15px при появлении/исчезновении бара, и пересчёт плиток при смене
+        # режима (4→3) идёт по неустаканенной ширине → крайняя плитка обрезается. AlwaysOn
+        # делает ширину viewport детерминированной (area − scrollbar) на Mac и Win.
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         # Слить область с фоном страницы (как Flow): без рамки/подложки.
         area.setFrameShape(QFrame.Shape.NoFrame)
         area.viewport().setStyleSheet("background:transparent;")
@@ -243,20 +243,18 @@ class GeneratorPage(QWidget):
         eh.addStretch()
         self._results_empty = empty
         outer_v.addWidget(self._empty_host, stretch=1)
-        # Сетка N-в-ряд (N = self._grid_cols). Колонки слева-направо, перенос по рядам.
-        # Размер плиток считается динамически от ширины области → горизонт. скролла нет.
+        # Ряды результатов: вертикальный стек рядов-QHBoxLayout (НЕ QGridLayout) —
+        # каждый ряд НЕЗАВИСИМ, поэтому 9:16 (уже) и 16:9 (шире) лежат в СВОИХ рядах
+        # с разным числом плиток, не подмешиваясь друг к другу. Высота у всех общая.
         self._grid_host = QWidget()
-        self._grid = QGridLayout(self._grid_host)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setHorizontalSpacing(12)
-        self._grid.setVerticalSpacing(12)
+        self._rows_v = QVBoxLayout(self._grid_host)
+        self._rows_v.setContentsMargins(0, 0, 0, 0)
+        self._rows_v.setSpacing(12)
         self._grid_host.hide()
-        # Прижать сетку к ЛЕВОМУ краю: grid_host hug-content в HBox, пустое место —
-        # справа (а не центрирование). Вертикально — addStretch снизу (верх-лево).
+        # grid_host на всю ширину; левое выравнивание держит trailing-stretch в каждом ряду.
         grid_row = QHBoxLayout()
         grid_row.setContentsMargins(0, 0, 0, 0)
-        grid_row.addWidget(self._grid_host)
-        grid_row.addStretch(1)
+        grid_row.addWidget(self._grid_host, 1)
         outer_v.addLayout(grid_row)
         outer_v.addStretch(1)
         area.setWidget(inner)
@@ -324,10 +322,11 @@ class GeneratorPage(QWidget):
                 lambda _checked=False, key=_k: self._on_seg_click(self.count_btns, key))
         ctl.addWidget(self.count_seg)
 
-        # Размер сетки: 2 / 3 / 4 в ряд. ЖИВОЙ переключатель (в отличие от прочих
-        # сегментов-заглушек) — перестраивает сетку + пишет в QSettings.
+        # Размер плиток S/M/L (слева→направо мелкий→крупный). Лейбл — буква, КЛЮЧ —
+        # число колонок 16:9: S=4 (мелкие), M=3, L=2 (крупные). _on_cols_change/_grid_cols/
+        # N_VERT_BY_COLS работают по ключу-числу как раньше; меняется только порядок и подпись.
         self.cols_seg, self.cols_btns = self._seg_group(
-            [("2", "2"), ("3", "3"), ("4", "4")], active_key=str(self._grid_cols))
+            [("S", "4"), ("M", "3"), ("L", "2")], active_key=str(self._grid_cols))
         for _k, _b in self.cols_btns.items():
             _b.clicked.connect(
                 lambda _checked=False, key=_k: self._on_cols_change(key))
@@ -515,21 +514,41 @@ class GeneratorPage(QWidget):
 
     # ── сетка результатов + параллельные плитки ───────────────────────
     def _add_cell(self, aspect: str = "16:9") -> ShimmerCell:
-        """Loading-плитка в следующей свободной ячейке (слева-направо, N в ряд).
-        Первая ячейка прячет заглушку и показывает сетку. Размер — под текущие колонки.
-        (aspect принимается для совместимости с _on_run; сетка пока 16:9.)"""
+        """Loading-плитка. Ширина под формат (16:9 шире, 9:16 уже), высота ОБЩАЯ.
+        Раскладка по рядам с группировкой по формату — в _relayout_grid."""
         if self._cell_count == 0:
             self._empty_host.hide()
             self._grid_host.show()
-        cols = self._grid_cols
-        row, col = divmod(self._cell_count, cols)
-        w, h = self._cell_size(cols)
+        w, h = self._cell_wh(aspect)
         cell = ShimmerCell(self, w, h, aspect=aspect)
         self._cells.append(cell)
-        self._grid.addWidget(cell, row, col,
-                             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._cell_count += 1
+        self._relayout_grid()   # перестроить ряды (включая новую плитку)
         return cell
+
+    def _cell_wh(self, aspect: str):
+        """Размер плитки. 16:9 → w16×H (как было). 9:16 → ширина подогнана под n_v штук
+        в ряду (по режиму), высота производная — см. _vert_dims."""
+        if aspect == "16:9":
+            return self._cell_size(self._grid_cols)
+        w_v, h_v, _ = self._vert_dims()
+        return w_v, h_v
+
+    def _vert_dims(self):
+        """Размер плитки 9:16 + число в ряду. n_v ЖЁСТКО по режиму (N_VERT_BY_COLS);
+        ширина = (доступная − отступы)//n_v (ровно n_v штук без дыры справа); высота
+        производная w_v*16//9. Возвращает (w_v, h_v, n_v)."""
+        spacing = 12
+        n_v = N_VERT_BY_COLS.get(self._grid_cols, 8)
+        try:
+            vw = self._results_area.viewport().width()
+        except Exception:
+            vw = 0
+        if vw <= 0:
+            vw = self.width() or 1200
+        avail = vw - 4
+        w_v = max(60, (avail - (n_v - 1) * spacing) // n_v)
+        return w_v, (w_v * 16 // 9), n_v
 
     def _cell_size(self, cols: int):
         """Размер ячейки 16:9 под N колонок и текущую ширину области результатов.
@@ -548,7 +567,8 @@ class GeneratorPage(QWidget):
         return w, h
 
     def _on_cols_change(self, key: str):
-        """Клик 2/3/4: перестроить сетку под новое число колонок + запомнить."""
+        """Клик S/M/L (ключ = число колонок): перестроить сетку под новое число.
+        Без персистенции — размер всегда стартует с M (см. __init__)."""
         try:
             n = int(key)
         except Exception:
@@ -559,11 +579,6 @@ class GeneratorPage(QWidget):
             self._sync_cols_seg()   # повторный клик — просто синхронизируем подсветку
             return
         self._grid_cols = n
-        try:
-            import storyboard_app as _sa
-            QSettings(_sa.APP_ORG, _sa.APP_NAME).setValue("generator_grid_cols", n)
-        except Exception:
-            pass
         self._sync_cols_seg()
         self._relayout_grid()
 
@@ -578,18 +593,53 @@ class GeneratorPage(QWidget):
                 pass
 
     def _relayout_grid(self):
-        """Перераскладка СУЩЕСТВУЮЩИХ ячеек под self._grid_cols + пересчёт размера.
-        Ячейки НЕ пересоздаются (счётчик секунд/состояние/картинка сохраняются) —
-        removeWidget + set_size + re-addWidget по новой раскладке."""
-        cols = self._grid_cols
-        w, h = self._cell_size(cols)
+        """Перераскладка по РЯДАМ с группировкой по формату. Подряд идущие плитки
+        одного формата → один ряд; смена формата ИЛИ заполнение ряда → новый ряд.
+        16:9 в ряду: _grid_cols (2/3/4), размер w16×H. 9:16 в ряду: n_v ЖЁСТКО по режиму
+        (N_VERT_BY_COLS), ширина подогнана под n_v без дыры, высота производная (h_v).
+        Ряды 9:16 выше рядов 16:9 — ОК (ряды независимы). Ячейки НЕ пересоздаются
+        (таймеры/картинка живут) — открепляем от старых рядов и кладём заново."""
+        spacing = 12
+        cols16 = self._grid_cols
+        w16, H = self._cell_size(cols16)
+        w_v, h_v, n_v = self._vert_dims()   # 9:16: ширина под n_v штук, высота производная
+        # 1) открепить живые ячейки (состояние/таймеры сохраняются)
         for cell in self._cells:
-            self._grid.removeWidget(cell)
-        for i, cell in enumerate(self._cells):
-            cell.set_size(w, h)
-            row, col = divmod(i, cols)
-            self._grid.addWidget(cell, row, col,
+            cell.setParent(self._grid_host)
+        # 2) снести старые ряды (row_host'ы; ячейки уже откреплены — не удалятся)
+        while self._rows_v.count():
+            it = self._rows_v.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        # 3) сгруппировать ячейки в ряды по формату
+        rows, cur, cur_fmt = [], [], None
+        for cell in self._cells:
+            fmt = cell.aspect()
+            limit = cols16 if fmt == "16:9" else n_v
+            if cur and (fmt != cur_fmt or len(cur) >= limit):
+                rows.append(cur)
+                cur = []
+            cur.append(cell)
+            cur_fmt = fmt
+        if cur:
+            rows.append(cur)
+        # 4) построить ряды: row_host + QHBoxLayout, плитки слева, stretch справа
+        for row in rows:
+            rw = QWidget(self._grid_host)
+            hb = QHBoxLayout(rw)
+            hb.setContentsMargins(0, 0, 0, 0)
+            hb.setSpacing(spacing)
+            for cell in row:
+                if cell.aspect() == "16:9":
+                    cell.set_size(w16, H)
+                else:
+                    cell.set_size(w_v, h_v)   # 9:16: своя ширина + производная высота
+                hb.addWidget(cell, 0,
                              Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                cell.show()
+            hb.addStretch(1)
+            self._rows_v.addWidget(rw)
 
     def _on_gen_done(self, cell, th, path: str):
         try:

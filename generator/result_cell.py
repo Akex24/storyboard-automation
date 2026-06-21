@@ -141,9 +141,10 @@ class ShimmerCell(QFrame):
 
     def set_model_label(self, text: str):
         """Читаемое имя модели для бейджа в левом нижнем углу плитки. Рисуется
-        ПОВЕРХ картинки (UI-only, в файл НЕ вшивается); виден только в image."""
+        ПОВЕРХ плитки (UI-only, в файл НЕ вшивается) — и на loading, и на image
+        (не на error). Виден сразу при старте генерации."""
         self._model_label = (text or "").strip()
-        if self._state == "image":
+        if self._state in ("image", "loading"):
             self.update()
 
     def aspect(self) -> str:
@@ -258,6 +259,10 @@ class ShimmerCell(QFrame):
             corner.setColorAt(1.0, _WARM_ACCENT_OUTER)
             p.fillPath(path, corner)
 
+        # Бейдж модели поверх loading-плитки (сразу при старте; error сюда не доходит —
+        # у него ранний return выше). На image бейдж рисуется в своей ветке.
+        if self._model_label:
+            self._draw_model_badge(p)
         p.setPen(_BORDER_COLOR)
         p.drawPath(path)
         p.end()
