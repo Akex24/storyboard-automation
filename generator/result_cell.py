@@ -98,6 +98,8 @@ class ShimmerCell(QFrame):
         self._pixmap = None          # масштабированная под ячейку (рисуется в paintEvent)
         self._model_label = ""       # читаемое имя модели — бейдж поверх картинки (UI-only)
         self._video_path = None      # путь к .mp4 (state "video"); кадр-превью — позже (cv2)
+        self._result_path = None     # абсолютный путь к ГОТОВОМУ файлу (image .jpg / video .mp4)
+                                     # — для reveal-кнопки (показать в Finder/Explorer)
         self._meta = {}              # метаданные плитки (prompt/model_id/model_label/aspect/
                                      # type/file/ts) — in-memory; на диск тут НЕ пишется
 
@@ -186,6 +188,26 @@ class ShimmerCell(QFrame):
         self._actions_overlay.hide()
         self._position_actions_overlay()
 
+        # ── ЛЕВЫЙ overlay: одна кнопка «показать в Finder/Explorer» (reveal).
+        # ОТДЕЛЬНЫЙ виджет (не в правом кластере heart/ref/back/trash): прижат в
+        # ЛЕВЫЙ-верхний угол. Виден только на hover И только когда файл реально
+        # есть на диске (_refresh_reveal_enabled). Тот же _mk_btn-стиль (28×28,
+        # Lucide-иконка folder-open). _mk_btn ещё в scope этого __init__.
+        self._left_overlay = QWidget(self)
+        self._left_overlay.setObjectName("cell-actions")
+        self._left_overlay.setStyleSheet(_ACTIONS_OVERLAY_QSS)
+        self._left_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        _lh = QHBoxLayout(self._left_overlay)
+        _lh.setContentsMargins(0, 0, 0, 0)
+        _lh.setSpacing(6)
+        self.btn_reveal = _mk_btn("folder-open")
+        _lh.addWidget(self.btn_reveal)
+        self.btn_reveal.clicked.connect(self._on_reveal_clicked)
+        self._left_overlay.hide()
+        self._position_left_overlay()
+        self._refresh_reveal_enabled()   # стартово файла нет (loading) → скрыта
+
     # ── счётчик секунд ──────────────────────────────────────────────────
     def _tick_seconds(self):
         if self._state != "loading":
@@ -220,9 +242,11 @@ class ShimmerCell(QFrame):
             self.set_error("Не удалось открыть результат")
             return
         self._state = "image"
+        self._result_path = path     # абсолютный путь готового файла → reveal-кнопка
         self._original_pix = pix     # оригинал — для перемасштаба при смене размера
         self._info_lbl.hide()
         self._rescale_pixmap()
+        self._refresh_reveal_enabled()
         self.update()
 
     def set_video_placeholder(self, path: str):
@@ -233,6 +257,7 @@ class ShimmerCell(QFrame):
         self._finish_common()
         self._state = "video"
         self._video_path = path
+        self._result_path = path     # абсолютный путь .mp4 → reveal-кнопка
         self._info_lbl.hide()
         # Кадр-превью рядом с .mp4: то же имя, расширение .jpg. Чтение через Qt —
         # кириллица в пути не мешает (в отличие от cv2 на стороне видео-потока).
@@ -245,6 +270,7 @@ class ShimmerCell(QFrame):
                 self._rescale_pixmap()
         except Exception:
             pass
+        self._refresh_reveal_enabled()
         self.update()
 
     def set_model_label(self, text: str):
@@ -288,8 +314,9 @@ class ShimmerCell(QFrame):
         self.setFixedSize(width, height)
         if self._state in ("image", "video") and self._original_pix is not None:
             self._rescale_pixmap()
-        # Перепозиционировать hover-оверлей под новый размер плитки.
+        # Перепозиционировать hover-оверлеи под новый размер плитки.
         self._position_actions_overlay()
+        self._position_left_overlay()
         self.update()
 
     def _rescale_pixmap(self):
@@ -314,18 +341,65 @@ class ShimmerCell(QFrame):
         y = 8
         ov.move(x, y)
 
+    def _position_left_overlay(self):
+        """Поставить reveal-кнопку в ЛЕВЫЙ-верхний угол плитки (x=8, y=8). Зовётся
+        в __init__ и в set_size — симметрично _position_actions_overlay."""
+        ov = getattr(self, "_left_overlay", None)
+        if ov is None:
+            return
+        ov.adjustSize()
+        ov.move(8, 8)
+
+    def _refresh_reveal_enabled(self):
+        """reveal-кнопка активна только когда _result_path указывает на реально
+        существующий файл (готовый результат). На loading/error файла нет → флаг
+        False, кнопка не показывается в enterEvent. Зовётся из set_image /
+        set_video_placeholder и __init__."""
+        ok = False
+        try:
+            from pathlib import Path
+            ok = bool(self._result_path) and Path(self._result_path).exists()
+        except Exception:
+            ok = False
+        self._reveal_ok = ok
+        btn = getattr(self, "btn_reveal", None)
+        if btn is not None:
+            btn.setEnabled(ok)
+
+    def _on_reveal_clicked(self):
+        """Показать готовый файл в Finder/Explorer (reveal-and-select). Делегирует
+        кросс-платформенному storyboard_app.reveal_in_file_manager. Ленивый импорт
+        (circular-import / frozen guard, как get_icon). Любая ошибка — тихий выход
+        (UI-удобство, не критично)."""
+        path = getattr(self, "_result_path", None)
+        if not path:
+            return
+        try:
+            from storyboard_app import reveal_in_file_manager
+            reveal_in_file_manager(path)
+        except Exception:
+            pass
+
     def enterEvent(self, ev):
         super().enterEvent(ev)
         ov = getattr(self, "_actions_overlay", None)
         if ov is not None:
             ov.show()
             ov.raise_()
+        # ЛЕВЫЙ overlay (reveal) — только если файл реально есть (_reveal_ok).
+        lov = getattr(self, "_left_overlay", None)
+        if lov is not None and getattr(self, "_reveal_ok", False):
+            lov.show()
+            lov.raise_()
 
     def leaveEvent(self, ev):
         super().leaveEvent(ev)
         ov = getattr(self, "_actions_overlay", None)
         if ov is not None:
             ov.hide()
+        lov = getattr(self, "_left_overlay", None)
+        if lov is not None:
+            lov.hide()
 
     # ── btn_back ("вернуть промпт"): оживление ─────────────────────────
     def _refresh_back_enabled(self):

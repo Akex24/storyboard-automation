@@ -1797,6 +1797,35 @@ def no_console_kwargs() -> dict:
     return {}
 
 
+def reveal_in_file_manager(path) -> None:
+    """Показать файл в системном файловом менеджере с ВЫДЕЛЕНИЕМ (reveal-and-select):
+    открыть папку и подсветить сам файл. Кросс-платформенно:
+      • macOS:   open -R <file>            (Finder, выделяет файл)
+      • Windows: explorer /select,<file>   (Explorer, выделяет файл)
+      • Linux:   xdg-open <папка>          (reveal-select не стандартизован →
+                                            открываем папку, без выделения)
+
+    Особенности Windows: explorer требует «/select,<путь>» ОДНОЙ строкой-аргументом
+    (через запятую, без пробела) и ОБРАТНЫЕ слеши — формируем str(Path) который на
+    Win даёт '\\'. explorer ВОЗВРАЩАЕТ НЕНУЛЕВОЙ код даже при успехе → используем
+    Popen и НЕ проверяем returncode. no_console_kwargs() — без чёрного cmd-окна.
+
+    Любая ошибка глушится (UI-удобство, не критичный путь). 2026-06-22."""
+    try:
+        from pathlib import Path
+        p = Path(str(path))
+        if sys.platform == 'darwin':
+            subprocess.run(["open", "-R", str(p)], **no_console_kwargs())
+        elif sys.platform == 'win32':
+            # ОДНА строка-аргумент: "/select,C:\\...\\file.jpg". Popen, без check.
+            subprocess.Popen(["explorer", f"/select,{str(p)}"], **no_console_kwargs())
+        else:
+            # Linux: reveal-select нет — открываем родительскую папку.
+            subprocess.run(["xdg-open", str(p.parent)], **no_console_kwargs())
+    except Exception:
+        traceback.print_exc()
+
+
 def block_wheel_event(widget):
     """Блокирует прокрутку колесом мыши на виджете — событие проходит
     дальше к родителю (например QScrollArea будет скроллить страницу,
