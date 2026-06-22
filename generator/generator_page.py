@@ -542,6 +542,11 @@ class GeneratorPage(QWidget):
         for _ in range(count):
             cell = self._add_cell(aspect)
             cell.set_model_label(model_label)   # бейдж виден сразу (loading) и далее
+            # Метаданные плитки (in-memory): известное на старте. file/ts допишет
+            # _on_gen_done по факту сохранённого файла. type фиксируем здесь —
+            # _on_gen_done его НЕ переопределяет по расширению.
+            cell.set_meta(prompt=prompt, model_id=model_id, model_label=model_label,
+                          aspect=aspect, type=("video" if is_video else "image"))
             if is_video:
                 th = GeneratorVideoThread(prompt, aspect, model_id, duration_arg,
                                           out_dir, parent=None)
@@ -688,9 +693,16 @@ class GeneratorPage(QWidget):
     def _on_gen_done(self, cell, th, path: str):
         try:
             if path.lower().endswith(".mp4"):
-                cell.set_video_placeholder(path)   # видео: ▶ на тёмном фоне (кадр — кусок 3)
+                cell.set_video_placeholder(path)   # видео: кадр-превью + ▶
             else:
                 cell.set_image(path)
+            # Дописать в meta факт файла: basename (не полный путь) + ts из имени
+            # gen_<YYYYmmdd_HHMMSS>; не распарсилось → time.time(). type НЕ трогаем
+            # (он уже стоит из _on_run).
+            import os, re, time
+            fname = os.path.basename(path)
+            m = re.search(r"(\d{8}_\d{6})", fname)
+            cell.set_meta(file=fname, ts=(m.group(1) if m else time.time()))
         except Exception:
             pass
         if th in self._gen_threads:

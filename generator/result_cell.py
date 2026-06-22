@@ -71,6 +71,8 @@ class ShimmerCell(QFrame):
         self._pixmap = None          # масштабированная под ячейку (рисуется в paintEvent)
         self._model_label = ""       # читаемое имя модели — бейдж поверх картинки (UI-only)
         self._video_path = None      # путь к .mp4 (state "video"); кадр-превью — позже (cv2)
+        self._meta = {}              # метаданные плитки (prompt/model_id/model_label/aspect/
+                                     # type/file/ts) — in-memory; на диск тут НЕ пишется
 
         v = QVBoxLayout(self)
         # Поля для ТЕКСТА (loading «{n}с» / error-причина). Картинка рисуется
@@ -173,6 +175,16 @@ class ShimmerCell(QFrame):
     def aspect(self) -> str:
         """Формат плитки ("16:9"/"9:16") — сетка берёт его для пересчёта размера."""
         return self._aspect
+
+    def set_meta(self, **kwargs):
+        """Обновить метаданные плитки (in-memory, на диск тут НЕ пишется). Поля
+        заполняет GeneratorPage: _on_run при создании (prompt/model_id/model_label/
+        aspect/type), _on_gen_done по факту файла (file/ts). Для будущей персистенции."""
+        self._meta.update(kwargs)
+
+    def meta(self) -> dict:
+        """Текущие метаданные плитки (словарь). Источник для будущего сохранения холста."""
+        return self._meta
 
     def set_size(self, width: int, height: int):
         """Изменить размер ячейки (перераскладка сетки 2/3/4 колонки). Состояние,
