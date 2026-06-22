@@ -59,6 +59,14 @@ a = Analysis(
         'PyQt6.QtPrintSupport',
         'PyQt6.QtSvg',          # Для рендера SVG-иконок табов
         'PyQt6.QtSvgWidgets',
+        # 2026-06-22: QtMultimedia + QtMultimediaWidgets — hover-автоплей видео
+        # в плитках генератора (QMediaPlayer/QAudioOutput/QVideoWidget). PyInstaller
+        # hook-PyQt6 ДОЛЖЕН дотянуть media-плагины (plugins/multimedia/*) и Qt
+        # ffmpeg backend при наличии этих hiddenimports. ПРОВЕРИТЬ пересборкой:
+        # find бандла на *ultimedia*/*ffmpeg* должен стать НЕ пустым. Если хук не
+        # дотянет — добавить collect_dynamic_libs('PyQt6', ...) вторым заходом.
+        'PyQt6.QtMultimedia',
+        'PyQt6.QtMultimediaWidgets',
         'docx',
         # stdlib модули которые PyInstaller на Win иногда не подхватывает.
         # 2026-05-08: на Win-ноуте у коллеги периодически появлялась ошибка

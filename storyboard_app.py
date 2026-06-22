@@ -17942,6 +17942,16 @@ def main():
     # Qt-варнинги (qWarning, qCritical) — перенаправляем в наш stderr,
     # чтобы они тоже попадали в runtime.log с timestamp.
     _install_qt_message_handler()
+    # 2026-06-22: self-check QtMultimedia — ОДНОРАЗОВЫЙ диагностический импорт на
+    # старте, пишет в runtime.log результат. Нужен чтобы у КОЛЛЕГ в .exe (Windows)
+    # сразу было видно, дотянул ли PyInstaller media-стек, БЕЗ ожидания первого
+    # hover видео-плитки. На сам автоплей не влияет (плеер ленивый в result_cell).
+    try:
+        from PyQt6.QtMultimedia import QMediaPlayer  # noqa: F401
+        from PyQt6.QtMultimediaWidgets import QVideoWidget  # noqa: F401
+        sys.stderr.write("[multimedia] import ok\n")
+    except Exception as _mm_e:
+        sys.stderr.write(f"[multimedia] import FAIL {_mm_e}\n")
     # v1.0.65: применяем настройки прокси из QSettings к os.environ
     # ДО создания QApplication и ДО запуска любого subprocess. Если
     # юзер включил «🌐 ПРОКСИ-СЕРВЕР» в Settings — все исходящие HTTP

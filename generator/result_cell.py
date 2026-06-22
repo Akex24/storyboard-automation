@@ -29,7 +29,8 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QSize
-from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QPixmap, QFont
+from PyQt6.QtGui import (QPainter, QPainterPath, QLinearGradient, QColor, QPixmap,
+                         QFont)
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton, QWidget
 
 
@@ -53,6 +54,11 @@ _WARM_ACCENT_INNER = QColor(212, 162, 86, 26)   # янтарь (как кноп�
 _WARM_ACCENT_OUTER = QColor(212, 162, 86, 0)    # затухание к 0
 # Для статичного фолбэка под image-letterbox (отдельный «нейтральный» цвет).
 _BASE_COLOR = QColor(22, 16, 32)           # #161020 — используется в letterbox
+
+# Полоска-прогресс видео: гориз. вставка от краёв (≥ радиус скругления 8px →
+# концы не на углах) и подъём от самого низа (чище визуально, не липнет к кромке).
+_PROG_INSET = 8
+_PROG_LIFT = 2
 
 # QSS для hover-оверлея с 4 действиями (heart/image-plus/corner-up-left/trash-2-red).
 # QToolButton-кнопки с прозрачным фоном, скруглением 8px, тёмной подложкой и тонкой
@@ -100,6 +106,18 @@ class ShimmerCell(QFrame):
         self._video_path = None      # путь к .mp4 (state "video"); кадр-превью — позже (cv2)
         self._result_path = None     # абсолютный путь к ГОТОВОМУ файлу (image .jpg / video .mp4)
                                      # — для reveal-кнопки (показать в Finder/Explorer)
+        # hover-автоплей видео (ЛЕНИВО — плеер создаётся на ПЕРВОМ hover видео-
+        # плитки, не в __init__: плиток много). Вывод — НЕ нативный QVideoWidget,
+        # а QVideoSink: кадры рисуем в paintEvent (клип/скругление/клип-вьюпорта
+        # «бесплатно», кнопки-оверлеи всегда поверх, без нативного z-order).
+        # _mm_ok — tri-state: None=не пробовали импорт, True=QtMultimedia, False=нет.
+        self._player = None
+        self._audio = None
+        self._video_sink = None
+        self._mm_ok = None
+        self._video_active = False     # hover хочет воспроизведение (гейт кадров/старта)
+        self._video_playing = False    # пришёл ≥1 реальный кадр → рисуем видео (анти-мерцание)
+        self._last_video_frame = None  # последний QImage от sink (рисуется в paintEvent)
         self._meta = {}              # метаданные плитки (prompt/model_id/model_label/aspect/
                                      # type/file/ts) — in-memory; на диск тут НЕ пишется
 
@@ -350,6 +368,100 @@ class ShimmerCell(QFrame):
         ov.adjustSize()
         ov.move(8, 8)
 
+    # ── hover-автоплей видео (QVideoSink → кадры рисуем в paintEvent) ──────
+    def _ensure_player(self) -> bool:
+        """ЛЕНИВО создать QMediaPlayer+QAudioOutput+QVideoSink для ЭТОЙ плитки на
+        первом hover видео. Вывод — В QVideoSink (НЕ нативный QVideoWidget): кадры
+        ловим в _on_video_frame и рисуем в paintEvent. setSource — ОДИН раз тут
+        (а не на каждый hover → меньше пересборок ffmpeg-рендерера). True если
+        медиа-стек готов; False если QtMultimedia недоступен (frozen без модуля) →
+        автоплей тихо отключается, плитка живёт как раньше (превью-кадр+▶).
+
+        _mm_ok кэширует исход импорта (не дёргаем import на каждый hover). Ленивый
+        импорт QtMultimedia — паттерн get_icon (circular/frozen guard)."""
+        if self._mm_ok is False:
+            return False
+        if self._player is not None:
+            return True
+        try:
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
+            from PyQt6.QtCore import QUrl
+        except Exception as e:
+            self._mm_ok = False
+            print(f"[multimedia] player import FAILED on tile: {e}")
+            return False
+        try:
+            self._video_sink = QVideoSink(self)
+            self._audio = QAudioOutput(self)        # звук ВКЛ (как Google Flow)
+            self._player = QMediaPlayer(self)
+            self._player.setAudioOutput(self._audio)
+            self._player.setVideoOutput(self._video_sink)   # sink, не виджет
+            self._video_sink.videoFrameChanged.connect(self._on_video_frame)
+            self._player.positionChanged.connect(self._on_video_position)
+            # setSource ОДИН раз — на hover только setPosition(0)+play().
+            self._player.setSource(QUrl.fromLocalFile(self._video_path))
+            self._mm_ok = True
+            return True
+        except Exception as e:
+            self._mm_ok = False
+            print(f"[multimedia] player create FAILED on tile: {e}")
+            return False
+
+    def _on_video_frame(self, frame):
+        """QVideoSink.videoFrameChanged: первый РЕАЛЬНЫЙ кадр → _video_playing=True
+        (анти-мерцание: до первого кадра paintEvent рисует превью+▶, не черноту).
+        .copy() — отвязать QImage от mapped-буфера кадра (иначе данные протухнут).
+        Гейт _video_active: поздний кадр после leave/stop игнорируем."""
+        if not self._video_active:
+            return
+        try:
+            img = frame.toImage()
+            if img is not None and not img.isNull():
+                self._last_video_frame = img.copy()
+                self._video_playing = True
+                self.update()
+        except Exception:
+            pass
+
+    def _on_video_position(self, _pos: int):
+        """positionChanged → перерисовать плитку, чтобы полоска-прогресс (рисуется
+        в paintEvent из player.position()/duration()) двигалась. Только когда уже
+        идёт показ видео."""
+        if self._video_playing:
+            self.update()
+
+    def _stop_video_playback(self):
+        """Стоп воспроизведения + звука, сброс кадра/флагов → paintEvent
+        возвращается к превью+▶. Поздний кадр после этого игнорится
+        (_video_active=False). Плеер/источник НЕ уничтожаем — реюз на след. hover."""
+        self._video_active = False
+        self._video_playing = False
+        self._last_video_frame = None
+        if self._player is not None:
+            try:
+                self._player.stop()       # стоп видео И звука (no audio leak)
+            except Exception:
+                pass
+        self.update()
+
+    def _draw_progress(self, p: QPainter):
+        """Полоска-прогресс поверх кадра: тонкая (3px) у нижнего края, с гориз.
+        вставками _PROG_INSET (≥ радиус скругления → концы не на углах) и подъёмом
+        _PROG_LIFT. Ширина = доступная * position/duration."""
+        pl = getattr(self, "_player", None)
+        if pl is None:
+            return
+        try:
+            dur = pl.duration()
+            if dur and dur > 0:
+                frac = max(0.0, min(1.0, pl.position() / dur))
+                avail = max(0, self.width() - 2 * _PROG_INSET)
+                p.fillRect(QRectF(_PROG_INSET, self.height() - 3 - _PROG_LIFT,
+                                  avail * frac, 3),
+                           QColor(255, 255, 255, 217))   # ≈ rgba(255,255,255,0.85)
+        except Exception:
+            pass
+
     def _refresh_reveal_enabled(self):
         """reveal-кнопка активна только когда _result_path указывает на реально
         существующий файл (готовый результат). На loading/error файла нет → флаг
@@ -391,6 +503,20 @@ class ShimmerCell(QFrame):
         if lov is not None and getattr(self, "_reveal_ok", False):
             lov.show()
             lov.raise_()
+        # ── hover-автоплей видео (кадры через QVideoSink → paintEvent) ──
+        # Кнопки-оверлеи показаны ВЫШЕ и от видео НЕ зависят (видео = отрисовка в
+        # paintEvent, кнопки — дочерние QWidget поверх). Гейта видимости больше нет:
+        # кадры рисуются в paintEvent и клипаются скролл-областью сами (не вылезают
+        # за шапку). Плеер ленивый; QtMultimedia недоступен → тихо пропускаем.
+        if self._state == "video" and self._video_path and self._ensure_player():
+            try:
+                self._video_active = True            # hover хочет воспроизведение
+                self._video_playing = False          # ждём первый реальный кадр (анти-мерцание)
+                self._last_video_frame = None
+                self._player.setPosition(0)          # КАЖДЫЙ hover — с начала
+                self._player.play()
+            except Exception as e:
+                print(f"[multimedia] play FAILED on tile: {e}")
 
     def leaveEvent(self, ev):
         super().leaveEvent(ev)
@@ -400,6 +526,9 @@ class ShimmerCell(QFrame):
         lov = getattr(self, "_left_overlay", None)
         if lov is not None:
             lov.hide()
+        # Стоп видео+звука, сброс кадра/флагов → плитка возвращается к превью+▶
+        # (paintEvent). Поздний кадр после этого игнорится (_video_active=False).
+        self._stop_video_playback()
 
     # ── btn_back ("вернуть промпт"): оживление ─────────────────────────
     def _refresh_back_enabled(self):
@@ -550,9 +679,29 @@ class ShimmerCell(QFrame):
             p.end()
             return
 
-        # ── VIDEO: кадр-превью (если поток извлёк gen_*.jpg) ИЛИ тёмный фон;
-        # ▶ ВСЕГДА поверх (маркер «это видео») + бейдж. ──
+        # ── VIDEO ──
         if self._state == "video":
+            # ИГРАЕМ (пришёл ≥1 кадр): рисуем последний кадр с клипом по rounded-rect
+            # (углы скругляются сами, БЕЗ нативного виджета/маски) + полоска-прогресс.
+            if self._video_playing and self._last_video_frame is not None:
+                p.setClipPath(path)
+                img = self._last_video_frame
+                iw, ih = img.width(), img.height()
+                if iw > 0 and ih > 0:
+                    # fill ByExpanding + center-crop (как _rescale_pixmap для image).
+                    scale = max(self.width() / iw, self.height() / ih)
+                    tw, th = iw * scale, ih * scale
+                    tx = (self.width() - tw) / 2.0
+                    ty = (self.height() - th) / 2.0
+                    p.drawImage(QRectF(tx, ty, tw, th), img)
+                p.setClipping(False)
+                self._draw_progress(p)               # полоска с отступами поверх кадра
+                if self._model_label:
+                    self._draw_model_badge(p)
+                p.end()
+                return
+            # НЕ играем (нет hover / ждём первый кадр): превью-кадр (gen_*.jpg) ИЛИ
+            # тёмный фон + ▶ ВСЕГДА поверх (маркер «это видео») + бейдж.
             if self._pixmap is not None:
                 p.setClipPath(path)
                 pm = self._pixmap
