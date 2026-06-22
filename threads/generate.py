@@ -843,8 +843,9 @@ class GenerateThread(QThread):
                     self.progress.emit(
                         f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
-                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                # v5 schema: ключ "filename" (не "name"), биндинг позиционный.
+                # OpenAI требует filename — иначе реф не привязывается к промпту.
+                payload["inputs"] = [{"filename": f"img{i+1}", "input": h}
                                      for i, h in enumerate(ref_hashes)]
 
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
@@ -954,7 +955,8 @@ class GenerateThread(QThread):
                         if (provider == _sa.IMAGE_PROVIDER_OPENAI
                                 and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                             ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                        payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                        # v5 schema: filename (см. main payload выше).
+                        payload["inputs"] = [{"filename": f"img{i+1}", "input": h}
                                              for i, h in enumerate(ref_hashes)]
                         continue
                     raise
@@ -1320,8 +1322,9 @@ class RefGenerateThread(QThread):
                         and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                     # OpenAI-обрезка: мёртвая ветка здесь (refs<=1), оставлена как есть.
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
-                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                # v5 schema: ключ "filename" (не "name"). У RefGenerateThread всегда
+                # один реф = send_path → используем его basename как filename.
+                payload["inputs"] = [{"filename": send_path.name, "input": h}
                                      for i, h in enumerate(ref_hashes)]
 
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (P4/P7).
@@ -1349,7 +1352,8 @@ class RefGenerateThread(QThread):
                         _sa._upload_cache.pop(str(send_path.resolve()), None)
                         self.step.emit("Перезагружаю картинку (404 на сервере)…", 12)
                         ref_hashes = [self._upload(session, send_path)]
-                        payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                        # v5 schema: filename = send_path.name.
+                        payload["inputs"] = [{"filename": send_path.name, "input": h}
                                              for i, h in enumerate(ref_hashes)]
                         continue
                     raise
@@ -1961,9 +1965,10 @@ class GenerateActorRefThread(QThread):
                     self.progress.emit(
                         f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
-                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
-                                     for i, h in enumerate(ref_hashes)]
+                # v5 schema: ключ "filename" (не "name"); filename = реальный
+                # basename фото актёра (по zip с photo_paths[:10]).
+                payload["inputs"] = [{"filename": p.name, "input": h}
+                                     for p, h in zip(self.photo_paths[:10], ref_hashes)]
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
             endpoint = "/api/v5/generations"
             r = session.post(f"{_sa.API_BASE}{endpoint}",
@@ -2325,8 +2330,9 @@ class EditActorRefThread(QThread):
                 if (provider == _sa.IMAGE_PROVIDER_OPENAI
                         and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
-                # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
-                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                # v5 schema: ключ "filename" (не "name"). EditActorRefThread
+                # имеет ровно один реф = self.source_image_path → его basename.
+                payload["inputs"] = [{"filename": self.source_image_path.name, "input": h}
                                      for i, h in enumerate(ref_hashes)]
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
             endpoint = "/api/v5/generations"
