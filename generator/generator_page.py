@@ -74,6 +74,9 @@ class GeneratorPage(QWidget):
         # Размер плиток: ВСЕГДА стартуем с M (3 колонки), игнорируя прошлые сессии
         # (по требованию). Переключение S/M/L работает в рамках сессии через _grid_cols.
         self._grid_cols = 3
+        # Первый показ ещё не случился → размеры плиток в _load_canvas считаются по
+        # фолбэк-ширине (viewport=0); пересчёт под реальную ширину — в showEvent.
+        self._shown_once = False
         self._build_ui()
         # Под-шаг 3: первичное восстановление холста активного сериала (если есть
         # canvas.json). Пустой/битый/отсутствующий файл → холст остаётся пустым.
@@ -409,6 +412,25 @@ class GeneratorPage(QWidget):
                 self._last_prompt_w = w
                 self._adjust_prompt_height()
         return super().eventFilter(obj, ev)
+
+    def showEvent(self, event):
+        """Первый показ: viewport уже имеет реальную ширину → пересчитать размеры
+        имеющихся плиток под текущий _grid_cols. Иначе восстановленные в _load_canvas
+        (при __init__, до показа) плитки посчитаны по фолбэк-ширине 1200 и выглядят
+        мелко (как S) пока юзер не переключит S/M/L вручную."""
+        super().showEvent(event)
+        if not self._shown_once:
+            if self._cells:
+                self._relayout_grid()
+            self._shown_once = True
+
+    def resizeEvent(self, event):
+        """Ресайз окна → переразмерить уже выложенные плитки под новую ширину.
+        _relayout_grid идемпотентен и дёшев (set_size без пересоздания плиток) —
+        без дебаунса/таймера, просто зовём на каждый ресайз."""
+        super().resizeEvent(event)
+        if self._cells:
+            self._relayout_grid()
 
     # ── helpers ─────────────────────────────────────────────────────────
     def _seg_group(self, items, active_key: str, accent: bool = False):
