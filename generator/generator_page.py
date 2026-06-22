@@ -1112,6 +1112,32 @@ class GeneratorPage(QWidget):
         self._refs_row_lay.addWidget(thumb)
         self._refs_row.setVisible(True)
 
+    def add_ref_from_meta(self, meta: dict):
+        """Прикрепить файл плитки (по её _meta) как реф к следующей генерации.
+        Резолвит полный путь из meta['file'] через текущий root/slug:
+            shows/<slug>/generator/<file>
+        Зовётся плиткой (btn_ref → image-plus). Любая проблема (нет root/slug,
+        пустой file, файла нет на диске) → тихий выход. Для video-плитки плитка
+        ПРЕДВАРИТЕЛЬНО подменяет meta['file'] на парный .jpg-кадр (см.
+        result_cell._on_ref_clicked) — сюда уже приходит .jpg-имя или original."""
+        if not isinstance(meta, dict):
+            return
+        fname = (meta.get("file") or "").strip()
+        if not fname:
+            return
+        try:
+            import storyboard_app as _sa
+            root = _sa.get_stored_root()
+            slug = _sa.get_current_show(root) if root else None
+            if not (root and slug):
+                return
+            full = root / "shows" / slug / "generator" / fname
+            if not full.exists():
+                return
+            self.add_ref(str(full))
+        except Exception:
+            pass
+
     def remove_ref(self, file_path: str):
         """Открепить файл по пути. Если список опустел — скрыть ряд."""
         if file_path not in self._pending_refs:

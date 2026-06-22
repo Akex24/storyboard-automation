@@ -175,9 +175,11 @@ class ShimmerCell(QFrame):
         self.btn_trash = _mk_btn("trash-2-red", obj_name="cell-act-trash")
         for _b in (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash):
             ah.addWidget(_b)
-        # btn_back оживлён — вернуть промпт в поле; остальные клики пустые.
+        # btn_back и btn_ref оживлены; heart/trash пока пустые.
         self.btn_back.clicked.connect(self._on_back_clicked)
+        self.btn_ref.clicked.connect(self._on_ref_clicked)
         self._refresh_back_enabled()   # начальное состояние от текущего _meta
+        self._refresh_ref_enabled()    # btn_ref активна, когда есть meta.file
         self._actions_overlay.hide()
         self._position_actions_overlay()
 
@@ -261,9 +263,14 @@ class ShimmerCell(QFrame):
         self._meta.update(kwargs)
         # meta мог получить/изменить prompt → обновить enabled-состояние btn_back
         # ("вернуть промпт"). guard: btn_back может быть ещё не создана если
-        # set_meta зовётся очень рано (защитимся).
+        # set_meta зовётся очень рано (защитимся). Аналогично btn_ref ниже.
+        # ДВА отдельных try/except → падение одной кнопки не глушит другую.
         try:
             self._refresh_back_enabled()
+        except Exception:
+            pass
+        try:
+            self._refresh_ref_enabled()
         except Exception:
             pass
 
@@ -348,6 +355,51 @@ class ShimmerCell(QFrame):
                 self._page.set_prompt(prompt)
             except Exception:
                 pass
+
+    # ── btn_ref ("использовать как реф для следующей генерации"): оживление ──
+    def _refresh_ref_enabled(self):
+        """Кнопка btn_ref активна только если в _meta есть meta['file'] (плитка
+        уже имеет готовый файл на диске). Loading/error — disabled (нет файла).
+        Зеркало _refresh_back_enabled. Видео-плитки НЕ блокируем здесь — для
+        них в _on_ref_clicked подменяется meta['file'] на парный .jpg-кадр
+        (см. ниже); если .jpg нет — тихий выход."""
+        btn = getattr(self, "btn_ref", None)
+        if btn is None:
+            return
+        has_file = False
+        if isinstance(self._meta, dict):
+            has_file = bool((self._meta.get("file") or "").strip())
+        btn.setEnabled(has_file)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor
+                      if has_file else Qt.CursorShape.ArrowCursor)
+
+    def _on_ref_clicked(self):
+        """Клик по btn_ref: прикрепить файл этой плитки к prompt-bar как реф
+        к следующей генерации. Страница резолвит полный путь из meta['file']
+        через add_ref_from_meta. Для ВИДЕО-плитки .mp4 не подходит upload-у
+        (MIME не image/*) → подменяем file на парный .jpg-кадр (gen_<ts>.jpg
+        рядом с .mp4). Если .jpg нет — тихий выход. _meta плитки НЕ мутируем —
+        работаем с копией."""
+        if not isinstance(self._meta, dict):
+            return
+        fname = (self._meta.get("file") or "").strip()
+        if not fname:
+            return
+        if self._page is None:
+            return
+        meta_for_page = self._meta
+        if self._meta.get("type") == "video":
+            # Подмена на парный .jpg (первый кадр). Существование .jpg на диске
+            # проверит add_ref_from_meta через full.exists() — мы только подменяем
+            # имя в КОПИИ meta. Если .jpg не лежит рядом — тихий выход там же.
+            from pathlib import Path
+            jpg_name = Path(fname).with_suffix(".jpg").name
+            meta_for_page = dict(self._meta)
+            meta_for_page["file"] = jpg_name
+        try:
+            self._page.add_ref_from_meta(meta_for_page)
+        except Exception:
+            pass
 
     def set_error(self, msg: str):
         self._finish_common()
