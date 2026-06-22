@@ -23,6 +23,7 @@ generator/generator_page.py — страница «Генератор» (КАР�
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QEvent, QPoint
@@ -711,6 +712,10 @@ class GeneratorPage(QWidget):
             from generator.generator_video_thread import GeneratorVideoThread
         else:
             from generator.generator_thread import GeneratorImageThread
+        # Прикреплённые рефы из prompt-bar (коммит 1 завёл UI/хранение, коммит 2
+        # шлёт в payload["inputs"] для картинок). Копия списка — мутации в UI после
+        # старта не влияют на уже запущенные потоки.
+        refs = self.pending_refs()
         # ×N независимых параллельных генераций → N плиток. Pattern A: parent=None +
         # ссылка в списке. Захват своей ячейки и потока (default-arg → без late-binding):
         # каждая генерация заменит ИМЕННО свою плитку, даже при параллельных финишах.
@@ -719,14 +724,17 @@ class GeneratorPage(QWidget):
             cell.set_model_label(model_label)   # бейдж виден сразу (loading) и далее
             # Метаданные плитки (in-memory): известное на старте. file/ts допишет
             # _on_gen_done по факту сохранённого файла. type фиксируем здесь —
-            # _on_gen_done его НЕ переопределяет по расширению.
+            # _on_gen_done его НЕ переопределяет по расширению. refs — basenames
+            # (не полные пути) → попадают в canvas.json через _save_canvas.
             cell.set_meta(prompt=prompt, model_id=model_id, model_label=model_label,
-                          aspect=aspect, type=("video" if is_video else "image"))
+                          aspect=aspect, type=("video" if is_video else "image"),
+                          refs=[Path(r).name for r in refs] if refs else [])
             if is_video:
                 th = GeneratorVideoThread(prompt, aspect, model_id, duration_arg,
                                           out_dir, parent=None)
             else:
-                th = GeneratorImageThread(prompt, aspect, model_id, out_dir, parent=None)
+                th = GeneratorImageThread(prompt, aspect, model_id, out_dir,
+                                          refs=refs, parent=None)
             self._gen_threads.append(th)
             th.finished.connect(lambda pth, c=cell, t=th: self._on_gen_done(c, t, pth))
             th.error.connect(lambda msg, c=cell, t=th: self._on_gen_fail(c, t, msg))

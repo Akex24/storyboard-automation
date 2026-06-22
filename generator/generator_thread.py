@@ -40,16 +40,53 @@ class GeneratorImageThread(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, prompt: str, aspect_ratio: str, model_id: str,
-                 out_dir: Path, parent=None):
+                 out_dir: Path, refs=None, parent=None):
         super().__init__(parent)
         self.prompt = (prompt or "").strip()
         self.aspect_ratio = aspect_ratio or "16:9"
         self.model_id = model_id
         self.out_dir = Path(out_dir)
+        # Прикреплённые рефы (per-генерация). Default None → конвертим в list тут
+        # (избегаем mutable-default). Пусто → обычная генерация без inputs.
+        self.refs: list = [str(p) for p in (refs or [])]
         self._stop = False
 
     def stop(self):
         self._stop = True
+
+    def _upload(self, session: requests.Session, path: Path) -> str:
+        """Загрузить файл в FastGen storage и вернуть file_hash (32-hex без
+        префикса 'file:' — v5 требует голый хеш). Реюз модуль-уровневого
+        _sa._upload_cache (path.resolve() → file_hash): если файл уже грузился
+        (для шотов/актёров), скачка не повторяется. MIME — по магическим байтам
+        (PNG-в-jpg иначе валит 422). Без ресайза (PIL не используем).
+        Образец 1:1 — threads/generate.py:1180 (_upload в GenerateThread)."""
+        import storyboard_app as _sa
+        cache_key = str(path.resolve())
+        if cache_key in _sa._upload_cache:
+            return _sa._upload_cache[cache_key]
+        with open(path, "rb") as f:
+            head = f.read(12); f.seek(0)
+            if head[:8] == b'\x89PNG\r\n\x1a\n':
+                mime = "image/png"
+            elif head[:3] == b'\xff\xd8\xff':
+                mime = "image/jpeg"
+            elif head[:4] == b'RIFF' and head[8:12] == b'WEBP':
+                mime = "image/webp"
+            else:
+                ext = path.suffix.lower().lstrip(".")
+                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                        "png": "image/png", "webp": "image/webp"
+                        }.get(ext, "image/jpeg")
+            r = session.post(f"{_sa.STORAGE_BASE}/upload",
+                             files={"file": (path.name, f, mime)}, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+        fh = data.get("file_hash") or data.get("file") or data.get("hash") or ""
+        # v5: inputs.input требует ГОЛЫЙ 32-hex; /upload отдаёт с префиксом "file:"
+        fh = fh[5:] if fh.startswith("file:") else fh
+        _sa._upload_cache[cache_key] = fh
+        return fh
 
     def _fastgen(self, op_id, status, elapsed, result, extra=""):
         """Диаг-строка [FASTGEN] (→ runtime.log через studio tee), формат как в
@@ -57,7 +94,7 @@ class GeneratorImageThread(QThread):
         print(f"[FASTGEN] path=GeneratorImageThread api=v5 "
               f"endpoint=/api/v5/generations auth=X-API-Key "
               f"model={self.model_id} provider=generator result_format=ref "
-              f"inputs=0 op_id={op_id} status={status} time={elapsed} "
+              f"inputs={len(self.refs)} op_id={op_id} status={status} time={elapsed} "
               f"result={result}{extra}")
 
     def run(self):
@@ -70,12 +107,29 @@ class GeneratorImageThread(QThread):
             session = requests.Session()
             session.headers.update({"X-API-Key": key})
 
-            # v5: провайдер выбирается полем model; единый эндпоинт; без рефов.
+            # Upload прикреплённых рефов → file_hashes (32-hex). Degrade: ошибка
+            # на одном НЕ валит всю генерацию — progress-сообщение и продолжаем
+            # без него. Лимит OpenAI: режем до OPENAI_MAX_REFS (=10).
+            ref_hashes = []
+            if self.refs:
+                for _p in self.refs:
+                    try:
+                        ref_hashes.append(self._upload(session, Path(_p)))
+                    except Exception:
+                        self.progress.emit(f"Реф не загрузился: {Path(_p).name}")
+                if (self.model_id == "openai-image"
+                        and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
+                    ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
+
+            # v5: провайдер выбирается полем model; единый эндпоинт.
             payload = {
                 "prompt": self.prompt,
                 "aspect_ratio": self.aspect_ratio,
                 "model": self.model_id,
             }
+            if ref_hashes:
+                payload["inputs"] = [{"name": f"img{i+1}", "input": h}
+                                     for i, h in enumerate(ref_hashes)]
             r = session.post(f"{_sa.API_BASE}/api/v5/generations",
                              params={"result_format": "ref"},
                              json=payload, timeout=60)
