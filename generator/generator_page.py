@@ -26,11 +26,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QEvent, QPoint
+from PyQt6.QtCore import (
+    Qt, QSize, QTimer, QSettings, QEvent, QPoint,
+    QPropertyAnimation, QEasingCurve,
+)
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
+    QGraphicsOpacityEffect,
 )
 
 from generator.result_cell import ShimmerCell
@@ -79,6 +83,9 @@ class GeneratorPage(QWidget):
         # поля ввода в prompt-bar. dict для O(1) remove по пути.
         self._pending_refs: list[str] = []
         self._ref_thumbs: dict = {}   # path → QFrame thumb-виджет
+        self._thumb_popup = None      # QLabel popup увеличенной превьюшки (ленив)
+        self._thumb_anim = None       # QPropertyAnimation для fade-in/out (хранится
+                                      # на self, иначе GC соберёт во время анимации)
         # Размер плиток: ВСЕГДА стартуем с M (3 колонки), игнорируя прошлые сессии
         # (по требованию). Переключение S/M/L работает в рамках сессии через _grid_cols.
         self._grid_cols = 3
@@ -126,9 +133,13 @@ class GeneratorPage(QWidget):
             "QFrame#ref-thumb { background:#1a1428;"
             " border:1px solid rgba(255,255,255,0.15); border-radius:6px; }"
             "QPushButton#ref-thumb-x { background:rgba(0,0,0,0.7); color:#ffffff;"
-            " border:none; border-radius:9px; font-weight:600; font-size:12px;"
-            " padding:0px; }"
+            " border:none; border-radius:9px; font-weight:600; font-size:14px;"
+            " padding:0px; text-align:center; }"
             "QPushButton#ref-thumb-x:hover { background:rgba(0,0,0,0.9); }"
+            # Popup увеличенной картинки при hover на ref-thumb (один QLabel
+            # на страницу, переиспользуется, скрыт по умолчанию).
+            "QLabel#ref-thumb-popup { background:#1a1428;"
+            " border:1px solid rgba(255,255,255,0.25); border-radius:8px; }"
             # Область результатов
             "QScrollArea#results { background:transparent; border:none; }"
             "QLabel#results-empty { color:#6a6a78; font-size:13px;"
@@ -432,12 +443,27 @@ class GeneratorPage(QWidget):
 
     def eventFilter(self, obj, ev):
         """Пересчёт высоты поля при изменении его ШИРИНЫ (перенос строк едет при
-        ресайзе окна). Только на смену ширины → без рекурсии с setFixedHeight."""
+        ресайзе окна). Только на смену ширины → без рекурсии с setFixedHeight.
+        Также: Enter/Leave на ref-thumb (превьюшки рефов) — показать/скрыть ✕
+        и popup увеличенной картинки."""
         if obj is getattr(self, "prompt_input", None) and ev.type() == QEvent.Type.Resize:
             w = self.prompt_input.viewport().width()
             if w != getattr(self, "_last_prompt_w", -1):
                 self._last_prompt_w = w
                 self._adjust_prompt_height()
+        # ref-thumb hover: показ/скрытие крестика + popup увеличения.
+        if isinstance(obj, QFrame) and obj.objectName() == "ref-thumb":
+            t = ev.type()
+            if t == QEvent.Type.Enter:
+                btn = getattr(obj, "_x_btn", None)
+                if btn is not None:
+                    btn.setVisible(True)
+                self._show_thumb_popup(obj)
+            elif t == QEvent.Type.Leave:
+                btn = getattr(obj, "_x_btn", None)
+                if btn is not None:
+                    btn.setVisible(False)
+                self._hide_thumb_popup()
         return super().eventFilter(obj, ev)
 
     def showEvent(self, event):
@@ -1090,8 +1116,9 @@ class GeneratorPage(QWidget):
                 "color:#ffffff; font-size:18px;"
                 " background:#161020; border-radius:6px;")
             lbl.setGeometry(0, 0, 64, 64)
-        # Крестик-кнопка в правом верхнем углу (отступ 2px).
-        x_btn = QPushButton("×", thumb)
+        # Крестик-кнопка в правом верхнем углу (отступ 2px). "✕" (U+2715) —
+        # симметричнее обычного "×" и центрируется в кнопке.
+        x_btn = QPushButton("✕", thumb)
         x_btn.setObjectName("ref-thumb-x")
         x_btn.setFixedSize(18, 18)
         x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1099,7 +1126,131 @@ class GeneratorPage(QWidget):
         x_btn.clicked.connect(
             lambda _checked=False, fp=file_path: self.remove_ref(fp))
         x_btn.raise_()
+        x_btn.setVisible(False)        # видимый только при hover на thumb
+        # Ссылки для eventFilter (Enter/Leave → показать/скрыть ✕ + popup).
+        thumb._x_btn = x_btn
+        thumb._file_path = file_path
+        thumb.installEventFilter(self)
         return thumb
+
+    def _show_thumb_popup(self, thumb):
+        """Показать увеличенную превьюшку файла рефа над thumb'ом (306 по большой
+        стороне, KeepAspectRatio, rounded-clipped) с fade-in 150мс EaseOutCubic.
+        Ленивая инициализация одного QLabel(self) — переиспользуется для всех
+        thumb'ов. Для видео используется парный .jpg рядом (как в _make_ref_thumb);
+        если нет — тёмная ▶-заглушка. Прозрачность через QGraphicsOpacityEffect
+        (windowOpacity не работает для child-виджетов)."""
+        from pathlib import Path
+        VID = {".mp4", ".mov", ".m4v", ".webm"}
+        file_path = getattr(thumb, "_file_path", "")
+        if not file_path:
+            return
+        # Источник pixmap (тот же выбор, что и в _make_ref_thumb).
+        ext = Path(file_path).suffix.lower()
+        src = file_path
+        if ext in VID:
+            jpg = str(Path(file_path).with_suffix(".jpg"))
+            src = jpg if Path(jpg).exists() else None
+        pix = None
+        if src is not None:
+            p0 = QPixmap(src)
+            if not p0.isNull():
+                pix = p0
+        # Ленивая сборка popup (QLabel parented к странице) + opacity-effect.
+        if self._thumb_popup is None:
+            self._thumb_popup = QLabel(self)
+            self._thumb_popup.setObjectName("ref-thumb-popup")
+            self._thumb_popup.setVisible(False)
+            # QGraphicsOpacityEffect — для fade-анимаций child-виджета
+            # (windowOpacity у нетоп-левел Qt игнорирует).
+            eff = QGraphicsOpacityEffect(self._thumb_popup)
+            eff.setOpacity(1.0)
+            self._thumb_popup.setGraphicsEffect(eff)
+            self._thumb_popup._opacity_effect = eff
+        popup = self._thumb_popup
+        # Рендер pixmap → масштаб до 306 по большой стороне → rounded-clip 8px.
+        if pix is not None:
+            scaled = pix.scaled(
+                306, 306,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            w, h = scaled.width(), scaled.height()
+            clipped = QPixmap(w, h)
+            clipped.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(clipped)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            path = QPainterPath()
+            path.addRoundedRect(0.0, 0.0, float(w), float(h), 8.0, 8.0)
+            painter.setClipPath(path)
+            painter.drawPixmap(0, 0, scaled)
+            painter.end()
+            popup.setPixmap(clipped)
+            popup.setFixedSize(w, h)
+        else:
+            # ▶-заглушка для видео без парного .jpg: тёмный квадрат 306×306 с ▶.
+            popup.setPixmap(QPixmap())
+            popup.setText("▶")
+            popup.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            popup.setStyleSheet(
+                "QLabel#ref-thumb-popup { background:#161020; color:#ffffff;"
+                " font-size:48px; border-radius:8px;"
+                " border:1px solid rgba(255,255,255,0.25); }")
+            popup.setFixedSize(306, 306)
+        # Позиция: над thumb'ом по центру. Если не влезает — под thumb.
+        try:
+            tl = thumb.mapTo(self, QPoint(0, 0))
+        except Exception:
+            return
+        gap = 8
+        px = tl.x() + thumb.width() // 2 - popup.width() // 2
+        py = tl.y() - popup.height() - gap
+        if py < 4:
+            py = tl.y() + thumb.height() + gap   # не влезло сверху → снизу
+        # Кламп в окно страницы.
+        px = max(4, min(px, self.width() - popup.width() - 4))
+        py = max(4, min(py, self.height() - popup.height() - 4))
+        popup.move(px, py)
+        # Стоп предыдущей анимации (если ещё бежит — например hide→show подряд).
+        if self._thumb_anim is not None:
+            try: self._thumb_anim.stop()
+            except Exception: pass
+        # Fade-in: opacity 0 → 1 за 150мс EaseOutCubic.
+        eff = popup._opacity_effect
+        eff.setOpacity(0.0)
+        popup.show()
+        popup.raise_()
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(150)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._thumb_anim = anim   # держим ссылку, иначе GC
+        anim.start()
+
+    def _hide_thumb_popup(self):
+        """Скрыть popup увеличения с fade-out 120мс EaseInCubic. Зовётся из
+        Leave-ивента thumb'а и из remove_ref/clear_refs (иначе popup мог бы
+        повиснуть после удаления thumb'a до того как Leave успеет прийти)."""
+        if self._thumb_popup is None or not self._thumb_popup.isVisible():
+            return
+        popup = self._thumb_popup
+        eff = getattr(popup, "_opacity_effect", None)
+        # Если эффекта нет (legacy) — простой hide без анимации.
+        if eff is None:
+            popup.hide()
+            return
+        # Стоп предыдущей анимации (могла быть show-анимация в процессе).
+        if self._thumb_anim is not None:
+            try: self._thumb_anim.stop()
+            except Exception: pass
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(120)
+        anim.setStartValue(eff.opacity())
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        anim.finished.connect(popup.hide)
+        self._thumb_anim = anim
+        anim.start()
 
     def add_ref(self, file_path: str):
         """Прикрепить файл к следующей генерации. Дубликат — тихий выход."""
@@ -1142,6 +1293,9 @@ class GeneratorPage(QWidget):
         """Открепить файл по пути. Если список опустел — скрыть ряд."""
         if file_path not in self._pending_refs:
             return
+        # Popup мог быть открыт по этому thumb'у — скрыть до deleteLater,
+        # иначе он повиснет (Leave не успеет прийти).
+        self._hide_thumb_popup()
         self._pending_refs.remove(file_path)
         thumb = self._ref_thumbs.pop(file_path, None)
         if thumb is not None:
@@ -1156,6 +1310,7 @@ class GeneratorPage(QWidget):
     def clear_refs(self):
         """Очистить все прикреплённые рефы (вызывается из _on_run после запуска,
         и из reload_canvas при смене сериала — рефы старого шоу не релевантны)."""
+        self._hide_thumb_popup()
         for _p, thumb in list(self._ref_thumbs.items()):
             try:
                 thumb.setParent(None)
