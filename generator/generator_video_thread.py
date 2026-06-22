@@ -19,6 +19,7 @@ Cross-platform: requests + pathlib.Path + datetime, БЕЗ subprocess/shell/open
 
 from __future__ import annotations
 
+import base64
 import time
 from datetime import datetime
 from pathlib import Path
@@ -41,24 +42,41 @@ class GeneratorVideoThread(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, prompt: str, aspect_ratio: str, model_id: str,
-                 duration, out_dir: Path, parent=None):
+                 duration, out_dir: Path, refs=None, keyframes=False, parent=None):
         super().__init__(parent)
         self.prompt = (prompt or "").strip()
         self.aspect_ratio = aspect_ratio or "16:9"
         self.model_id = model_id
         self.duration = duration         # None для Veo; int (4/6/8/10) для Omni
         self.out_dir = Path(out_dir)
+        # Прикреплённые рефы (per-генерация). Default None → list тут (избегаем
+        # mutable-default). Veo/Omni Flash принимают inputs того же формата
+        # {"filename","input"} что и image-провайдеры (подтверждено живым тестом).
+        self.refs: list = [str(p) for p in (refs or [])]
+        # Veo «Кадры»-режим: payload.keyframes=True (start/end frame guidance).
+        # False для Omni/прочих — флаг не уходит в payload (см. run()).
+        self.keyframes = bool(keyframes)
         self._stop = False
 
     def stop(self):
         self._stop = True
+
+    def _file_to_data_uri(self, path: Path) -> str:
+        """Файл → base64 data URI для v5 inputs[].input. Без /upload — inputs
+        видны ЛЮБОМУ ключу submit-loop'а (фикс 403: storage upload-ключа A
+        не виден submit-ключу B). Нет TTL — рефы валидны столько же, сколько
+        живёт запрос. MIME по расширению; неизвестные → png."""
+        ext = path.suffix.lower().lstrip(".")
+        mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp"}.get(ext, "png")
+        b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f"data:image/{mime};base64,{b64}"
 
     def _fastgen(self, op_id, status, elapsed, result, extra=""):
         """Диаг-строка [FASTGEN] (→ runtime.log через studio tee). provider=generator-video."""
         print(f"[FASTGEN] path=GeneratorVideoThread api=v5 "
               f"endpoint=/api/v5/generations auth=X-API-Key "
               f"model={self.model_id} provider=generator-video result_format=ref "
-              f"duration={self.duration} inputs=0 op_id={op_id} status={status} "
+              f"duration={self.duration} inputs={len(self.refs)} op_id={op_id} status={status} "
               f"time={elapsed} result={result}{extra}")
 
     def run(self):
@@ -81,6 +99,35 @@ class GeneratorVideoThread(QThread):
             }
             if self.duration is not None:
                 payload["duration_seconds"] = self.duration
+
+            # ── РЕФЫ → base64 data URI (без /upload, без storage hash) ──
+            # Storage hash виден только сессии-аплоадеру, а submit-loop ниже
+            # перебирает разные ключи → hash от upload-ключа A не виден submit-
+            # ключу B → 403. Data URI идёт прямо в payload и не зависит от ключа.
+            ref_inputs = []
+            if self.refs:
+                for _p in self.refs:
+                    try:
+                        pp = Path(_p)
+                        ref_inputs.append({"filename": pp.name,
+                                           "input": self._file_to_data_uri(pp)})
+                    except Exception as e:
+                        self.progress.emit(f"Реф не загрузился: {Path(_p).name}")
+                        print(f"[FASTGEN] ref_to_base64 FAILED for {Path(_p).name}: {e}")
+                # Если рефы были запрошены, но ни один не подготовился — не идём
+                # дальше с «пустыми» inputs (юзер ждёт результат С рефом).
+                if not ref_inputs:
+                    self.error.emit("Не удалось подготовить ни одного рефа")
+                    return
+                # v5 schema: ключ "filename" (не "name") — критично для Veo/Omni.
+                payload["inputs"] = ref_inputs
+            # Veo «Кадры»-режим: payload.keyframes=True. На «Рефы» (ingredients —
+            # default сервера) поле не уходит. Для Omni/прочих self.keyframes=False.
+            if self.keyframes:
+                payload["keyframes"] = True
+            # Диагностика — что реально уходит в /generations для видео.
+            print(f"[FASTGEN] outgoing video payload keys={list(payload.keys())} "
+                  f"inputs_count={len(payload.get('inputs', []))}")
 
             # ── SUBMIT с перебором ключей при КЛЮЧЕ-СПЕЦИФИЧНЫХ ошибках (401/403/429) ──
             # Рабочий ключ держим в session и ИМ же поллим/качаем (чужой ключ на
@@ -117,6 +164,12 @@ class GeneratorVideoThread(QThread):
                     # Нет видео-доступа / лимит ключа — пробуем следующий ключ.
                     self._fastgen("-", "submit", 0, "error",
                                   f" error=http_{code} key_idx={idx}")
+                    # Логируем body 4xx — подсказка от сервера (например "model not supported for inputs")
+                    try:
+                        body_text = r.text[:500] if r.text else ''
+                        print(f"[FASTGEN] video submit {code} body={body_text}")
+                    except Exception:
+                        pass
                     tried.add(tkey)
                     continue
                 if not r.ok:
@@ -220,7 +273,18 @@ class GeneratorVideoThread(QThread):
         except Exception as e:
             if self._stop:
                 return
-            self.error.emit(str(e)[:300])
+            detail = str(e)[:300]
+            # HTTP-ошибки: вытащить body — иначе 404/422 непрозрачны (то же,
+            # что в image-thread).
+            try:
+                if hasattr(e, 'response') and e.response is not None:
+                    body = e.response.text[:500] if e.response.text else ''
+                    if body:
+                        detail = f"{detail} | body: {body}"
+                        print(f"[FASTGEN] path=GeneratorVideoThread error_detail={body[:300]}")
+            except Exception:
+                pass
+            self.error.emit(detail)
 
     def _extract_first_frame(self, mp4_path: Path) -> Optional[Path]:
         """Первый кадр .mp4 → .jpg рядом (то же имя, расширение .jpg) — превью плитки.

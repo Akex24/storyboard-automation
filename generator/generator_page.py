@@ -369,6 +369,23 @@ class GeneratorPage(QWidget):
                 lambda _checked=False, key=_k: self._on_duration_change(key))
         ctl.addWidget(self.dur_seg)
 
+        # Veo (flow-video-fast): режим работы рефов вместо длительности —
+        # «Кадры» (keyframes: start/end frame guidance) или «Рефы» (ingredients:
+        # style refs). По умолчанию — keyframes. Виден ТОЛЬКО для video + Veo,
+        # взаимоисключение с dur_seg (показ — в _update_duration_visibility).
+        self.veo_mode_seg, self.veo_mode_btns = self._seg_group(
+            [("Кадры", "keyframes"), ("Рефы", "refs")], active_key="keyframes")
+        for _k, _b in self.veo_mode_btns.items():
+            _b.clicked.connect(
+                lambda _checked=False, key=_k: self._on_seg_click(self.veo_mode_btns, key))
+        self.veo_mode_seg.setVisible(False)
+        ctl.addWidget(self.veo_mode_seg)
+        # Оба сегмента — одинаковая фиксированная ширина (максимум из двух sizeHint).
+        # При переключении модели Veo↔Omni визуально ничего не дёргается.
+        _seg_w = max(self.dur_seg.sizeHint().width(), self.veo_mode_seg.sizeHint().width())
+        self.dur_seg.setFixedWidth(_seg_w)
+        self.veo_mode_seg.setFixedWidth(_seg_w)
+
         # Формат: 16:9 / 9:16 (16:9 активен)
         self.fmt_seg, self.fmt_btns = self._seg_group(
             [("16:9", "16:9"), ("9:16", "9:16")], active_key="16:9")
@@ -676,11 +693,21 @@ class GeneratorPage(QWidget):
             pass
 
     def _update_duration_visibility(self):
-        """Сегмент длительности виден ТОЛЬКО для video + Omni Flash (omni требует
-        duration_seconds). Для image и video+Veo — скрыт."""
-        show = (self._mode == "video"
-                and self.model_combo.current_model_id() == "flow-video-omni-flash")
-        self.dur_seg.setVisible(show)
+        """Видимость сегментов dur_seg / veo_mode_seg по режиму+модели:
+          • video + Omni Flash → dur_seg (4/6/8/10s)
+          • video + Veo (flow-video-fast) → veo_mode_seg (Кадры/Рефы)
+          • image → оба скрыты.
+        Сегменты делят один слот в ctl-ряду (равная ширина), взаимоисключение.
+
+        Зовётся model_combo.changed (смена модели) и _on_mode_change (image↔video).
+        После переключения — обнуляем _pending_refs (clear_refs): лимиты у разных
+        моделей разные (_max_refs), оставшиеся рефы могли бы превысить новый лимит."""
+        model = self.model_combo.current_model_id()
+        is_video = (self._mode == "video")
+        self.dur_seg.setVisible(is_video and model == "flow-video-omni-flash")
+        self.veo_mode_seg.setVisible(is_video and model == "flow-video-fast")
+        # Стартовый вызов из __init__ при пустом _pending_refs — no-op.
+        self.clear_refs()
 
     def _show_hint(self, text: str):
         """Транзиентная подсказка-тост поверх prompt-bar (4с). НЕ в layout → геометрию
@@ -734,6 +761,12 @@ class GeneratorPage(QWidget):
         is_video = (self._mode == "video")
         # Veo (flow-video-fast) — без duration; Omni — текущая длительность сегмента.
         duration_arg = None if model_id == "flow-video-fast" else self._duration
+        # Veo: "Кадры" → payload.keyframes=True (start/end frame guidance);
+        # "Рефы" → без флага (ingredients-режим, default сервера). Для Omni и
+        # картинок keyframes_arg остаётся False, в payload поле не уйдёт.
+        keyframes_arg = False
+        if is_video and model_id == "flow-video-fast":
+            keyframes_arg = (self._active_seg_key(self.veo_mode_btns) == "keyframes")
         if is_video:
             from generator.generator_video_thread import GeneratorVideoThread
         else:
@@ -757,7 +790,8 @@ class GeneratorPage(QWidget):
                           refs=[Path(r).name for r in refs] if refs else [])
             if is_video:
                 th = GeneratorVideoThread(prompt, aspect, model_id, duration_arg,
-                                          out_dir, parent=None)
+                                          out_dir, refs=refs,
+                                          keyframes=keyframes_arg, parent=None)
             else:
                 th = GeneratorImageThread(prompt, aspect, model_id, out_dir,
                                           refs=refs, parent=None)
@@ -1253,9 +1287,12 @@ class GeneratorPage(QWidget):
         anim.start()
 
     def add_ref(self, file_path: str):
-        """Прикрепить файл к следующей генерации. Дубликат — тихий выход."""
+        """Прикрепить файл к следующей генерации. Дубликат — тихий выход.
+        Превышение лимита под текущую модель/режим (_max_refs) — тоже тихий выход."""
         file_path = str(file_path or "").strip()
         if not file_path or file_path in self._pending_refs:
+            return
+        if len(self._pending_refs) >= self._max_refs():
             return
         self._pending_refs.append(file_path)
         thumb = self._make_ref_thumb(file_path)
@@ -1324,6 +1361,23 @@ class GeneratorPage(QWidget):
     def pending_refs(self) -> list:
         """Копия списка прикреплённых путей — для коммита 2 (передача в потоки)."""
         return list(self._pending_refs)
+
+    def _max_refs(self) -> int:
+        """Лимит количества рефов для add_ref-гарда — зависит от текущей модели/режима:
+          • Veo 3.1 «Кадры»  → 2 (keyframes = start+end frame guidance)
+          • Veo 3.1 «Рефы»   → 3 (ingredients)
+          • Omni Flash       → 7
+          • Картинки (Nano Banana 2 / OpenAI) и неизвестная модель → 10.
+        Гарды hasattr() — на случай вызова до полной инициализации UI."""
+        model_id = (self.model_combo.current_model_id()
+                    if hasattr(self, "model_combo") else "")
+        if model_id == "flow-video-fast":
+            veo_mode = (self._active_seg_key(self.veo_mode_btns)
+                        if hasattr(self, "veo_mode_btns") else None) or "keyframes"
+            return 2 if veo_mode == "keyframes" else 3
+        if model_id == "flow-video-omni-flash":
+            return 7
+        return 10   # nano-banana-2 / openai-image / прочее
 
     # ── общий такт «дыхания» плиток (один таймер на страницу) ─────────
     # 2026-06-20 (Этап 3): бегущий блик заменён на ЧИСТУЮ ПУЛЬСАЦИЯ яркости

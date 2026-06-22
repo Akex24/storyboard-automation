@@ -167,13 +167,16 @@ class ShimmerCell(QFrame):
                 b.setIcon(ic)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             return b
-        # Порядок: heart → image-plus → corner-up-left → trash-2-red.
-        # В QHBoxLayout это слева направо (16:9); в QVBoxLayout — сверху вниз (9:16).
+        # 16:9 → слева направо: heart → image-plus → corner-up-left → trash-2-red (как было).
+        # 9:16 → сверху вниз: trash-2-red → corner-up-left → image-plus → heart.
         self.btn_heart = _mk_btn("heart")
         self.btn_ref   = _mk_btn("image-plus")
         self.btn_back  = _mk_btn("corner-up-left")
         self.btn_trash = _mk_btn("trash-2-red", obj_name="cell-act-trash")
-        for _b in (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash):
+        _order = ((self.btn_trash, self.btn_back, self.btn_ref, self.btn_heart)
+                  if self._aspect == "9:16"
+                  else (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash))
+        for _b in _order:
             ah.addWidget(_b)
         # btn_back и btn_ref оживлены; heart/trash пока пустые.
         self.btn_back.clicked.connect(self._on_back_clicked)
