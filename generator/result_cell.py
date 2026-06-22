@@ -75,6 +75,10 @@ _ACTIONS_OVERLAY_QSS = (
     "QToolButton#cell-act-trash:hover {"
     " background: rgba(20,20,24,0.72);"
     "}"
+    "QToolButton:disabled {"
+    " background: rgba(20,20,24,0.40);"
+    " border: 1px solid rgba(255,255,255,0.08);"
+    "}"
 )
 
 
@@ -171,7 +175,9 @@ class ShimmerCell(QFrame):
         self.btn_trash = _mk_btn("trash-2-red", obj_name="cell-act-trash")
         for _b in (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash):
             ah.addWidget(_b)
-        # КЛИКИ НЕ ПОДКЛЮЧАЕМ на этом шаге (каркас — оживление позже).
+        # btn_back оживлён — вернуть промпт в поле; остальные клики пустые.
+        self.btn_back.clicked.connect(self._on_back_clicked)
+        self._refresh_back_enabled()   # начальное состояние от текущего _meta
         self._actions_overlay.hide()
         self._position_actions_overlay()
 
@@ -253,6 +259,13 @@ class ShimmerCell(QFrame):
         заполняет GeneratorPage: _on_run при создании (prompt/model_id/model_label/
         aspect/type), _on_gen_done по факту файла (file/ts). Для будущей персистенции."""
         self._meta.update(kwargs)
+        # meta мог получить/изменить prompt → обновить enabled-состояние btn_back
+        # ("вернуть промпт"). guard: btn_back может быть ещё не создана если
+        # set_meta зовётся очень рано (защитимся).
+        try:
+            self._refresh_back_enabled()
+        except Exception:
+            pass
 
     def meta(self) -> dict:
         """Текущие метаданные плитки (словарь). Источник для будущего сохранения холста."""
@@ -303,6 +316,38 @@ class ShimmerCell(QFrame):
         ov = getattr(self, "_actions_overlay", None)
         if ov is not None:
             ov.hide()
+
+    # ── btn_back ("вернуть промпт"): оживление ─────────────────────────
+    def _refresh_back_enabled(self):
+        """Кнопка btn_back активна только если в _meta есть непустой prompt.
+        Дропнутые плитки имеют prompt="" → кнопка disabled (QSS:disabled даст
+        приглушённый вид; курсор Arrow вместо PointingHand). Зовётся из __init__
+        и из set_meta при каждом обновлении."""
+        btn = getattr(self, "btn_back", None)
+        if btn is None:
+            return
+        prompt = ""
+        if isinstance(self._meta, dict):
+            prompt = (self._meta.get("prompt") or "").strip()
+        enabled = bool(prompt)
+        btn.setEnabled(enabled)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor
+                      if enabled else Qt.CursorShape.ArrowCursor)
+
+    def _on_back_clicked(self):
+        """Клик по btn_back: положить prompt из _meta в поле ввода Генератора,
+        ЗАМЕНЯЯ текущий текст. Пустой prompt → выход (кнопка должна быть disabled,
+        но guard всё равно полезен)."""
+        prompt = ""
+        if isinstance(self._meta, dict):
+            prompt = (self._meta.get("prompt") or "").strip()
+        if not prompt:
+            return
+        if self._page is not None:
+            try:
+                self._page.set_prompt(prompt)
+            except Exception:
+                pass
 
     def set_error(self, msg: str):
         self._finish_common()

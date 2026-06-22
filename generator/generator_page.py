@@ -996,6 +996,16 @@ class GeneratorPage(QWidget):
         self._clear_canvas()
         self._load_canvas()
 
+    def set_prompt(self, text: str):
+        """Положить text в поле промпта, ЗАМЕНЯЯ текущее содержимое. Зовётся
+        плиткой по клику на 'вернуть промпт' (btn_back). setPlainText т.к.
+        prompt_input.setAcceptRichText(False) — plain-text режим."""
+        try:
+            self.prompt_input.setPlainText(text or "")
+            self.prompt_input.setFocus()
+        except Exception:
+            pass
+
     # ── общий такт «дыхания» плиток (один таймер на страницу) ─────────
     # 2026-06-20 (Этап 3): бегущий блик заменён на ЧИСТУЮ ПУЛЬСАЦИЯ яркости
     # базы (см. ShimmerCell.paintEvent). Угол [0, 2π) шлётся всем плиткам — они
