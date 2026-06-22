@@ -28,9 +28,9 @@ import math
 import time
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtCore import Qt, QTimer, QRectF, QSize
 from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QPixmap, QFont
-from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton, QWidget
 
 
 # Модуль-уровневые константы — не пересоздаём в paintEvent (дёшево для CPU).
@@ -53,6 +53,29 @@ _WARM_ACCENT_INNER = QColor(212, 162, 86, 26)   # янтарь (как кноп�
 _WARM_ACCENT_OUTER = QColor(212, 162, 86, 0)    # затухание к 0
 # Для статичного фолбэка под image-letterbox (отдельный «нейтральный» цвет).
 _BASE_COLOR = QColor(22, 16, 32)           # #161020 — используется в letterbox
+
+# QSS для hover-оверлея с 4 действиями (heart/image-plus/corner-up-left/trash-2-red).
+# QToolButton-кнопки с прозрачным фоном, скруглением 8px, тёмной подложкой и тонкой
+# светлой рамкой; hover — чуть светлее. У trash рамка слегка красная (rgba), hover
+# не меняется (visual cue «опасное действие»). Иконки SVG идут как QIcon — цвет
+# зашит в SVG (Lucide stroke), QSS его не перекрашивает.
+_ACTIONS_OVERLAY_QSS = (
+    "QToolButton {"
+    " background: rgba(20,20,24,0.72);"
+    " border: 1px solid rgba(255,255,255,0.18);"
+    " border-radius: 8px;"
+    " padding: 0px;"
+    "}"
+    "QToolButton:hover {"
+    " background: rgba(35,35,40,0.85);"
+    "}"
+    "QToolButton#cell-act-trash {"
+    " border: 1px solid rgba(232,75,74,0.35);"
+    "}"
+    "QToolButton#cell-act-trash:hover {"
+    " background: rgba(20,20,24,0.72);"
+    "}"
+)
 
 
 class ShimmerCell(QFrame):
@@ -102,6 +125,55 @@ class ShimmerCell(QFrame):
             self._page.register_loading(self)
         except Exception:
             pass
+
+        # ── hover-оверлей: ряд из 4 кнопок справа сверху (КАРКАС, клики НЕ
+        # подключены — оживление по одной отдельными шагами). Появляется в
+        # enterEvent, скрывается в leaveEvent. Кнопки — реальные QToolButton
+        # (painter не годится: ему не приходят клики и hover). Иконки —
+        # get_icon (Lucide SVG); если пусто → кнопка без картинки, не падаем.
+        self._actions_overlay = QWidget(self)
+        self._actions_overlay.setObjectName("cell-actions")
+        self._actions_overlay.setStyleSheet(_ACTIONS_OVERLAY_QSS)
+        self._actions_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        # Ориентация ряда зависит от формата плитки: 9:16 → ВЕРТИКАЛЬНЫЙ столбик
+        # (4 кнопки сверху вниз) — горизонтальный ряд не влезает по ширине узкой
+        # плитки на S/M. 16:9 → горизонтальный ряд слева направо (как было).
+        # _aspect задаётся при __init__ и не меняется → один раз при создании.
+        if self._aspect == "9:16":
+            ah = QVBoxLayout(self._actions_overlay)
+        else:
+            ah = QHBoxLayout(self._actions_overlay)
+        ah.setContentsMargins(0, 0, 0, 0)
+        ah.setSpacing(6)
+        # Ленивый импорт get_icon — паттерн generator_page._icon (избегает
+        # circular import + frozen-проблем). Пустой QIcon → кнопка без картинки.
+        try:
+            from storyboard_app import get_icon as _get_icon
+        except Exception:
+            _get_icon = lambda _n: None   # noqa: E731
+        def _mk_btn(icon_name: str, obj_name: str = "") -> QToolButton:
+            b = QToolButton(self._actions_overlay)
+            if obj_name:
+                b.setObjectName(obj_name)
+            b.setFixedSize(28, 28)
+            b.setIconSize(QSize(16, 16))
+            ic = _get_icon(icon_name)
+            if ic is not None:
+                b.setIcon(ic)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            return b
+        # Порядок: heart → image-plus → corner-up-left → trash-2-red.
+        # В QHBoxLayout это слева направо (16:9); в QVBoxLayout — сверху вниз (9:16).
+        self.btn_heart = _mk_btn("heart")
+        self.btn_ref   = _mk_btn("image-plus")
+        self.btn_back  = _mk_btn("corner-up-left")
+        self.btn_trash = _mk_btn("trash-2-red", obj_name="cell-act-trash")
+        for _b in (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash):
+            ah.addWidget(_b)
+        # КЛИКИ НЕ ПОДКЛЮЧАЕМ на этом шаге (каркас — оживление позже).
+        self._actions_overlay.hide()
+        self._position_actions_overlay()
 
     # ── счётчик секунд ──────────────────────────────────────────────────
     def _tick_seconds(self):
@@ -193,6 +265,8 @@ class ShimmerCell(QFrame):
         self.setFixedSize(width, height)
         if self._state in ("image", "video") and self._original_pix is not None:
             self._rescale_pixmap()
+        # Перепозиционировать hover-оверлей под новый размер плитки.
+        self._position_actions_overlay()
         self.update()
 
     def _rescale_pixmap(self):
@@ -204,6 +278,31 @@ class ShimmerCell(QFrame):
             self._w, self._h,
             Qt.AspectRatioMode.KeepAspectRatioByExpanding,
             Qt.TransformationMode.SmoothTransformation)
+
+    # ── hover-оверлей: позиционирование и показ/скрытие ────────────────
+    def _position_actions_overlay(self):
+        """Поставить ряд из 4 кнопок в правый-верхний угол плитки. Зовётся в
+        __init__ (один раз) и в set_size (при S/M/L / ресайзе окна)."""
+        ov = getattr(self, "_actions_overlay", None)
+        if ov is None:
+            return
+        ov.adjustSize()
+        x = max(0, self._w - ov.width() - 8)
+        y = 8
+        ov.move(x, y)
+
+    def enterEvent(self, ev):
+        super().enterEvent(ev)
+        ov = getattr(self, "_actions_overlay", None)
+        if ov is not None:
+            ov.show()
+            ov.raise_()
+
+    def leaveEvent(self, ev):
+        super().leaveEvent(ev)
+        ov = getattr(self, "_actions_overlay", None)
+        if ov is not None:
+            ov.hide()
 
     def set_error(self, msg: str):
         self._finish_common()
