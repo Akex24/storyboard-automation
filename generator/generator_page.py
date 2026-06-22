@@ -703,6 +703,9 @@ class GeneratorPage(QWidget):
             fname = os.path.basename(path)
             m = re.search(r"(\d{8}_\d{6})", fname)
             cell.set_meta(file=fname, ts=(m.group(1) if m else time.time()))
+            # Персист холста на диск (под-шаг 2): только при успешном финале —
+            # внутри try, после дописи file/ts. Сам _save_canvas тоже guard'нут.
+            self._save_canvas()
         except Exception:
             pass
         if th in self._gen_threads:
@@ -716,6 +719,38 @@ class GeneratorPage(QWidget):
             pass
         if th in self._gen_threads:
             self._gen_threads.remove(th)
+
+    # ── персист холста на диск (под-шаг 2: ТОЛЬКО запись) ──────────────
+    def _save_canvas(self):
+        """Записать текущий холст в shows/<slug>/generator/canvas.json.
+
+        ТОЛЬКО запись — чтение/восстановление плиток это под-шаг 3. Порядок
+        self._cells сохраняется (начало списка = верх холста = новое сверху).
+        Пишем только плитки с готовым файлом (meta['file']) — loading/error без
+        файла пропускаем. Атомарно: .tmp в той же папке → os.replace (атомарен на
+        Mac и Win, т.к. tmp и финал на одном томе). Ошибка записи НЕ роняет
+        генерацию — молча проглатываем (опц. лог в stderr). Зовётся из _on_gen_done
+        на main-потоке (сигналы QThread queued в event loop) → вызовы при ×N
+        сериализованы, гонки за canvas.json.tmp нет."""
+        try:
+            import json, os
+            import storyboard_app as _sa
+            root = _sa.get_stored_root()
+            slug = _sa.get_current_show(root) if root else None
+            if not root or not slug:
+                return
+            out_dir = root / "shows" / slug / "generator"
+            cells = [c.meta() for c in self._cells if c.meta().get("file")]
+            data = {"version": 1, "cells": cells}
+            out_dir.mkdir(parents=True, exist_ok=True)
+            tmp = out_dir / "canvas.json.tmp"
+            final = out_dir / "canvas.json"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, final)
+        except Exception as e:  # noqa: BLE001 — персист необязателен, не валим генерацию
+            import sys
+            print(f"[generator] canvas save failed: {e}", file=sys.stderr)
 
     # ── общий такт «дыхания» плиток (один таймер на страницу) ─────────
     # 2026-06-20 (Этап 3): бегущий блик заменён на ЧИСТУЮ ПУЛЬСАЦИЯ яркости
