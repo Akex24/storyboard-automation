@@ -9647,6 +9647,11 @@ class MainWindow(QMainWindow):
             self._watcher.removePaths(self._watcher.directories())
             self._watcher.addPath(str(STORYBOARDS_DIR))
         self._populate_episodes()
+        # Перечитать холст Генератора под новый сериал (персистенция холста).
+        # current_show.json уже содержит новый slug (записан выше в этом методе) →
+        # reload_canvas прочитает холст нужного сериала. Guard в стиле метода.
+        if hasattr(self, 'generator_view'):
+            self.generator_view.reload_canvas()
 
     def _reload_show(self):
         """Перечитать эпизоды/блоки текущего сериала (после изменений на диске).
