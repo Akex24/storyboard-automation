@@ -75,6 +75,9 @@ class GeneratorPage(QWidget):
         # (по требованию). Переключение S/M/L работает в рамках сессии через _grid_cols.
         self._grid_cols = 3
         self._build_ui()
+        # Под-шаг 3: первичное восстановление холста активного сериала (если есть
+        # canvas.json). Пустой/битый/отсутствующий файл → холст остаётся пустым.
+        self._load_canvas()
 
     # ── ленивый Lucide-иконкозагрузчик (без module-level import storyboard_app) ──
     def _icon(self, name: str):
@@ -751,6 +754,96 @@ class GeneratorPage(QWidget):
         except Exception as e:  # noqa: BLE001 — персист необязателен, не валим генерацию
             import sys
             print(f"[generator] canvas save failed: {e}", file=sys.stderr)
+
+    # ── чтение/восстановление холста (под-шаг 3) ──────────────────────
+    def _clear_canvas(self):
+        """Полная очистка холста: снять все плитки с экрана и shimmer-такта,
+        обнулить _cells/_cell_count, снести ряды-контейнеры, вернуть пустое
+        состояние. Зовётся перед перечитыванием под новый сериал (reload_canvas)."""
+        for cell in self._cells:
+            try:
+                self.unregister_loading(cell)   # снять с общего shimmer (если была loading)
+            except Exception:
+                pass
+            try:
+                cell.setParent(None)
+                cell.deleteLater()
+            except Exception:
+                pass
+        self._cells = []
+        self._cell_count = 0
+        # снести ряды-контейнеры (тот же механизм, что в _relayout_grid; плитки уже
+        # откреплены выше — deleteLater рядов их не заденет)
+        while self._rows_v.count():
+            it = self._rows_v.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        self._grid_host.hide()
+        self._empty_host.show()
+
+    def _load_canvas(self):
+        """Прочитать canvas.json активного сериала и восстановить плитки.
+
+        Холст у каждого сериала свой. Нет root/slug/файла, битый JSON → холст
+        остаётся пустым (НЕ ошибка). Плитки добавляются APPEND в порядке файла
+        (= порядок _cells, новое сверху) — НЕ через _add_cell (там insert(0)
+        перевернул бы порядок). Запись, чей файл удалён с диска, пропускаем молча.
+        Каждая запись обёрнута в try/except → битая запись не валит весь restore."""
+        try:
+            import json
+            import storyboard_app as _sa
+            root = _sa.get_stored_root()
+            slug = _sa.get_current_show(root) if root else None
+            if not root or not slug:
+                return
+            out_dir = root / "shows" / slug / "generator"
+            cj = out_dir / "canvas.json"
+            if not cj.exists():
+                return
+            try:
+                data = json.loads(cj.read_text(encoding="utf-8"))
+            except Exception:
+                return   # битый JSON → пустой холст, не падаем
+            cells = data.get("cells") if isinstance(data, dict) else None
+            if not isinstance(cells, list):
+                return
+            for meta in cells:
+                try:
+                    if not isinstance(meta, dict):
+                        continue
+                    fname = meta.get("file")
+                    if not fname:
+                        continue
+                    full = out_dir / fname
+                    if not full.exists():
+                        continue   # файл удалён юзером — пропускаем запись молча
+                    aspect = meta.get("aspect", "16:9")
+                    w, h = self._cell_wh(aspect)
+                    cell = ShimmerCell(self, w, h, aspect=aspect)
+                    cell.set_model_label(meta.get("model_label", ""))
+                    cell.set_meta(**meta)   # вернуть метаданные (иначе save затрёт)
+                    if meta.get("type") == "video":
+                        cell.set_video_placeholder(str(full))
+                    else:
+                        cell.set_image(str(full))
+                    self._cells.append(cell)   # APPEND → порядок 1:1 как в файле
+                except Exception:
+                    continue   # одна битая запись не валит весь restore
+            self._cell_count = len(self._cells)
+            if self._cells:
+                self._empty_host.hide()
+                self._grid_host.show()
+                self._relayout_grid()   # ОДИН раз в конце (не в цикле)
+        except Exception as e:  # noqa: BLE001 — restore необязателен, не валим страницу
+            import sys
+            print(f"[generator] canvas load failed: {e}", file=sys.stderr)
+
+    def reload_canvas(self):
+        """Публичный: перечитать холст под активный сериал (для смены сериала).
+        Хук в storyboard_app._on_show_changed — отдельной правкой."""
+        self._clear_canvas()
+        self._load_canvas()
 
     # ── общий такт «дыхания» плиток (один таймер на страницу) ─────────
     # 2026-06-20 (Этап 3): бегущий блик заменён на ЧИСТУЮ ПУЛЬСАЦИЯ яркости
