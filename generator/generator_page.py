@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QEvent, QPoint
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
@@ -72,6 +73,11 @@ class GeneratorPage(QWidget):
         # Счётчик заполненных ячеек + ссылки на ВСЕ плитки (для перераскладки).
         self._cell_count = 0
         self._cells = []
+        # Прикреплённые рефы (per-session, не per-show): пути файлов, которые
+        # уходят в payload["inputs"] следующей генерации. UI — ряд превьюшек выше
+        # поля ввода в prompt-bar. dict для O(1) remove по пути.
+        self._pending_refs: list[str] = []
+        self._ref_thumbs: dict = {}   # path → QFrame thumb-виджет
         # Размер плиток: ВСЕГДА стартуем с M (3 колонки), игнорируя прошлые сессии
         # (по требованию). Переключение S/M/L работает в рамках сессии через _grid_cols.
         self._grid_cols = 3
@@ -114,6 +120,14 @@ class GeneratorPage(QWidget):
             "QPushButton#canvas-close { background:transparent; border:none;"
             " border-radius:4px; }"
             "QPushButton#canvas-close:hover { background:#2c2438; }"
+            # Ряд прикреплённых рефов в prompt-bar (показывается выше поля ввода)
+            "QWidget#refs-row { background:transparent; }"
+            "QFrame#ref-thumb { background:#1a1428;"
+            " border:1px solid rgba(255,255,255,0.15); border-radius:6px; }"
+            "QPushButton#ref-thumb-x { background:rgba(0,0,0,0.7); color:#ffffff;"
+            " border:none; border-radius:9px; font-weight:600; font-size:12px;"
+            " padding:0px; }"
+            "QPushButton#ref-thumb-x:hover { background:rgba(0,0,0,0.9); }"
             # Область результатов
             "QScrollArea#results { background:transparent; border:none; }"
             "QLabel#results-empty { color:#6a6a78; font-size:13px;"
@@ -278,6 +292,17 @@ class GeneratorPage(QWidget):
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(14, 12, 14, 12)
         outer.setSpacing(8)
+
+        # Ряд прикреплённых рефов — ВЫШЕ поля ввода (как Google Flow). Скрыт пока
+        # _pending_refs пуст. add_ref/remove_ref/clear_refs управляют видимостью.
+        self._refs_row = QWidget()
+        self._refs_row.setObjectName("refs-row")
+        self._refs_row_lay = QHBoxLayout(self._refs_row)
+        self._refs_row_lay.setContentsMargins(0, 0, 0, 0)
+        self._refs_row_lay.setSpacing(6)
+        self._refs_row_lay.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._refs_row.setVisible(False)
+        outer.addWidget(self._refs_row)
 
         # Ввод промпта
         self.prompt_input = QTextEdit()
@@ -710,6 +735,7 @@ class GeneratorPage(QWidget):
         # переменную и в потоки выше; на их работу очистка не влияет). После цикла —
         # ранние return'ы (пустой промпт / нет сериала / нет модели) сюда не доходят.
         self.prompt_input.clear()
+        self.clear_refs()   # рефы тоже относились к этой генерации → сброс UI/состояния
 
     # ── сетка результатов + параллельные плитки ───────────────────────
     def _add_cell(self, aspect: str = "16:9") -> ShimmerCell:
@@ -992,7 +1018,9 @@ class GeneratorPage(QWidget):
 
     def reload_canvas(self):
         """Публичный: перечитать холст под активный сериал (для смены сериала).
-        Хук в storyboard_app._on_show_changed — отдельной правкой."""
+        Хук в storyboard_app._on_show_changed — отдельной правкой. Рефы старого
+        шоу не релевантны → очищаем перед сменой содержимого холста."""
+        self.clear_refs()
         self._clear_canvas()
         self._load_canvas()
 
@@ -1005,6 +1033,108 @@ class GeneratorPage(QWidget):
             self.prompt_input.setFocus()
         except Exception:
             pass
+
+    # ── прикреплённые рефы (per-session) ──────────────────────────────
+    def _make_ref_thumb(self, file_path: str) -> QFrame:
+        """Создать превьюшку 64×64 для прикреплённого рефа: rounded-clip pixmap
+        + крестик в углу (remove). Для видео ищет парный .jpg рядом; если нет —
+        тёмная заглушка с ▶. Pixmap клипится заранее через QPainter (QLabel не
+        клипит pixmap по border-radius)."""
+        from pathlib import Path
+        VID = {".mp4", ".mov", ".m4v", ".webm"}
+        thumb = QFrame(self._refs_row)
+        thumb.setObjectName("ref-thumb")
+        thumb.setFixedSize(64, 64)
+        ext = Path(file_path).suffix.lower()
+        src = file_path
+        is_video = ext in VID
+        if is_video:
+            jpg = str(Path(file_path).with_suffix(".jpg"))
+            src = jpg if Path(jpg).exists() else None
+        if src is not None:
+            pix = QPixmap(src)
+            if pix.isNull():
+                src = None
+        if src is not None:
+            base = pix.scaled(
+                64, 64,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation)
+            clipped = QPixmap(64, 64)
+            clipped.fill(Qt.GlobalColor.transparent)
+            p = QPainter(clipped)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            path = QPainterPath()
+            path.addRoundedRect(0.0, 0.0, 64.0, 64.0, 6.0, 6.0)
+            p.setClipPath(path)
+            x = (64 - base.width()) // 2
+            y = (64 - base.height()) // 2
+            p.drawPixmap(int(x), int(y), base)
+            p.end()
+            lbl = QLabel(thumb)
+            lbl.setPixmap(clipped)
+            lbl.setGeometry(0, 0, 64, 64)
+        else:
+            # Видео без парного кадра (или нечитаемый файл) → ▶-заглушка.
+            lbl = QLabel("▶", thumb)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet(
+                "color:#ffffff; font-size:18px;"
+                " background:#161020; border-radius:6px;")
+            lbl.setGeometry(0, 0, 64, 64)
+        # Крестик-кнопка в правом верхнем углу (отступ 2px).
+        x_btn = QPushButton("×", thumb)
+        x_btn.setObjectName("ref-thumb-x")
+        x_btn.setFixedSize(18, 18)
+        x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        x_btn.move(64 - 18 - 2, 2)
+        x_btn.clicked.connect(
+            lambda _checked=False, fp=file_path: self.remove_ref(fp))
+        x_btn.raise_()
+        return thumb
+
+    def add_ref(self, file_path: str):
+        """Прикрепить файл к следующей генерации. Дубликат — тихий выход."""
+        file_path = str(file_path or "").strip()
+        if not file_path or file_path in self._pending_refs:
+            return
+        self._pending_refs.append(file_path)
+        thumb = self._make_ref_thumb(file_path)
+        self._ref_thumbs[file_path] = thumb
+        self._refs_row_lay.addWidget(thumb)
+        self._refs_row.setVisible(True)
+
+    def remove_ref(self, file_path: str):
+        """Открепить файл по пути. Если список опустел — скрыть ряд."""
+        if file_path not in self._pending_refs:
+            return
+        self._pending_refs.remove(file_path)
+        thumb = self._ref_thumbs.pop(file_path, None)
+        if thumb is not None:
+            try:
+                thumb.setParent(None)
+                thumb.deleteLater()
+            except Exception:
+                pass
+        if not self._pending_refs:
+            self._refs_row.setVisible(False)
+
+    def clear_refs(self):
+        """Очистить все прикреплённые рефы (вызывается из _on_run после запуска,
+        и из reload_canvas при смене сериала — рефы старого шоу не релевантны)."""
+        for _p, thumb in list(self._ref_thumbs.items()):
+            try:
+                thumb.setParent(None)
+                thumb.deleteLater()
+            except Exception:
+                pass
+        self._ref_thumbs.clear()
+        self._pending_refs.clear()
+        self._refs_row.setVisible(False)
+
+    def pending_refs(self) -> list:
+        """Копия списка прикреплённых путей — для коммита 2 (передача в потоки)."""
+        return list(self._pending_refs)
 
     # ── общий такт «дыхания» плиток (один таймер на страницу) ─────────
     # 2026-06-20 (Этап 3): бегущий блик заменён на ЧИСТУЮ ПУЛЬСАЦИЯ яркости
