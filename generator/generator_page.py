@@ -59,6 +59,7 @@ class GeneratorPage(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("generator-page")
+        self.setAcceptDrops(True)   # drag-and-drop файлов с диска в холст (см. dropEvent)
         self._mode = "image"   # активный режим (пока статично, без переключения)
         self._duration = 8     # длительность видео (сек); видна только для Omni Flash
         # Параллельные генерации: список активных потоков (Pattern A: parent=None
@@ -431,6 +432,130 @@ class GeneratorPage(QWidget):
         super().resizeEvent(event)
         if self._cells:
             self._relayout_grid()
+
+    # ── drag-and-drop файлов с диска в холст ──────────────────────────
+    def dragEnterEvent(self, ev):
+        if ev.mimeData() and ev.mimeData().hasUrls():
+            ev.acceptProposedAction()
+
+    def dragMoveEvent(self, ev):
+        # Без этого dropEvent НЕ сработает на macOS — drag-and-drop требует
+        # акцепта действия и в move (как в views/actors.py).
+        if ev.mimeData() and ev.mimeData().hasUrls():
+            ev.acceptProposedAction()
+
+    def dropEvent(self, ev):
+        # Дроп ИЗ prompt_input (QTextEdit) — не наш, пусть обрабатывает сам.
+        # Внешний файловый дроп с диска имеет source()==None → не отсеивается.
+        pi = getattr(self, "prompt_input", None)
+        if pi is not None and ev.source() is pi:
+            return
+        md = ev.mimeData()
+        if not md or not md.hasUrls():
+            return
+        from pathlib import Path
+        paths = [Path(u.toLocalFile()) for u in md.urls()
+                 if u.toLocalFile() and Path(u.toLocalFile()).is_file()]
+        if not paths:
+            return
+        ev.acceptProposedAction()
+        self._import_dropped_files(paths)
+
+    def _aspect_from_image(self, path) -> str:
+        """Бакет '16:9'/'9:16' по реальным размерам картинки (QImage — Unicode-safe,
+        кириллица в пути не мешает). width >= height → '16:9', иначе '9:16'.
+        Не прочитать → фолбэк '16:9'."""
+        try:
+            from PyQt6.QtGui import QImage
+            img = QImage(str(path))
+            if img.isNull() or img.width() <= 0 or img.height() <= 0:
+                return "16:9"
+            return "16:9" if img.width() >= img.height() else "9:16"
+        except Exception:
+            return "16:9"
+
+    def _import_dropped_files(self, paths):
+        """Скопировать дропнутые файлы в shows/<slug>/generator/ и поставить плитками
+        СВЕРХУ (новейшие). Формат — по реальным размерам файла. Пишется в canvas.json
+        (переживает перезапуск). Мультидроп: все наверх, порядок выделения сохранён.
+        Оригиналы юзера НЕ трогаются (shutil.copy2). Битый файл не валит остальные."""
+        import shutil, time
+        import storyboard_app as _sa
+        root = _sa.get_stored_root()
+        slug = _sa.get_current_show(root) if root else None
+        if not root or not slug:
+            self._show_hint("Чтобы добавить файлы, создай любой сериал")
+            return
+        out_dir = root / "shows" / slug / "generator"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+        IMG = {".jpg", ".jpeg", ".png", ".webp"}
+        VID = {".mp4", ".mov", ".m4v", ".webm"}
+        # Реюз извлечения первого кадра из видео-потока (cv2.imencode→jpg, НЕ imwrite —
+        # не-ASCII пути). Метод _extract_first_frame не использует self → лёгкий
+        # throwaway-инстанс (QThread НЕ стартуем, только как неймспейс). Создаём
+        # лишь если в дропе есть видео.
+        _frame = None
+        if any(p.suffix.lower() in VID for p in paths):
+            try:
+                from generator.generator_video_thread import GeneratorVideoThread
+                _frame = GeneratorVideoThread("", "16:9", "", None, out_dir, parent=None)
+            except Exception:
+                _frame = None
+        added = 0
+        # reversed: insert(0) в цикле перевернул бы порядок между файлами; reversed
+        # компенсирует → итог сверху = порядок выделения.
+        for src in reversed(list(paths)):
+            try:
+                ext = src.suffix.lower()
+                if ext in VID:
+                    ftype = "video"
+                elif ext in IMG:
+                    ftype = "image"
+                else:
+                    continue   # неподдерживаемый формат — пропуск
+                # Уникальное имя по СТЕМУ gen_<ts> (резервируем весь стем, чтобы кадр-
+                # превью gen_<ts>.jpg видео не затёр одноимённую дропнутую картинку).
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                stem = f"gen_{ts}"
+                n = 2
+                while any(out_dir.glob(stem + ".*")):
+                    stem = f"gen_{ts}_{n}"
+                    n += 1
+                target = out_dir / f"{stem}{ext}"
+                shutil.copy2(str(src), str(target))   # оригинал не трогаем
+                if ftype == "video":
+                    # первый кадр → gen_<ts>.jpg рядом (для превью); нет кадра → ▶-фолбэк
+                    if _frame is not None:
+                        try:
+                            _frame._extract_first_frame(target)
+                        except Exception:
+                            pass
+                    jpg = target.with_suffix(".jpg")
+                    aspect = self._aspect_from_image(jpg) if jpg.exists() else "16:9"
+                else:
+                    aspect = self._aspect_from_image(target)
+                w, h = self._cell_wh(aspect)
+                cell = ShimmerCell(self, w, h, aspect=aspect)
+                cell.set_model_label("")
+                cell.set_meta(prompt="", model_id="", model_label="",
+                              aspect=aspect, type=ftype, file=target.name, ts=ts)
+                if ftype == "video":
+                    cell.set_video_placeholder(str(target))
+                else:
+                    cell.set_image(str(target))
+                self._cells.insert(0, cell)   # дропнутое — сверху
+                added += 1
+            except Exception:
+                continue   # битый файл не валит остальные
+        if added:
+            self._cell_count = len(self._cells)
+            self._empty_host.hide()
+            self._grid_host.show()
+            self._relayout_grid()   # ОДИН раз в конце
+            self._save_canvas()     # ОДИН раз в конце
 
     # ── helpers ─────────────────────────────────────────────────────────
     def _seg_group(self, items, active_key: str, accent: bool = False):
