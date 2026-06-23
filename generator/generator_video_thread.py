@@ -174,6 +174,13 @@ class GeneratorVideoThread(QThread):
                     continue
                 if not r.ok:
                     # Не ключевая (400 битый payload, 5xx и т.п.) — обычная ошибка.
+                    # Логируем тело — подсказка сервера (например keyframes requires
+                    # 1-2 inputs). Тот же [FASTGEN]-формат что для 401/403/429 выше.
+                    try:
+                        body_text = r.text[:500] if r.text else ''
+                        print(f"[FASTGEN] video submit {code} body={body_text}")
+                    except Exception:
+                        pass
                     self.error.emit(f"Ошибка отправки запроса: HTTP {code}")
                     return
                 data = r.json()

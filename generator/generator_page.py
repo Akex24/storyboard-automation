@@ -971,6 +971,14 @@ class GeneratorPage(QWidget):
         # шлёт в payload["inputs"] для картинок). Копия списка — мутации в UI после
         # старта не влияют на уже запущенные потоки.
         refs = self.pending_refs()
+        # Pre-flight гард: Veo Fast «Кадры» (keyframes) ТРЕБУЕТ ≥1 стартовый кадр
+        # (сервер: «flow-video-fast keyframes requires 1-2 inputs; received 0» → HTTP
+        # 400). Без рефов не отправляем — иначе заведомо невалидный запрос + плитка
+        # с ошибкой. Тот же _show_hint-паттерн, что у промпта/сериала/модели выше.
+        if is_video and model_id == "flow-video-fast" and keyframes_arg and not refs:
+            self._show_hint(
+                "В режиме Кадры нужен стартовый кадр. Прикрепи реф или переключись на Рефы.")
+            return
         # ×N независимых параллельных генераций → N плиток. Pattern A: parent=None +
         # ссылка в списке. Захват своей ячейки и потока (default-arg → без late-binding):
         # каждая генерация заменит ИМЕННО свою плитку, даже при параллельных финишах.
