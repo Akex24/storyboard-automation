@@ -12348,13 +12348,19 @@ class MainWindow(QMainWindow):
             from widgets import ShotViewerDialog
             active = shot_path(self.current_block, panel_idx)
             history = shot_history_dir(self.current_block, panel_idx)
-            # Если попап для этого шота уже открыт — поднимаем существующий.
-            existing = self._get_open_shot_viewer(self.current_block, panel_idx)
-            if existing is not None:
-                existing.refresh()
-                existing.show()
-                existing.raise_()
-                existing.activateWindow()
+            # 2026-06-23: один попап шота на всё приложение. Если открыт ЛЮБОЙ
+            # ShotViewerDialog — клик по другому шоту НЕ плодит второй попап, а
+            # выводит уже открытый на передний план. (_get_open_shot_viewer НЕ
+            # трогаем — её per-(block,panel) семантику используют edit/regen/improve.)
+            viewers = self._ensure_open_shot_viewers()
+            if viewers:
+                try:
+                    _b0, _p0, dlg0 = viewers[0]
+                    dlg0.show()
+                    dlg0.raise_()
+                    dlg0.activateWindow()
+                except Exception:
+                    pass
                 return
             # 2026-06-13: стиль блока (commit 1 пишет в episodes.json
             # blocks[str(n)]['style']). Читаем СВЕЖИМ с диска — кеш self._meta
@@ -12374,6 +12380,22 @@ class MainWindow(QMainWindow):
                         _blk_style = _braw.get('style', 'sketch') or 'sketch'
             except Exception:
                 _blk_style = 'sketch'
+            # 2026-06-23: описание шота из карточки того же блока — действие и
+            # реплика РАЗДЕЛЬНО (реплика стилизуется как на карточке: #shot-dialog
+            # = фиолетовый курсив). Защита: нет карточки/атрибутов → обе пустые →
+            # диалог даст старый hint.
+            _desc = ""
+            _dialog = ""
+            try:
+                if 0 <= panel_idx < len(self.shot_cards):
+                    card = self.shot_cards[panel_idx]
+                    _desc = card.desc_label.text().strip()
+                    _rep  = getattr(card, "_dlg_en", "").strip()
+                    if _rep:
+                        _dialog = f'"{_rep}"'
+            except Exception:
+                _desc = ""
+                _dialog = ""
             dlg = ShotViewerDialog(
                 panel_idx=panel_idx,
                 block_name=self.current_block,
@@ -12381,6 +12403,8 @@ class MainWindow(QMainWindow):
                 history_dir=history,
                 aspect=self._current_aspect,
                 style=_blk_style,
+                description=_desc,
+                dialog=_dialog,
                 parent=self)
             # Edit/regen — те же handlers что hover-overlay имели раньше.
             dlg.edit_requested.connect(self._on_edit_shot)
@@ -12679,8 +12703,25 @@ class MainWindow(QMainWindow):
                 "или не найден в промпте блока. Редактировать нечего.")
             return
 
+        # 2026-06-23: если правим конкретную версию (parent_version>0) и у неё
+        # есть сохранённый AI-edit сайдкар edit_v{N}.json — достаём прошлую
+        # правку, чтобы подставить в нижнее поле диалога. Нет файла/битый →
+        # пустая строка (поведение как раньше).
+        initial_short = ""
+        if parent_version and parent_version > 0:
+            _edit_sc = (shot_history_dir(target_block, panel_idx)
+                        / f"edit_v{int(parent_version)}.json")
+            if _edit_sc.exists():
+                try:
+                    import json as _json
+                    _ed = _json.loads(_edit_sc.read_text(encoding='utf-8')) or {}
+                    initial_short = str(_ed.get("ai_edit", "") or "")
+                except Exception:
+                    initial_short = ""
+
         # Попап с pre-filled промптом + второе поле «короткая инструкция AI»
-        result = self._ask_edit_full_prompt(panel_idx, current_body, target_block)
+        result = self._ask_edit_full_prompt(panel_idx, current_body, target_block,
+                                            initial_short=initial_short)
         if not result:
             return  # юзер нажал Отмена / закрыл окно
         new_body, short_instruction = result
@@ -12823,7 +12864,8 @@ class MainWindow(QMainWindow):
 
     def _ask_edit_full_prompt(self, panel_idx: int,
                                   current_body: str,
-                                  target_block: str
+                                  target_block: str,
+                                  initial_short: str = ""
                                   ) -> Optional[tuple]:
         """Попап правки SHOT — два режима в одном окне (2026-05-07).
 
@@ -12883,6 +12925,10 @@ class MainWindow(QMainWindow):
         short_field.setPlaceholderText(
             "убери ружьё, остальное оставь как есть… можно коротко "
             "по-русски и нажать ✨ Улучшить — AI перепишет в точный промпт")
+        # 2026-06-23: предзаполняем нижнее поле сохранённой AI-edit правкой
+        # версии (если есть). Пусто → остаётся placeholder, как раньше.
+        if initial_short:
+            short_field.setPlainText(initial_short)
         short_field.setMinimumHeight(150)
         short_field.setStyleSheet(
             "QPlainTextEdit { background:#1a1330; border:1px solid #4a3470; "

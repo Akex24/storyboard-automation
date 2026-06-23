@@ -1108,6 +1108,20 @@ class GenerateThread(QThread):
                             encoding='utf-8')
                     except Exception:
                         pass
+                # 2026-06-23: AI-edit правку версии кладём отдельным sidecar
+                # edit_v{N}.json (как parent_v) — чтобы при повторном открытии
+                # диалога правки подставить её обратно в нижнее поле. Префикс
+                # edit_ не ловится фильтром list_shot_versions. Пишем ТОЛЬКО
+                # когда правка была (edit-режим). Сбой записи не критичен.
+                if self.edit_instruction and self.parent_version:
+                    try:
+                        import json as _json
+                        (history_dir / f"edit_v{int(self.parent_version)}.json").write_text(
+                            _json.dumps({"ai_edit": self.edit_instruction},
+                                        ensure_ascii=False),
+                            encoding='utf-8')
+                    except Exception:
+                        pass
             except Exception:
                 # Fallback: если что-то пошло не так с Pillow или
                 # history — пишем оригинальный файл, чтоб не потерять шот.

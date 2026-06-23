@@ -382,10 +382,17 @@ class ShotViewerDialog(QDialog):
                  active_path: Path, history_dir: Path,
                  aspect: str = "9:16",
                  style: str = "sketch",
+                 description: str = "",
+                 dialog: str = "",
                  parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
         self.panel_idx = panel_idx
         self.block_name = block_name
+        # 2026-06-23: описание шота над лентой версий вместо технической
+        # подсказки: действие (#shot-desc) + реплика (#shot-dialog, фиолетовый
+        # курсив, как на карточке). Обе пустые → старый hint.
+        self._description = description
+        self._dialog = dialog
         self.active_path = Path(active_path)
         self.history_dir = Path(history_dir)
         # Этап (формат кадра): формат зоны просмотра. Дефолт "9:16" → как было.
@@ -548,9 +555,26 @@ class ShotViewerDialog(QDialog):
         self.btn_marker.raise_()
 
         # Лента миниатюр (горизонтальный scroll)
-        strip_label = QLabel(tr('shot_viewer_versions_label'))
-        strip_label.setObjectName("hint")
-        lay.addWidget(strip_label)
+        # 2026-06-23: над лентой версий — описание шота РАЗДЕЛЬНО: действие
+        # (#ffffff 14px) + реплика (#b9a7e6 курсив 14px) INLINE-стилем. Inline,
+        # а НЕ objectName: app-level QSS #shot-desc/#shot-dialog (ID-селектор)
+        # перебил бы inline по специфичности. Обе пустые → старый hint.
+        if self._description or self._dialog:
+            if self._description:
+                action_lbl = QLabel(self._description)
+                action_lbl.setStyleSheet("color:#d8d8d8; font-size:12px;")
+                action_lbl.setWordWrap(True)
+                lay.addWidget(action_lbl)
+            if self._dialog:
+                replica_lbl = QLabel(self._dialog)
+                replica_lbl.setStyleSheet(
+                    "color:#b9a7e6; font-style:italic; font-size:12px;")
+                replica_lbl.setWordWrap(True)
+                lay.addWidget(replica_lbl)
+        else:
+            strip_label = QLabel(tr('shot_viewer_versions_label'))
+            strip_label.setObjectName("hint")
+            lay.addWidget(strip_label)
 
         self.strip_scroll = QScrollArea()
         self.strip_scroll.setWidgetResizable(True)
