@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr, get_lang
+from widgets.shimmer_paint import ShimmerOverlay
 
 
 class _AppProxy:
@@ -311,20 +312,18 @@ class ShotCard(QFrame):
         # самодостаточно через start_progress (моментально при показе блока).
         self.gen_overlay = QWidget(self.img_container)
         self.gen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
-        self.gen_overlay.setStyleSheet(
-            "background: rgba(20, 14, 30, 0.78); border-radius:6px;")
+        # 2026-06-23: фон/анимацию даёт ShimmerOverlay (как в генераторе).
+        # gen_overlay сам прозрачный — это контейнер для лейблов поверх shimmer.
+        # Не задаём фон/border-radius на gen_overlay — иначе квадратный фон
+        # перекроет скруглённый shimmer-paint.
+        self.gen_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.shimmer_overlay = ShimmerOverlay(self.gen_overlay)
+        self.shimmer_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
+        self.shimmer_overlay.lower()   # под лейблами
         _go = QVBoxLayout(self.gen_overlay)
         _go.setContentsMargins(14, 14, 14, 14)
         _go.addStretch()
-        self.gen_progress_bar = QProgressBar()
-        self.gen_progress_bar.setRange(0, 0)  # indeterminate (бегущая анимация)
-        self.gen_progress_bar.setTextVisible(False)
-        self.gen_progress_bar.setFixedHeight(6)
-        self.gen_progress_bar.setStyleSheet(
-            "QProgressBar { background:#2a1f3d; border:none; border-radius:3px; }"
-            "QProgressBar::chunk { background:#8e6cd4; border-radius:3px; }")
-        _go.addWidget(self.gen_progress_bar)
-        _go.addSpacing(6)
         # Подпись захода: добор → «Добор» (i18n), primary → скрыта.
         self.gen_redrive_lbl = QLabel("")
         self.gen_redrive_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -688,6 +687,11 @@ class ShotCard(QFrame):
                 pass
             self.gen_overlay.show()
             self.gen_overlay.raise_()
+            # 2026-06-23: запустить shimmer-анимацию overlay (свой ~30мс таймер).
+            try:
+                self.shimmer_overlay.start()
+            except Exception:
+                pass
             self._tick_progress()
             if self._gen_timer is None:
                 self._gen_timer = QTimer(self)
@@ -702,6 +706,12 @@ class ShotCard(QFrame):
         try:
             if self._gen_timer is not None:
                 self._gen_timer.stop()
+            # 2026-06-23: остановить shimmer-таймер ДО hide (защита от лишних
+            # тиков). ShimmerOverlay.hideEvent сам страхует, но явно — чище.
+            try:
+                self.shimmer_overlay.stop()
+            except Exception:
+                pass
             self.gen_overlay.hide()
             self._gen_started_at = None
         except Exception:

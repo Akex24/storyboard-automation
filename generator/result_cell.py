@@ -724,33 +724,21 @@ class ShimmerCell(QFrame):
             p.end()
             return
 
-        # Базовая тёмная плитка (loading-скелет).
-        p.fillPath(path, _BASE_COLOR)
-
         if self._state == "loading":
-            # ── ДЫШАЩАЯ БАЗА: яркость колеблется по sin(angle) бесшовно ────
-            # pulse ∈ [0, 1], 0.5+0.5·sin(angle) — производная непрерывна, разрывов
-            # нет. Никаких бегущих блик/wrap → «слепых зон» не существует.
-            pulse = 0.5 + 0.5 * math.sin(self._angle)
-            r = int(_BASE_DARK_R + (_BASE_LIGHT_R - _BASE_DARK_R) * pulse)
-            gc = int(_BASE_DARK_G + (_BASE_LIGHT_G - _BASE_DARK_G) * pulse)
-            b = int(_BASE_DARK_B + (_BASE_LIGHT_B - _BASE_DARK_B) * pulse)
-            p.fillPath(path, QColor(r, gc, b))
-            # ── СТАТИЧНЫЙ ВЕРТИКАЛЬНЫЙ ГРАДИЕНТ объёма (без анимации) ──────
-            # Сверху чуть светлее, снизу чуть темнее — намёк на «глубину», как
-            # у премиальных skeleton. От фазы НЕ зависит.
-            gv = QLinearGradient(0, 0, 0, self.height())
-            gv.setColorAt(0.0, _DEPTH_TOP)
-            gv.setColorAt(1.0, _DEPTH_BOTTOM)
-            p.fillPath(path, gv)
-            # ── ОПЦИОНАЛЬНАЯ ТЁПЛАЯ ТОЧКА в верх-лев углу (статично) ──────
-            # Янтарь с очень низкой α, мягкий радиальный градиент. Цветовой
-            # нюанс «без скучноты», не двигается, бесплатно по CPU.
-            from PyQt6.QtGui import QRadialGradient
-            corner = QRadialGradient(0.0, 0.0, max(self.width(), self.height()) * 0.7)
-            corner.setColorAt(0.0, _WARM_ACCENT_INNER)
-            corner.setColorAt(1.0, _WARM_ACCENT_OUTER)
-            p.fillPath(path, corner)
+            # 2026-06-23: pulse+depth+corner вынесены в общий хелпер
+            # widgets/shimmer_paint.paint_shimmer_loading — ровно тот же визуал
+            # (порядок слоёв и значения констант 1:1), просто из одного источника
+            # правды. Тёмный _BASE_COLOR теперь рисует сам хелпер первым слоем,
+            # поэтому fillPath(path, _BASE_COLOR) выше БЫЛ продублирован — убрал.
+            # set_phase / register_loading / общий таймер страницы не тронуты.
+            from widgets.shimmer_paint import paint_shimmer_loading
+            paint_shimmer_loading(
+                p, QRectF(0, 0, self.width(), self.height()), self._angle)
+        else:
+            # НЕ-loading состояние сюда доходит, когда image/video/error не сработали
+            # ранним return'ом (например, image без _pixmap). Поведение прежнее:
+            # тёмная подложка под последующий бейдж/рамку.
+            p.fillPath(path, _BASE_COLOR)
 
         # Бейдж модели поверх loading-плитки (сразу при старте; error сюда не доходит —
         # у него ранний return выше). На image бейдж рисуется в своей ветке.
