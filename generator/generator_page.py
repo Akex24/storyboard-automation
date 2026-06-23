@@ -78,6 +78,17 @@ class GeneratorPage(QWidget):
         # Счётчик заполненных ячеек + ссылки на ВСЕ плитки (для перераскладки).
         self._cell_count = 0
         self._cells = []
+        # Мультихолст (КУСОК 1 — только данные/хранение; таб-бар/переключение —
+        # куски 2-3). self._cells = плитки АКТИВНОГО холста (как раньше). Секции
+        # холстов: [{id,title,cells:[<meta>...]}]; cells активного синкаются из
+        # self._cells при сохранении. canvas.json v2 хранит все холсты.
+        self._canvases: list = []
+        self._active_canvas_id = None
+        # Путь A: ЖИВЫЕ виджеты плиток per-canvas {canvas_id: [ShimmerCell...]}.
+        # Переключение холста НЕ уничтожает плитки (иначе обрывалась бы идущая
+        # генерация — поток держит плитку), а ПРЯЧЕТ их и показывает плитки целевого.
+        # Инвариант: _canvas_cells[active] — ТОТ ЖЕ список-объект что self._cells.
+        self._canvas_cells: dict = {}
         # Прикреплённые рефы (per-session, не per-show): пути файлов, которые
         # уходят в payload["inputs"] следующей генерации. UI — ряд превьюшек выше
         # поля ввода в prompt-bar. dict для O(1) remove по пути.
@@ -96,6 +107,9 @@ class GeneratorPage(QWidget):
         # Под-шаг 3: первичное восстановление холста активного сериала (если есть
         # canvas.json). Пустой/битый/отсутствующий файл → холст остаётся пустым.
         self._load_canvas()
+        # Таб-бар уже построен в _build_ui (дефолтный чип) — пересобрать под реально
+        # загруженные холсты (могло быть несколько после миграции/v2).
+        self._rebuild_canvas_row()
 
     # ── ленивый Lucide-иконкозагрузчик (без module-level import storyboard_app) ──
     def _icon(self, name: str):
@@ -198,55 +212,221 @@ class GeneratorPage(QWidget):
         outer = QVBoxLayout(wrap)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        # Ряд вкладок (chips + «+»), прижат к низу — вкладки садятся на линию.
+        # Ряд вкладок (chips + «+»), прижат к низу. Содержимое строит
+        # _rebuild_canvas_row из self._canvases — layout храним для пересборки
+        # (после add/switch/delete).
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         row.setAlignment(Qt.AlignmentFlag.AlignBottom)
-        # Пока ОДИН холст (мультихолст-логика отложена). Активный — без ✕.
-        row.addWidget(self._canvas_chip("Холст 1", active=True))
-        new_btn = QPushButton("+")
-        new_btn.setObjectName("canvas-new")
-        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        new_btn.setFixedSize(32, 34)
-        new_btn.setEnabled(False)   # неактивна (логика добавления — позже)
-        # заглушка: без обработчика
-        row.addWidget(new_btn)
-        row.addStretch()
+        self._canvas_row_lay = row
         outer.addLayout(row)
         # Линия-разделитель 1px (активная вкладка разрывает её янтарным подчёркиванием).
         divider = QFrame()
         divider.setObjectName("canvas-divider")
         divider.setFixedHeight(1)
         outer.addWidget(divider)
+        self._rebuild_canvas_row()   # первичное наполнение чипами + «+»
         return wrap
 
-    def _canvas_chip(self, title: str, active: bool) -> QFrame:
+    def _rebuild_canvas_row(self):
+        """Перерисовать ряд вкладок из self._canvases (активная подсвечена). Сносит
+        старое содержимое ряда (чипы + «+») и строит заново. Зовётся после load /
+        add / switch (и delete в куске 3)."""
+        lay = getattr(self, "_canvas_row_lay", None)
+        if lay is None:
+            return
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._ensure_canvases()
+        for c in self._canvases:
+            chip = self._canvas_chip(c, active=(c.get("id") == self._active_canvas_id))
+            lay.addWidget(chip)
+        new_btn = QPushButton("+")
+        new_btn.setObjectName("canvas-new")
+        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_btn.setFixedSize(32, 34)
+        new_btn.clicked.connect(self._add_canvas)   # активна (КУСОК 2)
+        lay.addWidget(new_btn)
+        lay.addStretch()
+
+    def _canvas_chip(self, canvas: dict, active: bool) -> QFrame:
         chip = QFrame()
         chip.setObjectName("canvas-chip")
         chip.setProperty("active", active)
-        chip.setCursor(Qt.CursorShape.PointingHandCursor)   # кликабельность — заход 2
+        chip.setCursor(Qt.CursorShape.PointingHandCursor)
         chip.setFixedHeight(34)   # вровень с сегментами нижней панели (#seg = 34)
+        chip._canvas_id = canvas.get("id")    # для клика (см. eventFilter)
+        chip.installEventFilter(self)         # ЛКМ-релиз по чипу → _switch_canvas
         lay = QHBoxLayout(chip)
-        lay.setContentsMargins(16, 0, 16, 0)   # вертикаль держит setFixedHeight, текст по центру
+        # ✕ стоит на АКТИВНОЙ вкладке (как в браузере) → у неё резервируем место
+        # справа под крестик (✕ — абсолютный дочерний поверх правого края, не в layout).
+        lay.setContentsMargins(16, 0, 28 if active else 16, 0)
         lay.setSpacing(8)
-        lbl = QLabel(title)
+        lbl = QLabel(canvas.get("title", "Холст"))
         lbl.setObjectName("canvas-title")
+        # клик по тексту должен уйти ЧИПУ (не съедаться лейблом).
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         lay.addWidget(lbl)
-        if not active:
-            close = QPushButton()
-            close.setObjectName("canvas-close")
-            close.setCursor(Qt.CursorShape.PointingHandCursor)
-            ic = self._icon("x")
-            if ic is not None:
-                close.setIcon(ic)
-                close.setIconSize(QSize(12, 12))
-            else:
-                close.setText("x")
+        if active:
+            # Круглый ✕ ТОЧНО как на ref-thumb (objectName "ref-thumb-x": тёмный
+            # кружок border-radius:9, белый ✕, hover-затемнение). АБСОЛЮТНЫЙ дочерний
+            # chip (НЕ в layout, чтобы не дёргать ширину). ВСЕГДА виден на активной
+            # вкладке (как закрытие таба в браузере). Позиция — по Resize в eventFilter.
+            close = QPushButton("✕", chip)
+            close.setObjectName("ref-thumb-x")
             close.setFixedSize(18, 18)
-            # заглушка: без обработчика
-            lay.addWidget(close)
+            close.setCursor(Qt.CursorShape.PointingHandCursor)
+            # обработчик удаления — КУСОК 3 (рендерим вид + позицию, клик НЕ вешаем).
+            chip._close_btn = close
         return chip
+
+    # ── мультихолст: добавление/переключение (КУСОК 2) ────────────────
+    def _add_canvas(self):
+        """«+»: создать новый ПУСТОЙ холст и сразу переключиться на него. id/номер —
+        c<N>, N = max существующий индекс + 1 (НЕ count: после удаления номера НЕ
+        переиспользуются). id и отображаемый номер связаны: c<N> ↔ «Холст N»."""
+        self._ensure_canvases()
+        nums = []
+        for c in self._canvases:
+            cid = c.get("id", "")
+            if isinstance(cid, str) and cid.startswith("c") and cid[1:].isdigit():
+                nums.append(int(cid[1:]))
+        n = (max(nums) + 1) if nums else 1
+        self._canvases.append({"id": f"c{n}", "title": f"Холст {n}", "cells": []})
+        self._switch_canvas(f"c{n}")   # синк текущего + построить пустой + персист + пересборка
+
+    def _switch_canvas(self, canvas_id):
+        """Переключить активный холст (ПУТЬ A — плитки НЕ уничтожаются):
+        синк meta текущих → секцию (persist) → СПРЯТАТЬ живые плитки текущего холста
+        (в _canvas_cells, без deleteLater) → показать/построить плитки целевого →
+        персист active → пересобрать таб-бар. No-op если уже активен / id неизвестен.
+        Идущая генерация переживает switch: её плитка остаётся живой (скрытой)."""
+        self._ensure_canvases()
+        if not canvas_id or canvas_id == self._active_canvas_id:
+            return   # гард: тот же холст — не пересобираем зря
+        if not any(c.get("id") == canvas_id for c in self._canvases):
+            return   # неизвестный id
+        # ВАЖНО: meta готовых плиток текущего → секция ДО ухода (cross-session persist).
+        self._sync_active_canvas_cells()
+        self._detach_active_cells()   # ЖИВЫЕ плитки текущего → спрятать (НЕ удалять)
+        self.clear_refs()             # рефы per-session — сброс (как в reload_canvas)
+        self._active_canvas_id = canvas_id
+        import storyboard_app as _sa
+        root = _sa.get_stored_root()
+        slug = _sa.get_current_show(root) if root else None
+        out_dir = (root / "shows" / slug / "generator") if (root and slug) else None
+        self._attach_canvas_cells(canvas_id, out_dir)
+        self._save_canvas()        # зафиксировать active + все секции
+        self._rebuild_canvas_row() # подсветить новую вкладку
+
+    def _detach_active_cells(self):
+        """СПРЯТАТЬ живые плитки текущего активного холста: открепить из рядов
+        (setParent(None)+hide), оставить в self._canvas_cells[active] (НЕ deleteLater
+        — иначе idущая генерация пишет в мёртвый виджет). Снести ряды-контейнеры.
+        _loading_cells НЕ трогаем — генерящаяся плитка продолжает «дышать»/считать."""
+        old = self._active_canvas_id
+        if old is not None:
+            self._canvas_cells[old] = self._cells   # держим живой список за холстом
+        for cell in self._cells:
+            try:
+                cell.setParent(None)   # открепить из row-контейнера (виджет ЖИВ)
+                cell.hide()
+            except Exception:
+                pass
+        # снести ряды-контейнеры (плитки уже откреплены — deleteLater рядов их не заденет)
+        while self._rows_v.count():
+            it = self._rows_v.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        self._cells = []
+        self._cell_count = 0
+        self._grid_host.hide()
+        self._empty_host.show()
+
+    def _attach_canvas_cells(self, canvas_id, out_dir):
+        """Показать плитки целевого холста. Уже посещался (есть живые в
+        _canvas_cells) → ПЕРЕПРИКРЕПИТЬ те же виджеты (таймеры/картинка/видео живы).
+        Первый визит → построить из секции (_populate_cells). Инвариант:
+        _canvas_cells[canvas_id] = self._cells (один список)."""
+        cached = self._canvas_cells.get(canvas_id)
+        if cached is not None:
+            self._cells = cached
+            for cell in self._cells:
+                try:
+                    cell.setParent(self._grid_host)
+                    cell.show()
+                except Exception:
+                    pass
+            self._cell_count = len(self._cells)
+            if self._cells:
+                self._empty_host.hide()
+                self._grid_host.show()
+                self._relayout_grid()   # переразложить живые ячейки по рядам
+            else:
+                self._grid_host.hide()
+                self._empty_host.show()
+        else:
+            self._cells = []
+            self._canvas_cells[canvas_id] = self._cells   # тот же объект — _populate append'ит
+            if out_dir is not None:
+                self._populate_cells(self._active_canvas().get("cells") or [], out_dir)
+
+    def _destroy_stashed_canvas_cells(self):
+        """Снести ЖИВЫЕ плитки ВСЕХ НЕактивных холстов (deleteLater) + очистить кэш.
+        Активный холст (self._cells) сносит _clear_canvas. Зовётся при СМЕНЕ СЕРИАЛА
+        (reload_canvas) — плитки прошлого сериала не нужны."""
+        for cid, cells in list(self._canvas_cells.items()):
+            if cid == self._active_canvas_id:
+                continue   # активные = self._cells → их снесёт _clear_canvas
+            for cell in cells:
+                try:
+                    self.unregister_loading(cell)
+                except Exception:
+                    pass
+                try:
+                    cell.setParent(None)
+                    cell.deleteLater()
+                except Exception:
+                    pass
+        self._canvas_cells = {}
+
+    def _populate_cells(self, cells, out_dir):
+        """Построить ShimmerCell'ы из списка meta (cells активного холста) в текущую
+        сетку. Общий код для _load_canvas и _switch_canvas. Запись без файла на
+        диске пропускается молча; битая запись не валит остальные."""
+        for meta in cells:
+            try:
+                if not isinstance(meta, dict):
+                    continue
+                fname = meta.get("file")
+                if not fname:
+                    continue
+                full = out_dir / fname
+                if not full.exists():
+                    continue   # файл удалён юзером — пропускаем запись молча
+                aspect = meta.get("aspect", "16:9")
+                w, h = self._cell_wh(aspect)
+                cell = ShimmerCell(self, w, h, aspect=aspect)
+                cell.set_model_label(meta.get("model_label", ""))
+                cell.set_meta(**meta)   # вернуть метаданные (иначе save затрёт)
+                if meta.get("type") == "video":
+                    cell.set_video_placeholder(str(full))
+                else:
+                    cell.set_image(str(full))
+                self._cells.append(cell)   # APPEND → порядок 1:1 как в секции
+            except Exception:
+                continue   # одна битая запись не валит весь restore
+        self._cell_count = len(self._cells)
+        if self._cells:
+            self._empty_host.hide()
+            self._grid_host.show()
+            self._relayout_grid()   # ОДИН раз в конце (не в цикле)
 
     # ── (C) область результатов — пустая прокрутка с заглушкой ──────────
     def _build_results_area(self) -> QScrollArea:
@@ -481,6 +661,22 @@ class GeneratorPage(QWidget):
                 if btn is not None:
                     btn.setVisible(False)
                 self._hide_thumb_popup()
+        # canvas-chip: позиция ✕ (Resize) + ЛКМ-релиз → переключить холст (КУСОК 2).
+        # ✕ теперь на АКТИВНОЙ вкладке и ВСЕГДА виден (без hover) — Enter/Leave не
+        # нужны. ✕ — абсолютная дочерняя кнопка; её клики чипу не доходят (обработчик
+        # удаления — кусок 3).
+        if isinstance(obj, QFrame) and obj.objectName() == "canvas-chip":
+            t = ev.type()
+            b = getattr(obj, "_close_btn", None)   # None у НЕактивных вкладок (✕ нет)
+            if t == QEvent.Type.Resize and b is not None:
+                b.move(obj.width() - 18 - 6, (obj.height() - 18) // 2)
+                b.raise_()
+            elif t == QEvent.Type.MouseButtonRelease:
+                try:
+                    if ev.button() == Qt.MouseButton.LeftButton:
+                        self._switch_canvas(getattr(obj, "_canvas_id", None))
+                except Exception:
+                    pass
         return super().eventFilter(obj, ev)
 
     def showEvent(self, event):
@@ -938,7 +1134,24 @@ class GeneratorPage(QWidget):
             hb.addStretch(1)
             self._rows_v.addWidget(rw)
 
+    @staticmethod
+    def _cell_alive(cell) -> bool:
+        """Жив ли C++ объект плитки. Путь A плитки на switch НЕ удаляет, но при
+        смене СЕРИАЛА (reload) поток мог финишировать в уже удалённую плитку —
+        страховка от RuntimeError «wrapped C/C++ object has been deleted»."""
+        try:
+            from PyQt6 import sip
+            return cell is not None and not sip.isdeleted(cell)
+        except Exception:
+            return cell is not None
+
     def _on_gen_done(self, cell, th, path: str):
+        if not self._cell_alive(cell):
+            # Плитка уже снесена (смена сериала во время генерации). Файл на диске
+            # есть, но обновлять/персистить некуда — чистим поток и выходим.
+            if th in self._gen_threads:
+                self._gen_threads.remove(th)
+            return
         try:
             if path.lower().endswith(".mp4"):
                 cell.set_video_placeholder(path)   # видео: кадр-превью + ▶
@@ -961,6 +1174,10 @@ class GeneratorPage(QWidget):
 
     def _on_gen_fail(self, cell, th, msg: str):
         # Причина — на плитке (постоянной строки статуса нет).
+        if not self._cell_alive(cell):
+            if th in self._gen_threads:
+                self._gen_threads.remove(th)
+            return
         try:
             cell.set_error((msg or "Ошибка")[:160])
         except Exception:
@@ -968,17 +1185,89 @@ class GeneratorPage(QWidget):
         if th in self._gen_threads:
             self._gen_threads.remove(th)
 
-    # ── персист холста на диск (под-шаг 2: ТОЛЬКО запись) ──────────────
-    def _save_canvas(self):
-        """Записать текущий холст в shows/<slug>/generator/canvas.json.
+    # ── мультихолст: секции/активный (КУСОК 1 — данные) ────────────────
+    def _ensure_canvases(self):
+        """Гарантировать ≥1 холст и валидный active. Дефолт — «Холст 1» (c1).
+        Вызывается перед любым доступом к секциям (save/load/sync)."""
+        if not self._canvases:
+            self._canvases = [{"id": "c1", "title": "Холст 1", "cells": []}]
+        if (not self._active_canvas_id
+                or not any(c.get("id") == self._active_canvas_id
+                           for c in self._canvases)):
+            self._active_canvas_id = self._canvases[0]["id"]
 
-        ТОЛЬКО запись — чтение/восстановление плиток это под-шаг 3. Порядок
-        self._cells сохраняется (начало списка = верх холста = новое сверху).
-        Пишем только плитки с готовым файлом (meta['file']) — loading/error без
-        файла пропускаем. Атомарно: .tmp в той же папке → os.replace (атомарен на
-        Mac и Win, т.к. tmp и финал на одном томе). Ошибка записи НЕ роняет
-        генерацию — молча проглатываем (опц. лог в stderr). Зовётся из _on_gen_done
-        на main-потоке (сигналы QThread queued в event loop) → вызовы при ×N
+    def _active_canvas(self) -> dict:
+        """Секция активного холста (создаёт дефолт через _ensure_canvases)."""
+        self._ensure_canvases()
+        for c in self._canvases:
+            if c.get("id") == self._active_canvas_id:
+                return c
+        return self._canvases[0]   # подстраховка (ensure уже выровнял active)
+
+    def _sync_active_canvas_cells(self):
+        """Снять meta текущих self._cells (плитки активного холста) в его секцию.
+        Только плитки с готовым файлом (как раньше). Порядок self._cells = порядок
+        на холсте (новое сверху)."""
+        self._active_canvas()["cells"] = [
+            c.meta() for c in self._cells
+            if self._cell_alive(c) and c.meta().get("file")]
+
+    def _sync_all_canvas_cells(self):
+        """Синк meta ЖИВЫХ плиток ВСЕХ посещённых холстов (путь A: _canvas_cells) в
+        их секции. Нужно чтобы генерация, ФИНИШИРОВАВШАЯ на СКРЫТОМ холсте, попала в
+        canvas.json сразу (а не только при возврате) — иначе при выходе до возврата
+        плитка терялась бы. Непосещённые секции остаются как загружены."""
+        self._ensure_canvases()
+        sect = {c.get("id"): c for c in self._canvases}
+        synced = set()
+        for cid, cells in self._canvas_cells.items():
+            s = sect.get(cid)
+            if s is not None:
+                s["cells"] = [c.meta() for c in cells
+                              if self._cell_alive(c) and c.meta().get("file")]
+                synced.add(cid)
+        # активный мог ещё не попасть в _canvas_cells (самый первый save) — явно.
+        if self._active_canvas_id not in synced:
+            self._active_canvas()["cells"] = [
+                c.meta() for c in self._cells
+                if self._cell_alive(c) and c.meta().get("file")]
+
+    @staticmethod
+    def _parse_canvas_data(data) -> tuple:
+        """canvas.json (v1 ИЛИ v2) → (canvases:list, active_id:str).
+
+        МИГРАЦИЯ v1→v2: старый формат version=1 имел top-level "cells" без понятия
+        холста. Оборачиваем эти cells в ОДИН холст {id:"c1", title:"Холст 1"},
+        active="c1" — старые плитки переезжают 1:1 БЕЗ потерь. Неизвестный/битый
+        формат → один пустой холст по умолчанию."""
+        if (isinstance(data, dict) and data.get("version") == 2
+                and isinstance(data.get("canvases"), list)):
+            canvases = [c for c in data["canvases"]
+                        if isinstance(c, dict) and c.get("id")]
+            if canvases:
+                for c in canvases:
+                    if not isinstance(c.get("cells"), list):
+                        c["cells"] = []
+                    c.setdefault("title", "Холст 1")
+                active = data.get("active")
+                if not any(c.get("id") == active for c in canvases):
+                    active = canvases[0]["id"]
+                return canvases, active
+        # v1 / неизвестное → миграция top-level cells (или пусто) в один холст.
+        old_cells = data.get("cells") if isinstance(data, dict) else None
+        if not isinstance(old_cells, list):
+            old_cells = []
+        return [{"id": "c1", "title": "Холст 1", "cells": old_cells}], "c1"
+
+    # ── персист холста на диск (canvas.json v2: ВСЕ холсты) ────────────
+    def _save_canvas(self):
+        """Записать ВСЕ холсты в shows/<slug>/generator/canvas.json (формат v2).
+
+        Перед записью синкаем meta текущих self._cells в активную секцию
+        (_sync_active_canvas_cells). Пишем только плитки с готовым файлом
+        (meta['file']). Атомарно: .tmp в той же папке → os.replace (атомарен на
+        Mac и Win). Ошибка записи НЕ роняет генерацию — молча проглатываем (лог в
+        stderr). Зовётся из _on_gen_done на main-потоке → вызовы при ×N
         сериализованы, гонки за canvas.json.tmp нет."""
         try:
             import json, os
@@ -988,8 +1277,10 @@ class GeneratorPage(QWidget):
             if not root or not slug:
                 return
             out_dir = root / "shows" / slug / "generator"
-            cells = [c.meta() for c in self._cells if c.meta().get("file")]
-            data = {"version": 1, "cells": cells}
+            self._sync_all_canvas_cells()   # ВСЕ живые холсты → секции (вкл. фон-финиш)
+            data = {"version": 2,
+                    "active": self._active_canvas_id,
+                    "canvases": self._canvases}
             out_dir.mkdir(parents=True, exist_ok=True)
             tmp = out_dir / "canvas.json.tmp"
             final = out_dir / "canvas.json"
@@ -1035,6 +1326,11 @@ class GeneratorPage(QWidget):
         (= порядок _cells, новое сверху) — НЕ через _add_cell (там insert(0)
         перевернул бы порядок). Запись, чей файл удалён с диска, пропускаем молча.
         Каждая запись обёрнута в try/except → битая запись не валит весь restore."""
+        # Сброс мультихолст-состояния: load полностью перестраивает его из файла.
+        # Иначе при смене сериала на шоу БЕЗ canvas.json остались бы секции прошлого
+        # шоу. Пусто → _ensure_canvases создаст дефолт «Холст 1» лениво при save.
+        self._canvases = []
+        self._active_canvas_id = None
         try:
             import json
             import storyboard_app as _sa
@@ -1050,36 +1346,16 @@ class GeneratorPage(QWidget):
                 data = json.loads(cj.read_text(encoding="utf-8"))
             except Exception:
                 return   # битый JSON → пустой холст, не падаем
-            cells = data.get("cells") if isinstance(data, dict) else None
+            # Миграция v1→v2 + выбор активного холста. Старый top-level "cells"
+            # оборачивается в «Холст 1» (c1) без потерь (см. _parse_canvas_data).
+            self._canvases, self._active_canvas_id = self._parse_canvas_data(data)
+            self._ensure_canvases()
+            cells = self._active_canvas().get("cells")
             if not isinstance(cells, list):
                 return
-            for meta in cells:
-                try:
-                    if not isinstance(meta, dict):
-                        continue
-                    fname = meta.get("file")
-                    if not fname:
-                        continue
-                    full = out_dir / fname
-                    if not full.exists():
-                        continue   # файл удалён юзером — пропускаем запись молча
-                    aspect = meta.get("aspect", "16:9")
-                    w, h = self._cell_wh(aspect)
-                    cell = ShimmerCell(self, w, h, aspect=aspect)
-                    cell.set_model_label(meta.get("model_label", ""))
-                    cell.set_meta(**meta)   # вернуть метаданные (иначе save затрёт)
-                    if meta.get("type") == "video":
-                        cell.set_video_placeholder(str(full))
-                    else:
-                        cell.set_image(str(full))
-                    self._cells.append(cell)   # APPEND → порядок 1:1 как в файле
-                except Exception:
-                    continue   # одна битая запись не валит весь restore
-            self._cell_count = len(self._cells)
-            if self._cells:
-                self._empty_host.hide()
-                self._grid_host.show()
-                self._relayout_grid()   # ОДИН раз в конце (не в цикле)
+            self._populate_cells(cells, out_dir)   # общий построитель (см. _switch_canvas)
+            # Путь A инвариант: живой список активного холста держим в кэше.
+            self._canvas_cells[self._active_canvas_id] = self._cells
         except Exception as e:  # noqa: BLE001 — restore необязателен, не валим страницу
             import sys
             print(f"[generator] canvas load failed: {e}", file=sys.stderr)
@@ -1087,10 +1363,14 @@ class GeneratorPage(QWidget):
     def reload_canvas(self):
         """Публичный: перечитать холст под активный сериал (для смены сериала).
         Хук в storyboard_app._on_show_changed — отдельной правкой. Рефы старого
-        шоу не релевантны → очищаем перед сменой содержимого холста."""
+        шоу не релевантны → очищаем перед сменой содержимого холста. Путь A: живые
+        плитки ВСЕХ холстов прошлого сериала тоже снести (не нужны новому сериалу)."""
         self.clear_refs()
-        self._clear_canvas()
+        self._destroy_stashed_canvas_cells()   # живые плитки НЕактивных холстов прошлого шоу
+        self._clear_canvas()                   # активные плитки + ряды + состояние
+        self._canvas_cells = {}                # кэш холстов прошлого сериала — обнулить
         self._load_canvas()
+        self._rebuild_canvas_row()   # таб-бар под холсты нового сериала
 
     def set_prompt(self, text: str):
         """Положить text в поле промпта, ЗАМЕНЯЯ текущее содержимое. Зовётся
