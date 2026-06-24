@@ -827,14 +827,21 @@ class CreateActorRefDialog(QDialog):
     (через owner_view.start_ref_generation) и закрывается с показом
     прогресса в статус-баре главного окна."""
 
-    def __init__(self, project_root: Path, actor_slug: str, display_name: str,
+    def __init__(self, project_root: Path, actor_slug: Optional[str],
+                 display_name: str,
                  photos: List[Path], status_bar=None, owner_view=None,
                  parent=None,
                  prefill_show: Optional[str] = None,
                  prefill_character: Optional[str] = None,
-                 prefill_description: Optional[str] = None):
+                 prefill_description: Optional[str] = None,
+                 custom_mode: bool = False):
         super().__init__(parent)
         self.project_root = project_root
+        # 2026-06-24 (монстры 3б-redo): custom_mode=True → диалог для
+        # нестандартного персонажа (монстра): тот же UI 1:1, но генерация
+        # без фото (text2img + ACTOR_REF_PROMPT_CUSTOM) и БЕЗ записи
+        # actors.json. actor_slug в этом режиме не используется (может быть None).
+        self.custom_mode = custom_mode
         self.actor_slug = actor_slug
         self.display_name = display_name
         self.photos = list(photos)
@@ -850,7 +857,9 @@ class CreateActorRefDialog(QDialog):
         self.owner_view = owner_view
         self._selected_variant = "simple"  # default (Базовый; «Расширенный» заглушён)
 
-        self.setWindowTitle(tr('create_ref_title', name=display_name))
+        self.setWindowTitle(
+            tr('custom_char_title') if custom_mode
+            else tr('create_ref_title', name=display_name))
         self.setModal(True)
         # 2026-05-19: адаптивный размер под parent/screen. Раньше
         # resize(640, 700) фиксированный — на 14" MBP (1512×982 logical
@@ -1089,7 +1098,12 @@ class CreateActorRefDialog(QDialog):
         что combo по умолчанию указывает на не того персонажа и реф
         прикрепляется к чужой роли."""
         try:
-            wildcard_mode = not bool(self._prefill_character)
+            # 2026-06-24 (монстры 3б-redo): в custom_mode wildcard НЕ
+            # включаем — монстр выбирает/создаёт персонажа обычным combo
+            # (как актёр без pending-запроса). Иначе пустой prefill_character
+            # ушёл бы в wildcard-ветку (placeholder + дисейбл кнопки).
+            wildcard_mode = (not bool(self._prefill_character)
+                             and not self.custom_mode)
             # 1. Сериал — выставляем по data-полю combobox'а
             if self._prefill_show:
                 for i in range(self.show_combo.count()):
@@ -1322,6 +1336,36 @@ class CreateActorRefDialog(QDialog):
             if not filename:
                 filename = character
 
+            # 2026-06-24 (монстры 3б-redo): custom_mode — генерация листа
+            # нестандартного персонажа. Тот же target_dir что у актёра
+            # (shows/<show>/refs/characters/<character>), но: text2img (без
+            # identity_anchor), ACTOR_REF_PROMPT_CUSTOM, и БЕЗ set_actor_role
+            # (actors.json синкается коллегам — не трогаем). Карточка монстра
+            # локальная (custom.json). Актёрский путь ниже НЕ затрагивается.
+            if self.custom_mode:
+                if not desc:
+                    self.status_lbl.setText(tr('create_ref_desc_placeholder'))
+                    self.desc_edit.setFocus()
+                    return
+                if self.owner_view is None:
+                    self.status_lbl.setText(tr('create_ref_failed'))
+                    return
+                prompt = _sa.ACTOR_REF_PROMPT_CUSTOM.format(description=desc)
+                target_dir = (self.project_root / "shows" / show / "refs"
+                              / "characters" / character)
+                data = self.char_combo.currentData()
+                if data == "__new__":
+                    display_label = self.new_char_edit.text().strip() or character
+                else:
+                    display_label = self.char_combo.currentText() or character
+                ok = self.owner_view.start_custom_ref_generation(
+                    character, display_label, desc, prompt, filename, target_dir)
+                if ok:
+                    self.accept()
+                else:
+                    self.status_lbl.setText(tr('create_ref_failed'))
+                return
+
             outfit_text = desc if desc else (
                 "Keep the person's appearance exactly as in the reference "
                 "images. Use the same clothing visible in the reference photos.")
@@ -1353,119 +1397,6 @@ class CreateActorRefDialog(QDialog):
                 self.display_name, target_dir, outfit_text=desc,
                 variant_id=self._selected_variant)
             # Закрываем попап — поток живёт в ActorsView, не зависит от диалога
-            self.accept()
-        except Exception:
-            traceback.print_exc()
-            self.status_lbl.setText(tr('create_ref_failed'))
-
-
-class CustomCharacterDialog(QDialog):
-    """2026-06-24 (монстры 3б): попап создания нестандартного персонажа
-    («монстра») БЕЗ фото-референса. Поля: Имя + Описание (multiline).
-    Валидирует ввод и по «Сгенерировать» закрывается, отдавая result_name /
-    result_desc — генерацию запускает ActorsView._on_add_custom_clicked
-    (slug + start_custom_ref_generation). Поток живёт на view (parent=None),
-    НЕ на диалоге → нет QThread внутри диалога, closeEvent не нужен
-    (паттерн A, ARCHITECTURE.md «parent для QThread»).
-
-    Актёрский CreateActorRefDialog НЕ затрагивается — это отдельный лёгкий
-    диалог (у монстра нет сериала / персонажа / фото)."""
-
-    def __init__(self, project_root: Path, parent=None):
-        super().__init__(parent)
-        self.project_root = project_root
-        self.result_name = ""
-        self.result_desc = ""
-
-        self.setWindowTitle(tr('custom_char_title'))
-        self.setModal(True)
-        self.setMinimumWidth(480)
-        self.setStyleSheet(
-            "QDialog { background:#15101e; }"
-            "QLabel#cr-section { color:#cfcfcf; font-size:12px;"
-            " font-weight:700; letter-spacing:1px; }"
-            "QLineEdit#cr-newchar {"
-            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
-            " color:#fff; padding:8px 10px; font-size:13px; }"
-            "QLineEdit#cr-newchar:focus { border:1px solid #6e4cc4; }"
-            "QPlainTextEdit#cr-desc {"
-            " background:#1a1424; border:1px solid #2a1f3d; border-radius:8px;"
-            " color:#fff; padding:10px; font-size:13px; }"
-            "QPlainTextEdit#cr-desc:focus { border:1px solid #6e4cc4; }"
-            "QPushButton#cr-generate { background:#6e4cc4; color:#fff;"
-            " border:none; border-radius:8px; padding:10px 22px;"
-            " font-size:14px; font-weight:600; }"
-            "QPushButton#cr-generate:hover { background:#7d5bd4; }"
-            "QPushButton#cr-generate:disabled {"
-            " background:#473463; color:#cbb8ef; }"
-            "QPushButton#cr-cancel { background:transparent; color:#aaa;"
-            " border:1px solid #3a2c52; border-radius:6px; padding:8px 16px;"
-            " font-size:13px; }"
-            "QPushButton#cr-cancel:hover { color:#fff; border-color:#5a4a82; }")
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(22, 18, 22, 18)
-        outer.setSpacing(10)
-
-        # ── Имя ──────────────────────────────────────────────────────────
-        self.name_section_lbl = QLabel(tr('custom_char_name_label'))
-        self.name_section_lbl.setObjectName("cr-section")
-        outer.addWidget(self.name_section_lbl)
-        self.name_edit = QLineEdit()
-        self.name_edit.setObjectName("cr-newchar")
-        self.name_edit.setPlaceholderText(tr('custom_char_name_placeholder'))
-        outer.addWidget(self.name_edit)
-
-        # ── Описание ─────────────────────────────────────────────────────
-        outer.addSpacing(4)
-        self.desc_section_lbl = QLabel(tr('custom_char_desc_label'))
-        self.desc_section_lbl.setObjectName("cr-section")
-        outer.addWidget(self.desc_section_lbl)
-        self.desc_edit = QPlainTextEdit()
-        self.desc_edit.setObjectName("cr-desc")
-        self.desc_edit.setPlaceholderText(tr('custom_char_desc_placeholder'))
-        self.desc_edit.setFixedHeight(150)
-        outer.addWidget(self.desc_edit)
-
-        # ── Статус + кнопки ──────────────────────────────────────────────
-        self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#ffd24d; font-size:12px;")
-        outer.addWidget(self.status_lbl)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        self.cancel_btn = QPushButton(tr('custom_char_cancel'))
-        self.cancel_btn.setObjectName("cr-cancel")
-        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(self.cancel_btn)
-        self.generate_btn = QPushButton(tr('custom_char_generate'))
-        self.generate_btn.setObjectName("cr-generate")
-        self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.generate_btn.clicked.connect(self._on_generate)
-        btn_row.addWidget(self.generate_btn)
-        outer.addLayout(btn_row)
-
-    def _on_generate(self):
-        """Валидация: имя обязательно, описание обязательно (пустое → фокус,
-        не закрывать). По успеху — запоминаем result_name/result_desc,
-        «Генерируется…» + блок кнопки, accept(). Генерацию (и прогресс на
-        карточке) запускает ActorsView после exec()."""
-        try:
-            name = self.name_edit.text().strip()
-            if not name:
-                self.status_lbl.setText(tr('custom_char_need_name'))
-                self.name_edit.setFocus()
-                return
-            desc = self.desc_edit.toPlainText().strip()
-            if not desc:
-                self.status_lbl.setText(tr('custom_char_need_desc'))
-                self.desc_edit.setFocus()
-                return
-            self.result_name = name
-            self.result_desc = desc
-            self.generate_btn.setText(tr('custom_char_generating'))
-            self.generate_btn.setEnabled(False)
             self.accept()
         except Exception:
             traceback.print_exc()

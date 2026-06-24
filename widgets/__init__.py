@@ -22,7 +22,6 @@ from widgets.actor_dialogs import (
     ActorPhotosDialog,
     CreateActorRefDialog,
     RefResultDialog,
-    CustomCharacterDialog,
 )
 from widgets.editor_widgets import (
     OverlayActionBtn,
@@ -55,7 +54,6 @@ __all__ = [
     'ActorPhotosDialog',
     'CreateActorRefDialog',
     'RefResultDialog',
-    'CustomCharacterDialog',
     # editor_widgets.py (5A)
     'OverlayActionBtn',
     'ShotCard',

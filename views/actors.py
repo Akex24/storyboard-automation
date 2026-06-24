@@ -43,7 +43,7 @@ from threads import (
 )
 from widgets import (
     AddActorDialog, ChooseActorDialog, ActorPhotosDialog,
-    CreateActorRefDialog, RefResultDialog, CustomCharacterDialog,
+    CreateActorRefDialog, RefResultDialog,
 )
 # 2026-05-17 (Этап 2): ApplyTextureDialog не реэкспортирован через
 # widgets/__init__.py — импортируем напрямую чтобы не задеть лишний файл.
@@ -909,17 +909,22 @@ class ActorsView(QWidget):
         except Exception:
             traceback.print_exc()
 
-    def start_custom_ref_generation(self, slug: str, display_name: str,
-                                    description: str) -> bool:
-        """2026-06-24 (монстры 3б): ТОНКАЯ обёртка генерации листа
-        нестандартного персонажа БЕЗ фото. Повторяет прогресс-обвязку
+    def start_custom_ref_generation(self, character_slug: str,
+                                    display_name: str, description: str,
+                                    prompt: str, output_filename: str,
+                                    target_dir: Path) -> bool:
+        """2026-06-24 (монстры 3б-redo): ТОНКАЯ обёртка генерации листа
+        нестандартного персонажа БЕЗ фото. Прогресс-обвязка 1:1 как
         start_ref_generation (бар + секунды на карточке — общий механизм
         ActorCard), НО:
           • photos=[] → GenerateActorRefThread шлёт text2img (без inputs);
-          • prompt = ACTOR_REF_PROMPT_CUSTOM.format(description=...);
-          • target_dir = actors/_custom/<slug>/ ('_'-папка к коллегам не синкается);
+          • prompt / target_dir строит диалог (custom_mode): target_dir =
+            shows/<show>/refs/characters/<character> — РОВНО как у актёра;
           • хвост _on_finished: вместо _pending_variants → _upsert_custom_character
             + refresh() (актёрский start_ref_generation НЕ трогаем).
+        Карточка монстра — ЛОКАЛЬНАЯ: метаданные в actors/_custom/custom.json
+        (slug = _make_custom_slug(character), '_'-папка к коллегам не синкается),
+        sheets[] указывают на путь рефа в папке сериала.
         Поток parent=None + ссылка в self._ref_threads (паттерн A,
         ARCHITECTURE.md «parent для QThread»). Возвращает True если стартовал.
 
@@ -927,8 +932,7 @@ class ActorsView(QWidget):
         карточки монстра нет в гриде и прогресс-бар некуда повесить; на finish
         дописываем реальный sheet_rel, на error — откат если листов нет."""
         try:
-            target_dir = self.project_root / "actors" / "_custom" / slug
-            prompt = _sa.ACTOR_REF_PROMPT_CUSTOM.format(description=description)
+            slug = self._make_custom_slug(character_slug)
             if not hasattr(self, '_ref_threads'):
                 self._ref_threads = []
             if not hasattr(self, '_active_generations'):
@@ -938,7 +942,7 @@ class ActorsView(QWidget):
             self._upsert_custom_character(slug, display_name, description, "")
 
             thread = GenerateActorRefThread(
-                slug, target_dir, [], prompt, slug, parent=None)
+                slug, target_dir, [], prompt, output_filename, parent=None)
             self._ref_threads.append(thread)
 
             self._active_generations[slug] = {
@@ -963,11 +967,12 @@ class ActorsView(QWidget):
                 c = self._cards_by_slug.get(slug)
                 if c is not None:
                     c.stop_progress()
-                # Хвост монстра: дописываем лист в custom.json (sheet_rel —
-                # относительно actors/_custom/) + перерисовываем грид.
+                # Хвост монстра: дописываем лист в custom.json. Реф лежит в
+                # папке СЕРИАЛА → sheet_rel относительно project_root (чтобы
+                # карточка на стр. Актёры нашла его на 3в, независимо от шоу).
                 try:
-                    custom_root = self.project_root / "actors" / "_custom"
-                    sheet_rel = str(Path(target_path).relative_to(custom_root))
+                    sheet_rel = str(
+                        Path(target_path).relative_to(self.project_root))
                 except Exception:
                     sheet_rel = Path(target_path).name
                 self._upsert_custom_character(
@@ -1042,19 +1047,22 @@ class ActorsView(QWidget):
             pass
 
     def _on_add_custom_clicked(self):
-        """2026-06-24 (монстры 3б): клик по карточке-плюс → диалог создания
-        нестандартного персонажа (Имя + Описание). По «Сгенерировать» строим
-        slug и запускаем генерацию листа БЕЗ фото-референса (text2img)."""
+        """2026-06-24 (монстры 3б-redo): клик по карточке-плюс → актёрский
+        CreateActorRefDialog в режиме custom_mode (монстр = персонаж сериала:
+        Описание + Сериал + Персонаж + Имя файла + Вариант, БЕЗ фото). Сериал
+        подцепляется сам через _populate_show_combo (get_current_show)."""
         try:
-            dlg = CustomCharacterDialog(self.project_root, parent=self.window())
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            name = (dlg.result_name or "").strip()
-            desc = (dlg.result_desc or "").strip()
-            if not name or not desc:
-                return
-            slug = self._make_custom_slug(name)
-            self.start_custom_ref_generation(slug, name, desc)
+            try:
+                prefill_show = _sa.get_current_show(self.project_root)
+            except Exception:
+                prefill_show = None
+            dlg = CreateActorRefDialog(
+                self.project_root, None, "",
+                [], status_bar=self.status_bar,
+                owner_view=self, parent=self,
+                prefill_show=prefill_show,
+                custom_mode=True)
+            dlg.exec()
         except Exception:
             traceback.print_exc()
 
