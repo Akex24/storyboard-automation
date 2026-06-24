@@ -204,6 +204,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QScrollArea, QFrame, QListWidget, QListWidgetItem,
     QStatusBar, QFileDialog, QMessageBox, QProgressBar, QDialog,
     QDialogButtonBox, QTabWidget, QComboBox, QPlainTextEdit, QTextEdit, QMenu,
+    QWidgetAction,
     QStackedWidget, QGridLayout, QGraphicsOpacityEffect, QLineEdit, QSizePolicy,
     QCheckBox,
 )
@@ -2097,6 +2098,41 @@ def get_block_meta(meta: Dict, ep: str, blk_n: str, lang: Optional[str] = None) 
     blocks = meta.get(ep, {}).get("blocks", {})
     raw = blocks.get(str(blk_n))
     if raw is None:
+        montage_blocks = (meta.get(ep, {}).get("montage_card", {}) or {}).get("blocks", [])
+        try:
+            target_n = int(blk_n)
+        except Exception:
+            target_n = None
+        if isinstance(montage_blocks, list) and target_n is not None:
+            for item in montage_blocks:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    item_n = int(item.get("n", -1))
+                except Exception:
+                    item_n = -1
+                if item_n != target_n:
+                    continue
+                shots = {}
+                for shot in item.get("shots", []) or []:
+                    if not isinstance(shot, dict):
+                        continue
+                    n = shot.get("n")
+                    if n is None:
+                        continue
+                    desc = (
+                        shot.get(f"description_{lang}")
+                        or shot.get("description_ru")
+                        or shot.get("description")
+                        or shot.get("scene_action")
+                        or ""
+                    )
+                    shots[str(n)] = _pick_lang(desc, lang)
+                return {
+                    "name": _pick_lang(item.get("name", ""), lang),
+                    "shots": shots,
+                }
+    if raw is None:
         return {"name": "", "shots": {}}
     if isinstance(raw, str):
         return {"name": raw, "shots": {}}
@@ -2993,6 +3029,97 @@ QPushButton:hover           { background: #2c2240; border-color: #3d2f55; }
 QPushButton:pressed         { background: #1c1626; }
 QPushButton:disabled        { background: #181222; color: #444; border-color: #221a30; }
 
+QPushButton#nav-select {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    color: #ffffff;
+    padding: 0 10px;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+}
+QPushButton#nav-select:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.18);
+}
+QPushButton#nav-select[empty="true"] {
+    color: rgba(255, 255, 255, 0.48);
+}
+QPushButton#nav-select[active="true"] {
+    background: rgba(228, 52, 74, 0.15);
+    border-color: rgba(228, 52, 74, 0.40);
+}
+QPushButton#nav-arrow {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.78);
+    padding: 0;
+    font-size: 16px;
+    font-weight: 700;
+}
+QPushButton#nav-arrow:hover {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: rgba(255, 255, 255, 0.18);
+    color: #ffffff;
+}
+QPushButton#nav-arrow:disabled {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.09);
+    color: rgba(255, 255, 255, 0.45);
+}
+QLabel#nav-label {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 13px;
+    font-weight: 500;
+}
+QFrame#nav-popup {
+    background: #171220;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 10px;
+}
+QWidget#nav-popup-item-wrap {
+    background: transparent;
+}
+QLabel#nav-popup-title {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 11px;
+    font-weight: 700;
+}
+QPushButton#nav-popup-item {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 7px;
+    color: rgba(255, 255, 255, 0.72);
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    min-height: 26px;
+}
+QPushButton#nav-popup-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+QPushButton#nav-popup-item[active="true"] {
+    background: rgba(228, 52, 74, 0.18);
+    border-color: rgba(228, 52, 74, 0.45);
+    color: #ffffff;
+}
+QPushButton#nav-popup-add {
+    background: rgba(228, 52, 74, 0.10);
+    border: 1px solid rgba(228, 52, 74, 0.28);
+    border-radius: 7px;
+    color: #e4344a;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPushButton#nav-popup-add:hover {
+    background: rgba(228, 52, 74, 0.18);
+    border-color: rgba(228, 52, 74, 0.42);
+}
+
 /* QPushButton#save — нейтральная action-кнопка («Отправить» в чате,
    «Сохранить сториборд» внизу редактора). 2026-05-08 редизайн Этап 6:
    LUMZ-стиль — приглушённый фон, тонкая граница, белый текст. */
@@ -3327,6 +3454,8 @@ QFrame#header-tabs {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.04);
     border-radius: 8px;
+    min-height: 34px;
+    max-height: 34px;
 }
 /* Lang-wrapper — невидимая обёртка вокруг кнопки переключения языка.
    Те же geometric параметры (padding 3+3 + 1px border) что у
@@ -3342,7 +3471,9 @@ QFrame#lang-wrapper {
 QPushButton#tab-pill {
     background: transparent; color: rgba(255, 255, 255, 0.55);
     border: none; border-radius: 6px;
-    padding: 5px 14px; font-size: 12px;
+    padding: 0 14px; font-size: 12px;
+    min-height: 28px;
+    max-height: 28px;
 }
 QPushButton#tab-pill:hover {
     color: rgba(255, 255, 255, 0.85);
@@ -3370,11 +3501,15 @@ QFrame#aspect-seg {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.04);
     border-radius: 8px;
+    min-height: 34px;
+    max-height: 34px;
 }
 QPushButton#aspect-seg-btn {
     background: transparent; color: rgba(255, 255, 255, 0.55);
     border: none; border-radius: 6px;
-    padding: 5px 12px; font-size: 12px; font-weight: 600;
+    padding: 0 12px; font-size: 12px; font-weight: 600;
+    min-height: 28px;
+    max-height: 28px;
 }
 QPushButton#aspect-seg-btn:hover { color: rgba(255, 255, 255, 0.85); }
 QPushButton#aspect-seg-btn[active="true"] { background: #e63946; color: #ffffff; }
@@ -3412,7 +3547,7 @@ QPushButton#episode-title-btn {
     font-size: 11px; color: #d4a256; font-weight: 500;
     background: rgba(212, 162, 86, 0.10);
     border: 1px solid rgba(212, 162, 86, 0.30);
-    border-radius: 6px; padding: 5px 12px;
+    border-radius: 8px; padding: 0 12px;
     text-align: left;
     letter-spacing: 0.3px;
 }
@@ -7496,12 +7631,14 @@ class MainWindow(QMainWindow):
         self._aspect_seg_buttons: Dict[str, QPushButton] = {}
         aspect_seg = QFrame()
         aspect_seg.setObjectName("aspect-seg")
+        aspect_seg.setFixedHeight(34)
         as_lay = QHBoxLayout(aspect_seg)
         as_lay.setContentsMargins(3, 3, 3, 3)
         as_lay.setSpacing(0)
         for _code in ("9:16", "16:9"):
             _b = QPushButton(_code)
             _b.setObjectName("aspect-seg-btn")
+            _b.setFixedHeight(28)
             _b.setCursor(Qt.CursorShape.PointingHandCursor)
             _b.setProperty("active", False)
             _b.clicked.connect(
@@ -7521,6 +7658,7 @@ class MainWindow(QMainWindow):
         self._header_tab_buttons: List[QPushButton] = []
         tabs_group = QFrame()
         tabs_group.setObjectName("header-tabs")
+        tabs_group.setFixedHeight(34)
         tg_lay = QHBoxLayout(tabs_group)
         tg_lay.setContentsMargins(3, 3, 3, 3)
         tg_lay.setSpacing(0)
@@ -7534,6 +7672,7 @@ class MainWindow(QMainWindow):
                               (1, 'tab_actors'), (2, 'tab_settings')):
             btn = QPushButton(tr(key))
             btn.setObjectName("tab-pill")
+            btn.setFixedHeight(28)
             btn.setProperty("active", page_idx == 0)
             if key == 'tab_generator':
                 btn.setProperty("accent", True)   # янтарная акцентная pill
@@ -7992,6 +8131,12 @@ class MainWindow(QMainWindow):
                 self._chat_pill.setText(tr('chat_pill'))
             except Exception:
                 pass
+        if hasattr(self, '_refs_pill') and self._refs_pill is not None:
+            try:
+                self._refresh_refs_pill_text()
+            except Exception:
+                pass
+        self._refresh_compact_nav()
         # Кнопка «Удалить эпизод» — text НЕ устанавливаем (используем
         # SVG-иконку через setIcon, см. `_build_editor_tab`). Раньше
         # tr('delete_ep_btn') возвращал '🗑' и рисовался ПОВЕРХ SVG —
@@ -8127,6 +8272,92 @@ class MainWindow(QMainWindow):
         aub_lay.addWidget(self.app_update_btn)
         lay.addWidget(self.app_update_banner)
 
+        # 2026-06-24 Codex: компактная навигация редактора.
+        # Старые строки пилюль остаются ниже как hidden/service widgets, чтобы
+        # не ломать существующую логику выбора, индикаторов и hotfix'ов.
+        self._compact_nav_enabled = True
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 0)
+        nav_row.setSpacing(8)
+        self.compact_nav_layout = nav_row
+        NAV_H = 34
+
+        self.nav_show_label = QLabel(tr('series').rstrip(':'))
+        self.nav_show_label.setObjectName("nav-label")
+        nav_row.addWidget(self.nav_show_label)
+        self.show_select_btn = QPushButton("")
+        self.show_select_btn.setObjectName("nav-select")
+        self.show_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.show_select_btn.setMinimumWidth(190)
+        self.show_select_btn.setFixedHeight(NAV_H)
+        self.show_select_btn.clicked.connect(self._show_show_picker)
+        nav_row.addWidget(self.show_select_btn)
+
+        nav_row.addSpacing(18)
+        self.nav_ep_label = QLabel(tr('episode').rstrip(':'))
+        self.nav_ep_label.setObjectName("nav-label")
+        nav_row.addWidget(self.nav_ep_label)
+        self.ep_prev_btn = QPushButton("‹")
+        self.ep_prev_btn.setObjectName("nav-arrow")
+        self.ep_prev_btn.setFixedSize(24, NAV_H)
+        self.ep_prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ep_prev_btn.clicked.connect(lambda: self._step_episode(-1))
+        nav_row.addWidget(self.ep_prev_btn)
+        self.ep_select_btn = QPushButton("")
+        self.ep_select_btn.setObjectName("nav-select")
+        self.ep_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ep_select_btn.setFixedSize(58, NAV_H)
+        self.ep_select_btn.clicked.connect(self._show_episode_picker)
+        nav_row.addWidget(self.ep_select_btn)
+        self.ep_next_btn = QPushButton("›")
+        self.ep_next_btn.setObjectName("nav-arrow")
+        self.ep_next_btn.setFixedSize(24, NAV_H)
+        self.ep_next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ep_next_btn.clicked.connect(lambda: self._step_episode(1))
+        nav_row.addWidget(self.ep_next_btn)
+
+        nav_row.addSpacing(18)
+        self.nav_block_label = QLabel(tr('block'))
+        self.nav_block_label.setObjectName("nav-label")
+        nav_row.addWidget(self.nav_block_label)
+        self.block_prev_btn = QPushButton("‹")
+        self.block_prev_btn.setObjectName("nav-arrow")
+        self.block_prev_btn.setFixedSize(24, NAV_H)
+        self.block_prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.block_prev_btn.clicked.connect(lambda: self._step_block(-1))
+        nav_row.addWidget(self.block_prev_btn)
+        self.block_select_btn = QPushButton("")
+        self.block_select_btn.setObjectName("nav-select")
+        self.block_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.block_select_btn.setFixedSize(86, NAV_H)
+        self.block_select_btn.clicked.connect(self._show_block_picker)
+        nav_row.addWidget(self.block_select_btn)
+        self.block_next_btn = QPushButton("›")
+        self.block_next_btn.setObjectName("nav-arrow")
+        self.block_next_btn.setFixedSize(24, NAV_H)
+        self.block_next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.block_next_btn.clicked.connect(lambda: self._step_block(1))
+        nav_row.addWidget(self.block_next_btn)
+
+        self._refs_pill = QPushButton(tr('refs'))
+        self._refs_pill.setObjectName("pill-refs")
+        self._refs_pill.setFixedHeight(NAV_H)
+        self._refs_pill.setProperty("active", False)
+        self._refs_pill.setProperty("has_notice", False)
+        self._refs_pill.setProperty("pulse_on", False)
+        self._refs_pill.clicked.connect(self._show_refs_view)
+        nav_row.addWidget(self._refs_pill)
+
+        self._chat_pill = QPushButton(tr('chat_pill'))
+        self._chat_pill.setObjectName("pill-chat")
+        self._chat_pill.setFixedHeight(NAV_H)
+        self._chat_pill.setProperty("active", False)
+        self._chat_pill.clicked.connect(self._show_chat_view)
+        nav_row.addWidget(self._chat_pill)
+
+        nav_row.addStretch()
+        lay.addLayout(nav_row)
+
         # Селектор сериала
         show_row = QHBoxLayout()
         show_row.setSpacing(10)
@@ -8172,8 +8403,12 @@ class MainWindow(QMainWindow):
         self.new_show_btn.clicked.connect(self._on_new_show)
         show_row.addWidget(self.new_show_btn)
 
+        self.show_lbl.hide()
+        self.show_combo.hide()
+        self.new_show_btn.hide()
         show_row.addStretch()
-        lay.addLayout(show_row)
+        if not getattr(self, '_compact_nav_enabled', False):
+            lay.addLayout(show_row)
 
         # Эпизоды + название/длительность
         ep_row = QHBoxLayout()
@@ -8225,7 +8460,7 @@ class MainWindow(QMainWindow):
             " border: 1px solid rgba(228, 52, 74, 0.25);"
             " border-radius: 8px;"
             " color: #e4344a;"
-            " padding: 8px 14px;"
+            " padding: 0 14px;"
             " font-size: 12px; font-weight: 500;"
             "}"
             "QPushButton#compile-ep-btn:hover {"
@@ -8237,9 +8472,13 @@ class MainWindow(QMainWindow):
             " color: rgba(228, 52, 74, 0.55);"
             " background: rgba(228, 52, 74, 0.06); }"
         )
+        self.compile_ep_btn.setFixedHeight(NAV_H)
         self.compile_ep_btn.setVisible(False)
         self.compile_ep_btn.clicked.connect(self._on_compile_episode_btn)
-        ep_row.addWidget(self.compile_ep_btn)
+        if getattr(self, '_compact_nav_enabled', False):
+            self.compact_nav_layout.addWidget(self.compile_ep_btn)
+        else:
+            ep_row.addWidget(self.compile_ep_btn)
         # 2026-05-07: title — кликабельная кнопка. Клик → попап с
         # оригинальным сценарием эпизода (из shows/<slug>/scenarios/epNN.txt).
         self.ep_title_label = QPushButton("")
@@ -8248,11 +8487,20 @@ class MainWindow(QMainWindow):
         self.ep_title_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ep_title_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.ep_title_label.clicked.connect(self._on_ep_title_clicked)
-        ep_row.addWidget(self.ep_title_label)
+        if getattr(self, '_compact_nav_enabled', False):
+            self.ep_title_label.setFixedHeight(NAV_H)
+            self.compact_nav_layout.addWidget(self.ep_title_label)
+        else:
+            ep_row.addWidget(self.ep_title_label)
         self.ep_dur_label = QLabel("")
         self.ep_dur_label.setObjectName("episode-duration")
         ep_row.addWidget(self.ep_dur_label)
-        lay.addLayout(ep_row)
+        if getattr(self, '_compact_nav_enabled', False):
+            self.ep_label.hide()
+            self.ep_pills_container.hide()
+            self.ep_dur_label.hide()
+        if not getattr(self, '_compact_nav_enabled', False):
+            lay.addLayout(ep_row)
 
         # 2026-05-05 v3: drop-зона переехала внутрь NewEpisodeView (форма
         # «Новый эпизод»). На стартовом экране редактора её больше нет —
@@ -8284,7 +8532,7 @@ class MainWindow(QMainWindow):
         # Раньше был emoji `🗑` — выглядел разнокалиберно с остальным UI.
         self.delete_ep_btn = QPushButton("")
         self.delete_ep_btn.setObjectName("delete-episode-btn")
-        self.delete_ep_btn.setFixedSize(34, 34)
+        self.delete_ep_btn.setFixedSize(NAV_H, NAV_H)
         self.delete_ep_btn.setToolTip(tr('delete_ep_btn_tooltip'))
         self.delete_ep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_ep_btn.setEnabled(False)
@@ -8303,8 +8551,13 @@ class MainWindow(QMainWindow):
             # Fallback на emoji если SVG не загрузился (PyInstaller edge-case)
             self.delete_ep_btn.setText("🗑")
         self.delete_ep_btn.clicked.connect(self._on_delete_episode_clicked)
-        blk_row.addWidget(self.delete_ep_btn)
-        lay.addLayout(blk_row)
+        if getattr(self, '_compact_nav_enabled', False):
+            self.block_pills_container.hide()
+            self.compact_nav_layout.addWidget(self.delete_ep_btn)
+        else:
+            blk_row.addWidget(self.delete_ep_btn)
+        if not getattr(self, '_compact_nav_enabled', False):
+            lay.addLayout(blk_row)
 
         # Заголовок блока («КАМЕРА ЛОРЫ ~8с») + кнопка Seedance справа
         title_row = QHBoxLayout()
@@ -9676,6 +9929,215 @@ class MainWindow(QMainWindow):
         if not shows:
             self.show_combo.addItem(tr('no_shows'), userData=None)
         self.show_combo.blockSignals(False)
+        self._refresh_compact_nav()
+
+    def _set_nav_button_text(self, btn: QPushButton, prefix: str, value: str = "", empty: bool = False):
+        """Small helper for compact editor navigation buttons."""
+        if btn is None:
+            return
+        text = f"{value} ▾" if value else "— ▾"
+        btn.setText(text)
+        btn.setProperty("empty", bool(empty))
+        btn.style().unpolish(btn); btn.style().polish(btn)
+
+    def _episode_display_label(self, ep: Optional[str]) -> str:
+        if not ep:
+            return ""
+        m = re.match(r'ep(\d+)', ep)
+        return f"{int(m.group(1)):02d}" if m else ep
+
+    def _block_display_label(self, block_name: Optional[str]) -> str:
+        if not block_name:
+            return ""
+        m = re.match(r'.*_block_(\d+)', block_name)
+        return f"{tr('block')} {m.group(1)}" if m else block_name
+
+    def _refresh_compact_nav(self):
+        """Refreshes compact selector labels without changing selection."""
+        if not getattr(self, '_compact_nav_enabled', False):
+            return
+        try:
+            show_display = ""
+            if self._current_show:
+                show_display = show_manager.display_name_for(
+                    self._project_root, self._current_show)
+            self._set_nav_button_text(
+                getattr(self, 'show_select_btn', None),
+                tr('series').rstrip(':'),
+                show_display or tr('no_shows'),
+                empty=not bool(self._current_show),
+            )
+            self._set_nav_button_text(
+                getattr(self, 'ep_select_btn', None),
+                tr('episode').rstrip(':'),
+                self._episode_display_label(getattr(self, '_current_episode', None))
+                    or tr('pill_new_episode_title'),
+                empty=not bool(getattr(self, '_current_episode', None)),
+            )
+            self._set_nav_button_text(
+                getattr(self, 'block_select_btn', None),
+                tr('block'),
+                self._block_display_label(getattr(self, 'current_block', None))
+                    or "—",
+                empty=not bool(getattr(self, 'current_block', None)),
+            )
+            if hasattr(self, 'nav_show_label'):
+                self.nav_show_label.setText(tr('series').rstrip(':'))
+            if hasattr(self, 'nav_ep_label'):
+                self.nav_ep_label.setText(tr('episode').rstrip(':'))
+            if hasattr(self, 'nav_block_label'):
+                self.nav_block_label.setText(tr('block'))
+            eps = list_episodes() if self._current_show else []
+            ep_idx = eps.index(self._current_episode) if self._current_episode in eps else -1
+            for btn_name, enabled in (
+                    ('ep_prev_btn', ep_idx > 0),
+                    ('ep_next_btn', ep_idx >= 0 and ep_idx < len(eps) - 1)):
+                btn = getattr(self, btn_name, None)
+                if btn is not None:
+                    btn.setEnabled(enabled)
+            blocks = (list_blocks_for_episode(self._current_episode)
+                      if self._current_episode else [])
+            blk_idx = (blocks.index(self.current_block)
+                       if self.current_block in blocks else -1)
+            for btn_name, enabled in (
+                    ('block_prev_btn', blk_idx > 0),
+                    ('block_next_btn', blk_idx >= 0 and blk_idx < len(blocks) - 1)):
+                btn = getattr(self, btn_name, None)
+                if btn is not None:
+                    btn.setEnabled(enabled)
+        except Exception:
+            traceback.print_exc()
+
+    def _step_episode(self, delta: int):
+        eps = list_episodes() if self._current_show else []
+        if not eps or self._current_episode not in eps:
+            return
+        idx = eps.index(self._current_episode) + delta
+        if 0 <= idx < len(eps):
+            self._select_episode(eps[idx])
+
+    def _step_block(self, delta: int):
+        if not self._current_episode:
+            return
+        blocks = list_blocks_for_episode(self._current_episode)
+        if not blocks or self.current_block not in blocks:
+            return
+        idx = blocks.index(self.current_block) + delta
+        if 0 <= idx < len(blocks):
+            self._select_block(blocks[idx])
+
+    def _show_nav_menu(self, anchor: QPushButton, width: int, title: str, builder):
+        """Builds a QMenu with a custom QWidget body; it overlays the UI."""
+        menu = QMenu(self)
+        menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, False)
+        menu.setStyleSheet(
+            "QMenu { background: transparent; border: none; padding: 0; }")
+
+        frame = QFrame()
+        frame.setObjectName("nav-popup")
+        frame.setMinimumWidth(width)
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(12)
+        label = QLabel(title)
+        label.setObjectName("nav-popup-title")
+        v.addWidget(label)
+        builder(v, menu)
+
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(frame)
+        menu.addAction(action)
+        pos = anchor.mapToGlobal(QPoint(0, anchor.height() + 6))
+        menu.exec(pos)
+
+    def _nav_item_wrap(self, btn: QPushButton, h_margin: int = 0, v_margin: int = 4) -> QWidget:
+        wrap = QWidget()
+        wrap.setObjectName("nav-popup-item-wrap")
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(h_margin, v_margin, h_margin, v_margin)
+        lay.setSpacing(0)
+        lay.addWidget(btn)
+        return wrap
+
+    def _show_show_picker(self):
+        shows = list_shows(self._project_root)
+
+        def build(v, menu):
+            for slug in shows:
+                display = show_manager.display_name_for(self._project_root, slug)
+                btn = QPushButton(display)
+                btn.setObjectName("nav-popup-item")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setMinimumHeight(38)
+                btn.setProperty("active", slug == self._current_show)
+                btn.clicked.connect(lambda _, s=slug: (menu.close(), self._on_show_changed(s)))
+                v.addWidget(self._nav_item_wrap(btn, v_margin=3))
+            add_btn = QPushButton("+ " + tr('new_show_btn_tooltip'))
+            add_btn.setObjectName("nav-popup-add")
+            add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            add_btn.setMinimumHeight(40)
+            add_btn.clicked.connect(lambda: (menu.close(), self._on_new_show()))
+            v.addWidget(self._nav_item_wrap(add_btn, v_margin=5))
+
+        self._show_nav_menu(
+            self.show_select_btn, 280, tr('series').rstrip(':'), build)
+
+    def _show_episode_picker(self):
+        eps = list_episodes() if self._current_show else []
+
+        def build(v, menu):
+            grid_w = QWidget()
+            grid = QGridLayout(grid_w)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(12)
+            grid.setVerticalSpacing(10)
+            cols = 6
+            for i, ep in enumerate(eps):
+                btn = QPushButton(self._episode_display_label(ep))
+                btn.setObjectName("nav-popup-item")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setMinimumSize(62, 40)
+                btn.setProperty("active", ep == self._current_episode)
+                btn.clicked.connect(lambda _, e=ep: (menu.close(), self._select_episode(e)))
+                grid.addWidget(self._nav_item_wrap(btn, v_margin=3), i // cols, i % cols)
+            v.addWidget(grid_w)
+            add_btn = QPushButton("+ " + tr('pill_new_episode_tip'))
+            add_btn.setObjectName("nav-popup-add")
+            add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            add_btn.setMinimumHeight(42)
+            add_btn.clicked.connect(lambda: (menu.close(), self._show_new_episode_view()))
+            v.addWidget(self._nav_item_wrap(add_btn, v_margin=5))
+
+        self._show_nav_menu(
+            self.ep_select_btn, 320, tr('episode').rstrip(':'), build)
+
+    def _show_block_picker(self):
+        blocks = (list_blocks_for_episode(self._current_episode)
+                  if self._current_episode else [])
+
+        def build(v, menu):
+            grid_w = QWidget()
+            grid = QGridLayout(grid_w)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(12)
+            grid.setVerticalSpacing(10)
+            cols = 4
+            for i, blk in enumerate(blocks):
+                btn = QPushButton(self._block_display_label(blk))
+                btn.setObjectName("nav-popup-item")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setMinimumSize(88, 40)
+                btn.setProperty("active", blk == self.current_block)
+                btn.clicked.connect(lambda _, b=blk: (menu.close(), self._select_block(b)))
+                grid.addWidget(self._nav_item_wrap(btn, v_margin=3), i // cols, i % cols)
+            if not blocks:
+                empty = QLabel("—")
+                empty.setObjectName("nav-popup-title")
+                grid.addWidget(empty, 0, 0)
+            v.addWidget(grid_w)
+
+        self._show_nav_menu(
+            self.block_select_btn, 300, tr('block'), build)
 
     def _on_show_changed_idx(self, idx: int):
         """Слот currentIndexChanged. Извлекает slug из userData."""
@@ -9957,6 +10419,7 @@ class MainWindow(QMainWindow):
 
         if not self._current_show:
             self.ep_title_label.setText(tr('no_shows'))
+            self.ep_title_label.setVisible(False)
             self.ep_dur_label.setText("")
             if hasattr(self, 'delete_ep_btn'):
                 self.delete_ep_btn.setEnabled(False)
@@ -9971,6 +10434,7 @@ class MainWindow(QMainWindow):
             if getattr(self, 'scenario_drop_zone', None) is not None:
                 self.scenario_drop_zone.hide()  # без сериала прятаем
             self._populate_blocks()
+            self._refresh_compact_nav()
             return
 
         eps = list_episodes()
@@ -10061,6 +10525,7 @@ class MainWindow(QMainWindow):
                 'no_episodes',
                 show=show_manager.display_name_for(self._project_root, self._current_show),
             ))
+            self.ep_title_label.setVisible(False)
             self.ep_dur_label.setText("")
             if hasattr(self, 'delete_ep_btn'):
                 self.delete_ep_btn.setEnabled(False)
@@ -10077,6 +10542,7 @@ class MainWindow(QMainWindow):
             self._refresh_episode_pill_indicators()
         except Exception:
             traceback.print_exc()
+        self._refresh_compact_nav()
 
     def _episode_pipeline_state(self, ep_id: str):
         """v1.0.88 (Stage 10): возвращает (state, last_completed_stage|None)
@@ -10296,6 +10762,7 @@ class MainWindow(QMainWindow):
         title = get_episode_title(self._meta, ep) or ep.upper()
         dur = episode_total_duration(ep)
         self.ep_title_label.setText(title)
+        self.ep_title_label.setVisible(True)
         self.ep_dur_label.setText(f"{dur}с" if dur else "")
         # Активируем кнопку удаления только когда есть эпизод
         if hasattr(self, 'delete_ep_btn'):
@@ -10304,6 +10771,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'compile_ep_btn'):
             self.compile_ep_btn.setVisible(True)
         self._populate_blocks()
+        self._refresh_compact_nav()
         # Восстанавливаем view (refs/chat) если был не на shots.
         # _populate_blocks по умолчанию переключил content_stack на блок 0
         # (shots) — для prev_view='shots' это и нужно. Иначе перебиваем.
@@ -10684,9 +11152,15 @@ class MainWindow(QMainWindow):
             except Exception:
                 traceback.print_exc()
             event.accept()
+            app = QApplication.instance()
+            if app is not None:
+                QTimer.singleShot(0, app.quit)
         except Exception:
             traceback.print_exc()
             event.accept()
+            app = QApplication.instance()
+            if app is not None:
+                QTimer.singleShot(0, app.quit)
 
     def _graceful_shutdown_all_threads(self) -> None:
         """2026-05-11 (v1.0.45): корректно останавливает все QThread'ы
@@ -11075,7 +11549,9 @@ class MainWindow(QMainWindow):
         """
         self._clear_layout(self.block_pills_layout)
         self._block_pills = {}
-        self._refs_pill = None
+        compact_nav = getattr(self, '_compact_nav_enabled', False)
+        if not compact_nav:
+            self._refs_pill = None
 
         if not self._current_episode:
             self.current_block = None
@@ -11091,6 +11567,33 @@ class MainWindow(QMainWindow):
                 self.content_stack.setCurrentIndex(0)
             self.save_btn.show()
             self.save_btn.setEnabled(False)
+            self._refresh_compact_nav()
+            return
+
+        if compact_nav:
+            blocks = list_blocks_for_episode(self._current_episode)
+            if self._refs_pill is not None:
+                self._refs_pill.setText(tr('refs'))
+                self._refs_pill.setProperty("active", False)
+                self._refs_pill.style().unpolish(self._refs_pill)
+                self._refs_pill.style().polish(self._refs_pill)
+            if self._chat_pill is not None:
+                self._chat_pill.setText(tr('chat_pill'))
+                self._chat_pill.setProperty("active", False)
+                self._chat_pill.style().unpolish(self._chat_pill)
+                self._chat_pill.style().polish(self._chat_pill)
+            if self._pending_ref_notices:
+                self._set_refs_pill_notice(True)
+            if blocks:
+                prev = self.current_block if self.current_block in blocks else blocks[0]
+                self._select_block(prev)
+            else:
+                self.current_block = None
+                for card in self.shot_cards:
+                    card.set_shot_info(dict(shot_num=1, duration="", description="", is_blank=True))
+                    card.set_image(None)
+                self._show_refs_view()
+            self._refresh_compact_nav()
             return
 
         # 2026-05-22: сетка по 9 блок-пилюль в строке. Refs/Chat пилюли
@@ -11204,6 +11707,7 @@ class MainWindow(QMainWindow):
             self.content_stack.setCurrentIndex(0)
             self.save_btn.show()
         self._display_block(name)
+        self._refresh_compact_nav()
         self._clear_status_now()
         # fade-in ТОЛЬКО при реальном переходе на другой блок
         if hasattr(self, 'content_stack') and not same_block:
@@ -11498,6 +12002,7 @@ class MainWindow(QMainWindow):
         self.content_stack.setCurrentIndex(1)
         self._refresh_stop_btn()
         self.save_btn.hide()
+        self._refresh_compact_nav()
         self._clear_status_now()
         fade_in_widget(self.content_stack, duration=260)
 
@@ -11566,6 +12071,7 @@ class MainWindow(QMainWindow):
         self.content_stack.setCurrentIndex(2)
         self._refresh_stop_btn()
         self.save_btn.hide()
+        self._refresh_compact_nav()
         self._clear_status_now()
         fade_in_widget(self.content_stack, duration=260)
 
@@ -11614,6 +12120,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'block_refs_btn'):
             self.block_refs_btn.setVisible(False)
         self.ep_title_label.setText(tr('new_ep_title'))
+        self.ep_title_label.setVisible(False)
         self.ep_dur_label.setText("")
         # Кнопка удаления неактивна для виртуального «нового» эпизода
         if hasattr(self, 'delete_ep_btn'):
@@ -11624,6 +12131,7 @@ class MainWindow(QMainWindow):
         self.content_stack.setCurrentIndex(3)
         self._refresh_stop_btn()
         self.save_btn.hide()
+        self._refresh_compact_nav()
         self._clear_status_now()
         fade_in_widget(self.content_stack, duration=260)
 
@@ -12349,6 +12857,8 @@ class MainWindow(QMainWindow):
         """Обновляет пилюлю блока: текст (точки если идёт генерация) + property `unseen`."""
         btn = self._block_pills.get(block_name)
         if btn is None:
+            self._refresh_compact_nav()
+            self._refresh_stop_btn()
             return
         has_active = (
             any(b == block_name for (b, _) in self._active_regens.keys())
@@ -12360,6 +12870,7 @@ class MainWindow(QMainWindow):
         btn.setText(self._format_block_label(block_name))
         btn.setProperty("unseen", has_unseen)
         btn.style().unpolish(btn); btn.style().polish(btn)
+        self._refresh_compact_nav()
         self._refresh_stop_btn()
 
     def _refresh_stop_btn(self):
@@ -18636,6 +19147,7 @@ def main():
     # _init_studio_file_logging выше попадёт в runtime.log.
     apply_proxy_from_settings()
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("Storyboard Studio")
     app.setOrganizationName(APP_ORG)
     # 2026-05-08: платформо-зависимый шрифт-стек чтобы Qt не варнил
