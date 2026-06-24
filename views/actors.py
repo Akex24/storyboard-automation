@@ -43,7 +43,7 @@ from threads import (
 )
 from widgets import (
     AddActorDialog, ChooseActorDialog, ActorPhotosDialog,
-    CreateActorRefDialog, RefResultDialog,
+    CreateActorRefDialog, RefResultDialog, CustomCharacterDialog,
 )
 # 2026-05-17 (Этап 2): ApplyTextureDialog не реэкспортирован через
 # widgets/__init__.py — импортируем напрямую чтобы не задеть лишний файл.
@@ -737,12 +737,22 @@ class ActorsView(QWidget):
         # обычно пуст (стора ещё нет) — это каркас под 3б/3в.
         next_idx = len(slugs)
         for m in monsters:
+            mslug = m['slug']
             mcard = ActorCard(
-                m['slug'], m['display_name'], m['photos'],
+                mslug, m['display_name'], m['photos'],
                 is_admin=self._is_admin, card_width=self._card_width,
                 generated_refs_count=len(m.get('sheets') or []),
                 pending_count=0)
             mcard.clicked.connect(self._on_custom_card_clicked)
+            # 2026-06-24 (монстры 3б): регистрируем карточку монстра в
+            # _cards_by_slug — без этого общий прогресс-механизм ActorCard
+            # (бар + счётчик секунд) не найдёт карточку во время генерации.
+            # Зеркало актёрского цикла выше (восстановление active_gen).
+            self._cards_by_slug[mslug] = mcard
+            active_gen = getattr(self, '_active_generations', {}).get(mslug)
+            if active_gen is not None:
+                mcard.start_progress(active_gen.get('label'))
+                mcard._gen_started_at = active_gen.get('started_at')
             r, c = divmod(next_idx, cols)
             self.grid.addWidget(mcard, r, c)
             next_idx += 1
@@ -801,6 +811,197 @@ class ActorsView(QWidget):
             traceback.print_exc()
         return out
 
+    def _make_custom_slug(self, name: str) -> str:
+        """2026-06-24 (монстры 3б): slug нестандартного персонажа из имени.
+        База — актёрский slugify (транслит RU→EN), + суффикс _2/_3 при
+        коллизии С КЛЮЧАМИ custom.json И с папками actors/_custom/<slug>/.
+        Зеркалит логику create_actor (storyboard_app). Cross-platform:
+        pathlib.Path + json, без subprocess/shell."""
+        base_slug = _sa.slugify_actor_name(name)
+        custom_root = self.project_root / "actors" / "_custom"
+        taken = set()
+        try:
+            meta_path = custom_root / "custom.json"
+            if meta_path.is_file():
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    taken.update(data.keys())
+        except Exception:
+            traceback.print_exc()
+        candidate = base_slug
+        i = 2
+        while candidate in taken or (custom_root / candidate).exists():
+            candidate = f"{base_slug}_{i}"
+            i += 1
+        return candidate
+
+    def _upsert_custom_character(self, slug: str, display_name: str,
+                                 description: str, sheet_rel: str) -> None:
+        """2026-06-24 (монстры 3б): upsert записи монстра в
+        actors/_custom/custom.json. sheet_rel (если непустой) добавляется в
+        sheets[]. portrait НЕ пишем (отложено на 3в). Атомарная запись
+        (temp + os.replace) — cross-platform (Mac/Win). Битый/отсутствующий
+        JSON → стартуем с {}. Никогда не валит вызывающий flow."""
+        import os
+        from datetime import datetime as _dt
+        try:
+            custom_root = self.project_root / "actors" / "_custom"
+            custom_root.mkdir(parents=True, exist_ok=True)
+            meta_path = custom_root / "custom.json"
+            data = {}
+            if meta_path.is_file():
+                try:
+                    loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except Exception:
+                    data = {}
+            rec = data.get(slug)
+            if not isinstance(rec, dict):
+                rec = {"display_name": display_name, "description": description,
+                       "sheets": [],
+                       "created": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+            sheets = rec.get("sheets")
+            if not isinstance(sheets, list):
+                sheets = []
+            if sheet_rel and sheet_rel not in sheets:
+                sheets.append(sheet_rel)
+            rec["sheets"] = sheets
+            rec["display_name"] = display_name
+            rec["description"] = description
+            rec.setdefault("created", _dt.now().strftime("%Y-%m-%d %H:%M:%S"))
+            data[slug] = rec
+            tmp_path = meta_path.with_suffix(".json.tmp")
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            os.replace(str(tmp_path), str(meta_path))
+        except Exception:
+            traceback.print_exc()
+
+    def _delete_custom_character(self, slug: str,
+                                 only_if_empty: bool = False) -> None:
+        """2026-06-24 (монстры 3б): удаляет запись монстра из custom.json.
+        only_if_empty=True → удаляет лишь когда sheets пуст (откат
+        placeholder-записи после неудачной ПЕРВОЙ генерации, чтобы не
+        оставлять «призрак»-карточку без листов). Атомарно (temp+os.replace)."""
+        import os
+        try:
+            custom_root = self.project_root / "actors" / "_custom"
+            meta_path = custom_root / "custom.json"
+            if not meta_path.is_file():
+                return
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                return
+            if not isinstance(data, dict) or slug not in data:
+                return
+            rec = data.get(slug) or {}
+            if only_if_empty and (rec.get("sheets") or []):
+                return
+            del data[slug]
+            tmp_path = meta_path.with_suffix(".json.tmp")
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            os.replace(str(tmp_path), str(meta_path))
+        except Exception:
+            traceback.print_exc()
+
+    def start_custom_ref_generation(self, slug: str, display_name: str,
+                                    description: str) -> bool:
+        """2026-06-24 (монстры 3б): ТОНКАЯ обёртка генерации листа
+        нестандартного персонажа БЕЗ фото. Повторяет прогресс-обвязку
+        start_ref_generation (бар + секунды на карточке — общий механизм
+        ActorCard), НО:
+          • photos=[] → GenerateActorRefThread шлёт text2img (без inputs);
+          • prompt = ACTOR_REF_PROMPT_CUSTOM.format(description=...);
+          • target_dir = actors/_custom/<slug>/ ('_'-папка к коллегам не синкается);
+          • хвост _on_finished: вместо _pending_variants → _upsert_custom_character
+            + refresh() (актёрский start_ref_generation НЕ трогаем).
+        Поток parent=None + ссылка в self._ref_threads (паттерн A,
+        ARCHITECTURE.md «parent для QThread»). Возвращает True если стартовал.
+
+        placeholder-запись custom.json (sheets=[]) делается ДО старта — иначе
+        карточки монстра нет в гриде и прогресс-бар некуда повесить; на finish
+        дописываем реальный sheet_rel, на error — откат если листов нет."""
+        try:
+            target_dir = self.project_root / "actors" / "_custom" / slug
+            prompt = _sa.ACTOR_REF_PROMPT_CUSTOM.format(description=description)
+            if not hasattr(self, '_ref_threads'):
+                self._ref_threads = []
+            if not hasattr(self, '_active_generations'):
+                self._active_generations: Dict[str, Dict] = {}
+
+            # placeholder → refresh() нарисует карточку + повесит прогресс.
+            self._upsert_custom_character(slug, display_name, description, "")
+
+            thread = GenerateActorRefThread(
+                slug, target_dir, [], prompt, slug, parent=None)
+            self._ref_threads.append(thread)
+
+            self._active_generations[slug] = {
+                'started_at': time.time(),
+                'label': tr('actor_progress_starting'),
+            }
+            self._actor_errors.pop(slug, None)
+            # refresh() создаст карточку монстра и (через блок восстановления
+            # в монстр-цикле) повесит на неё start_progress + секунды.
+            self.refresh()
+
+            def _on_progress(msg: str):
+                if slug in self._active_generations:
+                    self._active_generations[slug]['label'] = msg
+                c = self._cards_by_slug.get(slug)
+                if c is not None:
+                    c.update_progress(msg)
+                self._show_status_persistent(msg)
+
+            def _on_finished(target_path: str):
+                self._active_generations.pop(slug, None)
+                c = self._cards_by_slug.get(slug)
+                if c is not None:
+                    c.stop_progress()
+                # Хвост монстра: дописываем лист в custom.json (sheet_rel —
+                # относительно actors/_custom/) + перерисовываем грид.
+                try:
+                    custom_root = self.project_root / "actors" / "_custom"
+                    sheet_rel = str(Path(target_path).relative_to(custom_root))
+                except Exception:
+                    sheet_rel = Path(target_path).name
+                self._upsert_custom_character(
+                    slug, display_name, description, sheet_rel)
+                self.refresh()
+                self._notify_tab_blink_if_hidden()
+                self._show_status_temp(
+                    tr('create_ref_done', filename=Path(target_path).name))
+
+            def _on_error(msg: str):
+                self._active_generations.pop(slug, None)
+                c = self._cards_by_slug.get(slug)
+                if c is not None:
+                    c.stop_progress()
+                # Неудачная ПЕРВАЯ генерация: откат placeholder если листов нет
+                # (не плодим «призрак»-карточки без листов).
+                self._delete_custom_character(slug, only_if_empty=True)
+                self.refresh()
+                self._show_status_temp(msg or tr('create_ref_failed'))
+
+            thread.progress.connect(_on_progress)
+            thread.finished.connect(_on_finished)
+            thread.error.connect(_on_error)
+            thread.key_used.connect(
+                lambda idx: getattr(self.window(), '_blink_key_indicator',
+                                    lambda *a: None)(idx))
+            self._show_status_persistent(
+                tr('create_ref_started', actor=display_name))
+            thread.start()
+            return True
+        except Exception:
+            traceback.print_exc()
+            return False
+
     def _make_add_custom_card(self) -> QFrame:
         """2026-06-24 (монстры 3а): карточка-плюс «добавить нестандартного
         персонажа». Клик → _on_add_custom_clicked (на 3а заглушка; диалог в 3б)."""
@@ -841,12 +1042,21 @@ class ActorsView(QWidget):
             pass
 
     def _on_add_custom_clicked(self):
-        """2026-06-24 (монстры 3а, заглушка): клик по карточке-плюс. Диалог
-        создания нестандартного персонажа подключается в Шаге 3б."""
+        """2026-06-24 (монстры 3б): клик по карточке-плюс → диалог создания
+        нестандартного персонажа (Имя + Описание). По «Сгенерировать» строим
+        slug и запускаем генерацию листа БЕЗ фото-референса (text2img)."""
         try:
-            print("[custom] add-card clicked (Шаг 3б подключит диалог создания)")
+            dlg = CustomCharacterDialog(self.project_root, parent=self.window())
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            name = (dlg.result_name or "").strip()
+            desc = (dlg.result_desc or "").strip()
+            if not name or not desc:
+                return
+            slug = self._make_custom_slug(name)
+            self.start_custom_ref_generation(slug, name, desc)
         except Exception:
-            pass
+            traceback.print_exc()
 
     def _calc_cols(self) -> int:
         """Сколько карточек влезает в ряд при текущей ширине viewport

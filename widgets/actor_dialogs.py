@@ -1359,6 +1359,119 @@ class CreateActorRefDialog(QDialog):
             self.status_lbl.setText(tr('create_ref_failed'))
 
 
+class CustomCharacterDialog(QDialog):
+    """2026-06-24 (монстры 3б): попап создания нестандартного персонажа
+    («монстра») БЕЗ фото-референса. Поля: Имя + Описание (multiline).
+    Валидирует ввод и по «Сгенерировать» закрывается, отдавая result_name /
+    result_desc — генерацию запускает ActorsView._on_add_custom_clicked
+    (slug + start_custom_ref_generation). Поток живёт на view (parent=None),
+    НЕ на диалоге → нет QThread внутри диалога, closeEvent не нужен
+    (паттерн A, ARCHITECTURE.md «parent для QThread»).
+
+    Актёрский CreateActorRefDialog НЕ затрагивается — это отдельный лёгкий
+    диалог (у монстра нет сериала / персонажа / фото)."""
+
+    def __init__(self, project_root: Path, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.result_name = ""
+        self.result_desc = ""
+
+        self.setWindowTitle(tr('custom_char_title'))
+        self.setModal(True)
+        self.setMinimumWidth(480)
+        self.setStyleSheet(
+            "QDialog { background:#15101e; }"
+            "QLabel#cr-section { color:#cfcfcf; font-size:12px;"
+            " font-weight:700; letter-spacing:1px; }"
+            "QLineEdit#cr-newchar {"
+            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
+            " color:#fff; padding:8px 10px; font-size:13px; }"
+            "QLineEdit#cr-newchar:focus { border:1px solid #6e4cc4; }"
+            "QPlainTextEdit#cr-desc {"
+            " background:#1a1424; border:1px solid #2a1f3d; border-radius:8px;"
+            " color:#fff; padding:10px; font-size:13px; }"
+            "QPlainTextEdit#cr-desc:focus { border:1px solid #6e4cc4; }"
+            "QPushButton#cr-generate { background:#6e4cc4; color:#fff;"
+            " border:none; border-radius:8px; padding:10px 22px;"
+            " font-size:14px; font-weight:600; }"
+            "QPushButton#cr-generate:hover { background:#7d5bd4; }"
+            "QPushButton#cr-generate:disabled {"
+            " background:#473463; color:#cbb8ef; }"
+            "QPushButton#cr-cancel { background:transparent; color:#aaa;"
+            " border:1px solid #3a2c52; border-radius:6px; padding:8px 16px;"
+            " font-size:13px; }"
+            "QPushButton#cr-cancel:hover { color:#fff; border-color:#5a4a82; }")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 18, 22, 18)
+        outer.setSpacing(10)
+
+        # ── Имя ──────────────────────────────────────────────────────────
+        self.name_section_lbl = QLabel(tr('custom_char_name_label'))
+        self.name_section_lbl.setObjectName("cr-section")
+        outer.addWidget(self.name_section_lbl)
+        self.name_edit = QLineEdit()
+        self.name_edit.setObjectName("cr-newchar")
+        self.name_edit.setPlaceholderText(tr('custom_char_name_placeholder'))
+        outer.addWidget(self.name_edit)
+
+        # ── Описание ─────────────────────────────────────────────────────
+        outer.addSpacing(4)
+        self.desc_section_lbl = QLabel(tr('custom_char_desc_label'))
+        self.desc_section_lbl.setObjectName("cr-section")
+        outer.addWidget(self.desc_section_lbl)
+        self.desc_edit = QPlainTextEdit()
+        self.desc_edit.setObjectName("cr-desc")
+        self.desc_edit.setPlaceholderText(tr('custom_char_desc_placeholder'))
+        self.desc_edit.setFixedHeight(150)
+        outer.addWidget(self.desc_edit)
+
+        # ── Статус + кнопки ──────────────────────────────────────────────
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("color:#ffd24d; font-size:12px;")
+        outer.addWidget(self.status_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.cancel_btn = QPushButton(tr('custom_char_cancel'))
+        self.cancel_btn.setObjectName("cr-cancel")
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
+        self.generate_btn = QPushButton(tr('custom_char_generate'))
+        self.generate_btn.setObjectName("cr-generate")
+        self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.generate_btn.clicked.connect(self._on_generate)
+        btn_row.addWidget(self.generate_btn)
+        outer.addLayout(btn_row)
+
+    def _on_generate(self):
+        """Валидация: имя обязательно, описание обязательно (пустое → фокус,
+        не закрывать). По успеху — запоминаем result_name/result_desc,
+        «Генерируется…» + блок кнопки, accept(). Генерацию (и прогресс на
+        карточке) запускает ActorsView после exec()."""
+        try:
+            name = self.name_edit.text().strip()
+            if not name:
+                self.status_lbl.setText(tr('custom_char_need_name'))
+                self.name_edit.setFocus()
+                return
+            desc = self.desc_edit.toPlainText().strip()
+            if not desc:
+                self.status_lbl.setText(tr('custom_char_need_desc'))
+                self.desc_edit.setFocus()
+                return
+            self.result_name = name
+            self.result_desc = desc
+            self.generate_btn.setText(tr('custom_char_generating'))
+            self.generate_btn.setEnabled(False)
+            self.accept()
+        except Exception:
+            traceback.print_exc()
+            self.status_lbl.setText(tr('create_ref_failed'))
+
+
 # ─── Стек pending-вариантов character-рефа ───────────────────────
 
 class RefResultDialog(QDialog):
