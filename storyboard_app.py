@@ -736,6 +736,68 @@ def add_photo_to_actor(project_root: Path, slug: str, src_path: Path) -> Path:
     return candidate
 
 
+def convert_heic_to_jpg(src) -> Optional[bytes]:
+    """2026-06-24: ОБЩИЙ конвертер heic/heif → JPEG bytes (q90, EXIF-normalized).
+    Гибрид C:
+      1) primary — pillow_heif: register_heif_opener() вызван в main() на старте,
+         поэтому PIL открывает heic нативно (кроссплатформенно, wheels Win/Mac/Linux);
+      2) fallback — macOS sips (как в add_photo_to_actor) если PIL не смог;
+      3) None — конвертера нет (Win без pillow_heif / битый файл) → caller отклоняет.
+
+    Зачем общий: и location-DnD (этап 3), и будущая миграция add_photo_to_actor
+    зовут ОДИН путь. Возвращает bytes готового JPEG (на диск НЕ пишет — caller сам).
+
+    Cross-platform: pathlib.Path + PIL + io; sips ТОЛЬКО darwin, через
+    **no_console_kwargs() (без чёрного cmd-окна на Win), без shell=True.
+    """
+    src = Path(src)
+    # 1) primary: pillow_heif → PIL (heic откроется если opener зарегистрирован)
+    try:
+        from PIL import ImageOps
+        img = PILImage.open(str(src))
+        img = ImageOps.exif_transpose(img)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        buf = io.BytesIO()
+        img.save(buf, 'JPEG', quality=90, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        pass
+    # 2) fallback: sips (только macOS)
+    if sys.platform == 'darwin':
+        try:
+            import subprocess
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tf:
+                tmp_jpg = Path(tf.name)
+            try:
+                r = subprocess.run(
+                    ['sips', '-s', 'format', 'jpeg',
+                     str(src), '--out', str(tmp_jpg)],
+                    capture_output=True, timeout=30, **no_console_kwargs())
+                if (r.returncode != 0 or not tmp_jpg.exists()
+                        or tmp_jpg.stat().st_size == 0):
+                    return None
+                from PIL import ImageOps
+                img = PILImage.open(str(tmp_jpg))
+                img = ImageOps.exif_transpose(img)
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                buf = io.BytesIO()
+                img.save(buf, 'JPEG', quality=90, optimize=True)
+                return buf.getvalue()
+            finally:
+                try:
+                    tmp_jpg.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            traceback.print_exc()
+            return None
+    # 3) конвертера нет
+    return None
+
+
 def list_shows(project_root: Path) -> List[str]:
     """Список slug'ов сериалов в `shows/` (сортировка алфавитная)."""
     sd = shows_dir(project_root)
@@ -18146,6 +18208,16 @@ def main():
     # Qt-варнинги (qWarning, qCritical) — перенаправляем в наш stderr,
     # чтобы они тоже попадали в runtime.log с timestamp.
     _install_qt_message_handler()
+    # 2026-06-24: pillow-heif — регистрируем HEIF/HEIC opener для PIL ОДИН раз
+    # на старте (до любого heic-open). Кроссплатформенно (wheels Win/Mac/Linux).
+    # try/except: пакет может быть не установлен — НЕ падаем, heic уйдёт в
+    # sips-fallback внутри convert_heic_to_jpg либо будет отклонён.
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+        sys.stderr.write("[pillow-heif] registered\n")
+    except Exception as _heif_e:
+        sys.stderr.write(f"[pillow-heif] not available: {_heif_e}\n")
     # 2026-06-22: self-check QtMultimedia — ОДНОРАЗОВЫЙ диагностический импорт на
     # старте, пишет в runtime.log результат. Нужен чтобы у КОЛЛЕГ в .exe (Windows)
     # сразу было видно, дотянул ли PyInstaller media-стек, БЕЗ ожидания первого

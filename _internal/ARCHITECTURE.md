@@ -2149,6 +2149,24 @@ datas=[
   обкатать на Windows до раздачи (cross-platform gate). Mac-фундамент рабочий.
 - ⚠️ Бандл вырос (+opencv+numpy ~60-80МБ) → больше вес авто-апдейта коллегам.
 
+**2026-06-24 — pillow-heif (кроссплатформенный heic→jpg для рефов):**
+- Зависимость сборки: **`pillow-heif`** (wheels Win/Mac/Linux, тянет нативный
+  `libheif`+`libde265`). В spec через **`collect_all('pillow_heif')`** → влито в
+  `binaries`/`datas`/`hiddenimports` (+ явный `'pillow_heif'`). ⚠️ Пакет ДОЛЖЕН
+  стоять в окружении сборки — иначе `collect_all` валит билд (намеренно: не
+  шипим без heic-конвертера).
+- Win-сборка ([.github/workflows/build-windows.yml](.github/workflows/build-windows.yml))
+  + [BUILD_WINDOWS.md](BUILD_WINDOWS.md): `pip install … pillow-heif` добавлено.
+- `register_heif_opener()` — ОДИН раз в `main()` ([storyboard_app.py](storyboard_app.py),
+  после `_install_qt_message_handler`), lazy `try/except` (нет пакета → не падаем).
+  В runtime.log пишет `[pillow-heif] registered`.
+- Конвертер — **`convert_heic_to_jpg(src) -> bytes|None`** (модульная,
+  [storyboard_app.py](storyboard_app.py) рядом с `add_photo_to_actor`): гибрид C —
+  primary `pillow_heif`/PIL → fallback `sips` (только darwin) → None (caller
+  отклоняет). Общий для location-DnD (этап 3) и будущей миграции `add_photo_to_actor`.
+- ⚠️ Бандл arm64-only → heic-нативка едет только Apple-Silicon-коллегам (как и
+  весь .app). `add_photo_to_actor` (sips) пока НЕ мигрирован на хелпер — follow-up.
+
 `pipeline.py` после распаковки находится через `sys._MEIPASS` (на Mac
 .app `Contents/Resources/pipeline.py`, на Win onedir `_internal/pipeline.py`).
 Studio при старте копирует его в `project_root` через

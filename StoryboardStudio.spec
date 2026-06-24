@@ -5,11 +5,18 @@
 
 import sys
 import certifi
+from PyInstaller.utils.hooks import collect_all
+
+# 2026-06-24: pillow-heif тащит нативные libheif/libde265/x265. collect_all
+# собирает их .dylib/.dll + data + hidden submodules для onedir Win и .app Mac.
+# ВАЖНО: pillow_heif ДОЛЖЕН быть установлен в окружении сборки — иначе collect_all
+# падает (это намеренно: не шипим билд без heic-конвертера).
+_heif_datas, _heif_binaries, _heif_hiddenimports = collect_all('pillow_heif')
 
 a = Analysis(
     ['storyboard_app.py'],
     pathex=[],
-    binaries=[],
+    binaries=_heif_binaries,
     datas=[
         (certifi.where(), 'certifi'),
         # Иконки табов (Lucide SVG) и иконки приложения
@@ -49,8 +56,9 @@ a = Analysis(
         # Contents/Resources/assets/models/, на Win onedir → _internal/assets/models/.
         # Путь резолвится через storyboard_app.get_model_path (_MEIPASS-aware).
         ('assets/models/face_detection_yunet_2023mar.onnx', 'assets/models'),
-    ],
+    ] + _heif_datas,
     hiddenimports=[
+        'pillow_heif',
         'PIL._tkinter_finder',
         # 2026-06-02: opencv (cv2) для детекции лиц YuNet. PyInstaller обычно
         # подхватывает cv2 сам, но явный хинт страхует Win-сборку. numpy —
@@ -91,7 +99,7 @@ a = Analysis(
         'agents.validator_prefilter_b',
         'agents.validator_prefilter_c',
         'agents.validator_prefilter_d',
-    ],
+    ] + _heif_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
