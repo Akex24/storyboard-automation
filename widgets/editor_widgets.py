@@ -1457,6 +1457,13 @@ class RefCard(QFrame):
         if self._kind not in ('character', 'location'):
             ev.ignore()
             return
+        # 2026-06-24: busy-замок — пока карточка занята (geometry/image-gen)
+        # не подсвечиваем и не принимаем drop (повторный дроп на busy-карточку =
+        # гонка файлов/тредов с фоновой автогеометрией). Те же флаги что у
+        # click-гейта картинки (_geometry_updating / _image_updating).
+        if self._geometry_updating or self._image_updating:
+            ev.ignore()
+            return
         try:
             md = ev.mimeData() if ev else None
             if md is not None and md.hasUrls():
@@ -1493,6 +1500,12 @@ class RefCard(QFrame):
 
     def dropEvent(self, ev):
         if self._kind not in ('character', 'location'):
+            ev.ignore()
+            return
+        # 2026-06-24: busy-замок — повторный дроп пока идёт geometry/image-gen
+        # НЕ принимаем (гонка с фоновой автогеометрией). Авторитетный гейт:
+        # даже если dragMove акцептил действие, дроп здесь отклоняется.
+        if self._geometry_updating or self._image_updating:
             ev.ignore()
             return
         self._dnd_reset_style()

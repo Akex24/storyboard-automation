@@ -11916,6 +11916,20 @@ class MainWindow(QMainWindow):
                 encoding='utf-8')
             _os.replace(tmp, meta_path)
             self._meta = data
+            # 2026-06-24 (этап 3, автогеометрия): после замены картинки авто-
+            # запуск geometry-only (как ↻, но БЕЗ перегенерации картинки —
+            # _on_ref_regen затёр бы дроп). Молча, без попапа. Только если
+            # Claude CLI есть; дедуп-гард по _active_geometry_paths (повторный
+            # дроп пока идёт geometry не плодит второй тред). Стартуем ДО
+            # отложенного rebuild — _active_geometry_paths уже содержит target,
+            # новая карточка сразу покажет непрерывный busy-overlay (1:1 _on_ref_done).
+            # Свой try/except: сбой старта геометрии НЕ должен сорвать rebuild ниже.
+            try:
+                if find_claude_cli() is not None and \
+                        target.resolve() not in self._active_geometry_paths:
+                    self._start_geometry_thread(target, source_ep_id=ep_id)
+            except Exception:
+                traceback.print_exc()
             # Перерисовка ОТЛОЖЕНА (фикс краша, см. _on_ref_character_drop).
             QTimer.singleShot(0, lambda e=ep_id: self._build_refs_view(e))
         except Exception:
