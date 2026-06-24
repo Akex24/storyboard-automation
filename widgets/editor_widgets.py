@@ -918,10 +918,10 @@ class RefCard(QFrame):
     regen_requested  = pyqtSignal()
     edit_requested   = pyqtSignal()
     delete_requested = pyqtSignal()
-    # 2026-06-24 (DnD этап 1/7): юзер dropped файл из Finder на character-
-    # карточку. Передаём абсолютный путь к source-файлу; MainWindow его
-    # копирует в refs/characters/<slug>/ и обновляет refs_decisions.
-    # Для location/object этот сигнал НЕ подключается (DnD пока только character).
+    # 2026-06-24 (DnD этап 1/7 + 3/7): юзер dropped файл из Finder на character-
+    # или location-карточку. Передаём абсолютный путь к source-файлу; MainWindow
+    # копирует/архивирует и обновляет refs_decisions.
+    # Object (этап 5) этот сигнал пока НЕ подключает.
     image_dropped    = pyqtSignal(Path)
     IMG_H = 220
 
@@ -954,11 +954,11 @@ class RefCard(QFrame):
         # мышь у img_container → Leave → мигание fade_out/fade_in.
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.installEventFilter(self)
-        # 2026-06-24 (DnD этап 1/7): только character-карточка принимает drop
-        # файлов из Finder. Locations/objects пока без DnD (этапы 3 и 5).
+        # 2026-06-24 (DnD этап 1/7 + 3/7): character и location принимают drop
+        # файлов из Finder. Object пока без DnD (этап 5).
         # Запоминаем дефолтный stylesheet чтобы возвращать его на dragLeave/drop.
         self._dnd_default_style = self.styleSheet()
-        if self._kind == 'character':
+        if self._kind in ('character', 'location'):
             self.setAcceptDrops(True)
 
     def _build(self, r: Dict):
@@ -1454,7 +1454,7 @@ class RefCard(QFrame):
         self.setStyleSheet(self._dnd_default_style or '')
 
     def dragEnterEvent(self, ev):
-        if self._kind != 'character':
+        if self._kind not in ('character', 'location'):
             ev.ignore()
             return
         try:
@@ -1479,7 +1479,7 @@ class RefCard(QFrame):
     def dragMoveEvent(self, ev):
         # macOS требует чтобы dragMoveEvent тоже акцептил действие, иначе
         # dropEvent не сработает (см. views/actors.py:1974).
-        if self._kind == 'character':
+        if self._kind in ('character', 'location'):
             try:
                 if ev.mimeData() and ev.mimeData().hasUrls():
                     ev.acceptProposedAction()
@@ -1492,7 +1492,7 @@ class RefCard(QFrame):
         self._dnd_reset_style()
 
     def dropEvent(self, ev):
-        if self._kind != 'character':
+        if self._kind not in ('character', 'location'):
             ev.ignore()
             return
         self._dnd_reset_style()

@@ -2443,7 +2443,8 @@ def list_episode_refs(ep: str) -> Dict[str, List[Dict]]:
                 cand = _find_on_disk(LOCATIONS_DIR, loc_name, fn)
                 if cand is not None:
                     locs.append({'name': _pretty_stem(cand.stem),
-                                 'filename': cand.name, 'path': cand})
+                                 'filename': cand.name, 'path': cand,
+                                 'slug': loc_name})
         obj_decisions = decisions.get('object') if isinstance(decisions, dict) else None
         if isinstance(obj_decisions, dict):
             for obj_name, entry in obj_decisions.items():
@@ -2504,7 +2505,8 @@ def list_episode_refs(ep: str) -> Dict[str, List[Dict]]:
         # 1) locations
         cand = LOCATIONS_DIR / fn
         if cand.exists():
-            locs.append({'name': _pretty_stem(cand.stem), 'filename': fn, 'path': cand})
+            locs.append({'name': _pretty_stem(cand.stem), 'filename': fn,
+                         'path': cand, 'slug': cand.stem})
             continue
         # 2) objects
         cand = OBJECTS_DIR / fn
@@ -11809,6 +11811,145 @@ class MainWindow(QMainWindow):
         except Exception:
             traceback.print_exc()
 
+    def _on_ref_location_drop(self, slug, src_path, cur_path) -> None:
+        """2026-06-24 (DnD этап 3/7): юзер dropped файл из Finder на location-
+        карточку. Новый файл становится каноническим refs/locations/<slug>.<ext>;
+        старый (cur_path) архивируется в той же папке как
+        <slug>_<YYYY-MM-DD-HHMM>.<old_ext> (НЕ удаляется). В episodes.json
+        обновляется refs_decisions.location.<slug>.filename (+decision='linked').
+        Перерисовка refs-view ОТЛОЖЕНА через QTimer.singleShot(0) — тот же фикс
+        краша что в _on_ref_character_drop (синхронный _build_refs_view сносит
+        карточку внутри её же dropEvent -> abort на macOS).
+
+        slug = КЛЮЧ refs_decisions.location (НЕ stem имени файла: в реальных
+        данных stem != key, напр. key=gloria_living_room file=gloria_living_room_3.jpg).
+
+        Архив: GUARD — если cur-файл линкуется ещё каким-то ключом location в
+        этом show (shared, напр. hale_secret_office.jpg на 2 локации) → COPY
+        (оригинал остаётся, сиблинг цел); иначе MOVE (rename).
+
+        HEIC/HEIF: через ОБЩИЙ convert_heic_to_jpg (гибрид C: pillow_heif →
+        sips → None). None → отклоняем с сообщением, битый файл НЕ кладём.
+        Канонический файл при конвертации = <slug>.jpg. Sibling <slug>_geometry.txt
+        НЕ трогаем (этап 7).
+
+        Cross-platform: pathlib.Path + shutil + datetime; heic-конвертер сам
+        гейтит платформу. Без shell=True.
+        """
+        ep_id = self._current_episode
+        if not ep_id or not slug:
+            return
+        try:
+            src = Path(src_path)
+            if not src.is_file():
+                return
+            import unicodedata
+            import shutil as _shutil
+            import os as _os
+            ext = src.suffix.lower()
+            LOCATIONS_DIR.mkdir(parents=True, exist_ok=True)
+            # ── Канонический target. heic/heif → конвертация в jpg. ──────────
+            jpg_bytes = None
+            if ext in ('.heic', '.heif'):
+                jpg_bytes = convert_heic_to_jpg(src)
+                if jpg_bytes is None:
+                    QMessageBox.warning(
+                        self, tr('refs_loc_drop_heic_fail_title'),
+                        tr('refs_loc_drop_heic_fail_msg'))
+                    return
+                target = LOCATIONS_DIR / unicodedata.normalize("NFC", f"{slug}.jpg")
+            else:
+                target = LOCATIONS_DIR / unicodedata.normalize("NFC", f"{slug}{ext}")
+
+            # ── Архив старого файла (cur_path). НЕ удаляем. ──────────────────
+            cur = Path(cur_path) if cur_path else None
+            if cur is not None and cur.is_file():
+                ts = datetime.datetime.now().strftime('%Y-%m-%d-%H%M')
+                arch = LOCATIONS_DIR / unicodedata.normalize(
+                    "NFC", f"{slug}_{ts}{cur.suffix}")
+                k = 2
+                while arch.exists():
+                    arch = LOCATIONS_DIR / unicodedata.normalize(
+                        "NFC", f"{slug}_{ts}_{k}{cur.suffix}")
+                    k += 1
+                    if k > 999:
+                        return
+                shared = self._location_file_is_shared(cur.name, ep_id, slug)
+                try:
+                    if shared:
+                        _shutil.copy2(str(cur), str(arch))  # сиблинг цел
+                    else:
+                        _shutil.move(str(cur), str(arch))   # rename
+                except Exception:
+                    traceback.print_exc()
+
+            # ── Пишем новый канонический файл. ──────────────────────────────
+            if jpg_bytes is not None:
+                target.write_bytes(jpg_bytes)
+            else:
+                _shutil.copy2(str(src), str(target))
+
+            # ── episodes.json: refs_decisions.location.<slug>.filename ──────
+            meta_path = SHOW_ROOT / "episodes.json"
+            data = read_episodes_meta(SHOW_ROOT)
+            ep = data.get(ep_id) if isinstance(data, dict) else None
+            if not isinstance(ep, dict):
+                return
+            decisions = ep.get('refs_decisions') or {}
+            if not isinstance(decisions, dict):
+                decisions = {}
+            loc_bucket = decisions.get('location') or {}
+            if not isinstance(loc_bucket, dict):
+                loc_bucket = {}
+            entry = loc_bucket.get(slug) or {}
+            if not isinstance(entry, dict):
+                entry = {}
+            entry['decision'] = 'linked'
+            entry['filename'] = target.name
+            loc_bucket[slug] = entry
+            decisions['location'] = loc_bucket
+            ep['refs_decisions'] = decisions
+            data[ep_id] = ep
+            tmp = meta_path.with_suffix(f'.json.tmp.{_os.getpid()}')
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8')
+            _os.replace(tmp, meta_path)
+            self._meta = data
+            # Перерисовка ОТЛОЖЕНА (фикс краша, см. _on_ref_character_drop).
+            QTimer.singleShot(0, lambda e=ep_id: self._build_refs_view(e))
+        except Exception:
+            traceback.print_exc()
+
+    def _location_file_is_shared(self, filename, cur_ep, cur_slug) -> bool:
+        """True если filename линкуется ещё каким-то ключом location в любом
+        эпизоде текущего show (кроме самой пары cur_ep/cur_slug). Защищает от
+        MOVE-архивации файла, который шарят несколько локаций (напр.
+        hale_secret_office.jpg на penthouse_kitchen_morning + yacht_cabin_maren)."""
+        try:
+            data = read_episodes_meta(SHOW_ROOT)
+            if not isinstance(data, dict):
+                return False
+            for ep_id, ep in data.items():
+                if not isinstance(ep, dict):
+                    continue
+                loc = (ep.get('refs_decisions') or {}).get('location') or {}
+                if not isinstance(loc, dict):
+                    continue
+                for k, v in loc.items():
+                    if not isinstance(v, dict):
+                        continue
+                    if v.get('decision') != 'linked':
+                        continue
+                    if v.get('filename') != filename:
+                        continue
+                    if ep_id == cur_ep and k == cur_slug:
+                        continue
+                    return True
+            return False
+        except Exception:
+            return False
+
     def _on_ref_character_remove(self, slug: str):
         """2026-05-05: клик «🗑 Удалить» на character-карточке в РЕФЕРЕНСАХ.
         Удаляет запись из `refs_decisions[character][slug]` для текущего
@@ -11957,6 +12098,15 @@ class MainWindow(QMainWindow):
             card.regen_requested.connect(lambda p=r['path'], k=kind: self._on_ref_regen(p, k))
             card.edit_requested.connect(lambda p=r['path'], k=kind: self._on_ref_edit(p, k))
             card.delete_requested.connect(lambda p=r['path'], k=kind: self._on_ref_delete(p, k))
+            # 2026-06-24 (DnD этап 3/7): drop файла из Finder на location-
+            # карточку → новый файл = канонический <slug>.<ext>, старый
+            # архивируется датой, refs_decisions.location.<slug> обновляется.
+            # Object (этап 5) пока без DnD. slug = КЛЮЧ decisions (r['slug']),
+            # НЕ stem пути (в данных stem≠key).
+            if kind == 'location':
+                card.image_dropped.connect(
+                    lambda src, s=r.get('slug'), cur=r['path']:
+                        self._on_ref_location_drop(s, src, cur))
         elif kind == 'character':
             # 2026-05-05: для character-карточки только «🗑 Удалить».
             # Удаляет запись из refs_decisions[character][slug] —
