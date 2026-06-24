@@ -1098,10 +1098,11 @@ class CreateActorRefDialog(QDialog):
         что combo по умолчанию указывает на не того персонажа и реф
         прикрепляется к чужой роли."""
         try:
-            # 2026-06-24 (монстры 3б-redo): в custom_mode wildcard НЕ
-            # включаем — монстр выбирает/создаёт персонажа обычным combo
-            # (как актёр без pending-запроса). Иначе пустой prefill_character
-            # ушёл бы в wildcard-ветку (placeholder + дисейбл кнопки).
+            # 2026-06-24 (монстры 3б-redo+fix): в custom_mode НЕ идём в
+            # обычный wildcard (он удаляет «➕ Создать нового»). У монстра —
+            # свой placeholder-режим (ветка ниже) который КОПИРУЕТ вид wildcard
+            # (placeholder «👇 Выбери персонажа» + красная рамка), но КЕЕПИТ
+            # «➕ Создать нового». Сам wildcard и его хендлер НЕ трогаем.
             wildcard_mode = (not bool(self._prefill_character)
                              and not self.custom_mode)
             # 1. Сериал — выставляем по data-полю combobox'а
@@ -1112,7 +1113,21 @@ class CreateActorRefDialog(QDialog):
                             self.show_combo.setCurrentIndex(i)
                         break
             # 2. Персонаж
-            if wildcard_mode:
+            if self.custom_mode:
+                # 2026-06-24 (монстры 3б-fix): поле «Персонаж» — копия
+                # актёрского wildcard (placeholder «👇 Выбери персонажа» +
+                # красная рамка + дисейбл «Сгенерировать»), НО «➕ Создать
+                # нового» СОХРАНЕНА. Реальный персонаж НЕ предвыбран (раньше =
+                # «guest_1»). Реактивация кнопки — тем же общим (НЕ изменённым)
+                # _on_wildcard_selection_changed. Рамка НЕ снимается после
+                # выбора — РОВНО как у актёра.
+                self._set_custom_char_placeholder()
+                try:
+                    self.char_combo.currentIndexChanged.connect(
+                        self._on_wildcard_selection_changed)
+                except Exception:
+                    pass
+            elif wildcard_mode:
                 # 2026-05-05: для wildcard потока (юзер пришёл из «+
                 # Добавить персонажа» в РЕФЕРЕНСАХ) полностью убираем
                 # поле «введи имя нового» — имена персонажей берутся
@@ -1204,6 +1219,46 @@ class CreateActorRefDialog(QDialog):
         except Exception:
             self.generate_btn.setEnabled(True)
 
+    def _set_custom_char_placeholder(self):
+        """2026-06-24 (монстры 3б-fix): custom_mode — поле «Персонаж» 1:1 как
+        у актёрского wildcard: placeholder «👇 Выбери персонажа» (data=None) на
+        index 0, та же красная рамка (НЕ снимается после выбора — как у актёра),
+        «Сгенерировать» дисейблится. «➕ Создать нового» СОХРАНЕНА. Реальный
+        персонаж НЕ предвыбирается (раньше combo вставал на первого = «guest_1»).
+        Реактивация кнопки — общим _on_wildcard_selection_changed. Вызывается
+        после каждого _populate_character_combo (в т.ч. при смене сериала).
+
+        Красный QSS — КОПИЯ строки из wildcard-ветки (актёрскую ветку НЕ
+        трогаем, её поведение не меняем; небольшое дублирование строки —
+        цена того что актёрский флоу остаётся байт-в-байт)."""
+        try:
+            self.new_char_edit.hide()
+            self.char_combo.blockSignals(True)
+            # убрать «(пока нет)» placeholder (data=None) если есть —
+            # вставим свой единый placeholder вместо него.
+            for i in range(self.char_combo.count() - 1, -1, -1):
+                if self.char_combo.itemData(i) is None:
+                    self.char_combo.removeItem(i)
+            self.char_combo.insertItem(
+                0, tr('create_ref_wildcard_pick'), None)
+            self.char_combo.setCurrentIndex(0)
+            self.char_combo.blockSignals(False)
+            self.char_combo.setStyleSheet(
+                "QComboBox#cr-character {"
+                " background:#3a1e26; border:2px solid #ff6464;"
+                " border-radius:6px; color:#fff;"
+                " padding:6px 10px; font-size:13px;"
+                " font-weight:600; }"
+                "QComboBox#cr-character::drop-down {"
+                " border:0; width:18px; }"
+                "QComboBox QAbstractItemView { background:#1a1424;"
+                " color:#ddd;"
+                " selection-background-color:#322545;"
+                " border:1px solid #322545; }")
+            self.generate_btn.setEnabled(False)
+        except Exception:
+            traceback.print_exc()
+
     def _on_variant_chosen(self, variant_id: str):
         self._selected_variant = variant_id
         self.card_detailed.setSelected(variant_id == "detailed")
@@ -1266,6 +1321,11 @@ class CreateActorRefDialog(QDialog):
     def _on_show_changed(self, _index: int):
         """Смена сериала → перезагрузка списка персонажей."""
         self._populate_character_combo()
+        # 2026-06-24 (монстры 3б-fix): в custom_mode после ребилда списка
+        # снова ставим placeholder + красную рамку — иначе combo авто-выбрал
+        # бы первого персонажа нового сериала (баг с «guest_1»).
+        if getattr(self, 'custom_mode', False):
+            self._set_custom_char_placeholder()
         self._update_filename_preview()
 
     def _on_character_changed(self, _index: int):
