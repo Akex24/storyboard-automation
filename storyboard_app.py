@@ -7971,6 +7971,67 @@ class MainWindow(QMainWindow):
         # перевод реплики (uk) через Haiku
         card.translate_requested.connect(self._on_translate_shot)
 
+    def eventFilter(self, obj, ev):
+        try:
+            if (ev.type() == QEvent.Type.Resize
+                    and getattr(self, '_current_aspect', None) == "16:9"
+                    and hasattr(self, 'shots_scroll')
+                    and obj is self.shots_scroll.viewport()):
+                QTimer.singleShot(0, self._recalc_shot_cards_size)
+        except Exception:
+            traceback.print_exc()
+        return super().eventFilter(obj, ev)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if getattr(self, '_current_aspect', None) == "16:9":
+            QTimer.singleShot(0, self._recalc_shot_cards_size)
+
+    def _recalc_shot_cards_size(self):
+        """Adaptive 16:9 storyboard grid for large editor viewports only.
+
+        Startup/small laptop windows keep the old fixed card size and horizontal
+        scroll behavior. Once the storyboard viewport is tall enough, the 2x2
+        grid stretches down toward Save storyboard without vertical scrolling.
+        """
+        if getattr(self, '_current_aspect', None) != "16:9":
+            return
+        cards = getattr(self, 'shot_cards', None) or []
+        if not cards or not hasattr(self, 'shots_scroll'):
+            return
+        try:
+            viewport = self.shots_scroll.viewport()
+            viewport_w = viewport.width()
+            viewport_h = viewport.height()
+            if viewport_w <= 0 or viewport_h <= 0:
+                return
+
+            adaptive_min_h = 760
+            if viewport_h < adaptive_min_h:
+                for card in cards:
+                    card.reset_image_size()
+                return
+
+            spacing = 12
+            card_h = max(180, (viewport_h - spacing) // 2)
+            # SHOT row + up to four compact description/dialog lines.
+            # Larger reserve made adaptive cards leave visible empty tails below
+            # short text blocks.
+            text_h = 56
+            image_h_by_height = max(90, card_h - 20 - 6 - text_h)
+            # Fill the available two-column width in large/split-screen mode.
+            # The previous extra 40px reserve left side gutters, so 16:9 images
+            # were width-limited and could not grow taller even with less text.
+            image_w_by_width = max(160, (viewport_w - spacing) // 2 - 20)
+            image_h_by_width = int(image_w_by_width * 9 / 16)
+            image_h = max(90, min(image_h_by_height, image_h_by_width))
+            image_w = int(image_h * 16 / 9)
+
+            for card in cards:
+                card.apply_image_size(image_w, image_h, card_h)
+        except Exception:
+            traceback.print_exc()
+
     def _build_editor_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -8296,6 +8357,8 @@ class MainWindow(QMainWindow):
             grid = QGridLayout(cards_w)
             grid.setSpacing(12)
             grid.setContentsMargins(0, 0, 0, 0)
+            grid.setAlignment(
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
             for i in range(PANELS):
                 card = ShotCard(i, aspect="16:9")
                 self._wire_shot_card(card)
@@ -8312,12 +8375,15 @@ class MainWindow(QMainWindow):
                 self.cards_row.addWidget(card)
             self.cards_row.addStretch()
 
-        shots_scroll = QScrollArea()
-        shots_scroll.setWidgetResizable(True)
-        shots_scroll.setWidget(cards_w)
-        shots_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        shots_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.content_stack.addWidget(shots_scroll)   # index 0
+        self.shots_scroll = QScrollArea()
+        self.shots_scroll.setWidgetResizable(True)
+        self.shots_scroll.setWidget(cards_w)
+        self.shots_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.shots_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_stack.addWidget(self.shots_scroll)   # index 0
+        if self._current_aspect == "16:9":
+            self.shots_scroll.viewport().installEventFilter(self)
+            QTimer.singleShot(0, self._recalc_shot_cards_size)
 
         # ── Страница 1: референсы ──────────────────────────────────────────
         self.refs_container = QWidget()
@@ -12334,6 +12400,8 @@ class MainWindow(QMainWindow):
         # 2026-06-11 (стоп-кнопка): видимость по глобальному наличию активных
         # генераций (стоп глобальный), независимо от показанного блока.
         self._refresh_stop_btn()
+        if getattr(self, '_current_aspect', None) == "16:9":
+            QTimer.singleShot(0, self._recalc_shot_cards_size)
 
     # ── Regeneration ─────────────────────────────────────────────────────────
 

@@ -160,6 +160,7 @@ class ShotCard(QFrame):
         # Запоминаем что шот пустой/blank — чтобы overlay не показывался
         self._is_blank = False
         self._is_loading = False
+        self._aspect = aspect
         # 2026-06-03 (Этап 2): тексты реплики для перевода + поповер.
         self._dlg_en = ""
         self._dlg_ru = ""
@@ -224,16 +225,17 @@ class ShotCard(QFrame):
         # открывает ShotViewerDialog (большое превью + история версий +
         # edit/regen внутри попапа). UX: «навёл — увидел подсказку,
         # кликнул — открылся подробный попап».
-        STRIP_H = 36
+        self._STRIP_H = 36
         self.regen_overlay = QFrame(self.img_container)
         self.regen_overlay.setObjectName("shot-overlay")
         self.regen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
         self.regen_overlay.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        strip = QFrame(self.regen_overlay)
-        strip.setObjectName("shot-overlay-strip")
-        strip.setGeometry(0, self.CARD_H - STRIP_H, self.CARD_W, STRIP_H)
-        sh = QHBoxLayout(strip)
+        self.strip = QFrame(self.regen_overlay)
+        self.strip.setObjectName("shot-overlay-strip")
+        self.strip.setGeometry(
+            0, self.CARD_H - self._STRIP_H, self.CARD_W, self._STRIP_H)
+        sh = QHBoxLayout(self.strip)
         sh.setContentsMargins(8, 6, 8, 6)
         sh.setSpacing(6)
         hint_lbl = QLabel(tr('shot_overlay_click_to_open'))
@@ -254,15 +256,17 @@ class ShotCard(QFrame):
         #
         # Иконки — Lucide SVG через _sa.get_icon (ленивый импорт из
         # storyboard_app, чтобы не плодить circular import в этом модуле).
-        BTN = 28
+        self._BTN = 28
         self.btn_copy = QPushButton(self.regen_overlay)
         self.btn_copy.setObjectName("shot-corner-btn")
-        self.btn_copy.setGeometry(self.CARD_W - BTN - 6, 6, BTN, BTN)
+        self.btn_copy.setGeometry(
+            self.CARD_W - self._BTN - 6, 6, self._BTN, self._BTN)
         self.btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_copy.setToolTip(tr('shot_copy'))
         self.btn_paste = QPushButton(self.regen_overlay)
         self.btn_paste.setObjectName("shot-corner-btn")
-        self.btn_paste.setGeometry(self.CARD_W - 2 * BTN - 12, 6, BTN, BTN)
+        self.btn_paste.setGeometry(
+            self.CARD_W - 2 * self._BTN - 12, 6, self._BTN, self._BTN)
         self.btn_paste.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_paste.setToolTip(tr('shot_paste'))
         self.btn_paste.setEnabled(False)  # активна когда буфер не пуст
@@ -507,7 +511,8 @@ class ShotCard(QFrame):
             self.img_label.setText(tr('empty_shot'))
             return
         pixmap = QPixmap.fromImage(QImage.fromData(jpeg_bytes)).scaled(
-            QSize(self.CARD_W, self.CARD_H),
+            QSize(max(1, self.img_container.width()),
+                  max(1, self.img_container.height())),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
@@ -520,6 +525,73 @@ class ShotCard(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, pixmap.width(), pixmap.height()), 6, 6)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+        self.img_label.setPixmap(rounded)
+
+    def apply_image_size(self, w: int, h: int, card_h: int = 0):
+        """Apply adaptive 16:9 size. Legacy 9:16 cards keep old behavior."""
+        if self._aspect != "16:9":
+            return
+        w = max(160, int(w))
+        h = max(90, int(h))
+        if card_h > 0:
+            self.setFixedHeight(int(card_h))
+        self.setFixedWidth(w + 20)
+        self.img_container.setFixedSize(w, h)
+        self.img_label.setGeometry(0, 0, w, h)
+        self.regen_overlay.setGeometry(0, 0, w, h)
+        self.strip.setGeometry(0, h - self._STRIP_H, w, self._STRIP_H)
+        self.btn_copy.setGeometry(
+            w - self._BTN - 6, 6, self._BTN, self._BTN)
+        self.btn_paste.setGeometry(
+            w - 2 * self._BTN - 12, 6, self._BTN, self._BTN)
+        self.gen_overlay.setGeometry(0, 0, w, h)
+        self.shimmer_overlay.setGeometry(0, 0, w, h)
+        self.desc_label.setMaximumWidth(w)
+        self.dialog_label.setMaximumWidth(max(80, w - 24))
+        self._rebuild_pixmap_for_current_size()
+
+    def reset_image_size(self):
+        """Return 16:9 card to compact startup size when viewport is small."""
+        if self._aspect != "16:9":
+            return
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(16777215)
+        self.setFixedWidth(self.CARD_W + 20)
+        self.img_container.setFixedSize(self.CARD_W, self.CARD_H)
+        self.img_label.setGeometry(0, 0, self.CARD_W, self.CARD_H)
+        self.regen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
+        self.strip.setGeometry(
+            0, self.CARD_H - self._STRIP_H, self.CARD_W, self._STRIP_H)
+        self.btn_copy.setGeometry(
+            self.CARD_W - self._BTN - 6, 6, self._BTN, self._BTN)
+        self.btn_paste.setGeometry(
+            self.CARD_W - 2 * self._BTN - 12, 6, self._BTN, self._BTN)
+        self.gen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
+        self.shimmer_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
+        self.desc_label.setMaximumWidth(self.CARD_W + 20)
+        self.dialog_label.setMaximumWidth(self.CARD_W - 24)
+        self._rebuild_pixmap_for_current_size()
+
+    def _rebuild_pixmap_for_current_size(self):
+        jpeg_bytes = getattr(self, '_last_jpeg_bytes', None)
+        if not jpeg_bytes:
+            return
+        pixmap = QPixmap.fromImage(QImage.fromData(jpeg_bytes)).scaled(
+            QSize(max(1, self.img_container.width()),
+                  max(1, self.img_container.height())),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        rounded = QPixmap(pixmap.size())
+        rounded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(
+            QRectF(0, 0, pixmap.width(), pixmap.height()), 6, 6)
         painter.setClipPath(path)
         painter.drawPixmap(0, 0, pixmap)
         painter.end()
