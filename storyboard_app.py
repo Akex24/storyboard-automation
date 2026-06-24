@@ -11662,6 +11662,91 @@ class MainWindow(QMainWindow):
         bl.addLayout(grid)
         return box
 
+    def _on_ref_character_drop(self, slug: str, src_path: Path) -> None:
+        """2026-06-24 (DnD этап 1/7): юзер dropped файл из Finder на
+        character-карточку. Копируем файл в refs/characters/<slug>/ под
+        исходным именем (NFC normalized; +суффикс _2/_3 при duplicate),
+        обновляем refs_decisions.character.<slug>.filename для текущего
+        эпизода. Старый файл в папке НЕ трогаем — может пригодиться в
+        существующих блоках сториборда (их шапка ссылается на конкретный
+        filename, find_ref_image:4008 найдёт старый файл рядом с новым).
+
+        Для locations/objects этот метод НЕ зовётся (DnD пока только character —
+        этапы 3 и 5 в roadmap'е DnD).
+        """
+        ep_id = self._current_episode
+        if not ep_id or not slug:
+            return
+        try:
+            src = Path(src_path)
+            if not src.is_file():
+                return
+            target_dir = CHARACTERS_DIR / slug
+            target_dir.mkdir(parents=True, exist_ok=True)
+            # NFC-нормализация имени: согласовано с find_ref_image (стр.4008).
+            # На macOS APFS кириллица хранится в NFD, refs_decisions/.txt
+            # промпты пишутся в NFC — иначе mismatch при поиске файла.
+            import unicodedata
+            target_name = unicodedata.normalize("NFC", src.name)
+            target = target_dir / target_name
+            # Уникализация: если уже есть файл с таким именем — добавляем
+            # суффикс _2, _3, ... (не перезаписываем, чтобы не сломать старые
+            # блоки которые ссылаются на исходное имя в шапке .txt).
+            if target.exists():
+                stem = target.stem
+                suffix = target.suffix
+                n = 2
+                while True:
+                    cand = target_dir / f"{stem}_{n}{suffix}"
+                    if not cand.exists():
+                        target = cand
+                        break
+                    n += 1
+                    if n > 999:  # защита от runaway-цикла
+                        return
+            import shutil as _shutil
+            _shutil.copy2(str(src), str(target))
+            # Обновляем episodes.json. Формат filename для character —
+            # '<slug>/<filename>' (list_episode_refs:2398-2416 ожидает именно так).
+            meta_path = SHOW_ROOT / "episodes.json"
+            data = read_episodes_meta(SHOW_ROOT)
+            ep = data.get(ep_id) if isinstance(data, dict) else None
+            if not isinstance(ep, dict):
+                return
+            decisions = ep.get('refs_decisions') or {}
+            if not isinstance(decisions, dict):
+                decisions = {}
+            char_bucket = decisions.get('character') or {}
+            if not isinstance(char_bucket, dict):
+                char_bucket = {}
+            entry = char_bucket.get(slug) or {}
+            if not isinstance(entry, dict):
+                entry = {}
+            entry['decision'] = 'linked'
+            entry['filename'] = f"{slug}/{target.name}"
+            char_bucket[slug] = entry
+            decisions['character'] = char_bucket
+            ep['refs_decisions'] = decisions
+            data[ep_id] = ep
+            # Atomic write (тот же паттерн что _set_ref_decision_filename:6740-6748).
+            import os as _os
+            tmp = meta_path.with_suffix(f'.json.tmp.{_os.getpid()}')
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8')
+            _os.replace(tmp, meta_path)
+            self._meta = data
+            # Перерисовываем РЕФЕРЕНСЫ — карточка покажет новую картинку.
+            # 2026-06-24 (фикс краша drop): ОТЛОЖЕННО через QTimer.singleShot(0).
+            # _build_refs_view → _clear_vbox.deleteLater сносит секции вместе с
+            # RefCard'ами (включая ту, чей dropEvent СЕЙЧАС в стеке). Прямой
+            # вызов уничтожал бы виджет внутри его же drop-хендлера → Cocoa
+            # drag-сессия финализирует drop на мёртвом target → abort. Отложенный
+            # вызов даёт dropEvent вернуться в Qt/Cocoa до сноса дерева.
+            QTimer.singleShot(0, lambda e=ep_id: self._build_refs_view(e))
+        except Exception:
+            traceback.print_exc()
+
     def _on_ref_character_remove(self, slug: str):
         """2026-05-05: клик «🗑 Удалить» на character-карточке в РЕФЕРЕНСАХ.
         Удаляет запись из `refs_decisions[character][slug]` для текущего
@@ -11824,6 +11909,11 @@ class MainWindow(QMainWindow):
                 pass
             card.delete_requested.connect(
                 lambda s=slug: self._on_ref_character_remove(s))
+            # 2026-06-24 (DnD этап 1/7): drop файла из Finder на character-
+            # карточку → копируем в refs/characters/<slug>/ + обновляем filename
+            # в refs_decisions для текущего эпизода. Старый файл в папке остаётся.
+            card.image_dropped.connect(
+                lambda src, s=slug: self._on_ref_character_drop(s, src))
         # Если для этой картинки прямо сейчас идёт фоновое обновление geometry
         # (refs-view был перерисован после _on_ref_done пока Claude ещё не
         # дописал geometry-файл) — карточку нужно вернуть в busy-состояние,

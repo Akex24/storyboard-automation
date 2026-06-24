@@ -918,6 +918,11 @@ class RefCard(QFrame):
     regen_requested  = pyqtSignal()
     edit_requested   = pyqtSignal()
     delete_requested = pyqtSignal()
+    # 2026-06-24 (DnD этап 1/7): юзер dropped файл из Finder на character-
+    # карточку. Передаём абсолютный путь к source-файлу; MainWindow его
+    # копирует в refs/characters/<slug>/ и обновляет refs_decisions.
+    # Для location/object этот сигнал НЕ подключается (DnD пока только character).
+    image_dropped    = pyqtSignal(Path)
     IMG_H = 220
 
     def __init__(self, r: Dict, kind: str, parent=None):
@@ -949,6 +954,12 @@ class RefCard(QFrame):
         # мышь у img_container → Leave → мигание fade_out/fade_in.
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.installEventFilter(self)
+        # 2026-06-24 (DnD этап 1/7): только character-карточка принимает drop
+        # файлов из Finder. Locations/objects пока без DnD (этапы 3 и 5).
+        # Запоминаем дефолтный stylesheet чтобы возвращать его на dragLeave/drop.
+        self._dnd_default_style = self.styleSheet()
+        if self._kind == 'character':
+            self.setAcceptDrops(True)
 
     def _build(self, r: Dict):
         cl = QVBoxLayout(self)
@@ -1421,3 +1432,88 @@ class RefCard(QFrame):
                 self.img_lbl.setPixmap(pixmap)
         except Exception:
             pass
+
+    # ── Drag & Drop (только character; этап 1/7) ──────────────────────────
+    # 2026-06-24: юзер тащит файл из Finder на character-карточку → копируем
+    # в refs/characters/<slug>/ под исходным именем (NFC normalized, +суффикс
+    # _2/_3 если duplicate). Обновляем episodes.json.refs_decisions.character.
+    # Locations/objects пока без DnD (этапы 3 и 5).
+    _DND_ACCEPTED_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'}
+
+    def _dnd_set_active_style(self):
+        """Фиолетовый dashed-border фидбек на dragEnter."""
+        self.setStyleSheet(
+            (self._dnd_default_style or '') +
+            "\nQFrame#ref-card {"
+            " background: rgba(110,76,196,0.15);"
+            " border: 2px dashed rgba(190,150,255,0.85);"
+            "}")
+
+    def _dnd_reset_style(self):
+        """Возврат к дефолтному стилю карточки на dragLeave/drop/ignore."""
+        self.setStyleSheet(self._dnd_default_style or '')
+
+    def dragEnterEvent(self, ev):
+        if self._kind != 'character':
+            ev.ignore()
+            return
+        try:
+            md = ev.mimeData() if ev else None
+            if md is not None and md.hasUrls():
+                # Принимаем только если хотя бы один URL — локальный файл
+                # с подходящим расширением.
+                ok = False
+                for u in md.urls():
+                    p = u.toLocalFile()
+                    if p and Path(p).suffix.lower() in self._DND_ACCEPTED_EXTS:
+                        ok = True
+                        break
+                if ok:
+                    ev.acceptProposedAction()
+                    self._dnd_set_active_style()
+                    return
+        except Exception:
+            traceback.print_exc()
+        ev.ignore()
+
+    def dragMoveEvent(self, ev):
+        # macOS требует чтобы dragMoveEvent тоже акцептил действие, иначе
+        # dropEvent не сработает (см. views/actors.py:1974).
+        if self._kind == 'character':
+            try:
+                if ev.mimeData() and ev.mimeData().hasUrls():
+                    ev.acceptProposedAction()
+                    return
+            except Exception:
+                pass
+        ev.ignore()
+
+    def dragLeaveEvent(self, ev):
+        self._dnd_reset_style()
+
+    def dropEvent(self, ev):
+        if self._kind != 'character':
+            ev.ignore()
+            return
+        self._dnd_reset_style()
+        try:
+            md = ev.mimeData() if ev else None
+            files = []
+            if md is not None and md.hasUrls():
+                for u in md.urls():
+                    p = u.toLocalFile()
+                    if not p:
+                        continue
+                    pp = Path(p)
+                    if pp.is_file() and pp.suffix.lower() in self._DND_ACCEPTED_EXTS:
+                        files.append(pp)
+            if not files:
+                ev.ignore()
+                return
+            # Один файл за раз. Если drop'нули несколько — берём первый
+            # (остальные игнорируем; UX задачи 1/7).
+            self.image_dropped.emit(files[0])
+            ev.acceptProposedAction()
+        except Exception:
+            traceback.print_exc()
+            ev.ignore()
