@@ -1047,21 +1047,43 @@ class ActorsView(QWidget):
             pass
 
     def _on_add_custom_clicked(self):
-        """2026-06-24 (монстры 3б-redo): клик по карточке-плюс → актёрский
+        """2026-06-24 (монстры 3б-redo / 3г): клик по карточке-плюс → актёрский
         CreateActorRefDialog в режиме custom_mode (монстр = персонаж сериала:
-        Описание + Сериал + Персонаж + Имя файла + Вариант, БЕЗ фото). Сериал
-        подцепляется сам через _populate_show_combo (get_current_show)."""
+        Описание + Сериал + Персонаж + Имя файла + Вариант, БЕЗ фото).
+
+        3г: если юзер пришёл из чата (кнопка Generate в манифесте → выбор
+        варианта) — карман `_pending_create_request` уже заполнен; читаем его
+        1:1 как актёрский `_on_create_ref_requested` (show + character + desc)
+        и префиллим окно монстра. Нет кармана → сериал из активного,
+        персонаж/описание пустые (placeholder-режим), без ошибок."""
         try:
-            try:
-                prefill_show = _sa.get_current_show(self.project_root)
-            except Exception:
-                prefill_show = None
+            # Префиллы из чата (если ждут) — РОВНО как актёр. Иначе сериал из
+            # активного, персонаж/описание None.
+            req = self._pending_create_request
+            if req:
+                prefill_show = req.get("show") or None
+                prefill_character = (req.get("character_slug")
+                                     or req.get("character") or None)
+                prefill_description = req.get("description") or None
+            else:
+                try:
+                    prefill_show = _sa.get_current_show(self.project_root)
+                except Exception:
+                    prefill_show = None
+                prefill_character = None
+                prefill_description = None
             dlg = CreateActorRefDialog(
                 self.project_root, None, "",
                 [], status_bar=self.status_bar,
                 owner_view=self, parent=self,
                 prefill_show=prefill_show,
+                prefill_character=prefill_character,
+                prefill_description=prefill_description,
                 custom_mode=True)
+            # Чистим карман до показа (как актёр) — повторный плюс без чата
+            # не префилит старым текстом.
+            if req:
+                self._clear_pending_request()
             dlg.exec()
         except Exception:
             traceback.print_exc()

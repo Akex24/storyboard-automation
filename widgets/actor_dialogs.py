@@ -1114,19 +1114,43 @@ class CreateActorRefDialog(QDialog):
                         break
             # 2. Персонаж
             if self.custom_mode:
-                # 2026-06-24 (монстры 3б-fix): поле «Персонаж» — копия
-                # актёрского wildcard (placeholder «👇 Выбери персонажа» +
-                # красная рамка + дисейбл «Сгенерировать»), НО «➕ Создать
-                # нового» СОХРАНЕНА. Реальный персонаж НЕ предвыбран (раньше =
-                # «guest_1»). Реактивация кнопки — тем же общим (НЕ изменённым)
-                # _on_wildcard_selection_changed. Рамка НЕ снимается после
-                # выбора — РОВНО как у актёра.
-                self._set_custom_char_placeholder()
+                # 2026-06-24 (монстры 3б-fix + 3г): реактивация кнопки/рамки
+                # при смене персонажа — общим _on_wildcard_selection_changed
+                # (нужен и для placeholder-режима, и после смены сериала).
+                # Подключаем ОДИН раз.
                 try:
                     self.char_combo.currentIndexChanged.connect(
                         self._on_wildcard_selection_changed)
                 except Exception:
                     pass
+                if self._prefill_character:
+                    # 2026-06-24 (монстры 3г): персонаж пришёл из чата
+                    # (манифест) → выбираем в combo 1:1 как актёр (НЕ
+                    # placeholder): найден → выбрать; не найден → «➕ Создать
+                    # нового» + имя в поле. setCurrentIndex дёрнет handler выше →
+                    # красная рамка снимется, «Сгенерировать» включится.
+                    # Копия логики ветки `elif self._prefill_character` ниже
+                    # (актёрскую ветку НЕ трогаем).
+                    want = self._prefill_character
+                    found = False
+                    for i in range(self.char_combo.count()):
+                        if self.char_combo.itemData(i) == want:
+                            if self.char_combo.currentIndex() != i:
+                                self.char_combo.setCurrentIndex(i)
+                            found = True
+                            break
+                    if not found:
+                        for i in range(self.char_combo.count()):
+                            if self.char_combo.itemData(i) == "__new__":
+                                self.char_combo.setCurrentIndex(i)
+                                break
+                        self.new_char_edit.setText(want)
+                else:
+                    # 2026-06-24 (монстры 3б-fix): нет персонажа из чата →
+                    # placeholder-режим (красная рамка + дисейбл «Сгенерировать»,
+                    # «➕ Создать нового» сохранена). Реальный персонаж НЕ
+                    # предвыбирается (раньше combo вставал на первого = «guest_1»).
+                    self._set_custom_char_placeholder()
             elif wildcard_mode:
                 # 2026-05-05: для wildcard потока (юзер пришёл из «+
                 # Добавить персонажа» в РЕФЕРЕНСАХ) полностью убираем
