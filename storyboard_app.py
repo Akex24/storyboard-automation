@@ -8034,6 +8034,8 @@ class MainWindow(QMainWindow):
         # копирование активной картинки между шотами/блоками
         card.copy_requested.connect(self._on_copy_shot)
         card.paste_requested.connect(self._on_paste_shot)
+        # удаление одного шота (со всеми версиями) — 3-я угловая кнопка
+        card.delete_requested.connect(self._on_delete_shot)
         # перевод реплики (uk) через Haiku
         card.translate_requested.connect(self._on_translate_shot)
 
@@ -12569,40 +12571,48 @@ class MainWindow(QMainWindow):
             return
         self._clear_current_block(block)
 
+    def _delete_shot_files(self, block, i):
+        """Сносит с диска ОДИН слот шота: активный файл {block}_shot{i+1}.jpg +
+        папка истории версий _history/{block}_shot{i+1}/ (поимённый unlink + rmdir)
+        + косметика (gen_time, unseen, started_at). ОБЩИЙ для _clear_current_block
+        (цикл по всем слотам) и _on_delete_shot (один слот). Монтажку/промпт/рефы
+        НЕ трогает. Cross-platform: pathlib.Path unlink/rmdir, без shell."""
+        try:
+            shot_path(block, i).unlink(missing_ok=True)
+        except Exception:
+            traceback.print_exc()
+        # История версий шота — папка _history/{block}_shot{N}/ (НА ШОТ):
+        # поимённый unlink файлов + rmdir пустой (не rmtree).
+        try:
+            hist = shot_history_dir(block, i)
+            if hist.exists() and hist.is_dir():
+                for f in list(hist.iterdir()):
+                    try:
+                        if f.is_file():
+                            f.unlink()
+                    except Exception:
+                        pass
+                try:
+                    hist.rmdir()
+                except Exception:
+                    pass
+        except Exception:
+            traceback.print_exc()
+        # Косметика: время генерации + unseen/overlay.
+        try:
+            QSettings(APP_ORG, APP_NAME).remove(
+                f"gen_time_{block}_shot{i + 1}")
+        except Exception:
+            pass
+        self._unseen_shots.discard((block, i))
+        self._shot_gen_started_at.pop((block, i), None)
+
     def _clear_current_block(self, block: str):
         """Адресно удаляет с диска ВСЕ шоты и версии блока + косметику + склеенный
         лист. Рефы, монтажку, .txt-промпт, соседние блоки НЕ трогает. Без rm -rf
         по storyboards — только поимённый unlink файлов этого блока."""
         for i in range(PANELS):
-            try:
-                shot_path(block, i).unlink(missing_ok=True)
-            except Exception:
-                traceback.print_exc()
-            # История версий шота — папка _history/{block}_shot{N}/ (НА ШОТ):
-            # поимённый unlink файлов + rmdir пустой (не rmtree).
-            try:
-                hist = shot_history_dir(block, i)
-                if hist.exists() and hist.is_dir():
-                    for f in list(hist.iterdir()):
-                        try:
-                            if f.is_file():
-                                f.unlink()
-                        except Exception:
-                            pass
-                    try:
-                        hist.rmdir()
-                    except Exception:
-                        pass
-            except Exception:
-                traceback.print_exc()
-            # Косметика: время генерации + unseen/overlay.
-            try:
-                QSettings(APP_ORG, APP_NAME).remove(
-                    f"gen_time_{block}_shot{i + 1}")
-            except Exception:
-                pass
-            self._unseen_shots.discard((block, i))
-            self._shot_gen_started_at.pop((block, i), None)
+            self._delete_shot_files(block, i)
         # Склеенный лист блока: .cache/_block_view/{ep}_block{N}/{ep}_block{N}.*
         try:
             m = re.match(r'(ep\d+)_block_(\d+)', block)
@@ -12640,6 +12650,84 @@ class MainWindow(QMainWindow):
             pass
         try:
             self.status_bar.showMessage(tr('clear_done'))
+        except Exception:
+            pass
+
+    def _on_delete_shot(self, panel_idx: int) -> None:
+        """Удаляет ОДИН шот (активный файл + все версии в _history) текущего блока.
+        Слот опустошается (ДЫРКА, не сдвиг) — монтажка/промпт/рефы/соседние шоты НЕ
+        трогаются, реген перезальёт слот из описания shot_num. Запрещено пока
+        ИМЕННО этот шот генерируется. Поведение = Clear блока, суженный до одного
+        слота (общий хелпер _delete_shot_files)."""
+        block = self.current_block
+        if not block:
+            return
+        # busy-гард по (block, panel_idx): нельзя сносить файлы под пишущим тредом.
+        busy = (any(b == block and p == panel_idx
+                    for (b, p) in self._active_regens)
+                or any(b == block and p == panel_idx
+                       for (b, p, _v) in self._active_mode_c_version_threads))
+        if busy:
+            return
+        # Нечего удалять — пустой слот.
+        try:
+            if not shot_path(block, panel_idx).exists():
+                return
+        except Exception:
+            return
+        # Попап Warning (Cancel по умолчанию), текст про ОДИН шот.
+        try:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(tr('shot_delete_confirm_title', n=panel_idx + 1))
+            box.setText(tr('shot_delete_confirm_text', n=panel_idx + 1))
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            box.button(QMessageBox.StandardButton.Ok).setText(
+                tr('shot_delete_confirm_ok'))
+            box.button(QMessageBox.StandardButton.Cancel).setText(
+                tr('shot_delete_confirm_cancel'))
+            box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if box.exec() != QMessageBox.StandardButton.Ok:
+                return
+        except Exception:
+            traceback.print_exc()
+            return
+        # Снос файлов слота (общий хелпер) — поведение = один проход Clear-блока.
+        self._delete_shot_files(block, panel_idx)
+        # Склеенный лист блока стал устаревшим — удаляем (регенерится при сборке).
+        try:
+            m = re.match(r'(ep\d+)_block_(\d+)', block)
+            if m and self._current_show:
+                ep_id, bn = m.group(1), int(m.group(2))
+                sheet_dir = (self._project_root / "shows" / self._current_show
+                             / ".cache" / "_block_view" / f"{ep_id}_block{bn}")
+                for ext in ("jpg", "jpeg", "png"):
+                    try:
+                        (sheet_dir / f"{ep_id}_block{bn}.{ext}").unlink(
+                            missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception:
+            traceback.print_exc()
+        # Закрыть открытый ShotViewer ИМЕННО этого шота (версии удалены).
+        try:
+            for b, _p, dlg in list(self._ensure_open_shot_viewers()):
+                if b == block and _p == panel_idx:
+                    try:
+                        dlg.close()
+                    except Exception:
+                        pass
+        except Exception:
+            traceback.print_exc()
+        # UI: перерисовка блока (слот станет blank) + индикатор.
+        try:
+            if self.current_block == block:
+                self._display_block(block)
+        except Exception:
+            traceback.print_exc()
+        try:
+            self._refresh_block_indicator(block)
         except Exception:
             pass
 

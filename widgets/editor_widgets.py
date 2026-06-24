@@ -139,6 +139,8 @@ class ShotCard(QFrame):
     # paste → буфер добавляется новой версией в шот-назначение.
     copy_requested  = pyqtSignal(int)
     paste_requested = pyqtSignal(int)
+    # 2026-06-24: удалить ОДИН шот (со всеми версиями) — 3-я угловая кнопка.
+    delete_requested = pyqtSignal(int)
     # 2026-06-03 (Этап 2): запрос перевода реплики на язык интерфейса.
     # (panel_idx, en_text). Эмитится ТОЛЬКО для uk (ru/en карточка показывает
     # сама из данных). MainWindow дёргает Haiku async + кэш → set_translation_result.
@@ -278,16 +280,30 @@ class ShotCard(QFrame):
         except Exception:
             traceback.print_exc()
         # Инлайн-стиль (НЕ через theme.py — общий не ломаем): полупрозрачный
-        # тёмный фон чтобы иконка читалась поверх светлой картинки, скругление,
-        # hover — фиолетовый акцент поярче, disabled («Вставить» без буфера) —
-        # приглушённый фон, видно что неактивна.
+        # тёмный фон чтобы иконка читалась поверх светлой картинки, скругление.
+        # 2026-06-24: hover copy/paste — янтарь (LUMZ accent_gold #d4a256 =
+        # rgb 212,162,86); корзина — красный (LUMZ accent_red #e4344a =
+        # rgb 228,52,74), см. corner_qss_delete. Никакого синего/фиолетового.
+        # disabled («Вставить» без буфера) — приглушённый фон, видно что неактивна.
         corner_qss = (
             "QPushButton#shot-corner-btn {"
             " background:rgba(10,10,13,0.55); border:none; border-radius:6px; }"
             "QPushButton#shot-corner-btn:hover {"
-            " background:rgba(110,76,196,0.85); }"
+            " background:rgba(212,162,86,0.85); }"
             "QPushButton#shot-corner-btn:pressed {"
-            " background:rgba(90,60,170,0.95); }"
+            " background:rgba(180,135,70,0.95); }"
+            "QPushButton#shot-corner-btn:disabled {"
+            " background:rgba(10,10,13,0.20); }"
+        )
+        # Корзина: красный hover + лёгкий красный тон даже без hover
+        # (деструктивная кнопка читается сразу среди трёх угловых).
+        corner_qss_delete = (
+            "QPushButton#shot-corner-btn {"
+            " background:rgba(228,52,74,0.30); border:none; border-radius:6px; }"
+            "QPushButton#shot-corner-btn:hover {"
+            " background:rgba(228,52,74,0.85); }"
+            "QPushButton#shot-corner-btn:pressed {"
+            " background:rgba(200,42,62,0.95); }"
             "QPushButton#shot-corner-btn:disabled {"
             " background:rgba(10,10,13,0.20); }"
         )
@@ -297,6 +313,22 @@ class ShotCard(QFrame):
             lambda: self.copy_requested.emit(self.panel_idx))
         self.btn_paste.clicked.connect(
             lambda: self.paste_requested.emit(self.panel_idx))
+        # 2026-06-24: 3-я угловая кнопка — удалить ОДИН шот (со всеми версиями).
+        # Дочерний regen_overlay → видимость как у copy/paste (hover, не-blank).
+        self.btn_delete = QPushButton(self.regen_overlay)
+        self.btn_delete.setObjectName("shot-corner-btn")
+        self.btn_delete.setGeometry(
+            self.CARD_W - 3 * self._BTN - 18, 6, self._BTN, self._BTN)
+        self.btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_delete.setToolTip(tr('shot_delete_tooltip'))
+        self.btn_delete.setStyleSheet(corner_qss_delete)
+        try:
+            self.btn_delete.setIcon(_sa.get_icon('trash-2'))
+            self.btn_delete.setIconSize(QSize(16, 16))
+        except Exception:
+            traceback.print_exc()
+        self.btn_delete.clicked.connect(
+            lambda: self.delete_requested.emit(self.panel_idx))
 
         # Скрытые legacy-объекты для обратной совместимости с set_loading
         # / тестами / проверками. Сигналы edit_requested/regen_requested
@@ -547,6 +579,8 @@ class ShotCard(QFrame):
             w - self._BTN - 6, 6, self._BTN, self._BTN)
         self.btn_paste.setGeometry(
             w - 2 * self._BTN - 12, 6, self._BTN, self._BTN)
+        self.btn_delete.setGeometry(
+            w - 3 * self._BTN - 18, 6, self._BTN, self._BTN)
         self.gen_overlay.setGeometry(0, 0, w, h)
         self.shimmer_overlay.setGeometry(0, 0, w, h)
         self.desc_label.setMaximumWidth(w)
