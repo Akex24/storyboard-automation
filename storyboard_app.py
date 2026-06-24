@@ -5818,6 +5818,52 @@ Hard constraints:
 """
 
 
+ACTOR_REF_PROMPT_CUSTOM = """{description}
+
+Create a clean technical character reference sheet for a single consistent original character, designed for future image generation consistency.
+Create one single image with a custom asymmetric layout based on a 3x3 grid structure.
+Layout:
+- top left: 3 full-body reference panels in one row:
+  1. front full-body view, full figure from head to feet, including the head
+  2. left side full-body view, full figure from head to feet, including the head
+  3. back full-body view, full figure from head to feet, including the head
+- bottom left: 3 head-and-shoulders reference panels in one row:
+  4. front head-and-shoulders close-up
+  5. left 3/4 head-and-shoulders close-up
+  6. left side profile head-and-shoulders close-up
+- right side: 1 enlarged portrait detail panel occupying a strict 2x2 area.
+  This enlarged portrait panel must be much larger than the other panels and must clearly dominate the layout.
+  Show the same character in a large frontal portrait view, looking directly into the camera.
+  The full head must be visible inside the panel, with the top of the head fully included and not cropped.
+  Show the face, full head, neck, upper shoulders, and the upper part of the clothing/collar.
+  Use tight portrait framing, but not an extreme face crop.
+  The character should fill most of the panel while still leaving a small amount of neutral background around the head and shoulders.
+  Keep clearly visible natural surface texture, realistic pores where applicable, surface and material detail, hairline or equivalent, ears or equivalent, neck, shoulders, and clothing details.
+Composition rules:
+- the large portrait panel occupies four standard cells on the right side
+- the 3 full-body panels stay in one horizontal row on the upper left
+- the 3 head-and-shoulders panels stay in one horizontal row on the lower left
+- panels 1, 2, 3: full figure from head to feet including the head, natural realistic body proportions, head correctly sized relative to the body
+- panels 4, 5, 6: head and shoulders visible, head fills most of the panel
+- clean technical organized layout
+Character consistency:
+Keep one single consistent character across all panels.
+The same head shape, silhouette, body proportions, colors, textures, surface features, distinctive traits, and any accessories must stay identical in every panel.
+Do not redesign the character between panels and do not introduce variations.
+High visual consistency across all panels.
+Style:
+Realistic studio photography, plain neutral studio background, soft even lighting, natural skin texture, sharp realistic detail, clean presentation, accurate proportions.
+Hard constraints:
+- exactly 3 full-body panels showing the full figure from head to feet including the head
+- exactly 3 head-and-shoulders panels
+- exactly 1 enlarged portrait detail panel occupying a 2x2 area on the right side
+- the enlarged portrait panel must show the complete head, neck, upper shoulders, and upper clothing/collar
+- the enlarged portrait panel must not be an extreme face crop
+- the top of the head must not be cropped
+- panels 1, 2, 3 show the complete figure from head to feet with correct natural body proportions
+"""
+
+
 # Простой ASCII-транслит RU/UK → латиница для авто-имени файла.
 # Не перевод (для перевода нужен AI). Просто phonetic mapping чтобы
 # юзер мог увидеть осмысленное название и поправить если хочет.
