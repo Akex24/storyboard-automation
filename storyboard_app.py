@@ -5774,7 +5774,6 @@ ACTOR_REF_PROMPT_SIMPLE = """Use the attached reference image as the identity an
 
 Create a clean technical identity reference sheet for the same exact person, designed for future image generation consistency.
 Create one single image with a custom asymmetric layout based on a 3x3 grid structure.
-
 Layout:
 - top left: 3 full-body reference panels in one row:
   1. front full-body view, full figure from head to feet, including the head
@@ -5784,35 +5783,37 @@ Layout:
   4. front head-and-shoulders close-up
   5. left 3/4 head-and-shoulders close-up
   6. left side profile head-and-shoulders close-up
-- right side: 1 enlarged facial detail panel occupying a strict 2x2 area.
-  This enlarged face panel must be much larger than the other panels and must clearly dominate the layout.
-  Show the same exact person in an extreme close frontal face crop, looking directly into the camera, with very tight framing so that only the eyes, nose, lips, and nearby cheek area are visible.
-  The face must fill the panel as much as possible. Keep clearly visible natural skin texture, realistic pores, subtle under-eye texture, realistic lips, realistic nose shape, and realistic facial detail.
-
+- right side: 1 enlarged portrait detail panel occupying a strict 2x2 area.
+  This enlarged portrait panel must be much larger than the other panels and must clearly dominate the layout.
+  Show the same exact person in a large frontal portrait view, looking directly into the camera.
+  The full head must be visible inside the panel, with the top of the head fully included and not cropped.
+  Show the face, full head, neck, upper shoulders, and the upper part of the clothing/collar.
+  Use tight portrait framing, but not an extreme face crop.
+  The person should fill most of the panel while still leaving a small amount of neutral background around the head and shoulders.
+  Keep clearly visible natural skin texture, realistic pores, subtle under-eye texture, realistic lips, realistic nose shape, realistic facial detail, hairline, ears, neck, shoulders, and clothing details.
 Composition rules:
-- the large facial panel occupies four standard cells on the right side
+- the large portrait panel occupies four standard cells on the right side
 - the 3 full-body panels stay in one horizontal row on the upper left
 - the 3 head-and-shoulders panels stay in one horizontal row on the lower left
 - panels 1, 2, 3: full figure from head to feet including the head, natural realistic body proportions, head correctly sized relative to the body
 - panels 4, 5, 6: head and shoulders visible, head fills most of the panel
 - clean technical organized layout
-
 Identity preservation:
 Preserve the exact same person from the reference image.
 Same facial identity, age, head shape, hairstyle, hairline, eyebrow shape, eye shape, nose, lips, jawline, ears, skin tone, neck and body proportions.
 Do not redesign or beautify the face.
 High identity consistency across all panels.
-
 Clothing:
 {outfit}
-
 Style:
 Realistic studio photography, plain neutral studio background, soft even lighting, natural skin texture, sharp realistic detail, clean presentation, accurate proportions.
-
 Hard constraints:
 - exactly 3 full-body panels showing the full figure from head to feet including the head
 - exactly 3 head-and-shoulders panels
-- exactly 1 enlarged facial detail panel occupying a 2x2 area on the right side
+- exactly 1 enlarged portrait detail panel occupying a 2x2 area on the right side
+- the enlarged portrait panel must show the complete head, neck, upper shoulders, and upper clothing/collar
+- the enlarged portrait panel must not be an extreme face crop
+- the top of the head must not be cropped
 - panels 1, 2, 3 show the complete figure from head to feet with correct natural body proportions
 """
 
