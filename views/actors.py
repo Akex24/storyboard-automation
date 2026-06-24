@@ -23,6 +23,7 @@ views/actors.py — вкладка «Актёры» Storyboard Studio.
 
 from __future__ import annotations
 
+import json
 import time
 import traceback
 from pathlib import Path
@@ -686,11 +687,12 @@ class ActorsView(QWidget):
                 wgt.deleteLater()
 
         slugs = _sa.list_actors(self.project_root)
-        if not slugs:
-            self.empty_lbl.show()
-            self.grid_widget.hide()
-            return
-        self.empty_lbl.hide()
+        # 2026-06-24 (монстры 3а): нестандартные персонажи из ЛОКАЛЬНОГО стора
+        # actors/_custom/ — читаем ОТДЕЛЬНО (list_actors исключает '_'-папки).
+        monsters = self._list_custom_characters()
+        # Грид показываем ВСЕГДА — внизу карточка-плюс «добавить нестандартного
+        # персонажа». empty_lbl — подсказка только когда нет НИ актёров, НИ монстров.
+        self.empty_lbl.setVisible(not slugs and not monsters)
         self.grid_widget.show()
 
         cols = self._calc_cols()
@@ -730,6 +732,25 @@ class ActorsView(QWidget):
                 card.set_error(err_msg)
             r, c = divmod(i, cols)
             self.grid.addWidget(card, r, c)
+        # 2026-06-24 (монстры 3а): карточки нестандартных персонажей — ПОСЛЕ
+        # обычных актёров, индексы продолжаются с len(slugs). На 3а monsters
+        # обычно пуст (стора ещё нет) — это каркас под 3б/3в.
+        next_idx = len(slugs)
+        for m in monsters:
+            mcard = ActorCard(
+                m['slug'], m['display_name'], m['photos'],
+                is_admin=self._is_admin, card_width=self._card_width,
+                generated_refs_count=len(m.get('sheets') or []),
+                pending_count=0)
+            mcard.clicked.connect(self._on_custom_card_clicked)
+            r, c = divmod(next_idx, cols)
+            self.grid.addWidget(mcard, r, c)
+            next_idx += 1
+        # 2026-06-24 (монстры 3а): карточка-плюс ВСЕГДА последней (после актёров
+        # + монстров). Любой refresh пересчитывает её в самом конце → гарантия.
+        add_card = self._make_add_custom_card()
+        r, c = divmod(next_idx, cols)
+        self.grid.addWidget(add_card, r, c)
         # Карточки прилипают к левому краю: stretch=0 на занятых колонках,
         # stretch=1 на финальной «пустой» колонке (cols) — она съедает
         # лишнее пространство справа. Иначе при cols=8 и 3 карточках они
@@ -740,6 +761,92 @@ class ActorsView(QWidget):
         # После пересборки сетки — обновить состояние pulse-таймера
         # (старые карточки удалены, надо подкинуть стиль свежим).
         self._update_pending_pulse_running()
+
+    def _list_custom_characters(self) -> List[Dict]:
+        """2026-06-24 (монстры): читает локальный стор нестандартных персонажей
+        actors/_custom/custom.json. Возвращает список записей с разрешённым путём
+        превью (portrait). Нет файла / битый JSON → [] (НЕ падаем). Стор '_custom'
+        ('_'-префикс) НЕ синкается к коллегам (snapshot upload и download-mirror
+        пропускают '_'-папки) → локальные данные машины.
+
+        Cross-platform: pathlib.Path + json, без subprocess/shell."""
+        out: List[Dict] = []
+        try:
+            custom_root = self.project_root / "actors" / "_custom"
+            meta_path = custom_root / "custom.json"
+            if not meta_path.is_file():
+                return out
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return out
+            for slug, rec in data.items():
+                if not isinstance(rec, dict):
+                    continue
+                portrait_rel = rec.get("portrait") or ""
+                photos: List[Path] = []
+                if portrait_rel:
+                    p = custom_root / portrait_rel
+                    if p.is_file():
+                        photos = [p]
+                out.append({
+                    "slug": slug,
+                    "display_name": rec.get("display_name") or slug,
+                    "description": rec.get("description") or "",
+                    "portrait": portrait_rel,
+                    "photos": photos,
+                    "sheets": rec.get("sheets") or [],
+                    "created": rec.get("created") or "",
+                })
+        except Exception:
+            traceback.print_exc()
+        return out
+
+    def _make_add_custom_card(self) -> QFrame:
+        """2026-06-24 (монстры 3а): карточка-плюс «добавить нестандартного
+        персонажа». Клик → _on_add_custom_clicked (на 3а заглушка; диалог в 3б)."""
+        card = QFrame()
+        card.setObjectName("add-custom-card")
+        card.setFixedWidth(self._card_width)
+        card.setMinimumHeight(self._card_width)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setStyleSheet(
+            "QFrame#add-custom-card {"
+            " background: rgba(255,255,255,0.03);"
+            " border: 2px dashed rgba(255,255,255,0.18);"
+            " border-radius: 12px; }"
+            "QFrame#add-custom-card:hover {"
+            " background: rgba(228,52,74,0.10);"
+            " border-color: rgba(228,52,74,0.45); }")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(0, 0, 0, 0)
+        plus = QLabel("+")
+        plus.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        plus.setStyleSheet(
+            "color: rgba(255,255,255,0.45); font-size: 64px;"
+            " font-weight: 300; background: transparent; border: none;")
+        cl.addWidget(plus)
+
+        def _click(ev):
+            if ev.button() == Qt.MouseButton.LeftButton:
+                self._on_add_custom_clicked()
+        card.mousePressEvent = _click  # type: ignore
+        return card
+
+    def _on_custom_card_clicked(self, slug: str):
+        """2026-06-24 (монстры 3а, каркас): клик по карточке монстра. На 3в
+        подключим попап «Все референсы» монстра. Сейчас — заглушка."""
+        try:
+            print(f"[custom] card clicked: {slug} (Шаг 3в подключит просмотр)")
+        except Exception:
+            pass
+
+    def _on_add_custom_clicked(self):
+        """2026-06-24 (монстры 3а, заглушка): клик по карточке-плюс. Диалог
+        создания нестандартного персонажа подключается в Шаге 3б."""
+        try:
+            print("[custom] add-card clicked (Шаг 3б подключит диалог создания)")
+        except Exception:
+            pass
 
     def _calc_cols(self) -> int:
         """Сколько карточек влезает в ряд при текущей ширине viewport
