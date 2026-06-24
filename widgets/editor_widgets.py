@@ -954,11 +954,11 @@ class RefCard(QFrame):
         # мышь у img_container → Leave → мигание fade_out/fade_in.
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.installEventFilter(self)
-        # 2026-06-24 (DnD этап 1/7 + 3/7): character и location принимают drop
-        # файлов из Finder. Object пока без DnD (этап 5).
+        # 2026-06-24 (DnD этап 1/7 + 3/7 + 5/7): character, location и object
+        # принимают drop файлов из Finder.
         # Запоминаем дефолтный stylesheet чтобы возвращать его на dragLeave/drop.
         self._dnd_default_style = self.styleSheet()
-        if self._kind in ('character', 'location'):
+        if self._kind in ('character', 'location', 'object'):
             self.setAcceptDrops(True)
 
     def _build(self, r: Dict):
@@ -1454,7 +1454,7 @@ class RefCard(QFrame):
         self.setStyleSheet(self._dnd_default_style or '')
 
     def dragEnterEvent(self, ev):
-        if self._kind not in ('character', 'location'):
+        if self._kind not in ('character', 'location', 'object'):
             ev.ignore()
             return
         # 2026-06-24: busy-замок — пока карточка занята (geometry/image-gen)
@@ -1486,7 +1486,7 @@ class RefCard(QFrame):
     def dragMoveEvent(self, ev):
         # macOS требует чтобы dragMoveEvent тоже акцептил действие, иначе
         # dropEvent не сработает (см. views/actors.py:1974).
-        if self._kind in ('character', 'location'):
+        if self._kind in ('character', 'location', 'object'):
             try:
                 if ev.mimeData() and ev.mimeData().hasUrls():
                     ev.acceptProposedAction()
@@ -1499,7 +1499,7 @@ class RefCard(QFrame):
         self._dnd_reset_style()
 
     def dropEvent(self, ev):
-        if self._kind not in ('character', 'location'):
+        if self._kind not in ('character', 'location', 'object'):
             ev.ignore()
             return
         # 2026-06-24: busy-замок — повторный дроп пока идёт geometry/image-gen
