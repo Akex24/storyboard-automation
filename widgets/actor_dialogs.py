@@ -1512,7 +1512,8 @@ class RefResultDialog(QDialog):
     def __init__(self, actor_slug: str, display_name: str,
                  photos: List[Path], initial_variants: List[str],
                  owner_view, initial_outfit: str = "",
-                 variant_id: str = "detailed", parent=None):
+                 variant_id: str = "detailed", parent=None,
+                 custom_mode: bool = False):
         super().__init__(parent)
         self.actor_slug = actor_slug
         self.display_name = display_name
@@ -1520,6 +1521,10 @@ class RefResultDialog(QDialog):
         self.owner_view = owner_view
         self._variant_id = variant_id
         self._initial_outfit = initial_outfit
+        # 2026-06-24 (монстры 3в): custom_mode=True → «Пересоздать» идёт по
+        # монстр-промту (ACTOR_REF_PROMPT_CUSTOM, без фото/identity_anchor) и
+        # запускается через owner_view.start_custom_ref_generation. UI идентичен.
+        self.custom_mode = custom_mode
 
         self._variants: List[str] = list(initial_variants)
         self._current_idx: int = 0
@@ -1849,6 +1854,27 @@ class RefResultDialog(QDialog):
             filename = re.sub(r'[^a-zA-Z0-9_-]', '_', filename)
             if not filename:
                 filename = self.actor_slug
+
+            # 2026-06-24 (монстры 3в): монстр — промт без фото/identity_anchor,
+            # запуск через start_custom_ref_generation (та же target_dir = папка
+            # сериала; make_slug=False — slug карточки уже готов). Актёрский путь
+            # ниже НЕ затрагивается.
+            if self.custom_mode:
+                self._sync_pending_to_owner()
+                try:
+                    target_dir = Path(self._variants[0]).parent \
+                        if self._variants else Path(self.target_path).parent
+                except Exception:
+                    target_dir = Path()
+                prompt = _sa.ACTOR_REF_PROMPT_CUSTOM.format(description=desc)
+                try:
+                    self.owner_view.start_custom_ref_generation(
+                        self.actor_slug, self.display_name, desc,
+                        prompt, filename, target_dir, make_slug=False)
+                except Exception:
+                    traceback.print_exc()
+                self.accept()
+                return
 
             outfit_text = desc if desc else (
                 "Keep the person's appearance exactly as in the reference "

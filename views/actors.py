@@ -738,12 +738,22 @@ class ActorsView(QWidget):
         next_idx = len(slugs)
         for m in monsters:
             mslug = m['slug']
+            # 2026-06-24 (монстры 3в): pending_count из того же стека что у
+            # актёра → жёлтая кнопка «Готов новый референс (N)» на карточке.
+            mpending = len(self._pending_variants.get(mslug, []))
             mcard = ActorCard(
                 mslug, m['display_name'], m['photos'],
                 is_admin=self._is_admin, card_width=self._card_width,
                 generated_refs_count=len(m.get('sheets') or []),
-                pending_count=0)
+                pending_count=mpending)
             mcard.clicked.connect(self._on_custom_card_clicked)
+            # 2026-06-24 (монстры 3в): ВСЕ кнопки карточки 1:1 как у актёра.
+            mcard.pending_clicked.connect(self._on_pending_clicked)
+            mcard.view_refs_requested.connect(self._on_view_refs_requested)
+            mcard.create_ref_requested.connect(self._on_create_ref_requested)
+            mcard.rename_requested.connect(self._on_rename_actor)
+            mcard.delete_requested.connect(self._on_delete_actor)
+            mcard.error_dismissed.connect(self._on_actor_error_dismissed)
             # 2026-06-24 (монстры 3б): регистрируем карточку монстра в
             # _cards_by_slug — без этого общий прогресс-механизм ActorCard
             # (бар + счётчик секунд) не найдёт карточку во время генерации.
@@ -912,7 +922,8 @@ class ActorsView(QWidget):
     def start_custom_ref_generation(self, character_slug: str,
                                     display_name: str, description: str,
                                     prompt: str, output_filename: str,
-                                    target_dir: Path) -> bool:
+                                    target_dir: Path,
+                                    make_slug: bool = True) -> bool:
         """2026-06-24 (монстры 3б-redo): ТОНКАЯ обёртка генерации листа
         нестандартного персонажа БЕЗ фото. Прогресс-обвязка 1:1 как
         start_ref_generation (бар + секунды на карточке — общий механизм
@@ -932,7 +943,11 @@ class ActorsView(QWidget):
         карточки монстра нет в гриде и прогресс-бар некуда повесить; на finish
         дописываем реальный sheet_rel, на error — откат если листов нет."""
         try:
-            slug = self._make_custom_slug(character_slug)
+            # 2026-06-24 (монстры 3в): make_slug=False (регенерация из
+            # RefResultDialog) → character_slug УЖЕ готовый card-slug; не
+            # пере-слугифицируем (иначе guest_5 → guest_5_2 = новая карточка).
+            slug = (self._make_custom_slug(character_slug) if make_slug
+                    else character_slug)
             if not hasattr(self, '_ref_threads'):
                 self._ref_threads = []
             if not hasattr(self, '_active_generations'):
@@ -967,16 +982,19 @@ class ActorsView(QWidget):
                 c = self._cards_by_slug.get(slug)
                 if c is not None:
                     c.stop_progress()
-                # Хвост монстра: дописываем лист в custom.json. Реф лежит в
-                # папке СЕРИАЛА → sheet_rel относительно project_root (чтобы
-                # карточка на стр. Актёры нашла его на 3в, независимо от шоу).
-                try:
-                    sheet_rel = str(
-                        Path(target_path).relative_to(self.project_root))
-                except Exception:
-                    sheet_rel = Path(target_path).name
-                self._upsert_custom_character(
-                    slug, display_name, description, sheet_rel)
+                # 2026-06-24 (монстры 3в): 1:1 как актёр — кладём в pending-стек
+                # (зажигает жёлтую кнопку на карточке). В custom.json sheets НЕ
+                # пишем — это на «Оставить» (confirm_pending_kept). _last_outfit/
+                # _last_variant нужны попапу при «Пересоздать».
+                self._pending_variants.setdefault(slug, []).append(target_path)
+                self._last_outfit[slug] = description
+                self._last_variant[slug] = "simple"
+                open_dlg = self._open_result_dialogs.get(slug)
+                if open_dlg is not None:
+                    try:
+                        open_dlg.append_variant(target_path)
+                    except Exception:
+                        traceback.print_exc()
                 self.refresh()
                 self._notify_tab_blink_if_hidden()
                 self._show_status_temp(
@@ -987,9 +1005,11 @@ class ActorsView(QWidget):
                 c = self._cards_by_slug.get(slug)
                 if c is not None:
                     c.stop_progress()
-                # Неудачная ПЕРВАЯ генерация: откат placeholder если листов нет
-                # (не плодим «призрак»-карточки без листов).
-                self._delete_custom_character(slug, only_if_empty=True)
+                # 2026-06-24 (монстры 3в): откат placeholder ТОЛЬКО если у монстра
+                # нет НИ pending-вариантов, НИ sheets (истинно пустая первая
+                # генерация). Если pending есть (был успешный лист) — не трогаем.
+                if not self._pending_variants.get(slug):
+                    self._delete_custom_character(slug, only_if_empty=True)
                 self.refresh()
                 self._show_status_temp(msg or tr('create_ref_failed'))
 
@@ -1039,12 +1059,171 @@ class ActorsView(QWidget):
         return card
 
     def _on_custom_card_clicked(self, slug: str):
-        """2026-06-24 (монстры 3а, каркас): клик по карточке монстра. На 3в
-        подключим попап «Все референсы» монстра. Сейчас — заглушка."""
+        """2026-06-24 (монстры 3в, решение Alex): клик по ТЕЛУ карточки монстра —
+        no-op. У монстра нет фото-исходников (у актёра клик открывает галерею
+        фото). Просмотр листов — через кнопку «🖼 Все референсы (N)»."""
+        return
+
+    def _custom_record(self, slug: str):
+        """2026-06-24 (монстры 3в): запись монстра из custom.json по slug, либо
+        None если slug — обычный актёр (не монстр). Детект для монстр-веток
+        всех хендлеров карточки."""
         try:
-            print(f"[custom] card clicked: {slug} (Шаг 3в подключит просмотр)")
+            for m in self._list_custom_characters():
+                if m.get('slug') == slug:
+                    return m
         except Exception:
-            pass
+            traceback.print_exc()
+        return None
+
+    def _set_custom_sheets(self, slug: str, sheets) -> None:
+        """2026-06-24 (монстры 3в): перезаписывает sheets[] монстра в custom.json
+        (прочие поля сохраняются). Атомарно (temp+os.replace), cross-platform.
+        Нужно для ресинка после удаления листа в попапе «Все референсы»."""
+        import os
+        try:
+            meta_path = self.project_root / "actors" / "_custom" / "custom.json"
+            if not meta_path.is_file():
+                return
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                return
+            if not isinstance(data, dict) or slug not in data:
+                return
+            rec = data.get(slug) or {}
+            rec["sheets"] = list(sheets)
+            data[slug] = rec
+            tmp_path = meta_path.with_suffix(".json.tmp")
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            os.replace(str(tmp_path), str(meta_path))
+        except Exception:
+            traceback.print_exc()
+
+    def _view_custom_refs(self, slug: str, rec) -> None:
+        """2026-06-24 (монстры 3в): «Все референсы (N)» монстра — ТОТ ЖЕ
+        ActorPhotosDialog что у актёра, листы из custom.json sheets (resolved,
+        существующие). enable_delete как у character-рефов актёра. После
+        закрытия — ресинк sheets (удаление в попапе отражается на счётчике)."""
+        try:
+            refs = []
+            for s in (rec.get('sheets') or []):
+                p = self.project_root / s
+                if p.is_file():
+                    refs.append(p)
+            if not refs:
+                self._show_status_temp(tr('actor_refs_dialog_empty'))
+                return
+            display = rec.get('display_name') or slug
+            folder_path = refs[0].parent
+            character = folder_path.name
+            # texture/grid папки монстра — рядом с папкой рефов (1:1 как у актёра):
+            # shows/<show>/refs/characters_texture|characters_grid/<character>/.
+            # Выводим из folder_path (= .../refs/characters/<character>).
+            refs_root = folder_path.parent.parent  # .../shows/<show>/refs
+            texture_folder_path = refs_root / "characters_texture" / character
+            grid_folder_path = refs_root / "characters_grid" / character
+            # 2026-06-24 (монстры 3в): «✓ Использовать в эпизоде» — как у
+            # актёра: активна ТОЛЬКО когда ждёт pending ep-link (юзер пришёл из
+            # чата «+ Добавить персонажа»). bool(_pending_ep_links["__any__"]).
+            pick_for_ep_active = bool(self._pending_ep_links.get("__any__"))
+            dlg = ActorPhotosDialog(
+                display, refs, parent=self,
+                folder_path=folder_path,
+                enable_delete=True,
+                enable_edit=True,
+                enable_texture=True,
+                enable_pick_for_ep=pick_for_ep_active,
+                texture_folder_path=texture_folder_path,
+                grid_folder_path=grid_folder_path)
+            # 2026-06-24 (монстры 3в): ВСЕ per-thumb действия — ТЕ ЖЕ хендлеры
+            # что у актёра (НЕ форкаем). edit/texture/grid берут путь из
+            # src.parent → пишут в папки монстра. pick-for-ep линкует лист к
+            # эпизоду по character-папке (p.parent.name) — тот же механизм.
+            # edit-результат → _pending_variants[<char>] → жёлтая → keep →
+            # custom.json (3в). texture/grid — overlay в своих папках.
+            if pick_for_ep_active:
+                dlg.picked_for_ep.connect(self._on_pick_existing_ref_for_ep)
+            dlg.edit_ref_requested.connect(self._on_edit_actor_ref)
+            dlg.apply_texture_requested.connect(self._on_apply_texture_to_ref)
+            dlg.apply_grid_requested.connect(self._on_apply_grid_to_ref)
+            dlg.setWindowTitle(
+                tr('actor_refs_dialog_title', name=display, n=len(refs)))
+            dlg.exec()
+            # Ресинк: оставляем только реально существующие листы (юзер мог
+            # удалить через ✕ в попапе) — счётчик карточки совпадёт.
+            alive = [s for s in (rec.get('sheets') or [])
+                     if (self.project_root / s).is_file()]
+            self._set_custom_sheets(slug, alive)
+            self.refresh()
+        except Exception:
+            traceback.print_exc()
+
+    def _create_custom_ref(self, slug: str, rec) -> None:
+        """2026-06-24 (монстры 3в): «Создать референс» на карточке монстра →
+        CreateActorRefDialog(custom_mode=True) с префиллом сериала/персонажа из
+        существующего листа (sheets[0] = shows/<show>/refs/characters/<char>/…)."""
+        try:
+            prefill_show = None
+            prefill_character = None
+            sheets = rec.get('sheets') or []
+            if sheets:
+                try:
+                    parts = Path(sheets[0]).parts
+                    prefill_character = Path(sheets[0]).parent.name
+                    if 'shows' in parts:
+                        prefill_show = parts[parts.index('shows') + 1]
+                except Exception:
+                    traceback.print_exc()
+            if not prefill_show:
+                try:
+                    prefill_show = _sa.get_current_show(self.project_root)
+                except Exception:
+                    prefill_show = None
+            dlg = CreateActorRefDialog(
+                self.project_root, None, "",
+                [], status_bar=self.status_bar,
+                owner_view=self, parent=self,
+                prefill_show=prefill_show,
+                prefill_character=prefill_character,
+                prefill_description=(rec.get('description') or None),
+                custom_mode=True)
+            dlg.exec()
+        except Exception:
+            traceback.print_exc()
+
+    def _delete_custom_monster(self, slug: str, rec) -> None:
+        """2026-06-24 (монстры 3в): 🗑 на карточке монстра → попап подтверждения
+        (как у актёра) → удаляем запись из custom.json + pending/попап. Show-рефы
+        (shows/.../characters/<char>/) НЕ трогаем — зеркало delete_actor (он тоже
+        НЕ трогает сгенерированные рефы в shows/)."""
+        try:
+            display = rec.get('display_name') or slug
+            n = len(rec.get('sheets') or [])
+            box = QMessageBox(self.window())
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(tr('delete_actor_title'))
+            box.setText(tr('delete_actor_msg', name=display, n=n, slug=slug))
+            yes_btn = box.addButton(tr('delete_actor_yes'),
+                                    QMessageBox.ButtonRole.DestructiveRole)
+            no_btn = box.addButton(tr('delete_actor_no'),
+                                   QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(no_btn)
+            box.exec()
+            if box.clickedButton() is not yes_btn:
+                return
+            self._delete_custom_character(slug, only_if_empty=False)
+            self._pending_variants.pop(slug, None)
+            self._open_result_dialogs.pop(slug, None)
+            self._last_outfit.pop(slug, None)
+            self.refresh()
+            if self.status_bar:
+                self.status_bar.showMessage(
+                    tr('delete_actor_done', name=display), 5000)
+        except Exception:
+            traceback.print_exc()
 
     def _on_add_custom_clicked(self):
         """2026-06-24 (монстры 3б-redo / 3г): клик по карточке-плюс → актёрский
@@ -1222,6 +1401,12 @@ class ActorsView(QWidget):
         не использовался для генерации) — статус-сообщение «нет рефов»,
         попап не открывается. Юзер должен сгенерировать первый реф
         через ✨ — связь запишется и кнопка заработает."""
+        # 2026-06-24 (монстры 3в): монстр (slug в custom.json) → тот же попап,
+        # листы из custom.json sheets. Актёрский путь ниже — байт-в-байт.
+        rec = self._custom_record(slug)
+        if rec is not None:
+            self._view_custom_refs(slug, rec)
+            return
         try:
             display = _sa.actor_display_name(self.project_root, slug)
             refs = _sa.get_actor_generated_refs_paths(slug)
@@ -1653,6 +1838,11 @@ class ActorsView(QWidget):
         Долг 13: если есть `_pending_create_request` (юзер пришёл из
         чата эпизода с готовым описанием одежды) — префиллим попап
         и сбрасываем pending после открытия диалога."""
+        # 2026-06-24 (монстры 3в): монстр → custom-диалог с префиллом персонажа.
+        rec = self._custom_record(slug)
+        if rec is not None:
+            self._create_custom_ref(slug, rec)
+            return
         try:
             display = _sa.actor_display_name(self.project_root, slug)
             photos = _sa.get_actor_photos(self.project_root, slug)
@@ -2065,9 +2255,20 @@ class ActorsView(QWidget):
             variants = list(self._pending_variants.get(slug, []))
             if not variants:
                 return
-            display = _sa.actor_display_name(self.project_root, slug)
-            photos = _sa.get_actor_photos(self.project_root, slug)
-            saved_outfit = self._last_outfit.get(slug, "")
+            # 2026-06-24 (монстры 3в): монстр (slug в custom.json) → display/desc
+            # из локального стора, photos=[], custom_mode=True (regen пойдёт по
+            # монстр-промту). Актёрский путь (slug не в custom.json) — без изменений.
+            monsters = {m['slug']: m for m in self._list_custom_characters()}
+            is_custom = slug in monsters
+            if is_custom:
+                display = monsters[slug].get('display_name') or slug
+                photos = []
+                saved_outfit = (self._last_outfit.get(slug)
+                                or monsters[slug].get('description') or "")
+            else:
+                display = _sa.actor_display_name(self.project_root, slug)
+                photos = _sa.get_actor_photos(self.project_root, slug)
+                saved_outfit = self._last_outfit.get(slug, "")
             dlg = RefResultDialog(
                 actor_slug=slug,
                 display_name=display,
@@ -2076,6 +2277,7 @@ class ActorsView(QWidget):
                 owner_view=self,
                 initial_outfit=saved_outfit,
                 variant_id=self._last_variant.get(slug, "detailed"),
+                custom_mode=is_custom,
                 parent=self.window())
             self._open_result_dialogs[slug] = dlg
             # При закрытии любым способом — снять из открытых
@@ -2153,6 +2355,23 @@ class ActorsView(QWidget):
         ep_id_for_unreg = ""
         char_slug_for_unreg = ""
         try:
+            # 2026-06-24 (монстры 3в): монстр → персист выбранного листа в
+            # custom.json sheets (актёр хранит реф файлом в папке; у монстра
+            # карточка локальная). Эпизод-линк ниже работает как у актёра.
+            try:
+                monsters = {m['slug']: m
+                            for m in self._list_custom_characters()}
+                if slug in monsters and kept_path:
+                    try:
+                        sheet_rel = str(
+                            Path(kept_path).relative_to(self.project_root))
+                    except Exception:
+                        sheet_rel = Path(kept_path).name
+                    self._upsert_custom_character(
+                        slug, monsters[slug].get('display_name') or slug,
+                        monsters[slug].get('description') or "", sheet_rel)
+            except Exception:
+                traceback.print_exc()
             if kept_path:
                 try:
                     target_dir = Path(kept_path).parent
@@ -2366,6 +2585,21 @@ class ActorsView(QWidget):
                 self.status_bar.showMessage(f"⚠ {ex}", 5000)
 
     def _on_rename_actor(self, slug: str):
+        # 2026-06-24 (монстры 3в): монстр → переименование display_name в
+        # custom.json (slug/папка не трогаются — зеркало rename_actor, который
+        # тоже меняет ТОЛЬКО display_name). Видимое поведение идентично актёру.
+        rec = self._custom_record(slug)
+        if rec is not None:
+            dlg = AddActorDialog(parent=self.window(),
+                                 current_name=rec.get('display_name') or slug)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            new_name = dlg.value()
+            if new_name:
+                self._upsert_custom_character(
+                    slug, new_name, rec.get('description') or "", "")
+                self.refresh()
+            return
         cur = _sa.actor_display_name(self.project_root, slug)
         dlg = AddActorDialog(parent=self.window(), current_name=cur)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -2385,6 +2619,12 @@ class ActorsView(QWidget):
         и запись из `actors.json`. Сгенерированные рефы в shows/*/refs/
         characters/ НЕ трогаем — это либо личная работа админа (он сам
         почистит), либо вообще не наша зона ответственности."""
+        # 2026-06-24 (монстры 3в): монстр → удаление карточки (custom.json
+        # запись + pending). Show-рефы НЕ трогаем — как актёр.
+        rec = self._custom_record(slug)
+        if rec is not None:
+            self._delete_custom_monster(slug, rec)
+            return
         try:
             display = _sa.actor_display_name(self.project_root, slug)
             photos_count = len(_sa.get_actor_photos(self.project_root, slug))
