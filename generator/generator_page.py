@@ -71,6 +71,7 @@ class GeneratorPage(QWidget):
         # Параллельные генерации: список активных потоков (Pattern A: parent=None
         # + ссылка тут, Qt не соберёт; убираются по finished/error). Кнопку НЕ блокируем.
         self._gen_threads = []
+        self._upscale_threads = []  # 2026-06-25 (апскейл): фоновые UpscaleThread
         # Общий shimmer-такт (~20fps) для всех loading-плиток; стоит в простое.
         self._loading_cells = set()
         self._shimmer_phase = 0.0
@@ -1394,6 +1395,150 @@ class GeneratorPage(QWidget):
             pass
         if th in self._gen_threads:
             self._gen_threads.remove(th)
+
+    def upscale_result_cell(self, cell: ShimmerCell):
+        """2026-06-25 (апскейл): создать НОВУЮ loading-плитку рядом с исходной,
+        запустить UpscaleThread × 2 через локальный Real-ESRGAN.
+
+        ВАЖНО: исходная cell НЕ меняется. Результат — отдельный <stem>_2k.jpg
+        в той же папке холста (shows/<slug>/generator/), новая плитка на холсте.
+        Если движок не готов — спросить юзера разово через QMessageBox.question;
+        отказ → ничего не делать, никакой плитки не создаём."""
+        if not self._cell_alive(cell):
+            return
+        meta = cell.meta() if hasattr(cell, "meta") else {}
+        if not isinstance(meta, dict):
+            return
+        if (meta.get("type") or "image") != "image":
+            return
+        fname = (meta.get("file") or "").strip()
+        if not fname:
+            return
+        try:
+            import storyboard_app as _sa
+            root = _sa.get_stored_root()
+            slug = _sa.get_current_show(root) if root else None
+            if not (root and slug):
+                return
+            out_dir = root / "shows" / slug / "generator"
+            out_root = out_dir.resolve()
+            src_path = (out_dir / fname).resolve()
+            # Защита границ: src должен быть внутри out_dir (защита от
+            # битого canvas.json с относительным путём наружу).
+            if out_root not in src_path.parents and src_path != out_root:
+                return
+            if not src_path.is_file():
+                return
+        except Exception:
+            return
+
+        # Имя выходного файла: <stem>_2k.jpg (+ _2k_2.jpg при коллизии).
+        stem = src_path.stem
+        out_path = out_dir / f"{stem}_2k.jpg"
+        i = 2
+        while out_path.exists():
+            out_path = out_dir / f"{stem}_2k_{i}.jpg"
+            i += 1
+
+        # Спросить юзера про скачивание движка ОДИН РАЗ если он не готов.
+        try:
+            from threads.upscale_engine import is_engine_ready
+            engine_ready = is_engine_ready()
+        except Exception:
+            engine_ready = False
+        if not engine_ready:
+            try:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Question)
+                box.setWindowTitle("Скачать движок улучшения качества?")
+                box.setText(
+                    "Для апскейла нужно один раз скачать движок улучшения "
+                    "качества (~25 МБ). Скачать сейчас?")
+                yes_btn = box.addButton("Скачать", QMessageBox.ButtonRole.AcceptRole)
+                box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() is not yes_btn:
+                    return
+            except Exception:
+                traceback.print_exc()
+                return
+
+        # Создаём НОВУЮ loading-плитку с тем же аспектом что у исходной.
+        aspect = (cell.aspect() if hasattr(cell, "aspect")
+                  else (meta.get("aspect") or "16:9"))
+        try:
+            w, h = self._cell_wh(aspect)
+        except Exception:
+            w, h = (480, 270) if aspect != "9:16" else (270, 480)
+        new_cell = ShimmerCell(self, w, h, aspect=aspect)
+        # Сразу заявим в meta тип/aspect — _refresh_2k_enabled и т.п.
+        # На loading 2K сама себя скроет (state != image).
+        try:
+            new_cell.set_meta(type="image", aspect=aspect, model_label="2K")
+            new_cell.set_model_label("2K")
+            new_cell.set_loading_text("Подготовка…")
+        except Exception:
+            pass
+
+        # Зеркало _add_cell (генерация): новая плитка СВЕРХУ.
+        # self._cells и self._canvas_cells[active] — ОДИН И ТОТ ЖЕ объект
+        # (см. _canvas_cells[canvas_id] = self._cells, line ~377),
+        # поэтому отдельная вставка в _canvas_cells НЕ НУЖНА и была неверна.
+        try:
+            self._empty_host.hide()
+            self._grid_host.show()
+            self._cells.insert(0, new_cell)
+            try:
+                self._cell_count = len(self._cells)
+            except Exception:
+                pass
+            self._relayout_grid()
+            self.register_loading(new_cell)
+        except Exception:
+            pass
+
+        # Запуск воркера.
+        from generator.upscale_thread import UpscaleThread
+        th = UpscaleThread(src_path, out_path, parent=self)
+        self._upscale_threads.append(th)
+        th.progress.connect(
+            lambda msg, c=new_cell: c.set_loading_text(msg))
+        th.finished.connect(
+            lambda path, c=new_cell, t=th: self._on_upscale_done(c, t, path))
+        th.failed.connect(
+            lambda msg, c=new_cell, t=th: self._on_upscale_fail(c, t, msg))
+        th.start()
+
+    def _on_upscale_done(self, cell: ShimmerCell, th, path: str):
+        """2026-06-25 (апскейл): UpscaleThread.finished → файл готов.
+        Зеркало _on_gen_done."""
+        if not self._cell_alive(cell):
+            if th in self._upscale_threads:
+                self._upscale_threads.remove(th)
+            return
+        try:
+            cell.set_image(path)
+            import os, time
+            fname = os.path.basename(path)
+            cell.set_meta(file=fname, ts=time.time(), type="image")
+            self._save_canvas()
+        except Exception:
+            pass
+        if th in self._upscale_threads:
+            self._upscale_threads.remove(th)
+
+    def _on_upscale_fail(self, cell: ShimmerCell, th, msg: str):
+        """2026-06-25 (апскейл): UpscaleThread.failed → ошибка на плитке."""
+        if not self._cell_alive(cell):
+            if th in self._upscale_threads:
+                self._upscale_threads.remove(th)
+            return
+        try:
+            cell.set_error((msg or "Ошибка апскейла")[:200])
+        except Exception:
+            pass
+        if th in self._upscale_threads:
+            self._upscale_threads.remove(th)
 
     def delete_result_cell(self, cell: ShimmerCell):
         """Удалить плитку генератора: готовый файл с диска или error-карточку

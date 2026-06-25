@@ -1,8 +1,9 @@
 """threads/upscale_engine.py — слой движка локального апскейла.
 
-Источник: Real-ESRGAN ncnn-vulkan v0.2.5.0 (xinntao) + модель ultramix-balanced-4x
-(из основного репо upscayl/upscayl/resources/models/). Поставка — ДОГРУЗКА при
-первом апскейле, НЕ бандл, НЕ в репозитории, НЕ в релизе.
+Источник: upscayl-bin (upscayl/upscayl-ncnn, тот же движок что юзает Upscayl-app
+— даёт чистый результат без мозаики, в отличие от xinntao Real-ESRGAN) +
+модель ultramix-balanced-4x (из основного репо upscayl/upscayl/resources/models/).
+Поставка — ДОГРУЗКА при первом апскейле, НЕ бандл, НЕ в репозитории, НЕ в релизе.
 
 Кэш — ВНЕ обновляемой папки приложения, auto-update его не затирает:
   Mac:   ~/Library/Application Support/StoryboardStudio/upscayl/
@@ -51,24 +52,25 @@ import requests
 
 # ─── Источники догрузки (точные URL + sha256, проверены на реальных файлах) ─
 
-REAL_ESRGAN_TAG = "v0.2.5.0"
-REAL_ESRGAN_BUILD = "20220424"
+# upscayl-bin — голый бинарь из репо upscayl/upscayl-ncnn (отдельный от
+# основного upscayl/upscayl). Это ТОТ ЖЕ движок что Upscayl-app кладёт под
+# капот; даёт чистую картинку без мозаики (в отличие от xinntao realesrgan).
+UPSCAYL_NCNN_TAG = "20251207-174704"
 
-# Real-ESRGAN ncnn-vulkan: Mac (universal: arm64 + x86_64) + Windows x64.
+# Mac (universal arm64+x86_64) + Windows x64. Структура zip:
+#   <tag>/upscayl-bin (или .exe) + LICENSE + README.md
 _BIN_URLS = {
-    "darwin": (f"https://github.com/xinntao/Real-ESRGAN/releases/download/"
-               f"{REAL_ESRGAN_TAG}/realesrgan-ncnn-vulkan-"
-               f"{REAL_ESRGAN_BUILD}-macos.zip"),
-    "win32":  (f"https://github.com/xinntao/Real-ESRGAN/releases/download/"
-               f"{REAL_ESRGAN_TAG}/realesrgan-ncnn-vulkan-"
-               f"{REAL_ESRGAN_BUILD}-windows.zip"),
+    "darwin": (f"https://github.com/upscayl/upscayl-ncnn/releases/download/"
+               f"{UPSCAYL_NCNN_TAG}/upscayl-bin-{UPSCAYL_NCNN_TAG}-macos.zip"),
+    "win32":  (f"https://github.com/upscayl/upscayl-ncnn/releases/download/"
+               f"{UPSCAYL_NCNN_TAG}/upscayl-bin-{UPSCAYL_NCNN_TAG}-windows.zip"),
 }
 
 # sha256 ИЗВЛЕЧЁННОГО бинаря (не самого zip). Посчитано локально через
-# shasum -a 256 на realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan.exe.
+# shasum -a 256 на upscayl-bin/upscayl-bin.exe из релиза tag 20251207-174704.
 _BIN_SHA256 = {
-    "darwin": "c1c35d92079085de96b9d547fd7e4464bc8a2e9ccf28d7b8c712d72ade91b7cc",
-    "win32":  "07e49f7cbb4ede01ae4dd4c399d3a7e5846e3d2085c3128eff881e55cb7b1a0c",
+    "darwin": "b7f54f362fc10d5f334e587fb90917e95a5557ec1cfefbddce78657dd3fee055",
+    "win32":  "294d31be8f29d047c0d91a8dcd5e739616ece56bce3188ac688f9a52d70abe60",
 }
 
 # Модель ultramix-balanced-4x — лежит в основном репо upscayl/upscayl
@@ -86,14 +88,14 @@ _MODEL_PARAM_NAME = "ultramix-balanced-4x.param"
 _MODEL_BIN_SHA256 = "171cae5968485d366b4fb575d232f98d117d94b766b15f22849cfccde40d2050"
 _MODEL_PARAM_SHA256 = "859ecba5b3592ecf3e76c93bed65e9f627b5236dd696aae5a84ecf8c93ab65ce"
 
-# Sanity-пороги размера. Реальные размеры:
-#   mac bin     26 787 080  (25.5 MB)
-#   win .exe     6 161 408  ( 5.9 MB)   ← Win сильно меньше Mac
+# Sanity-пороги размера. Реальные размеры upscayl-bin tag 20251207-174704:
+#   mac bin     28 266 680  (27.0 MB)
+#   win .exe     7 763 968  ( 7.4 MB)
 #   model.bin   33 424 520  (31.9 MB)
 #   model.param    140 295  ( 137 KB)
 _BIN_MIN_BYTES = {
-    "darwin": 10_000_000,   # ≥ 10 MB (запас под Mac binary 25 MB)
-    "win32":   3_000_000,   # ≥  3 MB (Win .exe всего 6 MB)
+    "darwin": 10_000_000,   # ≥ 10 MB (запас под Mac binary 27 MB)
+    "win32":   3_000_000,   # ≥  3 MB (Win .exe всего 7 MB)
 }
 _MODEL_BIN_MIN_BYTES = 25_000_000   # ≥ 25 MB
 _MODEL_PARAM_MIN_BYTES = 50_000      # ≥ 50 KB
@@ -130,8 +132,8 @@ def get_upscayl_paths() -> Dict[str, Path]:
     root = _appdata_root() / "upscayl"
     bin_dir = root / "bin"
     models_dir = root / "models"
-    bin_name = ("realesrgan-ncnn-vulkan.exe" if sys.platform == "win32"
-                else "realesrgan-ncnn-vulkan")
+    bin_name = ("upscayl-bin.exe" if sys.platform == "win32"
+                else "upscayl-bin")
     return {
         "root": root,
         "bin_dir": bin_dir,
@@ -247,12 +249,13 @@ def _download_to(url: str, dst: Path, on_log: Optional[LogCb],
 
 def _extract_bin_from_zip(zip_path: Path, dest_bin: Path,
                           on_log: Optional[LogCb]) -> bool:
-    """Достаёт `realesrgan-ncnn-vulkan[.exe]` из zip → копирует в dest_bin.
-    На Win также копирует все .dll из той же папки в bin_dir (vcomp140.dll —
-    OpenMP runtime, .exe без неё не стартует если её нет в системе).
-    Парные models/ из zip игнорируем — модель идёт отдельным download'ом."""
-    wanted_name = ("realesrgan-ncnn-vulkan.exe" if sys.platform == "win32"
-                   else "realesrgan-ncnn-vulkan")
+    """Достаёт `upscayl-bin[.exe]` из zip → копирует в dest_bin. Внутри zip —
+    подпапка <tag>/, поиск через rglob. На Win также копирует все .dll из той
+    же папки в bin_dir (защита на будущее: текущий релиз 20251207-174704 .dll
+    рядом не кладёт, но если upstream добавит — подхватим без правок кода).
+    LICENSE/README.md из zip игнорируем; модель идёт отдельным download'ом."""
+    wanted_name = ("upscayl-bin.exe" if sys.platform == "win32"
+                   else "upscayl-bin")
     dest_bin.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sb_upscale_zip_") as tmp_dir:
         tmp_root = Path(tmp_dir)
@@ -317,7 +320,7 @@ def _apply_exec_perms(bin_path: Path, on_log: Optional[LogCb]) -> None:
 
 def _ensure_binary(on_log: Optional[LogCb],
                    progress_cb: Optional[ProgressCb]) -> bool:
-    """Гарантирует наличие бинаря Real-ESRGAN с правильным sha256. Если файл
+    """Гарантирует наличие бинаря upscayl-bin с правильным sha256. Если файл
     уже валиден (size+sha) — НЕ КАЧАЕТ. На битом/несовпавшем sha — 1 повтор."""
     p = get_upscayl_paths()
     bin_path = p["bin_path"]

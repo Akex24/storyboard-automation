@@ -81,6 +81,23 @@ _ACTIONS_OVERLAY_QSS = (
     "QToolButton#cell-act-trash:hover {"
     " background: rgba(20,20,24,0.72);"
     "}"
+    # 2026-06-25 (апскейл): «2K» — золотой LUMZ accent_gold #d4a256, текстом без иконки.
+    "QToolButton#cell-act-2k {"
+    " background: rgba(212,162,86,0.18);"
+    " border: 1px solid rgba(212,162,86,0.55);"
+    " color: #f3d28a;"
+    " font-size: 11px; font-weight: 700;"
+    "}"
+    "QToolButton#cell-act-2k:hover {"
+    " background: rgba(212,162,86,0.32);"
+    " border-color: rgba(212,162,86,0.78);"
+    " color: #fff3c4;"
+    "}"
+    "QToolButton#cell-act-2k:disabled {"
+    " background: rgba(212,162,86,0.06);"
+    " border: 1px solid rgba(212,162,86,0.18);"
+    " color: rgba(212,162,86,0.45);"
+    "}"
     "QToolButton:disabled {"
     " background: rgba(20,20,24,0.40);"
     " border: 1px solid rgba(255,255,255,0.08);"
@@ -139,6 +156,11 @@ class ShimmerCell(QFrame):
 
         # ── персональный счётчик секунд (паттерн ActorCard, views/actors.py:312) ──
         self._t0 = time.time()
+        # 2026-06-25 (апскейл): если внешний код выставил текст через
+        # set_loading_text — _tick_seconds НЕ перезаписывает _info_lbl до
+        # _finish_common (там сбрасываем). Иначе «Скачиваю движок: 24%»
+        # мигало бы с секундным счётчиком «12с» каждый тик.
+        self._loading_text_external = False
         self._sec_timer = QTimer(self)
         self._sec_timer.setInterval(1000)
         self._sec_timer.timeout.connect(self._tick_seconds)
@@ -160,24 +182,23 @@ class ShimmerCell(QFrame):
         self._actions_overlay.setStyleSheet(_ACTIONS_OVERLAY_QSS)
         self._actions_overlay.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        # Ориентация ряда зависит от формата плитки: 9:16 → ВЕРТИКАЛЬНЫЙ столбик
-        # (4 кнопки сверху вниз) — горизонтальный ряд не влезает по ширине узкой
-        # плитки на S/M. 16:9 → горизонтальный ряд слева направо (как было).
-        # _aspect задаётся при __init__ и не меняется → один раз при создании.
-        if self._aspect == "9:16":
-            ah = QVBoxLayout(self._actions_overlay)
-        else:
-            ah = QHBoxLayout(self._actions_overlay)
-        ah.setContentsMargins(0, 0, 0, 0)
-        ah.setSpacing(6)
+        # 2026-06-25 (апскейл): структура overlay'ев:
+        #   16:9 — _actions_overlay становится VBox с двумя HBox-строками:
+        #     верхняя: heart → image-plus → corner-up-left → trash
+        #     нижняя: btn_2k под корзиной (с растяжкой слева)
+        #     _aux_2k_overlay (спутник для 9:16) НЕ создаётся.
+        #   9:16 — _actions_overlay остаётся VBox (4 иконки сверху вниз),
+        #     btn_2k — в ОТДЕЛЬНОМ _aux_2k_overlay слева от верхней (корзины).
+        # _aspect задаётся при __init__ и не меняется.
         # Ленивый импорт get_icon — паттерн generator_page._icon (избегает
         # circular import + frozen-проблем). Пустой QIcon → кнопка без картинки.
         try:
             from storyboard_app import get_icon as _get_icon
         except Exception:
             _get_icon = lambda _n: None   # noqa: E731
-        def _mk_btn(icon_name: str, obj_name: str = "") -> QToolButton:
-            b = QToolButton(self._actions_overlay)
+        def _mk_btn(icon_name: str, obj_name: str = "",
+                    parent_overlay: QWidget = None) -> QToolButton:
+            b = QToolButton(parent_overlay or self._actions_overlay)
             if obj_name:
                 b.setObjectName(obj_name)
             b.setFixedSize(28, 28)
@@ -187,26 +208,70 @@ class ShimmerCell(QFrame):
                 b.setIcon(ic)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             return b
-        # 16:9 → слева направо: heart → image-plus → corner-up-left → trash-2-red (как было).
-        # 9:16 → сверху вниз: trash-2-red → corner-up-left → image-plus → heart.
+
         self.btn_heart = _mk_btn("heart")
         self.btn_ref   = _mk_btn("image-plus")
         self.btn_back  = _mk_btn("corner-up-left")
         self.btn_trash = _mk_btn("trash-2-red", obj_name="cell-act-trash")
-        _order = ((self.btn_trash, self.btn_back, self.btn_ref, self.btn_heart)
-                  if self._aspect == "9:16"
-                  else (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash))
-        for _b in _order:
-            ah.addWidget(_b)
-        # btn_back / btn_ref / btn_trash оживлены; heart пока пустая.
+        self.btn_2k    = _mk_btn("", obj_name="cell-act-2k")
+        self.btn_2k.setText("2K")
+        self.btn_2k.setIconSize(QSize(0, 0))
+        self.btn_2k.setToolTip("Улучшить качество ×2")
+        # Спутник для 9:16: РОДИТЕЛЬ — сама плитка, не _actions_overlay (его
+        # позиция считается в углу). _aux_2k_overlay позиционируется отдельно.
+        self._aux_2k_overlay = None
+        if self._aspect == "9:16":
+            # _aux_2k_overlay — отдельный QWidget на плитке, слева от корзины.
+            self._aux_2k_overlay = QWidget(self)
+            self._aux_2k_overlay.setObjectName("cell-actions")
+            self._aux_2k_overlay.setStyleSheet(_ACTIONS_OVERLAY_QSS)
+            self._aux_2k_overlay.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            _aux_h = QHBoxLayout(self._aux_2k_overlay)
+            _aux_h.setContentsMargins(0, 0, 0, 0)
+            _aux_h.setSpacing(6)
+            # Меняем родителя кнопки на спутник (была привязана к _actions_overlay
+            # в _mk_btn по умолчанию). setParent сохраняет состояние.
+            self.btn_2k.setParent(self._aux_2k_overlay)
+            _aux_h.addWidget(self.btn_2k)
+            self._aux_2k_overlay.hide()
+            # _actions_overlay — VBox 4 иконки (без btn_2k).
+            ah = QVBoxLayout(self._actions_overlay)
+            ah.setContentsMargins(0, 0, 0, 0)
+            ah.setSpacing(6)
+            # 9:16 — сверху вниз: trash → back → ref → heart.
+            for _b in (self.btn_trash, self.btn_back, self.btn_ref, self.btn_heart):
+                ah.addWidget(_b)
+        else:
+            # 16:9 — _actions_overlay = VBox{ HBox{heart,ref,back,trash}, HBox{spacer,btn_2k} }.
+            ah = QVBoxLayout(self._actions_overlay)
+            ah.setContentsMargins(0, 0, 0, 0)
+            ah.setSpacing(6)
+            _top = QHBoxLayout()
+            _top.setContentsMargins(0, 0, 0, 0)
+            _top.setSpacing(6)
+            for _b in (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash):
+                _top.addWidget(_b)
+            _bot = QHBoxLayout()
+            _bot.setContentsMargins(0, 0, 0, 0)
+            _bot.setSpacing(6)
+            _bot.addStretch()
+            _bot.addWidget(self.btn_2k)
+            ah.addLayout(_top)
+            ah.addLayout(_bot)
+        # btn_back / btn_ref / btn_trash / btn_2k оживлены; heart пока пустая.
         self.btn_back.clicked.connect(self._on_back_clicked)
         self.btn_ref.clicked.connect(self._on_ref_clicked)
         self.btn_trash.clicked.connect(self._on_trash_clicked)
+        self.btn_2k.clicked.connect(self._on_2k_clicked)
         self._refresh_back_enabled()   # начальное состояние от текущего _meta
         self._refresh_ref_enabled()    # btn_ref активна, когда есть meta.file
         self._refresh_trash_enabled()  # trash активна, когда есть готовый файл
+        self._refresh_2k_enabled()     # 2k активна только когда meta.type=='image' + есть файл
         self._actions_overlay.hide()
         self._position_actions_overlay()
+        if self._aux_2k_overlay is not None:
+            self._position_aux_2k_overlay()
 
         # ── ЛЕВЫЙ overlay: одна кнопка «показать в Finder/Explorer» (reveal).
         # ОТДЕЛЬНЫЙ виджет (не в правом кластере heart/ref/back/trash): прижат в
@@ -232,6 +297,9 @@ class ShimmerCell(QFrame):
     def _tick_seconds(self):
         if self._state != "loading":
             return
+        # 2026-06-25 (апскейл): не топчем внешний прогресс (см. set_loading_text).
+        if getattr(self, "_loading_text_external", False):
+            return
         elapsed = max(0, int(time.time() - self._t0))
         self._info_lbl.setText(f"{elapsed}с")
 
@@ -250,6 +318,9 @@ class ShimmerCell(QFrame):
             self._sec_timer.stop()
         except Exception:
             pass
+        # 2026-06-25 (апскейл): освободить флаг внешнего текста — на случай
+        # если плитку позже переиспользуют под другую загрузку.
+        self._loading_text_external = False
         try:
             self._page.unregister_loading(self)
         except Exception:
@@ -267,6 +338,7 @@ class ShimmerCell(QFrame):
         self._info_lbl.hide()
         self._rescale_pixmap()
         self._refresh_reveal_enabled()
+        self._refresh_2k_enabled()
         self.update()
 
     def set_video_placeholder(self, path: str):
@@ -326,6 +398,10 @@ class ShimmerCell(QFrame):
             self._refresh_trash_enabled()
         except Exception:
             pass
+        try:
+            self._refresh_2k_enabled()
+        except Exception:
+            pass
 
     def meta(self) -> dict:
         """Текущие метаданные плитки (словарь). Источник для будущего сохранения холста."""
@@ -341,6 +417,7 @@ class ShimmerCell(QFrame):
         # Перепозиционировать hover-оверлеи под новый размер плитки.
         self._position_actions_overlay()
         self._position_left_overlay()
+        self._position_aux_2k_overlay()
         self.update()
 
     def _rescale_pixmap(self):
@@ -373,6 +450,24 @@ class ShimmerCell(QFrame):
             return
         ov.adjustSize()
         ov.move(8, 8)
+
+    def _position_aux_2k_overlay(self):
+        """2026-06-25 (апскейл, 9:16): спутник с btn_2k — СЛЕВА от верхней кнопки
+        основного overlay (= слева от корзины в 9:16). Зовётся в __init__ и в
+        set_size (симметрично _position_actions_overlay)."""
+        ov = getattr(self, "_aux_2k_overlay", None)
+        if ov is None:
+            return
+        main = getattr(self, "_actions_overlay", None)
+        if main is None:
+            return
+        main.adjustSize()
+        ov.adjustSize()
+        # _actions_overlay в углу: x=card_w - mw - 8, y=8. Спутник x=main.x - ov.w - 6.
+        main_x = max(0, self._w - main.width() - 8)
+        x = max(0, main_x - ov.width() - 6)
+        y = 8
+        ov.move(x, y)
 
     # ── hover-автоплей видео (QVideoSink → кадры рисуем в paintEvent) ──────
     def _ensure_player(self) -> bool:
@@ -509,6 +604,12 @@ class ShimmerCell(QFrame):
         if lov is not None and getattr(self, "_reveal_ok", False):
             lov.show()
             lov.raise_()
+        # 2026-06-25 (апскейл): спутник 2K (только в 9:16). На hover — поверх,
+        # только если btn_2k enabled (image + есть file).
+        aux2k = getattr(self, "_aux_2k_overlay", None)
+        if aux2k is not None and self.btn_2k.isEnabled():
+            aux2k.show()
+            aux2k.raise_()
         # ── hover-автоплей видео (кадры через QVideoSink → paintEvent) ──
         # Кнопки-оверлеи показаны ВЫШЕ и от видео НЕ зависят (видео = отрисовка в
         # paintEvent, кнопки — дочерние QWidget поверх). Гейта видимости больше нет:
@@ -532,6 +633,10 @@ class ShimmerCell(QFrame):
         lov = getattr(self, "_left_overlay", None)
         if lov is not None:
             lov.hide()
+        # 2026-06-25 (апскейл): спутник 2K (9:16).
+        aux2k = getattr(self, "_aux_2k_overlay", None)
+        if aux2k is not None:
+            aux2k.hide()
         # Стоп видео+звука, сброс кадра/флагов → плитка возвращается к превью+▶
         # (paintEvent). Поздний кадр после этого игнорится (_video_active=False).
         self._stop_video_playback()
@@ -599,6 +704,27 @@ class ShimmerCell(QFrame):
         btn.setCursor(Qt.CursorShape.PointingHandCursor
                       if enabled else Qt.CursorShape.ArrowCursor)
 
+    def _refresh_2k_enabled(self):
+        """2026-06-25 (апскейл): «2K» видна ТОЛЬКО у image-карточек с готовым
+        файлом. type определяем по meta — стабильнее чем _state (живёт даже на
+        loading-плитке, но enabled только при наличии file)."""
+        btn = getattr(self, "btn_2k", None)
+        if btn is None:
+            return
+        is_image = False
+        has_file = False
+        if isinstance(self._meta, dict):
+            is_image = (self._meta.get("type") or "image") == "image"
+            has_file = bool((self._meta.get("file") or "").strip())
+        enabled = bool(is_image and has_file and self._state == "image")
+        btn.setVisible(is_image)
+        btn.setEnabled(enabled)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor
+                      if enabled else Qt.CursorShape.ArrowCursor)
+        aux = getattr(self, "_aux_2k_overlay", None)
+        if aux is not None:
+            aux.setVisible(False)  # спутник появляется на hover, не сразу
+
     def _on_ref_clicked(self):
         """Клик по btn_ref: прикрепить файл этой плитки к prompt-bar как реф
         к следующей генерации. Страница резолвит полный путь из meta['file']
@@ -637,6 +763,31 @@ class ShimmerCell(QFrame):
         except Exception:
             pass
 
+    def _on_2k_clicked(self):
+        """2026-06-25 (апскейл): делегировать страницe. Page создаст НОВУЮ
+        loading-плитку рядом и запустит UpscaleThread; исходную НЕ трогает."""
+        if self._page is None:
+            return
+        try:
+            self._page.upscale_result_cell(self)
+        except Exception:
+            pass
+
+    def set_loading_text(self, msg: str) -> None:
+        """2026-06-25 (апскейл): публичный API для трансляции прогресса
+        («Скачиваю движок: 24%», «Улучшаю качество: 42%») в плашку лоадера.
+        Только в state=='loading' — иначе игнорируем (не плодим текст на image).
+        Выставляет _loading_text_external=True, чтобы _tick_seconds не
+        перетёр через секунду. Флаг сбросится в _finish_common."""
+        if self._state != "loading":
+            return
+        try:
+            self._loading_text_external = True
+            self._info_lbl.setText(msg or "")
+            self._info_lbl.show()
+        except Exception:
+            pass
+
     def set_error(self, msg: str):
         self._finish_common()
         self._state = "error"
@@ -651,6 +802,7 @@ class ShimmerCell(QFrame):
         self._refresh_reveal_enabled()
         self._refresh_ref_enabled()
         self._refresh_trash_enabled()
+        self._refresh_2k_enabled()
         self.update()
 
     # ── play-треугольник по центру (плитка готового видео, заглушка до кадра) ──
