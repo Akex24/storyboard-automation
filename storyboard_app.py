@@ -215,6 +215,29 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPainterPath, QAction, QGuiApplication, QKeySequence, QShortcut, QColor, QTextCursor, QIcon
 
+
+class _BlockCarouselScrollArea(QScrollArea):
+    """Horizontal wheel-scroll area for compact block pills."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def wheelEvent(self, ev):
+        delta = ev.angleDelta()
+        step = delta.x() if delta.x() else delta.y()
+        if step:
+            bar = self.horizontalScrollBar()
+            bar.setValue(bar.value() - step)
+            ev.accept()
+            return
+        super().wheelEvent(ev)
+
 # ─── Константы ───────────────────────────────────────────────────────────────
 APP_ORG  = "StoryboardStudio"
 APP_NAME = "StoryboardApp"
@@ -3051,23 +3074,27 @@ QPushButton#nav-select[active="true"] {
     border-color: rgba(228, 52, 74, 0.40);
 }
 QPushButton#nav-arrow {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
-    color: rgba(255, 255, 255, 0.78);
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 14px;
+    font-weight: 800;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 26px;
+    max-height: 26px;
     padding: 0;
-    font-size: 16px;
-    font-weight: 700;
 }
 QPushButton#nav-arrow:hover {
-    background: rgba(255, 255, 255, 0.09);
-    border-color: rgba(255, 255, 255, 0.18);
-    color: #ffffff;
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.92);
 }
 QPushButton#nav-arrow:disabled {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.09);
-    color: rgba(255, 255, 255, 0.45);
+    background: rgba(255, 255, 255, 0.02);
+    border-color: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.26);
 }
 QLabel#nav-label {
     color: rgba(255, 255, 255, 0.55);
@@ -3199,6 +3226,33 @@ QWidget#blocks-bar {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
+}
+QScrollArea#block-carousel-scroll {
+    background: transparent;
+    border: none;
+}
+QPushButton#block-carousel-arrow {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 14px;
+    font-weight: 800;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0;
+}
+QPushButton#block-carousel-arrow:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.92);
+}
+QPushButton#block-carousel-arrow:disabled {
+    background: rgba(255, 255, 255, 0.02);
+    border-color: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.26);
 }
 
 QPushButton#pill-block {
@@ -3498,13 +3552,15 @@ QPushButton#pill-block[active="true"][unseen="true"]:hover {
 /* Кнопка «Референсы» — золотой текст (LUMZ accent_gold), прозрачный фон.
    Когда активна — accent_red подсветка + белый текст. */
 QPushButton#pill-refs {
-    background: transparent; border: 1px solid transparent;
-    border-radius: 6px; padding: 6px 14px;
+    background: rgba(212, 162, 86, 0.08);
+    border: 1px solid rgba(212, 162, 86, 0.24);
+    border-radius: 8px; padding: 0 14px;
     color: #d4a256;
-    font-size: 12px; font-weight: 500; min-height: 14px;
+    font-size: 12px; font-weight: 600;
 }
 QPushButton#pill-refs:hover {
-    background: rgba(212, 162, 86, 0.10);
+    background: rgba(212, 162, 86, 0.14);
+    border-color: rgba(212, 162, 86, 0.42);
     color: #e1b46d;
 }
 QPushButton#pill-refs[active="true"] {
@@ -3532,13 +3588,15 @@ QPushButton#pill-refs[has_notice="true"]:hover {
 /* Пилюля «ЧАТ» — белый текст (text_primary), прозрачный фон.
    Когда активен — accent_red подсветка. */
 QPushButton#pill-chat {
-    background: transparent; border: 1px solid transparent;
-    border-radius: 6px; padding: 6px 14px;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 8px; padding: 0 14px;
     color: #ffffff;
-    font-size: 12px; font-weight: 500; min-height: 14px;
+    font-size: 12px; font-weight: 600;
 }
 QPushButton#pill-chat:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.075);
+    border-color: rgba(255, 255, 255, 0.17);
 }
 QPushButton#pill-chat[active="true"] {
     background: rgba(228, 52, 74, 0.15);
@@ -8606,10 +8664,10 @@ class MainWindow(QMainWindow):
         nav_row.addWidget(self.nav_ep_label)
         self.ep_prev_btn = QPushButton("‹")
         self.ep_prev_btn.setObjectName("nav-arrow")
-        self.ep_prev_btn.setFixedSize(24, NAV_H)
+        self.ep_prev_btn.setFixedSize(24, 26)
         self.ep_prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ep_prev_btn.clicked.connect(lambda: self._step_episode(-1))
-        nav_row.addWidget(self.ep_prev_btn)
+        nav_row.addWidget(self.ep_prev_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
         self.ep_select_btn = QPushButton("")
         self.ep_select_btn.setObjectName("nav-select")
         self.ep_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -8618,10 +8676,10 @@ class MainWindow(QMainWindow):
         nav_row.addWidget(self.ep_select_btn)
         self.ep_next_btn = QPushButton("›")
         self.ep_next_btn.setObjectName("nav-arrow")
-        self.ep_next_btn.setFixedSize(24, NAV_H)
+        self.ep_next_btn.setFixedSize(24, 26)
         self.ep_next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ep_next_btn.clicked.connect(lambda: self._step_episode(1))
-        nav_row.addWidget(self.ep_next_btn)
+        nav_row.addWidget(self.ep_next_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.nav_block_label = QLabel(tr('block'))
         self.nav_block_label.setObjectName("nav-label")
@@ -8826,14 +8884,41 @@ class MainWindow(QMainWindow):
         # по 9 блок-пилюль в каждой. Refs/Chat пилюли всегда в первой строке
         # (напротив блоков 1-9). _clear_layout рекурсивный — чистит вложенные.
         self.block_pills_layout = QVBoxLayout(self.block_pills_container)
-        self.block_pills_layout.setContentsMargins(5, 5, 5, 5)
-        self.block_pills_layout.setSpacing(4)
+        self.block_pills_layout.setContentsMargins(4, 3, 4, 3)
+        self.block_pills_layout.setSpacing(0)
+        if getattr(self, '_compact_nav_enabled', False):
+            # 10 compact block buttons: 10*44px + 9*2px spacing + 8px margins.
+            # Keep the outer pill fixed so fullscreen layouts cannot stretch
+            # the background into a long empty bar.
+            self.block_pills_container.setFixedSize(466, 34)
+            self.block_pills_container.setSizePolicy(
+                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         blk_row = QHBoxLayout()
         blk_row.setSpacing(8)
         self.inline_block_label = QLabel(tr('block'))
         self.inline_block_label.setObjectName("nav-label")
         blk_row.addWidget(self.inline_block_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+        if getattr(self, '_compact_nav_enabled', False):
+            self._block_carousel_left_btn = QPushButton("‹")
+            self._block_carousel_left_btn.setObjectName("block-carousel-arrow")
+            self._block_carousel_left_btn.setCursor(
+                Qt.CursorShape.PointingHandCursor)
+            self._block_carousel_left_btn.clicked.connect(
+                lambda: self._scroll_block_carousel(-5))
+            blk_row.addWidget(
+                self._block_carousel_left_btn,
+                alignment=Qt.AlignmentFlag.AlignVCenter)
         blk_row.addWidget(self.block_pills_container)
+        if getattr(self, '_compact_nav_enabled', False):
+            self._block_carousel_right_btn = QPushButton("›")
+            self._block_carousel_right_btn.setObjectName("block-carousel-arrow")
+            self._block_carousel_right_btn.setCursor(
+                Qt.CursorShape.PointingHandCursor)
+            self._block_carousel_right_btn.clicked.connect(
+                lambda: self._scroll_block_carousel(5))
+            blk_row.addWidget(
+                self._block_carousel_right_btn,
+                alignment=Qt.AlignmentFlag.AlignVCenter)
         blk_row.addStretch()
         # Кнопка «Удалить эпизод» — всегда справа в той же строке. Disabled
         # когда нет активного эпизода. Клик → диалог подтверждения → удаление
@@ -9035,12 +9120,12 @@ class MainWindow(QMainWindow):
         self.refs_layout.setContentsMargins(0, 0, 0, 0)
         self.refs_layout.addStretch()
 
-        refs_scroll = QScrollArea()
-        refs_scroll.setWidgetResizable(True)
-        refs_scroll.setWidget(self.refs_container)
-        refs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        refs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.content_stack.addWidget(refs_scroll)   # index 1
+        self.refs_scroll = QScrollArea()
+        self.refs_scroll.setWidgetResizable(True)
+        self.refs_scroll.setWidget(self.refs_container)
+        self.refs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.refs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.content_stack.addWidget(self.refs_scroll)   # index 1
 
         # ── Страница 2: чат конкретного эпизода ────────────────────────────
         self.episode_chat_view = EpisodeChatView(self)
@@ -10606,11 +10691,34 @@ class MainWindow(QMainWindow):
         """Перечитать эпизоды/блоки текущего сериала (после изменений на диске).
         Если юзер сейчас на экране Референсов — НЕ перебрасывать его на shots.
         """
-        was_on_refs = (
-            hasattr(self, 'content_stack')
-            and self.content_stack.currentIndex() == 1
+        content_idx = (
+            self.content_stack.currentIndex()
+            if hasattr(self, 'content_stack') else 0
         )
+        was_on_refs = content_idx == 1
+        was_on_aux_view = content_idx in (1, 2)
+        prev_eps = list(getattr(self, '_episode_pills', {}).keys())
+        prev_blocks = list(getattr(self, '_block_pills', {}).keys())
         self._meta = read_episodes_meta(SHOW_ROOT) if self._current_show else {}
+
+        # Storyboard watcher fires when a shot image appears on disk. If the
+        # user is reading References/Chat and episode/block lists did not
+        # change, rebuilding navigation would only cause a visible one-frame
+        # blink without showing any new information.
+        try:
+            new_eps = list_episodes() if self._current_show else []
+            new_blocks = (
+                list_blocks_for_episode(self._current_episode)
+                if self._current_episode else []
+            )
+            if was_on_aux_view and new_eps == prev_eps and new_blocks == prev_blocks:
+                self._refresh_compact_nav()
+                if hasattr(self, '_refs_watcher'):
+                    self._wire_refs_watcher()
+                return
+        except Exception:
+            pass
+
         self._populate_episodes()
         if was_on_refs and self._current_episode:
             self._show_refs_view()
@@ -10702,6 +10810,45 @@ class MainWindow(QMainWindow):
         # Перезапускаем таймер — каждый новый сигнал отодвигает ребилд
         self._refs_rebuild_timer.start()
 
+    def _refs_signature_from_refs(self, refs: Dict[str, List[Dict]]) -> tuple:
+        """Stable signature of what References actually renders.
+
+        The refs watcher also receives episodes.json writes from background
+        storyboard generation. Those writes should not rebuild the References
+        page unless the visible refs cards really changed.
+        """
+        sig = []
+        for kind in ('locations', 'objects', 'characters'):
+            for r in refs.get(kind, []) or []:
+                if not isinstance(r, dict):
+                    sig.append((kind, repr(r), '', '', -1, -1))
+                    continue
+                raw_path = r.get('path')
+                path = Path(raw_path) if raw_path else None
+                try:
+                    if path is not None and path.exists():
+                        st = path.stat()
+                        path_sig = (str(path.resolve()), st.st_size, st.st_mtime_ns)
+                    else:
+                        path_sig = (str(raw_path or ''), -1, -1)
+                except Exception:
+                    path_sig = (str(raw_path or ''), -1, -1)
+                sig.append((
+                    kind,
+                    str(r.get('name', '')),
+                    str(r.get('filename', '')),
+                    str(r.get('tag', '')),
+                    path_sig,
+                ))
+        return tuple(sig)
+
+    def _refs_view_signature(self, ep: str) -> Optional[tuple]:
+        try:
+            return self._refs_signature_from_refs(list_episode_refs(ep))
+        except Exception:
+            traceback.print_exc()
+            return None
+
     def _do_refs_rebuild(self):
         """Реальный ребилд refs-view, вызывается дебаунсером.
         Дополнительная защита: если юзер уже ушёл с refs (или сменил
@@ -10713,9 +10860,36 @@ class MainWindow(QMainWindow):
                 and self._current_episode is not None
             )
             if on_refs:
-                self._build_refs_view(self._current_episode)
+                ep = self._current_episode
+                new_sig = self._refs_view_signature(ep)
+                sig_cache = getattr(self, '_refs_view_signatures', {})
+                if new_sig is not None and sig_cache.get(ep) == new_sig:
+                    return
+                scroll_bar = None
+                scroll_value = 0
+                try:
+                    scroll = getattr(self, 'refs_scroll', None)
+                    scroll_bar = scroll.verticalScrollBar() if scroll else None
+                    scroll_value = scroll_bar.value() if scroll_bar else 0
+                except Exception:
+                    scroll_bar = None
+                self._build_refs_view(ep)
+                if scroll_bar is not None:
+                    def _restore_refs_scroll():
+                        try:
+                            scroll_bar.setValue(min(scroll_value, scroll_bar.maximum()))
+                        except Exception:
+                            pass
+                    QTimer.singleShot(0, _restore_refs_scroll)
         except Exception:
             traceback.print_exc()
+
+    def _is_blocks_view_active(self) -> bool:
+        """True only when the storyboard shot cards page is visible."""
+        return (
+            hasattr(self, 'content_stack')
+            and self.content_stack.currentIndex() == 0
+        )
 
     def _clear_layout(self, layout):
         """Рекурсивно чистит layout: и виджеты, и вложенные layouts.
@@ -11898,9 +12072,28 @@ class MainWindow(QMainWindow):
             blocks = list_blocks_for_episode(self._current_episode)
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(2)
-            row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            row.setSpacing(0)
+            row.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self.block_pills_layout.addLayout(row)
+
+            self._block_carousel_scroll = _BlockCarouselScrollArea()
+            self._block_carousel_scroll.setObjectName("block-carousel-scroll")
+            self._block_carousel_scroll.setFixedSize(458, 28)
+            self._block_carousel_scroll.horizontalScrollBar().valueChanged.connect(
+                self._update_block_carousel_arrows)
+            row.addWidget(
+                self._block_carousel_scroll,
+                alignment=Qt.AlignmentFlag.AlignVCenter)
+
+            self._block_carousel_content = QWidget()
+            self._block_carousel_content.setCursor(Qt.CursorShape.SizeHorCursor)
+            inner = QHBoxLayout(self._block_carousel_content)
+            inner.setContentsMargins(0, 0, 0, 0)
+            inner.setSpacing(2)
+            inner.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._block_carousel_scroll.setWidget(self._block_carousel_content)
 
             for blk in blocks:
                 btn = QPushButton(self._format_compact_block_label(blk))
@@ -11919,8 +12112,11 @@ class MainWindow(QMainWindow):
                     "gen_phase", str(getattr(self, '_block_gen_phase', 0)))
                 btn.setProperty("unseen", has_unseen)
                 btn.clicked.connect(lambda _, b=blk: self._select_block(b))
-                row.addWidget(btn)
+                inner.addWidget(btn)
                 self._block_pills[blk] = btn
+            content_w = len(blocks) * 44 + max(0, len(blocks) - 1) * 2
+            self._block_carousel_content.setMinimumWidth(max(458, content_w))
+            self._update_block_carousel_arrows()
 
             if self._refs_pill is not None:
                 self._refs_pill.setText(tr('refs'))
@@ -12041,18 +12237,77 @@ class MainWindow(QMainWindow):
                 card.set_image(None)
             self._show_refs_view()
 
+    def _block_carousel_step_px(self, pills: int = 5) -> int:
+        """Scroll distance for compact block carousel arrow clicks."""
+        direction = -1 if pills < 0 else 1
+        return direction * max(1, abs(pills)) * (44 + 2)
+
+    def _scroll_block_carousel(self, pills: int) -> None:
+        """Scroll compact block carousel by N block buttons."""
+        scroll = getattr(self, '_block_carousel_scroll', None)
+        if scroll is None:
+            return
+        try:
+            bar = scroll.horizontalScrollBar()
+            bar.setValue(bar.value() + self._block_carousel_step_px(pills))
+            self._update_block_carousel_arrows()
+        except Exception:
+            traceback.print_exc()
+
+    def _update_block_carousel_arrows(self, *_args) -> None:
+        """Enable/disable carousel arrows when the scroll area hits edges."""
+        scroll = getattr(self, '_block_carousel_scroll', None)
+        left = getattr(self, '_block_carousel_left_btn', None)
+        right = getattr(self, '_block_carousel_right_btn', None)
+        if scroll is None or left is None or right is None:
+            return
+        try:
+            bar = scroll.horizontalScrollBar()
+            left.setEnabled(bar.value() > bar.minimum())
+            right.setEnabled(bar.value() < bar.maximum())
+        except Exception:
+            pass
+        self._sync_block_pill_states()
+
+    def _ensure_block_carousel_visible(self, block_name: str) -> None:
+        """Scroll compact block carousel so the active block pill is visible."""
+        scroll = getattr(self, '_block_carousel_scroll', None)
+        btn = self._block_pills.get(block_name) if hasattr(self, '_block_pills') else None
+        if scroll is None or btn is None:
+            return
+
+        def _do_scroll():
+            try:
+                bar = scroll.horizontalScrollBar()
+                x = btn.x()
+                w = btn.width()
+                left = bar.value()
+                right = left + scroll.viewport().width()
+                pad = 6
+                if x < left + pad:
+                    bar.setValue(max(bar.minimum(), x - pad))
+                elif x + w > right - pad:
+                    bar.setValue(min(bar.maximum(), x + w - scroll.viewport().width() + pad))
+                self._update_block_carousel_arrows()
+            except Exception:
+                traceback.print_exc()
+
+        QTimer.singleShot(0, _do_scroll)
+
     def _select_block(self, name: str):
         # Если юзер кликнул на ТОТ ЖЕ блок что и сейчас — fade-in
         # анимация content_stack даст видимое моргание opacity 0→1 за
         # 240мс. Re-click того же блока не должен моргать — никаких
         # реальных изменений не происходит.
         same_block = (self.current_block == name)
-        if self.current_block and self.current_block != name:
+        was_on_blocks = self._is_blocks_view_active()
+        if was_on_blocks and self.current_block and self.current_block != name:
             self._mark_block_seen(self.current_block)
         self.current_block = name
         for b, btn in self._block_pills.items():
             btn.setProperty("active", b == name)
             btn.style().unpolish(btn); btn.style().polish(btn)
+        self._ensure_block_carousel_visible(name)
         for pill_attr in ('_refs_pill', '_chat_pill'):
             pill = getattr(self, pill_attr, None)
             if pill is not None:
@@ -12328,8 +12583,10 @@ class MainWindow(QMainWindow):
                 chat_pill.style().unpolish(chat_pill)
                 chat_pill.style().polish(chat_pill)
             return
-        if self.current_block:
-            self._mark_block_seen(self.current_block)
+        # Do not mark the current block as seen when opening References.
+        # During background generation current_block can point to a block the
+        # user is not visually inspecting, so clearing NEW here loses the
+        # "fresh shot" state for hidden carousel blocks.
         for b, btn in self._block_pills.items():
             btn.setProperty("active", False)
             btn.style().unpolish(btn); btn.style().polish(btn)
@@ -12401,8 +12658,8 @@ class MainWindow(QMainWindow):
                 chat_pill.style().unpolish(chat_pill)
                 chat_pill.style().polish(chat_pill)
             return
-        if self.current_block:
-            self._mark_block_seen(self.current_block)
+        # Do not clear block NEW badges when switching to Chat; the user may
+        # be away from the shot cards while background generation finishes.
         for b, btn in self._block_pills.items():
             btn.setProperty("active", False)
             btn.style().unpolish(btn); btn.style().polish(btn)
@@ -12501,6 +12758,9 @@ class MainWindow(QMainWindow):
         """Перерисовывает контент refs_container — 3 секции."""
         self._clear_vbox(self.refs_layout)
         refs = list_episode_refs(ep)
+        if not hasattr(self, '_refs_view_signatures'):
+            self._refs_view_signatures = {}
+        self._refs_view_signatures[ep] = self._refs_signature_from_refs(refs)
 
         sections = [
             ('refs_locations',  refs['locations'],  'location'),
@@ -13220,23 +13480,51 @@ class MainWindow(QMainWindow):
             self._refresh_compact_nav()
             self._refresh_stop_btn()
             return
-        has_active = (
+        self._apply_block_pill_state(block_name, btn)
+        self._refresh_compact_nav()
+        self._refresh_stop_btn()
+
+    def _block_has_active_generation(self, block_name: str) -> bool:
+        return (
             any(b == block_name for (b, _) in self._active_regens.keys())
             or any(b == block_name
                    for (b, _p, _v) in self._active_mode_c_version_threads.keys()))
-        # NEW показывается ТОЛЬКО когда нет активных генераций (взаимоисключающие)
-        has_unseen = (not has_active) and any(
-            b == block_name for (b, _) in self._unseen_shots)
+
+    def _block_has_unseen_shots(self, block_name: str) -> bool:
+        # NEW показывается ТОЛЬКО когда нет активных генераций (взаимоисключающие).
+        return (
+            not self._block_has_active_generation(block_name)
+            and any(b == block_name for (b, _) in self._unseen_shots)
+        )
+
+    def _apply_block_pill_state(self, block_name: str, btn: QPushButton) -> None:
+        """Apply active/generating/unseen state from registries to one block pill.
+
+        Compact carousel buttons may be outside the visible viewport when a
+        background shot finishes. Their visual state must not depend on whether
+        the user could see the button at that moment.
+        """
+        has_active = self._block_has_active_generation(block_name)
+        has_unseen = self._block_has_unseen_shots(block_name)
         if bool(btn.property("compact")):
             btn.setText(self._format_compact_block_label(block_name))
         else:
             btn.setText(self._format_block_label(block_name))
+        btn.setProperty("active", bool(
+            self._is_blocks_view_active() and self.current_block == block_name))
         btn.setProperty("generating", has_active)
         btn.setProperty("gen_phase", str(getattr(self, '_block_gen_phase', 0)))
         btn.setProperty("unseen", has_unseen)
-        btn.style().unpolish(btn); btn.style().polish(btn)
-        self._refresh_compact_nav()
-        self._refresh_stop_btn()
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+
+    def _sync_block_pill_states(self) -> None:
+        """Refresh all block pills from current active/unseen registries."""
+        try:
+            for block_name, btn in getattr(self, '_block_pills', {}).items():
+                self._apply_block_pill_state(block_name, btn)
+        except Exception:
+            traceback.print_exc()
 
     def _refresh_stop_btn(self):
         """Видимость кнопки «Остановить»: ТОЛЬКО на странице блоков (content_stack
@@ -15433,7 +15721,7 @@ class MainWindow(QMainWindow):
         #    _active_regens, остальные — реальные оставшиеся).
         # Иначе (юзер на чужом блоке без активных регенераций) — НЕ перерисовываем,
         # иначе все карточки моргают на 1 кадр без пользы.
-        if self.current_block:
+        if self.current_block and self._is_blocks_view_active():
             needs_redraw = (
                 self.current_block == target_block
                 or any(b == self.current_block
@@ -15466,7 +15754,7 @@ class MainWindow(QMainWindow):
 
         # Перерисовываем текущий блок ТОЛЬКО если есть смысл (см. _on_regen_done
         # выше — та же логика, иначе моргание у юзера на чужом блоке).
-        if self.current_block:
+        if self.current_block and self._is_blocks_view_active():
             needs_redraw = (
                 self.current_block == target_block
                 or any(b == self.current_block
@@ -15997,7 +16285,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._unseen_shots.add((block_basename, panel_idx))
-        if self.current_block:
+        if self.current_block and self._is_blocks_view_active():
             needs_redraw = (
                 self.current_block == block_basename
                 or any(b == self.current_block
@@ -16034,7 +16322,7 @@ class MainWindow(QMainWindow):
         if not any(b == block_basename and p == panel_idx
                    for (b, p, _v) in self._active_mode_c_version_threads):
             self._shot_gen_started_at.pop((block_basename, panel_idx), None)
-        if self.current_block:
+        if self.current_block and self._is_blocks_view_active():
             needs_redraw = (
                 self.current_block == block_basename
                 or any(b == self.current_block
