@@ -3326,17 +3326,21 @@ QFrame#ref-card {
     border-radius: 8px;
 }
 QFrame#ref-card:hover { border-color: rgba(255, 255, 255, 0.12); }
-/* 2026-06-25: карточка нестандартного персонажа (монстр) — приглушённый пурпур
-   accent_purple #6e4cc4, чтобы визуально отличать от актёрских карточек. Атрибут-
-   селектор [custom="true"] бьёт ТОЛЬКО монстр-карточки (ActorCard.setProperty);
-   базовый #ref-card (актёр) НЕ затрагивается. Прозрачности (Alex подвинет
-   визуально): fill 0.10 / border 0.35 / hover-border 0.55. Кнопки/портрет — свои. */
+/* 2026-06-25: карточка нестандартного персонажа (монстр) — ПЛОТНЫЙ пурпурный фон
+   ВСЕЙ карточки, чтобы с первого взгляда отличать от актёрских (у актёра фон почти
+   чёрный — rgba белый 0.04). Атрибут-селектор [custom="true"] бьёт ТОЛЬКО монстр-
+   карточки (ActorCard.setProperty); базовый #ref-card (актёр) НЕ затрагивается.
+   Плотность фона — Alex подвинет визуально, варианты:
+     средний:   background: rgba(110, 76, 196, 0.18);
+     плотный:   background: rgba(110, 76, 196, 0.25);
+     сплошной:  background: #2a1d40;   (текущий — самый плотный, без прозрачности)
+   Кнопки/портрет — свои стили, НЕ затрагиваются. */
 QFrame#ref-card[custom="true"] {
-    background: rgba(110, 76, 196, 0.10);
-    border: 1px solid rgba(110, 76, 196, 0.35);
+    background: #2a1d40;
+    border: 1px solid rgba(110, 76, 196, 0.55);
     border-radius: 8px;
 }
-QFrame#ref-card[custom="true"]:hover { border-color: rgba(110, 76, 196, 0.55); }
+QFrame#ref-card[custom="true"]:hover { border-color: rgba(110, 76, 196, 0.80); }
 QWidget#ref-card-info { background: transparent; }
 QLabel#ref-name { color: #ffffff; font-size: 13px; font-weight: 500; }
 QLabel#ref-tag  { color: rgba(255, 255, 255, 0.40); font-size: 11px; }
