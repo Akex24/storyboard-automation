@@ -29,8 +29,8 @@ import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QRectF, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QProgressBar, QSlider,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QDialog,
@@ -82,15 +82,59 @@ class ActorCard(QFrame):
     pending_clicked = pyqtSignal(str)         # slug — кнопка «Готов новый референс»
     error_dismissed = pyqtSignal(str)         # slug — клик «✕ Скрыть» на error overlay
 
+    @staticmethod
+    def _rounded_top_pixmap(pix: QPixmap, width: int, height: int,
+                            radius: int = 12) -> QPixmap:
+        """Pixmap для верхней части карточки с округлёнными верхними углами.
+        Нужен monster-карточкам: обычный QLabel с pixmap перекрывает border-radius
+        внешней карточки и визуально делает верх прямоугольным."""
+        out = QPixmap(width, height)
+        out.fill(Qt.GlobalColor.transparent)
+
+        path = QPainterPath()
+        path.setFillRule(Qt.FillRule.WindingFill)
+        # Скругляем верх; низ оставляем прямым, чтобы превью ровно стыковалось
+        # с информационной частью карточки без внутренних "капсул".
+        path.addRoundedRect(QRectF(0, 0, width, height + radius), radius, radius)
+        path.addRect(QRectF(0, radius, width, height - radius))
+
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setClipPath(path)
+        painter.fillRect(out.rect(), QColor("#2f2110"))
+        x = int((width - pix.width()) / 2)
+        y = int((height - pix.height()) / 2)
+        painter.drawPixmap(x, y, pix)
+        painter.end()
+        return out
+
     def __init__(self, slug: str, display_name: str, photos: List[Path],
                  is_admin: bool, card_width: int = 220,
                  generated_refs_count: int = 0,
-                 pending_count: int = 0, parent=None):
+                 pending_count: int = 0, is_custom: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.slug = slug
+        self.is_custom = bool(is_custom)
         self.setObjectName("ref-card")
         self.setFixedWidth(card_width)
         self._card_width = card_width
+        if self.is_custom:
+            self.setStyleSheet(
+                "QFrame#ref-card {"
+                " background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+                " stop:0 #4a3416, stop:0.52 #24180b, stop:1 #0d0a08);"
+                " border:1px solid rgba(232,178,72,0.78);"
+                " border-radius:12px; }"
+                "QFrame#ref-card:hover {"
+                " border-color:rgba(255,214,120,0.95);"
+                " background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+                " stop:0 #563d1b, stop:0.52 #2a1c0d, stop:1 #0d0a08); }"
+                "QWidget#ref-card-info { background: transparent; }"
+                "QLabel#ref-name { color:#fff8eb; font-size:13px;"
+                " font-weight:600; background:transparent; }"
+                "QLabel#ref-tag { color:rgba(242,205,143,0.72);"
+                " font-size:11px; background:transparent; }")
         # Курсор-палец на всей карточке — намёк что кликабельно.
         # На кнопке Переименовать он переопределится автоматически Qt.
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -102,8 +146,9 @@ class ActorCard(QFrame):
         # Контейнер для превью с overlay (плашка прогресса поверх).
         self.img_container = QWidget()
         self.img_container.setFixedSize(card_width, card_width)
+        img_bg = "#2f2110" if self.is_custom else "#1a1424"
         self.img_container.setStyleSheet(
-            "background:#1a1424; border-top-left-radius:11px;"
+            f"background:{img_bg}; border-top-left-radius:11px;"
             " border-top-right-radius:11px;")
 
         # Превью — первое фото актёра. Высота = ширине (квадрат), фото
@@ -113,7 +158,7 @@ class ActorCard(QFrame):
         self.img_lbl.setGeometry(0, 0, card_width, card_width)
         self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_lbl.setStyleSheet(
-            "background:#1a1424; border-top-left-radius:11px;"
+            f"background:{img_bg}; border-top-left-radius:11px;"
             " border-top-right-radius:11px; color:#555; font-size:13px;")
         if photos:
             try:
@@ -123,6 +168,8 @@ class ActorCard(QFrame):
                         QSize(card_width, card_width),
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation)
+                    if self.is_custom:
+                        pix = self._rounded_top_pixmap(pix, card_width, card_width)
                     self.img_lbl.setPixmap(pix)
             except Exception:
                 pass
@@ -241,11 +288,20 @@ class ActorCard(QFrame):
         create_ref_btn = QPushButton(tr('actor_card_create_ref'))
         create_ref_btn.setIcon(_sa.get_icon('wand-2'))
         create_ref_btn.setIconSize(QSize(14, 14))
-        create_ref_btn.setStyleSheet(
-            "QPushButton { background:#3a2c52; color:#fff; border:none;"
-            " border-radius:5px; padding:6px 8px; font-size:11px;"
-            " font-weight:600; text-align:left; }"
-            "QPushButton:hover { background:#4d3a6b; }")
+        if self.is_custom:
+            create_ref_btn.setStyleSheet(
+                "QPushButton { background:#7a5524; color:#fff8eb;"
+                " border:1px solid rgba(255,204,112,0.42);"
+                " border-radius:5px; padding:6px 8px; font-size:11px;"
+                " font-weight:600; text-align:left; }"
+                "QPushButton:hover { background:#8e642b;"
+                " border-color:rgba(255,214,136,0.70); }")
+        else:
+            create_ref_btn.setStyleSheet(
+                "QPushButton { background:#3a2c52; color:#fff; border:none;"
+                " border-radius:5px; padding:6px 8px; font-size:11px;"
+                " font-weight:600; text-align:left; }"
+                "QPushButton:hover { background:#4d3a6b; }")
         create_ref_btn.clicked.connect(
             lambda: self.create_ref_requested.emit(self.slug))
         il.addWidget(create_ref_btn)
@@ -257,11 +313,20 @@ class ActorCard(QFrame):
                 tr('actor_card_view_refs', n=generated_refs_count))
             view_refs_btn.setIcon(_sa.get_icon('images'))
             view_refs_btn.setIconSize(QSize(14, 14))
-            view_refs_btn.setStyleSheet(
-                "QPushButton { background:transparent; border:1px solid #6e4cc4;"
-                " border-radius:5px; padding:5px 8px; color:#d8c8ff;"
-                " font-size:11px; font-weight:600; text-align:left; }"
-                "QPushButton:hover { background:#2a1f3d; }")
+            if self.is_custom:
+                view_refs_btn.setStyleSheet(
+                    "QPushButton { background:rgba(255,204,112,0.06);"
+                    " border:1px solid rgba(214,161,70,0.82);"
+                    " border-radius:5px; padding:5px 8px; color:#f6dca8;"
+                    " font-size:11px; font-weight:600; text-align:left; }"
+                    "QPushButton:hover { background:rgba(214,161,70,0.16);"
+                    " color:#fff8eb; }")
+            else:
+                view_refs_btn.setStyleSheet(
+                    "QPushButton { background:transparent; border:1px solid #6e4cc4;"
+                    " border-radius:5px; padding:5px 8px; color:#d8c8ff;"
+                    " font-size:11px; font-weight:600; text-align:left; }"
+                    "QPushButton:hover { background:#2a1f3d; }")
             view_refs_btn.clicked.connect(
                 lambda: self.view_refs_requested.emit(self.slug))
             il.addWidget(view_refs_btn)
@@ -272,11 +337,20 @@ class ActorCard(QFrame):
             rename_btn = QPushButton(tr('actor_card_rename'))
             rename_btn.setIcon(_sa.get_icon('pencil'))
             rename_btn.setIconSize(QSize(14, 14))
-            rename_btn.setStyleSheet(
-                "QPushButton { background:transparent; border:1px solid #3a2c52;"
-                " border-radius:4px; padding:4px 8px; color:#aaa;"
-                " font-size:11px; text-align:left; }"
-                "QPushButton:hover { color:#fff; border-color:#5a4a82; }")
+            if self.is_custom:
+                rename_btn.setStyleSheet(
+                    "QPushButton { background:transparent;"
+                    " border:1px solid rgba(214,161,70,0.42);"
+                    " border-radius:4px; padding:4px 8px; color:#cdb081;"
+                    " font-size:11px; text-align:left; }"
+                    "QPushButton:hover { color:#fff8eb;"
+                    " border-color:rgba(255,204,112,0.70); }")
+            else:
+                rename_btn.setStyleSheet(
+                    "QPushButton { background:transparent; border:1px solid #3a2c52;"
+                    " border-radius:4px; padding:4px 8px; color:#aaa;"
+                    " font-size:11px; text-align:left; }"
+                    "QPushButton:hover { color:#fff; border-color:#5a4a82; }")
             rename_btn.clicked.connect(lambda: self.rename_requested.emit(self.slug))
             il.addWidget(rename_btn)
 
@@ -745,7 +819,7 @@ class ActorsView(QWidget):
                 mslug, m['display_name'], m['photos'],
                 is_admin=self._is_admin, card_width=self._card_width,
                 generated_refs_count=len(m.get('sheets') or []),
-                pending_count=mpending)
+                pending_count=mpending, is_custom=True)
             mcard.clicked.connect(self._on_custom_card_clicked)
             # 2026-06-24 (монстры 3в): ВСЕ кнопки карточки 1:1 как у актёра.
             mcard.pending_clicked.connect(self._on_pending_clicked)
