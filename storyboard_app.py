@@ -3207,6 +3207,259 @@ QPushButton#pill-block {
     color: rgba(255, 255, 255, 0.55);
     font-size: 12px; font-weight: 500; min-height: 14px;
 }
+QPushButton#pill-block[compact="true"] {
+    padding: 0;
+    min-width: 44px;
+    max-width: 44px;
+    min-height: 26px;
+    max-height: 26px;
+    font-size: 11px;
+    font-weight: 700;
+}
+QPushButton#pill-block[compact="true"][generating="true"] {
+    color: #ffffff;
+    border: 1px solid rgba(228, 52, 74, 0.58);
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="0"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.93),
+        stop:0.001 rgba(22, 16, 32, 0.93),
+        stop:0.002 rgba(228, 52, 74, 0.12),
+        stop:0.003 rgba(232, 178, 86, 0.23),
+        stop:0.004 rgba(228, 52, 74, 0.12),
+        stop:0.1 rgba(32, 24, 46, 0.93),
+        stop:1 rgba(18, 13, 28, 0.93));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="1"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.94),
+        stop:0.001 rgba(22, 16, 32, 0.94),
+        stop:0.002 rgba(228, 52, 74, 0.13),
+        stop:0.003 rgba(232, 178, 86, 0.24),
+        stop:0.004 rgba(228, 52, 74, 0.13),
+        stop:0.164 rgba(32, 24, 46, 0.94),
+        stop:1 rgba(18, 13, 28, 0.94));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="2"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.95),
+        stop:0.001 rgba(22, 16, 32, 0.95),
+        stop:0.002 rgba(228, 52, 74, 0.13),
+        stop:0.003 rgba(232, 178, 86, 0.24),
+        stop:0.0287 rgba(228, 52, 74, 0.13),
+        stop:0.229 rgba(32, 24, 46, 0.95),
+        stop:1 rgba(18, 13, 28, 0.95));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="3"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.95),
+        stop:0.001 rgba(22, 16, 32, 0.95),
+        stop:0.002 rgba(228, 52, 74, 0.13),
+        stop:0.003 rgba(232, 178, 86, 0.25),
+        stop:0.093 rgba(228, 52, 74, 0.13),
+        stop:0.293 rgba(32, 24, 46, 0.95),
+        stop:1 rgba(18, 13, 28, 0.95));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="4"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.96),
+        stop:0.001 rgba(22, 16, 32, 0.96),
+        stop:0.002 rgba(228, 52, 74, 0.14),
+        stop:0.0174 rgba(232, 178, 86, 0.26),
+        stop:0.157 rgba(228, 52, 74, 0.14),
+        stop:0.357 rgba(32, 24, 46, 0.96),
+        stop:1 rgba(18, 13, 28, 0.96));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="5"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.96),
+        stop:0.001 rgba(22, 16, 32, 0.96),
+        stop:0.002 rgba(228, 52, 74, 0.14),
+        stop:0.0817 rgba(232, 178, 86, 0.26),
+        stop:0.222 rgba(228, 52, 74, 0.14),
+        stop:0.422 rgba(32, 24, 46, 0.96),
+        stop:1 rgba(18, 13, 28, 0.96));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="6"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.96),
+        stop:0.001 rgba(22, 16, 32, 0.96),
+        stop:0.0261 rgba(228, 52, 74, 0.14),
+        stop:0.146 rgba(232, 178, 86, 0.26),
+        stop:0.286 rgba(228, 52, 74, 0.14),
+        stop:0.486 rgba(32, 24, 46, 0.96),
+        stop:1 rgba(18, 13, 28, 0.96));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="7"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.96),
+        stop:0.001 rgba(22, 16, 32, 0.96),
+        stop:0.0904 rgba(228, 52, 74, 0.14),
+        stop:0.21 rgba(232, 178, 86, 0.26),
+        stop:0.35 rgba(228, 52, 74, 0.14),
+        stop:0.55 rgba(32, 24, 46, 0.96),
+        stop:1 rgba(18, 13, 28, 0.96));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="8"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.96),
+        stop:0.001 rgba(22, 16, 32, 0.96),
+        stop:0.155 rgba(228, 52, 74, 0.14),
+        stop:0.275 rgba(232, 178, 86, 0.26),
+        stop:0.415 rgba(228, 52, 74, 0.14),
+        stop:0.615 rgba(32, 24, 46, 0.96),
+        stop:1 rgba(18, 13, 28, 0.96));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="9"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.95),
+        stop:0.0591 rgba(22, 16, 32, 0.95),
+        stop:0.219 rgba(228, 52, 74, 0.13),
+        stop:0.339 rgba(232, 178, 86, 0.25),
+        stop:0.479 rgba(228, 52, 74, 0.13),
+        stop:0.679 rgba(32, 24, 46, 0.95),
+        stop:1 rgba(18, 13, 28, 0.95));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="10"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.95),
+        stop:0.123 rgba(22, 16, 32, 0.95),
+        stop:0.283 rgba(228, 52, 74, 0.13),
+        stop:0.403 rgba(232, 178, 86, 0.24),
+        stop:0.543 rgba(228, 52, 74, 0.13),
+        stop:0.743 rgba(32, 24, 46, 0.95),
+        stop:1 rgba(18, 13, 28, 0.95));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="11"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.94),
+        stop:0.188 rgba(22, 16, 32, 0.94),
+        stop:0.348 rgba(228, 52, 74, 0.13),
+        stop:0.468 rgba(232, 178, 86, 0.24),
+        stop:0.608 rgba(228, 52, 74, 0.13),
+        stop:0.808 rgba(32, 24, 46, 0.94),
+        stop:1 rgba(18, 13, 28, 0.94));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="12"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.93),
+        stop:0.252 rgba(22, 16, 32, 0.93),
+        stop:0.412 rgba(228, 52, 74, 0.12),
+        stop:0.532 rgba(232, 178, 86, 0.23),
+        stop:0.672 rgba(228, 52, 74, 0.12),
+        stop:0.872 rgba(32, 24, 46, 0.93),
+        stop:1 rgba(18, 13, 28, 0.93));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="13"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.92),
+        stop:0.317 rgba(22, 16, 32, 0.92),
+        stop:0.477 rgba(228, 52, 74, 0.11),
+        stop:0.597 rgba(232, 178, 86, 0.22),
+        stop:0.737 rgba(228, 52, 74, 0.11),
+        stop:0.937 rgba(32, 24, 46, 0.92),
+        stop:1 rgba(18, 13, 28, 0.92));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="14"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.92),
+        stop:0.381 rgba(22, 16, 32, 0.92),
+        stop:0.541 rgba(228, 52, 74, 0.11),
+        stop:0.661 rgba(232, 178, 86, 0.21),
+        stop:0.801 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(32, 24, 46, 0.92),
+        stop:1 rgba(18, 13, 28, 0.92));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="15"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.91),
+        stop:0.445 rgba(22, 16, 32, 0.91),
+        stop:0.605 rgba(228, 52, 74, 0.11),
+        stop:0.725 rgba(232, 178, 86, 0.21),
+        stop:0.865 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(32, 24, 46, 0.91),
+        stop:1 rgba(18, 13, 28, 0.91));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="16"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.90),
+        stop:0.51 rgba(22, 16, 32, 0.90),
+        stop:0.67 rgba(228, 52, 74, 0.10),
+        stop:0.79 rgba(232, 178, 86, 0.20),
+        stop:0.93 rgba(228, 52, 74, 0.10),
+        stop:1 rgba(32, 24, 46, 0.90),
+        stop:1 rgba(18, 13, 28, 0.90));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="17"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.90),
+        stop:0.574 rgba(22, 16, 32, 0.90),
+        stop:0.734 rgba(228, 52, 74, 0.10),
+        stop:0.854 rgba(232, 178, 86, 0.20),
+        stop:0.994 rgba(228, 52, 74, 0.10),
+        stop:1 rgba(32, 24, 46, 0.90),
+        stop:1 rgba(18, 13, 28, 0.90));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="18"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.90),
+        stop:0.638 rgba(22, 16, 32, 0.90),
+        stop:0.798 rgba(228, 52, 74, 0.10),
+        stop:0.918 rgba(232, 178, 86, 0.20),
+        stop:1 rgba(228, 52, 74, 0.10),
+        stop:1 rgba(32, 24, 46, 0.90),
+        stop:1 rgba(18, 13, 28, 0.90));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="19"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.90),
+        stop:0.703 rgba(22, 16, 32, 0.90),
+        stop:0.863 rgba(228, 52, 74, 0.10),
+        stop:0.983 rgba(232, 178, 86, 0.20),
+        stop:1 rgba(228, 52, 74, 0.10),
+        stop:1 rgba(32, 24, 46, 0.90),
+        stop:1 rgba(18, 13, 28, 0.90));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="20"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.90),
+        stop:0.767 rgba(22, 16, 32, 0.90),
+        stop:0.927 rgba(228, 52, 74, 0.10),
+        stop:1 rgba(232, 178, 86, 0.20),
+        stop:1 rgba(228, 52, 74, 0.10),
+        stop:1 rgba(32, 24, 46, 0.90),
+        stop:1 rgba(18, 13, 28, 0.90));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="21"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.91),
+        stop:0.831 rgba(22, 16, 32, 0.91),
+        stop:0.991 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(232, 178, 86, 0.21),
+        stop:1 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(32, 24, 46, 0.91),
+        stop:1 rgba(18, 13, 28, 0.91));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="22"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.92),
+        stop:0.896 rgba(22, 16, 32, 0.92),
+        stop:1 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(232, 178, 86, 0.21),
+        stop:1 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(32, 24, 46, 0.92),
+        stop:1 rgba(18, 13, 28, 0.92));
+}
+QPushButton#pill-block[compact="true"][generating="true"][gen_phase="23"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(22, 16, 32, 0.92),
+        stop:0.96 rgba(22, 16, 32, 0.92),
+        stop:1 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(232, 178, 86, 0.22),
+        stop:1 rgba(228, 52, 74, 0.11),
+        stop:1 rgba(32, 24, 46, 0.92),
+        stop:1 rgba(18, 13, 28, 0.92));
+}
 QPushButton#pill-block:hover {
     background: rgba(255, 255, 255, 0.04);
     color: rgba(255, 255, 255, 0.85);
@@ -6335,8 +6588,11 @@ class MainWindow(QMainWindow):
         self._active_image_paths: dict = {}
         # Тогглер для пульсации пилюли «Референсы» когда есть pending уведомления
         self._refs_pulse_on = False
-        # Анимация точек ⋯ возле блоков с активной регенерацией
+        # Анимация индикаторов возле блоков с активной регенерацией.
+        # Старые wide-пилюли используют точки, compact-пилюли — shimmer-фазы.
         self._dot_step = 0
+        self._dot_anim_tick = 0
+        self._block_gen_phase = 0
         # v1.0.85: state seedance_btn — 'ready' | 'pending' | 'restart'.
         # Используется в `_on_seedance_btn` для роутинга клика.
         self._seedance_btn_mode = 'pending'
@@ -6410,11 +6666,12 @@ class MainWindow(QMainWindow):
         if self._is_admin and github_configured():
             QTimer.singleShot(4000, self._fetch_download_stats)
 
-        # Таймер анимации точек у блоков с активной регенерацией.
-        # Срабатывает каждые 400ms — циклически меняет ·/··/···
+        # Таймер анимации у блоков с активной регенерацией.
+        # Срабатывает часто для плавного compact shimmer. Wide-пилюли с точками
+        # обновляются только каждый третий тик, сохраняя старый темп.
         self._dot_timer = QTimer(self)
         self._dot_timer.timeout.connect(self._tick_dots)
-        self._dot_timer.start(400)
+        self._dot_timer.start(125)
 
         # Таймер пульсации пилюли «Референсы» когда там есть pending-уведомления.
         # Запущен всегда, но переключает CSS-property только если pending не пуст.
@@ -6476,7 +6733,10 @@ class MainWindow(QMainWindow):
         if (not self._active_regens and not self._active_mode_c_version_threads
                 and not refs_busy and not active_gens_busy):
             return
-        self._dot_step = (self._dot_step + 1) % 3
+        self._dot_anim_tick = (self._dot_anim_tick + 1) % 3
+        if self._dot_anim_tick == 0:
+            self._dot_step = (self._dot_step + 1) % 3
+        self._block_gen_phase = (self._block_gen_phase + 1) % 24
         active_blocks = {b for (b, _) in self._active_regens.keys()}
         active_blocks |= {
             b for (b, _p, _v) in self._active_mode_c_version_threads.keys()}
@@ -8363,28 +8623,27 @@ class MainWindow(QMainWindow):
         self.ep_next_btn.clicked.connect(lambda: self._step_episode(1))
         nav_row.addWidget(self.ep_next_btn)
 
-        nav_row.addSpacing(18)
         self.nav_block_label = QLabel(tr('block'))
         self.nav_block_label.setObjectName("nav-label")
-        nav_row.addWidget(self.nav_block_label)
+        self.nav_block_label.hide()
         self.block_prev_btn = QPushButton("‹")
         self.block_prev_btn.setObjectName("nav-arrow")
         self.block_prev_btn.setFixedSize(24, NAV_H)
         self.block_prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.block_prev_btn.clicked.connect(lambda: self._step_block(-1))
-        nav_row.addWidget(self.block_prev_btn)
+        self.block_prev_btn.hide()
         self.block_select_btn = QPushButton("")
         self.block_select_btn.setObjectName("nav-select")
         self.block_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.block_select_btn.setFixedSize(86, NAV_H)
         self.block_select_btn.clicked.connect(self._show_block_picker)
-        nav_row.addWidget(self.block_select_btn)
+        self.block_select_btn.hide()
         self.block_next_btn = QPushButton("›")
         self.block_next_btn.setObjectName("nav-arrow")
         self.block_next_btn.setFixedSize(24, NAV_H)
         self.block_next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.block_next_btn.clicked.connect(lambda: self._step_block(1))
-        nav_row.addWidget(self.block_next_btn)
+        self.block_next_btn.hide()
 
         self._refs_pill = QPushButton(tr('refs'))
         self._refs_pill.setObjectName("pill-refs")
@@ -8561,6 +8820,8 @@ class MainWindow(QMainWindow):
         # (Блок 1-N, Референсы, Чат) прижаты друг к другу. 2026-05-08.
         self.block_pills_container = QWidget()
         self.block_pills_container.setObjectName("blocks-bar")
+        self.block_pills_container.setProperty(
+            "compact", getattr(self, '_compact_nav_enabled', False))
         # 2026-05-22: контейнер строк (VBox). Внутри — несколько HBoxLayout
         # по 9 блок-пилюль в каждой. Refs/Chat пилюли всегда в первой строке
         # (напротив блоков 1-9). _clear_layout рекурсивный — чистит вложенные.
@@ -8568,6 +8829,10 @@ class MainWindow(QMainWindow):
         self.block_pills_layout.setContentsMargins(5, 5, 5, 5)
         self.block_pills_layout.setSpacing(4)
         blk_row = QHBoxLayout()
+        blk_row.setSpacing(8)
+        self.inline_block_label = QLabel(tr('block'))
+        self.inline_block_label.setObjectName("nav-label")
+        blk_row.addWidget(self.inline_block_label, alignment=Qt.AlignmentFlag.AlignVCenter)
         blk_row.addWidget(self.block_pills_container)
         blk_row.addStretch()
         # Кнопка «Удалить эпизод» — всегда справа в той же строке. Disabled
@@ -8599,7 +8864,8 @@ class MainWindow(QMainWindow):
             self.delete_ep_btn.setText("🗑")
         self.delete_ep_btn.clicked.connect(self._on_delete_episode_clicked)
         if getattr(self, '_compact_nav_enabled', False):
-            self.block_pills_container.hide()
+            self.block_pills_container.show()
+            lay.addLayout(blk_row)
             self.compact_nav_layout.addWidget(self.delete_ep_btn)
         else:
             blk_row.addWidget(self.delete_ep_btn)
@@ -8642,7 +8908,8 @@ class MainWindow(QMainWindow):
         )
         self.block_refs_btn.clicked.connect(self._on_block_refs_btn)
         self.block_refs_btn.setVisible(False)
-        title_row.addWidget(self.block_refs_btn)
+        if not getattr(self, '_compact_nav_enabled', False):
+            title_row.addWidget(self.block_refs_btn)
         # 2026-05-06: Этап 3 — кнопка открытия попапа с Seedance промптом.
         # Видна только когда current_block указывает на блок утверждённой
         # карты эпизода. State обновляется в _display_block.
@@ -8670,7 +8937,8 @@ class MainWindow(QMainWindow):
         )
         self.seedance_btn.clicked.connect(self._on_seedance_btn)
         self.seedance_btn.setVisible(False)
-        title_row.addWidget(self.seedance_btn)
+        if not getattr(self, '_compact_nav_enabled', False):
+            title_row.addWidget(self.seedance_btn)
         # 2026-06-11 (стоп-кнопка): «Остановить генерацию» — ПЕРВАЯ в ряду
         # (перед «Рефы блока»), видна пока идёт генерация. Залитый янтарный —
         # выделяется на фоне двух красных кнопок (Seedance/refs).
@@ -8690,7 +8958,8 @@ class MainWindow(QMainWindow):
         self.stop_gen_btn.clicked.connect(self._on_stop_gen_btn)
         self.stop_gen_btn.setVisible(False)
         # Первой среди кнопок (после заголовка-stretch, перед «Рефы блока»).
-        title_row.insertWidget(1, self.stop_gen_btn)
+        if not getattr(self, '_compact_nav_enabled', False):
+            title_row.insertWidget(1, self.stop_gen_btn)
         # 2026-06-11 (очистка блока): «🗑 Очистить блок» — ПЕРВОЙ в ряду (перед
         # «Остановить»). Тихая outline; видна только если в блоке есть картинки
         # и нет активной генерации (см. _refresh_clear_btn).
@@ -8710,7 +8979,13 @@ class MainWindow(QMainWindow):
             " border-color: rgba(255,255,255,0.28); }")
         self.clear_block_btn.clicked.connect(self._on_clear_block_btn)
         self.clear_block_btn.setVisible(False)
-        title_row.insertWidget(1, self.clear_block_btn)
+        if getattr(self, '_compact_nav_enabled', False):
+            blk_row.addWidget(self.stop_gen_btn)
+            blk_row.addWidget(self.clear_block_btn)
+            blk_row.addWidget(self.block_refs_btn)
+            blk_row.addWidget(self.seedance_btn)
+        else:
+            title_row.insertWidget(1, self.clear_block_btn)
         lay.addLayout(title_row)
 
         # ── Стек: страница 0 = шоты, страница 1 = референсы ─────────────────
@@ -10034,6 +10309,8 @@ class MainWindow(QMainWindow):
                 self.nav_ep_label.setText(tr('episode').rstrip(':'))
             if hasattr(self, 'nav_block_label'):
                 self.nav_block_label.setText(tr('block'))
+            if hasattr(self, 'inline_block_label'):
+                self.inline_block_label.setText(tr('block'))
             eps = list_episodes() if self._current_show else []
             ep_idx = eps.index(self._current_episode) if self._current_episode in eps else -1
             for btn_name, enabled in (
@@ -11619,6 +11896,32 @@ class MainWindow(QMainWindow):
 
         if compact_nav:
             blocks = list_blocks_for_episode(self._current_episode)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(2)
+            row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            self.block_pills_layout.addLayout(row)
+
+            for blk in blocks:
+                btn = QPushButton(self._format_compact_block_label(blk))
+                btn.setObjectName("pill-block")
+                btn.setFixedSize(44, 26)
+                btn.setProperty("compact", True)
+                btn.setProperty("active", False)
+                has_active = any(b == blk for (b, _) in self._active_regens.keys())
+                has_active = has_active or any(
+                    b == blk for (b, _p, _v)
+                    in self._active_mode_c_version_threads.keys())
+                has_unseen = (not has_active) and any(
+                    b == blk for (b, _) in self._unseen_shots)
+                btn.setProperty("generating", has_active)
+                btn.setProperty(
+                    "gen_phase", str(getattr(self, '_block_gen_phase', 0)))
+                btn.setProperty("unseen", has_unseen)
+                btn.clicked.connect(lambda _, b=blk: self._select_block(b))
+                row.addWidget(btn)
+                self._block_pills[blk] = btn
+
             if self._refs_pill is not None:
                 self._refs_pill.setText(tr('refs'))
                 self._refs_pill.setProperty("active", False)
@@ -11677,7 +11980,12 @@ class MainWindow(QMainWindow):
             btn.setFixedHeight(28)   # 2026-05-08 редизайн: компактнее (было 34)
             btn.setProperty("active", False)
             has_active = any(b == blk for (b, _) in self._active_regens.keys())
+            has_active = has_active or any(
+                b == blk for (b, _p, _v)
+                in self._active_mode_c_version_threads.keys())
             has_unseen = (not has_active) and any(b == blk for (b, _) in self._unseen_shots)
+            btn.setProperty("generating", has_active)
+            btn.setProperty("gen_phase", str(getattr(self, '_block_gen_phase', 0)))
             btn.setProperty("unseen", has_unseen)
             btn.clicked.connect(lambda _, b=blk: self._select_block(b))
             current_row.addWidget(btn)
@@ -12900,6 +13208,11 @@ class MainWindow(QMainWindow):
         base = f"{tr('block')} {m.group(1)}" if m else block_name
         return self._block_indicator_for(block_name) + base
 
+    def _format_compact_block_label(self, block_name: str) -> str:
+        """Short block pill label for compact navigation: only the block number."""
+        m = re.match(r'.*_block_(\d+)', block_name)
+        return m.group(1) if m else block_name
+
     def _refresh_block_indicator(self, block_name: str):
         """Обновляет пилюлю блока: текст (точки если идёт генерация) + property `unseen`."""
         btn = self._block_pills.get(block_name)
@@ -12914,7 +13227,12 @@ class MainWindow(QMainWindow):
         # NEW показывается ТОЛЬКО когда нет активных генераций (взаимоисключающие)
         has_unseen = (not has_active) and any(
             b == block_name for (b, _) in self._unseen_shots)
-        btn.setText(self._format_block_label(block_name))
+        if bool(btn.property("compact")):
+            btn.setText(self._format_compact_block_label(block_name))
+        else:
+            btn.setText(self._format_block_label(block_name))
+        btn.setProperty("generating", has_active)
+        btn.setProperty("gen_phase", str(getattr(self, '_block_gen_phase', 0)))
         btn.setProperty("unseen", has_unseen)
         btn.style().unpolish(btn); btn.style().polish(btn)
         self._refresh_compact_nav()
