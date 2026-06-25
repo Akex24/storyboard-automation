@@ -198,11 +198,13 @@ class ShimmerCell(QFrame):
                   else (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash))
         for _b in _order:
             ah.addWidget(_b)
-        # btn_back и btn_ref оживлены; heart/trash пока пустые.
+        # btn_back / btn_ref / btn_trash оживлены; heart пока пустая.
         self.btn_back.clicked.connect(self._on_back_clicked)
         self.btn_ref.clicked.connect(self._on_ref_clicked)
+        self.btn_trash.clicked.connect(self._on_trash_clicked)
         self._refresh_back_enabled()   # начальное состояние от текущего _meta
         self._refresh_ref_enabled()    # btn_ref активна, когда есть meta.file
+        self._refresh_trash_enabled()  # trash активна, когда есть готовый файл
         self._actions_overlay.hide()
         self._position_actions_overlay()
 
@@ -318,6 +320,10 @@ class ShimmerCell(QFrame):
             pass
         try:
             self._refresh_ref_enabled()
+        except Exception:
+            pass
+        try:
+            self._refresh_trash_enabled()
         except Exception:
             pass
 
@@ -579,6 +585,20 @@ class ShimmerCell(QFrame):
         btn.setCursor(Qt.CursorShape.PointingHandCursor
                       if has_file else Qt.CursorShape.ArrowCursor)
 
+    def _refresh_trash_enabled(self):
+        """Кнопка удаления активна для готового результата или error-плитки.
+        Loading не удаляем: генерация ещё может завершиться в эту плитку."""
+        btn = getattr(self, "btn_trash", None)
+        if btn is None:
+            return
+        has_file = False
+        if isinstance(self._meta, dict):
+            has_file = bool((self._meta.get("file") or "").strip())
+        enabled = bool(has_file or self._state == "error")
+        btn.setEnabled(enabled)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor
+                      if enabled else Qt.CursorShape.ArrowCursor)
+
     def _on_ref_clicked(self):
         """Клик по btn_ref: прикрепить файл этой плитки к prompt-bar как реф
         к следующей генерации. Страница резолвит полный путь из meta['file']
@@ -607,16 +627,30 @@ class ShimmerCell(QFrame):
         except Exception:
             pass
 
+    def _on_trash_clicked(self):
+        """Клик по trash: делегировать удаление странице, где есть доступ к
+        списку холста, canvas.json и текущему show-root."""
+        if self._page is None:
+            return
+        try:
+            self._page.delete_result_cell(self)
+        except Exception:
+            pass
+
     def set_error(self, msg: str):
         self._finish_common()
         self._state = "error"
         self._pixmap = None
+        self._result_path = None
         # Шрифт мельче (11px) + wordWrap + поля 10px → длинная причина переносится
         # и помещается ЦЕЛИКОМ в плитке, не торчит за край.
         self._info_lbl.setStyleSheet(
             "color:#ffb3b3; font-size:11px; background:transparent;")
         self._info_lbl.setText(msg or "Ошибка")
         self._info_lbl.show()
+        self._refresh_reveal_enabled()
+        self._refresh_ref_enabled()
+        self._refresh_trash_enabled()
         self.update()
 
     # ── play-треугольник по центру (плитка готового видео, заглушка до кадра) ──

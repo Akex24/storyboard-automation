@@ -27,14 +27,14 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import (
-    Qt, QSize, QTimer, QSettings, QEvent, QPoint,
-    QPropertyAnimation, QEasingCurve,
+    Qt, QSize, QTimer, QSettings, QEvent, QPoint, QRect,
+    QPropertyAnimation, QParallelAnimationGroup, QEasingCurve,
 )
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
-    QGraphicsOpacityEffect,
+    QGraphicsOpacityEffect, QMessageBox, QApplication, QCheckBox,
 )
 
 from generator.result_cell import ShimmerCell
@@ -1142,6 +1142,208 @@ class GeneratorPage(QWidget):
             hb.addStretch(1)
             self._rows_v.addWidget(rw)
 
+    def _capture_cell_global_positions(self, exclude=None) -> dict:
+        """Снимок текущих экранных позиций карточек перед удалением.
+        Global coordinates переживают перепривязку карточек в новые row-host'ы."""
+        positions = {}
+        for cell in self._cells:
+            if cell is exclude or not self._cell_alive(cell):
+                continue
+            try:
+                if cell.isVisible():
+                    positions[cell] = cell.mapToGlobal(QPoint(0, 0))
+            except Exception:
+                pass
+        return positions
+
+    def _restore_results_scroll(self, value: int):
+        """Вернуть вертикальный scroll после перестройки сетки.
+        При удалении нижней карточки максимум может уменьшиться — берём min."""
+        try:
+            bar = self._results_area.verticalScrollBar()
+            bar.setValue(max(0, min(int(value), bar.maximum())))
+        except Exception:
+            pass
+
+    def _relayout_grid_animated(self, old_positions: dict, scroll_value: int = None):
+        """FLIP-анимация после удаления через overlay-снимки.
+        Layout сразу ставит живые карточки в финальные места, но они временно
+        прозрачные; поверх едут снимки со старых позиций в новые. Так нет
+        промежуточного кадра, где живые карточки моргают уже в финальной позиции."""
+        hidden_effects = {}
+        overlays = {}
+        for cell, old_global in (old_positions or {}).items():
+            if cell in self._cells and self._cell_alive(cell):
+                try:
+                    snapshot = cell.grab()
+                    if snapshot.isNull():
+                        continue
+                    start_pos = self._grid_host.mapFromGlobal(old_global)
+                    overlay = QLabel(self._grid_host)
+                    overlay.setAttribute(
+                        Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                    overlay.setPixmap(snapshot)
+                    overlay.setScaledContents(True)
+                    overlay.setGeometry(QRect(start_pos, cell.size()))
+                    overlay.show()
+                    overlay.raise_()
+                    overlays[cell] = overlay
+                    effect = QGraphicsOpacityEffect(cell)
+                    effect.setOpacity(0.0)
+                    cell.setGraphicsEffect(effect)
+                    hidden_effects[cell] = effect
+                except Exception:
+                    pass
+        self._relayout_grid()
+        try:
+            self._rows_v.activate()
+            if scroll_value is not None:
+                self._restore_results_scroll(scroll_value)
+            QApplication.processEvents()
+            if scroll_value is not None:
+                self._restore_results_scroll(scroll_value)
+        except Exception:
+            pass
+
+        group = QParallelAnimationGroup(self)
+        moved = False
+        for cell, old_global in (old_positions or {}).items():
+            if cell not in self._cells or not self._cell_alive(cell):
+                continue
+            parent = cell.parentWidget()
+            if parent is None:
+                continue
+            try:
+                overlay = overlays.get(cell)
+                if overlay is None:
+                    continue
+                end_pos = self._grid_host.mapFromGlobal(cell.mapToGlobal(QPoint(0, 0)))
+                start_pos = self._grid_host.mapFromGlobal(old_global)
+                if (start_pos - end_pos).manhattanLength() < 2:
+                    continue
+                overlay.raise_()
+                anim = QPropertyAnimation(overlay, b"geometry", group)
+                anim.setDuration(520)
+                anim.setEasingCurve(QEasingCurve.Type.OutQuart)
+                anim.setStartValue(QRect(start_pos, overlay.size()))
+                anim.setEndValue(QRect(end_pos, cell.size()))
+                group.addAnimation(anim)
+                moved = True
+            except Exception:
+                continue
+
+        if not moved:
+            for cell in list(hidden_effects.keys()):
+                try:
+                    cell.setGraphicsEffect(None)
+                except Exception:
+                    pass
+            for overlay in list(overlays.values()):
+                try:
+                    overlay.setParent(None)
+                    overlay.deleteLater()
+                except Exception:
+                    pass
+            group.deleteLater()
+            return
+        self._grid_move_anim = group
+
+        def _cleanup_hidden_effects():
+            for cell in list(hidden_effects.keys()):
+                try:
+                    if self._cell_alive(cell):
+                        cell.setGraphicsEffect(None)
+                except Exception:
+                    pass
+            for overlay in list(overlays.values()):
+                try:
+                    overlay.setParent(None)
+                    overlay.deleteLater()
+                except Exception:
+                    pass
+
+        group.finished.connect(lambda: setattr(self, "_grid_move_anim", None))
+        group.finished.connect(_cleanup_hidden_effects)
+        group.finished.connect(group.deleteLater)
+        group.start()
+
+    def _animate_deleted_cell_collapse(self, snapshot: QPixmap, old_global: QPoint,
+                                       start_size: QSize, scroll_value: int = None,
+                                       finished_callback=None):
+        """Мягко схлопнуть snapshot удаляемой карточки поверх сетки.
+        Не анимируем живой layout-виджет: так нет драки между layout и animation."""
+        if snapshot is None or snapshot.isNull():
+            if callable(finished_callback):
+                QTimer.singleShot(0, finished_callback)
+            return
+        overlay = None
+        try:
+            if scroll_value is not None:
+                self._restore_results_scroll(scroll_value)
+            start_pos = self._grid_host.mapFromGlobal(old_global)
+            overlay = QLabel(self._grid_host)
+            overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            overlay.setPixmap(snapshot)
+            overlay.setScaledContents(True)
+            overlay.setGeometry(QRect(start_pos, start_size))
+            overlay.show()
+            overlay.raise_()
+            effect = QGraphicsOpacityEffect(overlay)
+            overlay.setGraphicsEffect(effect)
+            end_w = max(28, int(start_size.width() * 0.12))
+            end_h = max(18, int(start_size.height() * 0.12))
+            end_rect = QRect(
+                start_pos.x() + (start_size.width() - end_w) // 2,
+                start_pos.y() + (start_size.height() - end_h) // 2,
+                end_w,
+                end_h,
+            )
+            group = QParallelAnimationGroup(self)
+            geom_anim = QPropertyAnimation(overlay, b"geometry", group)
+            geom_anim.setDuration(560)
+            geom_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            geom_anim.setStartValue(QRect(start_pos, start_size))
+            geom_anim.setEndValue(end_rect)
+            opacity_anim = QPropertyAnimation(effect, b"opacity", group)
+            opacity_anim.setDuration(560)
+            opacity_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            opacity_anim.setStartValue(1.0)
+            opacity_anim.setEndValue(0.0)
+            group.addAnimation(geom_anim)
+            group.addAnimation(opacity_anim)
+            if not hasattr(self, "_delete_collapse_anims"):
+                self._delete_collapse_anims = []
+            self._delete_collapse_anims.append(group)
+
+            def _cleanup():
+                try:
+                    self._delete_collapse_anims.remove(group)
+                except Exception:
+                    pass
+                try:
+                    overlay.setGraphicsEffect(None)
+                    overlay.setParent(None)
+                    overlay.deleteLater()
+                except Exception:
+                    pass
+                if callable(finished_callback):
+                    try:
+                        finished_callback()
+                    except Exception:
+                        pass
+                group.deleteLater()
+
+            group.finished.connect(_cleanup)
+            group.start()
+        except Exception:
+            try:
+                if overlay is not None:
+                    overlay.deleteLater()
+            except Exception:
+                pass
+            if callable(finished_callback):
+                QTimer.singleShot(0, finished_callback)
+
     @staticmethod
     def _cell_alive(cell) -> bool:
         """Жив ли C++ объект плитки. Путь A плитки на switch НЕ удаляет, но при
@@ -1192,6 +1394,145 @@ class GeneratorPage(QWidget):
             pass
         if th in self._gen_threads:
             self._gen_threads.remove(th)
+
+    def delete_result_cell(self, cell: ShimmerCell):
+        """Удалить плитку генератора: готовый файл с диска или error-карточку
+        без файла, затем убрать карточку с холста и обновить canvas.json."""
+        if not self._cell_alive(cell):
+            return
+        meta = cell.meta() if hasattr(cell, "meta") else {}
+        fname = (meta.get("file") or "").strip() if isinstance(meta, dict) else ""
+        is_error_cell = getattr(cell, "_state", "") == "error"
+        if not fname and not is_error_cell:
+            return
+        target = None
+        try:
+            import storyboard_app as _sa
+            root = _sa.get_stored_root()
+            slug = _sa.get_current_show(root) if root else None
+            if not (root and slug):
+                return
+            out_dir = root / "shows" / slug / "generator"
+            out_root = out_dir.resolve()
+            if fname:
+                target = (out_dir / fname).resolve()
+                # Защита от битого canvas.json: удаляем только внутри папки generator.
+                if out_root not in target.parents and target != out_root:
+                    return
+        except Exception:
+            return
+
+        settings = QSettings()
+        skip_confirm = bool(settings.value(
+            "generator/skip_delete_confirm", False, type=bool))
+        if not skip_confirm:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Удалить карточку?")
+            if target is not None:
+                box.setText("Удалить эту картинку с холста и с компьютера окончательно?")
+            else:
+                box.setText("Удалить эту карточку с ошибкой с холста?")
+            dont_ask = QCheckBox("Больше не спрашивать при удалении")
+            box.setCheckBox(dont_ask)
+            yes_btn = box.addButton("Удалить", QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is not yes_btn:
+                return
+            if dont_ask.isChecked():
+                settings.setValue("generator/skip_delete_confirm", True)
+
+        old_positions = self._capture_cell_global_positions(exclude=cell)
+        try:
+            scroll_value = self._results_area.verticalScrollBar().value()
+        except Exception:
+            scroll_value = 0
+        deleted_global = cell.mapToGlobal(QPoint(0, 0))
+        deleted_size = cell.size()
+        try:
+            deleted_snapshot = cell.grab()
+        except Exception:
+            deleted_snapshot = QPixmap()
+        paths_to_delete = [target] if target is not None else []
+        if target is not None and meta.get("type") == "video":
+            paths_to_delete.append(target.with_suffix(".jpg"))
+        for p in paths_to_delete:
+            try:
+                if p.exists() and p.is_file():
+                    p.unlink()
+            except Exception:
+                pass
+
+        for p in paths_to_delete:
+            try:
+                self.remove_ref(str(p))
+            except Exception:
+                pass
+        try:
+            self.unregister_loading(cell)
+        except Exception:
+            pass
+        for cells in list(self._canvas_cells.values()):
+            try:
+                while cell in cells:
+                    cells.remove(cell)
+            except Exception:
+                pass
+        try:
+            while cell in self._cells:
+                self._cells.remove(cell)
+        except Exception:
+            pass
+        self._cell_count = len(self._cells)
+        if self._cells:
+            self._empty_host.hide()
+            self._grid_host.show()
+            try:
+                hold_effect = QGraphicsOpacityEffect(cell)
+                hold_effect.setOpacity(0.0)
+                cell.setGraphicsEffect(hold_effect)
+                cell.setEnabled(False)
+            except Exception:
+                pass
+
+            def _finish_delete_and_shift():
+                # Важно: до этого момента реальная карточка остаётся в layout как
+                # невидимый держатель места. Иначе соседняя плитка телепортируется
+                # под overlay удаляемой карточки ещё до старта FLIP-сдвига.
+                self._relayout_grid_animated(old_positions, scroll_value)
+
+            self._animate_deleted_cell_collapse(
+                deleted_snapshot,
+                deleted_global,
+                deleted_size,
+                scroll_value,
+                _finish_delete_and_shift,
+            )
+        else:
+            try:
+                cell.hide()
+                cell.setParent(None)
+                cell.deleteLater()
+            except Exception:
+                pass
+            while self._rows_v.count():
+                it = self._rows_v.takeAt(0)
+                w = it.widget()
+                if w is not None:
+                    w.deleteLater()
+            self._grid_host.show()
+            self._empty_host.hide()
+            self._restore_results_scroll(scroll_value)
+            self._animate_deleted_cell_collapse(
+                deleted_snapshot, deleted_global, deleted_size, scroll_value)
+            QTimer.singleShot(580, lambda: (
+                self._grid_host.hide(),
+                self._empty_host.show(),
+            ))
+        QTimer.singleShot(0, lambda v=scroll_value: self._restore_results_scroll(v))
+        QTimer.singleShot(120, lambda v=scroll_value: self._restore_results_scroll(v))
+        self._save_canvas()
 
     # ── мультихолст: секции/активный (КУСОК 1 — данные) ────────────────
     def _ensure_canvases(self):
