@@ -1102,6 +1102,96 @@ class ActorsView(QWidget):
         except Exception:
             traceback.print_exc()
 
+    def _update_custom_fields(self, slug: str, fields) -> None:
+        """2026-06-25 (монстры портрет): мерджит произвольные поля в
+        custom.json[slug] (прочие сохраняются). Значение None → поле удаляется.
+        Атомарно (temp+os.replace), cross-platform."""
+        import os
+        try:
+            meta_path = self.project_root / "actors" / "_custom" / "custom.json"
+            if not meta_path.is_file():
+                return
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                return
+            if not isinstance(data, dict) or slug not in data:
+                return
+            rec = data.get(slug) or {}
+            for k, v in (fields or {}).items():
+                if v is None:
+                    rec.pop(k, None)
+                else:
+                    rec[k] = v
+            data[slug] = rec
+            tmp_path = meta_path.with_suffix(".json.tmp")
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            os.replace(str(tmp_path), str(meta_path))
+        except Exception:
+            traceback.print_exc()
+
+    def _make_custom_portrait(self, slug: str, sheet_path) -> None:
+        """2026-06-25 (монстры портрет): вырезает крупный портрет из ПРАВОЙ
+        зоны листа (right-zone crop, PIL — без face-detect, на нечеловеке
+        ненадёжен) → actors/_custom/<slug>/<slug>_portrait.jpg; пишет в
+        custom.json portrait + portrait_src. Не падает на битом листе.
+        Cross-platform: PIL + pathlib (ленивый импорт PIL)."""
+        # Доли right-zone crop (Alex подберёт визуально):
+        LEFT_FRAC = 0.52   # левый край портретной зоны = 52% ширины листа
+        TOP_FRAC = 0.00    # верх зоны (голова сверху листа)
+        try:
+            from PIL import Image
+            src = Path(str(sheet_path))
+            if not src.is_file():
+                return
+            with Image.open(src) as im0:
+                im = im0.convert("RGB")
+                W, H = im.size
+                x0 = int(W * LEFT_FRAC)
+                zone_w = max(1, W - x0)
+                side = min(zone_w, H)
+                y0 = int(H * TOP_FRAC)
+                if y0 + side > H:
+                    y0 = max(0, H - side)
+                portrait = im.crop((x0, y0, x0 + side, y0 + side))
+            out_dir = self.project_root / "actors" / "_custom" / slug
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"{slug}_portrait.jpg"
+            portrait.save(str(out_path), "JPEG", quality=90)
+            self._update_custom_fields(slug, {
+                "portrait": f"{slug}/{out_path.name}",
+                "portrait_src": str(src),
+            })
+        except Exception:
+            traceback.print_exc()
+
+    def _refresh_custom_portrait(self, slug: str, alive_sheets) -> None:
+        """2026-06-25 (монстры портрет): держит превью актуальным после
+        удаления листов. Если источник текущего портрета (portrait_src) пропал
+        из существующих листов — перекропить из alive_sheets[0]; если листов не
+        осталось — очистить portrait/portrait_src."""
+        try:
+            meta_path = self.project_root / "actors" / "_custom" / "custom.json"
+            if not meta_path.is_file():
+                return
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                return
+            rec = (data.get(slug) if isinstance(data, dict) else None) or {}
+            portrait_src = rec.get("portrait_src") or ""
+            src_alive = bool(portrait_src) and Path(portrait_src).is_file()
+            if not alive_sheets:
+                self._update_custom_fields(
+                    slug, {"portrait": None, "portrait_src": None})
+            elif not src_alive:
+                self._make_custom_portrait(
+                    slug, str(self.project_root / alive_sheets[0]))
+        except Exception:
+            traceback.print_exc()
+
     def _view_custom_refs(self, slug: str, rec) -> None:
         """2026-06-24 (монстры 3в): «Все референсы (N)» монстра — ТОТ ЖЕ
         ActorPhotosDialog что у актёра, листы из custom.json sheets (resolved,
@@ -1157,6 +1247,9 @@ class ActorsView(QWidget):
             alive = [s for s in (rec.get('sheets') or [])
                      if (self.project_root / s).is_file()]
             self._set_custom_sheets(slug, alive)
+            # 2026-06-25 (монстры портрет): источник текущего портрета мог быть
+            # удалён → перекропить из оставшегося листа (или очистить).
+            self._refresh_custom_portrait(slug, alive)
             self.refresh()
         except Exception:
             traceback.print_exc()
@@ -2306,6 +2399,12 @@ class ActorsView(QWidget):
             self._auto_link_actor_ref_to_episode(p.parent, str(p))
             # Сбрасываем баннер.
             self._clear_pending_request()
+            # 2026-06-25 (монстры портрет): монстр → перерисовать превью из
+            # ВЫБРАННОГО листа (pick-for-ep сменил активный реф). Актёрский путь
+            # не затрагивается (условие на монстра: slug в custom.json).
+            if self._custom_record(slug) is not None:
+                self._make_custom_portrait(slug, str(p))
+                self.refresh()
         except Exception:
             traceback.print_exc()
 
@@ -2370,6 +2469,9 @@ class ActorsView(QWidget):
                     self._upsert_custom_character(
                         slug, monsters[slug].get('display_name') or slug,
                         monsters[slug].get('description') or "", sheet_rel)
+                    # 2026-06-25 (монстры портрет): kept-лист стал текущим
+                    # рефом → перерисовать превью-портрет из него.
+                    self._make_custom_portrait(slug, kept_path)
             except Exception:
                 traceback.print_exc()
             if kept_path:
