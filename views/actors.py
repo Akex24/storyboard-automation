@@ -85,17 +85,10 @@ class ActorCard(QFrame):
     def __init__(self, slug: str, display_name: str, photos: List[Path],
                  is_admin: bool, card_width: int = 220,
                  generated_refs_count: int = 0,
-                 pending_count: int = 0, parent=None,
-                 is_custom: bool = False):
+                 pending_count: int = 0, parent=None):
         super().__init__(parent)
         self.slug = slug
         self.setObjectName("ref-card")
-        # 2026-06-25 (монстры): карточка нестандартного персонажа — пурпурный
-        # фон/рамка (QSS QFrame#ref-card[custom="true"]). Свойство ставим ДО
-        # показа → polish применит стиль. Актёр (is_custom=False) — без свойства,
-        # базовый #ref-card. Кнопки/портрет НЕ затрагиваются.
-        if is_custom:
-            self.setProperty("custom", "true")
         self.setFixedWidth(card_width)
         self._card_width = card_width
         # Курсор-палец на всей карточке — намёк что кликабельно.
@@ -752,7 +745,7 @@ class ActorsView(QWidget):
                 mslug, m['display_name'], m['photos'],
                 is_admin=self._is_admin, card_width=self._card_width,
                 generated_refs_count=len(m.get('sheets') or []),
-                pending_count=mpending, is_custom=True)
+                pending_count=mpending)
             mcard.clicked.connect(self._on_custom_card_clicked)
             # 2026-06-24 (монстры 3в): ВСЕ кнопки карточки 1:1 как у актёра.
             mcard.pending_clicked.connect(self._on_pending_clicked)

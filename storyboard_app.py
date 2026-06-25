@@ -3326,17 +3326,6 @@ QFrame#ref-card {
     border-radius: 8px;
 }
 QFrame#ref-card:hover { border-color: rgba(255, 255, 255, 0.12); }
-/* 2026-06-25: карточка нестандартного персонажа (монстр) — приглушённый пурпур
-   accent_purple #6e4cc4, чтобы визуально отличать от актёрских карточек. Атрибут-
-   селектор [custom="true"] бьёт ТОЛЬКО монстр-карточки (ActorCard.setProperty);
-   базовый #ref-card (актёр) НЕ затрагивается. Прозрачности (Alex подвинет
-   визуально): fill 0.10 / border 0.35 / hover-border 0.55. Кнопки/портрет — свои. */
-QFrame#ref-card[custom="true"] {
-    background: rgba(110, 76, 196, 0.10);
-    border: 1px solid rgba(110, 76, 196, 0.35);
-    border-radius: 8px;
-}
-QFrame#ref-card[custom="true"]:hover { border-color: rgba(110, 76, 196, 0.55); }
 QWidget#ref-card-info { background: transparent; }
 QLabel#ref-name { color: #ffffff; font-size: 13px; font-weight: 500; }
 QLabel#ref-tag  { color: rgba(255, 255, 255, 0.40); font-size: 11px; }
