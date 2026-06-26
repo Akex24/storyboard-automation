@@ -1157,12 +1157,40 @@ class GeneratorPage(QWidget):
                 pass
         return positions
 
-    def _restore_results_scroll(self, value: int):
+    def _capture_results_scroll_state(self):
+        """Снимок вертикального scroll для стабильного удаления внизу холста.
+        Одного value недостаточно: после удаления высота контента уменьшается,
+        и у нижних позиций важнее сохранить расстояние до низа."""
+        try:
+            bar = self._results_area.verticalScrollBar()
+            return {
+                "value": int(bar.value()),
+                "maximum": int(bar.maximum()),
+                "bottom_gap": int(bar.maximum() - bar.value()),
+                "page_step": int(bar.pageStep()),
+            }
+        except Exception:
+            return {"value": 0, "maximum": 0, "bottom_gap": 0, "page_step": 0}
+
+    def _restore_results_scroll(self, value):
         """Вернуть вертикальный scroll после перестройки сетки.
         При удалении нижней карточки максимум может уменьшиться — берём min."""
         try:
             bar = self._results_area.verticalScrollBar()
-            bar.setValue(max(0, min(int(value), bar.maximum())))
+            if isinstance(value, dict):
+                old_value = int(value.get("value", 0))
+                old_gap = max(0, int(value.get("bottom_gap", 0)))
+                old_page = max(0, int(value.get("page_step", 0)))
+                # Если пользователь был в нижней части холста, сохраняем якорь
+                # "расстояние до низа", а не абсолютный value от верха.
+                near_bottom = old_gap <= max(24, old_page // 2)
+                if near_bottom:
+                    target = bar.maximum() - old_gap
+                else:
+                    target = old_value
+            else:
+                target = int(value)
+            bar.setValue(max(0, min(int(target), bar.maximum())))
         except Exception:
             pass
 
@@ -1173,14 +1201,18 @@ class GeneratorPage(QWidget):
         промежуточного кадра, где живые карточки моргают уже в финальной позиции."""
         hidden_effects = {}
         overlays = {}
+        try:
+            overlay_parent = self._results_area.viewport()
+        except Exception:
+            overlay_parent = self._grid_host
         for cell, old_global in (old_positions or {}).items():
             if cell in self._cells and self._cell_alive(cell):
                 try:
                     snapshot = cell.grab()
                     if snapshot.isNull():
                         continue
-                    start_pos = self._grid_host.mapFromGlobal(old_global)
-                    overlay = QLabel(self._grid_host)
+                    start_pos = overlay_parent.mapFromGlobal(old_global)
+                    overlay = QLabel(overlay_parent)
                     overlay.setAttribute(
                         Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
                     overlay.setPixmap(snapshot)
@@ -1218,8 +1250,8 @@ class GeneratorPage(QWidget):
                 overlay = overlays.get(cell)
                 if overlay is None:
                     continue
-                end_pos = self._grid_host.mapFromGlobal(cell.mapToGlobal(QPoint(0, 0)))
-                start_pos = self._grid_host.mapFromGlobal(old_global)
+                end_pos = overlay_parent.mapFromGlobal(cell.mapToGlobal(QPoint(0, 0)))
+                start_pos = overlay_parent.mapFromGlobal(old_global)
                 if (start_pos - end_pos).manhattanLength() < 2:
                     continue
                 overlay.raise_()
@@ -1262,6 +1294,8 @@ class GeneratorPage(QWidget):
                     overlay.deleteLater()
                 except Exception:
                     pass
+            if scroll_value is not None:
+                self._restore_results_scroll(scroll_value)
 
         group.finished.connect(lambda: setattr(self, "_grid_move_anim", None))
         group.finished.connect(_cleanup_hidden_effects)
@@ -1589,10 +1623,7 @@ class GeneratorPage(QWidget):
                 settings.setValue("generator/skip_delete_confirm", True)
 
         old_positions = self._capture_cell_global_positions(exclude=cell)
-        try:
-            scroll_value = self._results_area.verticalScrollBar().value()
-        except Exception:
-            scroll_value = 0
+        scroll_value = self._capture_results_scroll_state()
         deleted_global = cell.mapToGlobal(QPoint(0, 0))
         deleted_size = cell.size()
         try:
@@ -1645,6 +1676,13 @@ class GeneratorPage(QWidget):
                 # Важно: до этого момента реальная карточка остаётся в layout как
                 # невидимый держатель места. Иначе соседняя плитка телепортируется
                 # под overlay удаляемой карточки ещё до старта FLIP-сдвига.
+                try:
+                    cell.hide()
+                    cell.setGraphicsEffect(None)
+                    cell.setParent(None)
+                    cell.deleteLater()
+                except Exception:
+                    pass
                 self._relayout_grid_animated(old_positions, scroll_value)
 
             self._animate_deleted_cell_collapse(
@@ -1675,8 +1713,6 @@ class GeneratorPage(QWidget):
                 self._grid_host.hide(),
                 self._empty_host.show(),
             ))
-        QTimer.singleShot(0, lambda v=scroll_value: self._restore_results_scroll(v))
-        QTimer.singleShot(120, lambda v=scroll_value: self._restore_results_scroll(v))
         self._save_canvas()
 
     # ── мультихолст: секции/активный (КУСОК 1 — данные) ────────────────
