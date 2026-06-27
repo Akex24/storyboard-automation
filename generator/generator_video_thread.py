@@ -152,7 +152,7 @@ class GeneratorVideoThread(QThread):
                 s = requests.Session()
                 s.headers.update({"X-API-Key": key})
                 try:
-                    r = s.post(f"{_sa.API_BASE}/api/v5/generations",
+                    r = s.post(f"{_sa.API_BASE}/api/v6/generations",
                                params={"result_format": "ref"},
                                json=payload, timeout=60)
                 except requests.exceptions.RequestException as e:
@@ -212,7 +212,7 @@ class GeneratorVideoThread(QThread):
                         f"оставался {elapsed}с (>10 мин). Попробуй ещё раз.")
                     return
                 try:
-                    rr = session.get(f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                    rr = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
                                      params={"result_format": "ref"}, timeout=30)
                     rr.raise_for_status()
                 except requests.exceptions.HTTPError as e:
@@ -235,22 +235,34 @@ class GeneratorVideoThread(QThread):
                 self.progress.emit(f"Генерирую видео… ({elapsed}с · {status or '...'})")
 
                 if status in _OK_STATUSES:
-                    # v5: storage_id = results[0].metadata.storage_id; fallback v4-разбор.
                     results = d.get("results") or d.get("result") or []
-                    uri = ""
+                    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+                    # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{fh}/raw).
+                    download_url = ""
                     if results and isinstance(results[0], dict):
-                        uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
-                    if not uri:
-                        uri = results[0] if (isinstance(results, list) and results) else results
-                        if isinstance(uri, dict):
-                            uri = (uri.get("url") or uri.get("ref")
-                                   or uri.get("file_hash") or "")
-                        uri = str(uri)
-                    fh = uri[5:] if uri.startswith("file:") else uri
-                    # видео крупнее картинок → больше таймаут на скачивание.
-                    r2 = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw", timeout=300)
-                    r2.raise_for_status()
-                    video_bytes = r2.content
+                        download_url = results[0].get("download_url") or ""
+                    if download_url:
+                        # видео крупнее картинок → больше таймаут на скачивание.
+                        r2 = session.get(download_url, timeout=300)
+                        r2.raise_for_status()
+                        video_bytes = r2.content
+                        fh = download_url   # для диаг-строки [FASTGEN] ниже
+                    else:
+                        # v5: storage_id = results[0].metadata.storage_id; fallback v4-разбор.
+                        uri = ""
+                        if results and isinstance(results[0], dict):
+                            uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                        if not uri:
+                            uri = results[0] if (isinstance(results, list) and results) else results
+                            if isinstance(uri, dict):
+                                uri = (uri.get("url") or uri.get("ref")
+                                       or uri.get("file_hash") or "")
+                            uri = str(uri)
+                        fh = uri[5:] if uri.startswith("file:") else uri
+                        # видео крупнее картинок → больше таймаут на скачивание.
+                        r2 = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw", timeout=300)
+                        r2.raise_for_status()
+                        video_bytes = r2.content
                     self._fastgen(op_id, status, elapsed, "ok",
                                   f" storage_id={str(fh)[:8]}")
                     break
