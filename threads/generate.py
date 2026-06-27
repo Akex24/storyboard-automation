@@ -849,7 +849,7 @@ class GenerateThread(QThread):
                                      for i, h in enumerate(ref_hashes)]
 
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
-            endpoint = "/api/v5/generations"
+            endpoint = "/api/v6/generations"
 
             # ── 2026-05-15 DIAG DUMP (временно, для расследования) ────
             # Дамп ровно того payload что улетел в Fast Gen. Контекст:
@@ -994,7 +994,7 @@ class GenerateThread(QThread):
                         f"API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
                     return
-                r = session.get(f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                r = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
                                 params={"result_format": "ref"}, timeout=30)
                 r.raise_for_status()
                 data   = r.json()
@@ -1007,25 +1007,36 @@ class GenerateThread(QThread):
 
                 # v5: успешные статусы — множество.
                 if status in ("succeeded", "success", "completed", "done"):
-                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
                     results = data.get("results") or data.get("result") or []
-                    sid = ""
+                    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+                    # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{sid}/raw).
+                    download_url = ""
                     if results and isinstance(results[0], dict):
-                        sid = ((results[0].get("metadata") or {}).get("storage_id") or "")
-                    if not sid:
-                        # FALLBACK (v4-форма): result[0] → url/ref/file_hash.
-                        uri = results[0] if (isinstance(results, list) and results) else results
-                        if isinstance(uri, dict):
-                            uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
-                        sid = str(uri)
-                    if sid.startswith("data:"):
-                        _, b64 = sid.split(",", 1)
-                        image_bytes = base64.b64decode(b64)
-                    else:
-                        sid = sid[5:] if sid.startswith("file:") else sid
-                        r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
+                        download_url = results[0].get("download_url") or ""
+                    if download_url:
+                        r2 = session.get(download_url, timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                        sid = download_url   # для диаг-строки [FASTGEN] ниже
+                    else:
+                        # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                        sid = ""
+                        if results and isinstance(results[0], dict):
+                            sid = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                        if not sid:
+                            # FALLBACK (v4-форма): result[0] → url/ref/file_hash.
+                            uri = results[0] if (isinstance(results, list) and results) else results
+                            if isinstance(uri, dict):
+                                uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
+                            sid = str(uri)
+                        if sid.startswith("data:"):
+                            _, b64 = sid.split(",", 1)
+                            image_bytes = base64.b64decode(b64)
+                        else:
+                            sid = sid[5:] if sid.startswith("file:") else sid
+                            r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
+                            r2.raise_for_status()
+                            image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
                     print(f"[FASTGEN] path=GenerateThread api=v5 "
                           f"endpoint={endpoint} auth=X-API-Key "
@@ -1342,7 +1353,7 @@ class RefGenerateThread(QThread):
                                      for i, h in enumerate(ref_hashes)]
 
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (P4/P7).
-            endpoint = "/api/v5/generations"
+            endpoint = "/api/v6/generations"
             # 2026-06-17 (Коммит F): 404-перезаливка протухшего рефа. send_path мог
             # быть залит ранее в этой сессии → серверный file_hash протух (короткий
             # TTL), а в payload ушёл мёртвый хеш из _upload_cache → POST отдаёт 404
@@ -1397,7 +1408,7 @@ class RefGenerateThread(QThread):
                         f"[polling] API timeout: статус «{last_status or 'unknown'}»"
                         f" оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
                     return
-                r = session.get(f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                r = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
                                 params={"result_format": "ref"}, timeout=30)
                 r.raise_for_status()
                 data   = r.json()
@@ -1410,25 +1421,36 @@ class RefGenerateThread(QThread):
 
                 # v5: успешные статусы — множество.
                 if status in ("succeeded", "success", "completed", "done"):
-                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
                     results = data.get("results") or data.get("result") or []
-                    sid = ""
+                    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+                    # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{sid}/raw).
+                    download_url = ""
                     if results and isinstance(results[0], dict):
-                        sid = ((results[0].get("metadata") or {}).get("storage_id") or "")
-                    if not sid:
-                        # FALLBACK (v4-форма): result[0] → url/ref/file_hash.
-                        uri = results[0] if (isinstance(results, list) and results) else results
-                        if isinstance(uri, dict):
-                            uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
-                        sid = str(uri)
-                    if sid.startswith("data:"):
-                        _, b64 = sid.split(",", 1)
-                        image_bytes = base64.b64decode(b64)
-                    else:
-                        sid = sid[5:] if sid.startswith("file:") else sid
-                        r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
+                        download_url = results[0].get("download_url") or ""
+                    if download_url:
+                        r2 = session.get(download_url, timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                        sid = download_url   # для диаг-строки [FASTGEN] ниже
+                    else:
+                        # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                        sid = ""
+                        if results and isinstance(results[0], dict):
+                            sid = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                        if not sid:
+                            # FALLBACK (v4-форма): result[0] → url/ref/file_hash.
+                            uri = results[0] if (isinstance(results, list) and results) else results
+                            if isinstance(uri, dict):
+                                uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
+                            sid = str(uri)
+                        if sid.startswith("data:"):
+                            _, b64 = sid.split(",", 1)
+                            image_bytes = base64.b64decode(b64)
+                        else:
+                            sid = sid[5:] if sid.startswith("file:") else sid
+                            r2  = session.get(f"{_sa.STORAGE_BASE}/file/{sid}/raw", timeout=120)
+                            r2.raise_for_status()
+                            image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
                     print(f"[FASTGEN] path=RefGenerateThread api=v5 "
                           f"endpoint={endpoint} auth=X-API-Key "
@@ -1984,7 +2006,7 @@ class GenerateActorRefThread(QThread):
                 payload["inputs"] = [{"filename": p.name, "input": h}
                                      for p, h in zip(self.photo_paths[:10], ref_hashes)]
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
-            endpoint = "/api/v5/generations"
+            endpoint = "/api/v6/generations"
             r = session.post(f"{_sa.API_BASE}{endpoint}",
                              params={"result_format": "ref"},
                              json=payload, timeout=60)
@@ -2061,7 +2083,7 @@ class GenerateActorRefThread(QThread):
                     return
                 try:
                     r = session.get(
-                        f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                        f"{_sa.API_BASE}/api/v6/generations/{op_id}",
                         params={"result_format": "ref"},
                         timeout=30)
                     r.raise_for_status()
@@ -2075,28 +2097,39 @@ class GenerateActorRefThread(QThread):
                 last_status = status
                 # v5: успешные статусы — множество (status уже .lower()).
                 if status in ("succeeded", "success", "completed", "done"):
-                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
                     # var uri СОХРАНЕНА — downstream result_saved-лог ссылается на uri
                     # (переименование в sid дало бы NameError).
                     results = d.get("results") or d.get("result") or []
-                    uri = ""
+                    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+                    # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{fh}/raw).
+                    download_url = ""
                     if results and isinstance(results[0], dict):
-                        uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
-                    if not uri:
-                        uri = results[0] if (isinstance(results, list) and results) else results
-                        if isinstance(uri, dict):
-                            uri = (uri.get("url") or uri.get("ref")
-                                   or uri.get("file_hash") or "")
-                        uri = str(uri)
-                    if uri.startswith("data:"):
-                        _, b64 = uri.split(",", 1)
-                        image_bytes = base64.b64decode(b64)
-                    else:
-                        fh = uri[5:] if uri.startswith("file:") else uri
-                        r2 = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw",
-                                         timeout=120)
+                        download_url = results[0].get("download_url") or ""
+                    if download_url:
+                        r2 = session.get(download_url, timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                        uri = download_url   # для downstream result_saved-лога + диаг-строки
+                    else:
+                        # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                        uri = ""
+                        if results and isinstance(results[0], dict):
+                            uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                        if not uri:
+                            uri = results[0] if (isinstance(results, list) and results) else results
+                            if isinstance(uri, dict):
+                                uri = (uri.get("url") or uri.get("ref")
+                                       or uri.get("file_hash") or "")
+                            uri = str(uri)
+                        if uri.startswith("data:"):
+                            _, b64 = uri.split(",", 1)
+                            image_bytes = base64.b64decode(b64)
+                        else:
+                            fh = uri[5:] if uri.startswith("file:") else uri
+                            r2 = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw",
+                                             timeout=120)
+                            r2.raise_for_status()
+                            image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
                     print(f"[FASTGEN] path=GenerateActorRefThread api=v5 "
                           f"endpoint={endpoint} auth=X-API-Key "
@@ -2349,7 +2382,7 @@ class EditActorRefThread(QThread):
                 payload["inputs"] = [{"filename": self.source_image_path.name, "input": h}
                                      for i, h in enumerate(ref_hashes)]
             # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
-            endpoint = "/api/v5/generations"
+            endpoint = "/api/v6/generations"
             r = session.post(f"{_sa.API_BASE}{endpoint}",
                              params={"result_format": "ref"},
                              json=payload, timeout=60)
@@ -2389,7 +2422,7 @@ class EditActorRefThread(QThread):
                     return
                 try:
                     r = session.get(
-                        f"{_sa.API_BASE}/api/v5/generations/{op_id}",
+                        f"{_sa.API_BASE}/api/v6/generations/{op_id}",
                         params={"result_format": "ref"},
                         timeout=30)
                     r.raise_for_status()
@@ -2401,27 +2434,38 @@ class EditActorRefThread(QThread):
                 last_status = status
                 # v5: успешные статусы — множество (status уже .lower()).
                 if status in ("succeeded", "success", "completed", "done"):
-                    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
                     results = d.get("results") or d.get("result") or []
-                    uri = ""
+                    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+                    # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{fh}/raw).
+                    download_url = ""
                     if results and isinstance(results[0], dict):
-                        uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
-                    if not uri:
-                        uri = results[0] if (isinstance(results, list) and results) else results
-                        if isinstance(uri, dict):
-                            uri = (uri.get("url") or uri.get("ref")
-                                   or uri.get("file_hash") or "")
-                        uri = str(uri)
-                    if uri.startswith("data:"):
-                        _, b64 = uri.split(",", 1)
-                        image_bytes = base64.b64decode(b64)
-                    else:
-                        fh = uri[5:] if uri.startswith("file:") else uri
-                        r2 = session.get(
-                            f"{_sa.STORAGE_BASE}/file/{fh}/raw",
-                            timeout=120)
+                        download_url = results[0].get("download_url") or ""
+                    if download_url:
+                        r2 = session.get(download_url, timeout=120)
                         r2.raise_for_status()
                         image_bytes = r2.content
+                        uri = download_url   # для диаг-строки [FASTGEN] ниже
+                    else:
+                        # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+                        uri = ""
+                        if results and isinstance(results[0], dict):
+                            uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                        if not uri:
+                            uri = results[0] if (isinstance(results, list) and results) else results
+                            if isinstance(uri, dict):
+                                uri = (uri.get("url") or uri.get("ref")
+                                       or uri.get("file_hash") or "")
+                            uri = str(uri)
+                        if uri.startswith("data:"):
+                            _, b64 = uri.split(",", 1)
+                            image_bytes = base64.b64decode(b64)
+                        else:
+                            fh = uri[5:] if uri.startswith("file:") else uri
+                            r2 = session.get(
+                                f"{_sa.STORAGE_BASE}/file/{fh}/raw",
+                                timeout=120)
+                            r2.raise_for_status()
+                            image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
                     print(f"[FASTGEN] path=EditActorRefThread api=v5 "
                           f"endpoint={endpoint} auth=X-API-Key "
