@@ -83,7 +83,7 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
     while True:
         time.sleep(1.5)
         r = requests.get(
-            f"{FASTGEN_BASE}/api/v5/generations/{op_id}",
+            f"{FASTGEN_BASE}/api/v6/generations/{op_id}",
             headers=headers,
             params={"result_format": "ref"},
             timeout=30,
@@ -137,7 +137,7 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     # провайдер из image_provider.txt: "narwhal" → nano-banana-2, иначе openai-image.
     model = "nano-banana-2" if provider == "narwhal" else "openai-image"
     # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (ниже).
-    endpoint = "/api/v5/generations"
+    endpoint = "/api/v6/generations"
     print(f"  provider: {provider} (model={model}, {endpoint})")
     _fastgen_t0 = time.monotonic()  # [FASTGEN] засечка времени генерации
     r = requests.post(
@@ -158,18 +158,26 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     print(f"  op_id: {op_id}")
     result_data = _fastgen_poll(op_id, headers)
 
-    # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
     results = result_data.get("results") or result_data.get("result") or []
-    file_hash = ""
+    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+    # Если поля нет — fallback на v5 (storage_id → FASTGEN_STORAGE/file/{file_hash}/raw).
+    download_url = ""
     if results and isinstance(results[0], dict):
-        file_hash = ((results[0].get("metadata") or {}).get("storage_id") or "")
-    if not file_hash:
-        # FALLBACK (v4-форма): result[0] → ref/url/file_hash, file:-префикс.
-        ref = results[0] if (isinstance(results, list) and results) else results
-        if isinstance(ref, dict):
-            ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
-        file_hash = str(ref)
-    file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
+        download_url = results[0].get("download_url") or ""
+    if download_url:
+        file_hash = download_url   # для диаг-строки storage_id={file_hash[:8]} ниже
+    else:
+        # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
+        file_hash = ""
+        if results and isinstance(results[0], dict):
+            file_hash = ((results[0].get("metadata") or {}).get("storage_id") or "")
+        if not file_hash:
+            # FALLBACK (v4-форма): result[0] → ref/url/file_hash, file:-префикс.
+            ref = results[0] if (isinstance(results, list) and results) else results
+            if isinstance(ref, dict):
+                ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
+            file_hash = str(ref)
+        file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
 
     # [FASTGEN] диаг-строка успеха (stdout → читает агент). inputs=0 (чистый text2img).
     print(f"[FASTGEN] path=pipeline.generate_image api=v5 "
@@ -179,8 +187,10 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
           f"op_id={op_id} status={result_data.get('status')} "
           f"storage_id={str(file_hash)[:8]} "
           f"time={int(time.monotonic() - _fastgen_t0)} result=ok")
+    # v6: если есть download_url — качаем по нему КАК ЕСТЬ; иначе v5-путь FASTGEN_STORAGE/file/{file_hash}/raw.
+    _dl_target = download_url if download_url else f"{FASTGEN_STORAGE}/file/{file_hash}/raw"
     r = requests.get(
-        f"{FASTGEN_STORAGE}/file/{file_hash}/raw",
+        _dl_target,
         headers={"X-API-Key": fastgen_key},
         timeout=60,
     )
