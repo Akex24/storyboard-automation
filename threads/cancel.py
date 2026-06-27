@@ -42,7 +42,7 @@ class CancelThread(QThread):
                 # ключа-создателя, ПУСТОЕ тело (без json=). raise_for_status
                 # НЕ зовём — 4xx/5xx по одной паре не должны ронять остальные.
                 r = requests.delete(
-                    f"{API_BASE}/api/v5/generations/{op_id}",
+                    f"{API_BASE}/api/v6/generations/{op_id}",
                     headers={"X-API-Key": str(key)},
                     timeout=CANCEL_TIMEOUT_SEC)
                 # v5: HTTP 200 ≠ отменено. Поле "cancelled" — СТРОКА "True"/"False".

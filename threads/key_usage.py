@@ -104,7 +104,7 @@ class KeyUsageThread(QThread):
         ошибке/не-200 возвращает короткий 'usage: …'. Ключ в строку НЕ попадает."""
         try:
             r = requests.get(
-                f"{API_BASE}/api/v5/usage",
+                f"{API_BASE}/api/v6/usage",
                 headers={"X-API-Key": str(key_str or "")},
                 timeout=USAGE_TIMEOUT_SEC)
             if r.status_code != 200:

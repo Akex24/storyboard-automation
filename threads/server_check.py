@@ -86,7 +86,7 @@ class ServerCheckThread(QThread):
         #    БЕЗ рефов (inputs не передаём — тестовая генерация из текста).
         payload = {"prompt": TEST_PROMPT, "aspect_ratio": TEST_ASPECT, "model": model}
         try:
-            r = session.post(f"{API_BASE}/api/v5/generations",
+            r = session.post(f"{API_BASE}/api/v6/generations",
                              params={"result_format": "ref"},
                              json=payload, timeout=SUBMIT_TIMEOUT_SEC)
             r.raise_for_status()
@@ -113,7 +113,7 @@ class ServerCheckThread(QThread):
                 continue
             last_poll = time.monotonic()
             try:
-                pr = session.get(f"{API_BASE}/api/v5/generations/{op_id}",
+                pr = session.get(f"{API_BASE}/api/v6/generations/{op_id}",
                                  params={"result_format": "ref"},
                                  timeout=POLL_TIMEOUT_SEC)
                 pr.raise_for_status()
