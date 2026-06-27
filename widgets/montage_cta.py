@@ -331,9 +331,8 @@ class MontageCTA(QFrame):
             title_color = "#d4a256"
             subtitle_color = "rgba(255,255,255,0.70)"
         elif self._kind == KIND_OPEN_MAP:
-            # v1.0.82: green tint — карта готова, ничего не сломано.
-            bg = "rgba(80,200,120,0.10)"
-            border = "rgba(80,200,120,0.40)"
+            bg = "#131516"
+            border = "#1d1e20"
             title_color = "#50c878"
             subtitle_color = "rgba(255,255,255,0.70)"
         else:  # FAILED
@@ -375,7 +374,7 @@ class MontageCTA(QFrame):
             /* Primary CTA — solid LUMZ red */
             QPushButton#montage-cta-btn-primary {{
                 background: #e4344a;
-                color: #ffffff;
+                color: #fefefe;
                 border: none;
                 border-radius: 6px;
                 padding: 6px 14px;

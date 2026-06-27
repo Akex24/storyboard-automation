@@ -35,6 +35,7 @@ __pycache__/
 *.md.bak
 *.log
 _archive/
+_codex_restore_points/
 
 # macOS / IDE
 .DS_Store

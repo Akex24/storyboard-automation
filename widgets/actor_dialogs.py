@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QPlainTextEdit, QComboBox, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
     QScrollArea, QStackedWidget, QMessageBox, QDialogButtonBox,
-    QSlider, QGraphicsOpacityEffect,
+    QSlider,
 )
 
 from i18n import tr
@@ -69,7 +69,7 @@ class AddActorDialog(QDialog):
         self.setWindowTitle(tr('add_actor_title') if not current_name
                              else tr('rename_actor_title'))
         self.setFixedSize(440, 200)
-        self.setStyleSheet("QDialog { background: #1a1424; }")
+        self.setStyleSheet("QDialog { background: #121313; }")
         v = QVBoxLayout(self)
         v.setContentsMargins(28, 24, 28, 20)
         v.setSpacing(12)
@@ -82,7 +82,7 @@ class AddActorDialog(QDialog):
         self.input = QLineEdit(current_name)
         self.input.setPlaceholderText(tr('add_actor_placeholder'))
         self.input.setStyleSheet(
-            "QLineEdit { background:#1a1424; border:1px solid #3a2c52;"
+            "QLineEdit { background:#191b1d; border:1px solid #1d1e20;"
             " border-radius:6px; padding:10px; color:#fff; font-size:14px; }")
         v.addWidget(self.input)
 
@@ -122,7 +122,7 @@ class ChooseActorDialog(QDialog):
         self.project_root = project_root
         self.setWindowTitle(tr('choose_actor_title'))
         self.setFixedSize(460, 240)
-        self.setStyleSheet("QDialog { background: #1a1424; }")
+        self.setStyleSheet("QDialog { background: #121313; }")
         v = QVBoxLayout(self)
         v.setContentsMargins(28, 24, 28, 20)
         v.setSpacing(12)
@@ -138,7 +138,7 @@ class ChooseActorDialog(QDialog):
             self.combo.addItem(_sa.actor_display_name(project_root, slug), slug)
         self.combo.addItem(tr('actors_add_btn'), self.NEW_SENTINEL)
         self.combo.setStyleSheet(
-            "QComboBox { background:#1a1424; border:1px solid #3a2c52;"
+            "QComboBox { background:#191b1d; border:1px solid #1d1e20;"
             " border-radius:6px; padding:6px 10px; color:#fff; font-size:14px; }")
         _sa.block_wheel_event(self.combo)
         v.addWidget(self.combo)
@@ -307,11 +307,11 @@ class ActorPhotosDialog(QDialog):
         self.setModal(True)
         self.resize(820, 720)
         self.setStyleSheet(
-            "QDialog { background:#15101e; }"
+            "QDialog { background:#121313; }"
             "QLabel#photos-hint { color:#aaa; font-size:12px; }"
             "QLabel#photos-empty { color:#888; font-size:14px;"
             " font-style:italic; padding:40px; }"
-            "QPushButton#photos-close { background:#3a2c52; color:#fff;"
+            "QPushButton#photos-close { background:#3a2c52; color:#fdfdfd;"
             " border:none; border-radius:6px; padding:8px 18px; font-size:13px; }"
             "QPushButton#photos-close:hover { background:#4d3a6b; }"
             "QPushButton#photos-delete { background:transparent; color:#e08080;"
@@ -322,33 +322,33 @@ class ActorPhotosDialog(QDialog):
             "QPushButton#photos-pick { background:#3a5a3a; color:#d8ffd8;"
             " border:1px solid #4d8a4d; border-radius:6px; padding:6px 10px;"
             " font-size:12px; font-weight:600; }"
-            "QPushButton#photos-pick:hover { background:#4d7a4d; color:#fff;"
+            "QPushButton#photos-pick:hover { background:#4d7a4d; color:#fdfdfd;"
             " border-color:#6dba6d; }"
             # 2026-05-17: кнопка «✎ Изменить» — нейтральный outline стиль
             # (не destructive как Удалить, не accept как Использовать).
             "QPushButton#photos-edit { background:transparent;"
-            " color:#d8c8ff; border:1px solid #6e4cc4;"
+            " color:#d8c8fd; border:1px solid #3a2c53;"
             " border-radius:6px; padding:6px 10px; font-size:12px;"
             " font-weight:500; }"
-            "QPushButton#photos-edit:hover { background:#2a1f3d;"
-            " color:#fff; border-color:#8e6cdc; }"
+            "QPushButton#photos-edit:hover { background:#2a1f3c;"
+            " color:#fbfbfa; border-color:#5a4a83; }"
             # 2026-05-17 (Этап 2): кнопка «🎨 Текстура» — промежуточный
             # вариант между accept и destructive (золотой/янтарный
             # outline, ассоциация с краской/материалом).
             "QPushButton#photos-texture { background:transparent;"
-            " color:#d4a256; border:1px solid #b88a3c;"
+            " color:#f6dca7; border:1px solid rgba(214,161,70,0.43);"
             " border-radius:6px; padding:6px 10px; font-size:12px;"
             " font-weight:500; }"
-            "QPushButton#photos-texture:hover { background:#2a1f12;"
-            " color:#ffd24d; border-color:#d4a256; }"
+            "QPushButton#photos-texture:hover { background:rgba(214,161,70,0.165);"
+            " color:#fff8ea; border-color:rgba(255,204,112,0.69); }"
             # 2026-06-03: кнопка «🔲 Сетка на лицо» — активное действие
             # (голубой outline, отличается от серой заглушки-текстуры).
             "QPushButton#photos-grid { background:transparent;"
-            " color:#9fd0ff; border:1px solid #4a7fb0;"
+            " color:#f6dca7; border:1px solid rgba(214,161,70,0.43);"
             " border-radius:6px; padding:6px 10px; font-size:12px;"
             " font-weight:500; }"
-            "QPushButton#photos-grid:hover { background:#16222e;"
-            " color:#cfe8ff; border-color:#6aa0d8; }")
+            "QPushButton#photos-grid:hover { background:rgba(214,161,70,0.165);"
+            " color:#fff8ea; border-color:rgba(255,204,112,0.69); }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
@@ -402,10 +402,11 @@ class ActorPhotosDialog(QDialog):
         if self._folder_path is not None:
             self.open_folder_btn = QPushButton(tr('actor_photos_open_folder'))
             self.open_folder_btn.setStyleSheet(
-                "QPushButton { background:transparent; color:#d8c8ff;"
-                " border:1px solid #6e4cc4; border-radius:6px;"
+                "QPushButton { background:transparent; color:#d8c8fd;"
+                " border:1px solid #3a2c53; border-radius:6px;"
                 " padding:8px 14px; font-size:12px; font-weight:600; }"
-                "QPushButton:hover { background:#2a1f3d; color:#fff; }")
+                "QPushButton:hover { background:#2a1f3c; color:#fbfbfa;"
+                " border-color:#5a4a83; }")
             self.open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.open_folder_btn.clicked.connect(self._on_open_folder)
             bottom.addWidget(self.open_folder_btn)
@@ -420,11 +421,11 @@ class ActorPhotosDialog(QDialog):
             self.open_texture_folder_btn = QPushButton(
                 tr('actor_photos_show_texture_folder_btn'))
             self.open_texture_folder_btn.setStyleSheet(
-                "QPushButton { background:transparent; color:#d4a256;"
-                " border:1px solid #b88a3c; border-radius:6px;"
+                "QPushButton { background:transparent; color:#f6dca7;"
+                " border:1px solid rgba(214,161,70,0.43); border-radius:6px;"
                 " padding:8px 14px; font-size:12px; font-weight:600; }"
-                "QPushButton:hover { background:#2a1f12; color:#ffd24d;"
-                " border-color:#d4a256; }")
+                "QPushButton:hover { background:rgba(214,161,70,0.165);"
+                " color:#fff8ea; border-color:rgba(255,204,112,0.69); }")
             self.open_texture_folder_btn.setCursor(
                 Qt.CursorShape.PointingHandCursor)
             self.open_texture_folder_btn.clicked.connect(
@@ -440,11 +441,11 @@ class ActorPhotosDialog(QDialog):
             self.open_grid_folder_btn = QPushButton(
                 tr('actor_photos_show_grid_folder_btn'))
             self.open_grid_folder_btn.setStyleSheet(
-                "QPushButton { background:transparent; color:#9fd0ff;"
-                " border:1px solid #4a7fb0; border-radius:6px;"
+                "QPushButton { background:transparent; color:#f6dca7;"
+                " border:1px solid rgba(214,161,70,0.43); border-radius:6px;"
                 " padding:8px 14px; font-size:12px; font-weight:600; }"
-                "QPushButton:hover { background:#16222e; color:#cfe8ff;"
-                " border-color:#6aa0d8; }")
+                "QPushButton:hover { background:rgba(214,161,70,0.165);"
+                " color:#fff8ea; border-color:rgba(255,204,112,0.69); }")
             self.open_grid_folder_btn.setCursor(
                 Qt.CursorShape.PointingHandCursor)
             self.open_grid_folder_btn.clicked.connect(
@@ -592,8 +593,8 @@ class ActorPhotosDialog(QDialog):
             text.setPlaceholderText(
                 tr('actor_ref_edit_dialog_placeholder'))
             text.setStyleSheet(
-                "QPlainTextEdit { background:#15101e;"
-                " border:1px solid #2c2240; border-radius:6px;"
+                "QPlainTextEdit { background:#191b1d;"
+                " border:1px solid #1d1e20; border-radius:6px;"
                 " color:#ddd; padding:8px; font-size:13px; }")
             v.addWidget(text, stretch=1)
             btns = QDialogButtonBox(
@@ -772,49 +773,82 @@ class _LayoutVariantCard(QFrame):
         super().__init__(parent)
         self.variant_id = variant_id
         self._selected = False
+        self._locked = False
         self.setObjectName("variant-card")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(150)
-        self._apply_style()
 
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 12, 14, 12)
         v.setSpacing(6)
 
-        title_lbl = QLabel(title)
-        title_lbl.setStyleSheet(
-            "color:#fff; font-size:14px; font-weight:600; background:transparent;")
-        v.addWidget(title_lbl)
+        self.title_lbl = QLabel(title)
+        v.addWidget(self.title_lbl)
 
-        panels_lbl = QLabel(f"{panels_count} панелей")
-        panels_lbl.setStyleSheet(
-            "color:#ffd24d; font-size:12px; font-weight:600; background:transparent;")
-        v.addWidget(panels_lbl)
+        self.panels_lbl = QLabel(f"{panels_count} панелей")
+        v.addWidget(self.panels_lbl)
 
-        hint_lbl = QLabel(hint)
-        hint_lbl.setWordWrap(True)
-        hint_lbl.setStyleSheet(
-            "color:#bbb; font-size:11px; background:transparent;")
-        v.addWidget(hint_lbl)
+        self.hint_lbl = QLabel(hint)
+        self.hint_lbl.setWordWrap(True)
+        v.addWidget(self.hint_lbl)
         v.addStretch()
+        self._apply_style()
 
     def setSelected(self, sel: bool):
         self._selected = bool(sel)
         self._apply_style()
 
+    def setLocked(self, locked: bool):
+        self._locked = bool(locked)
+        self.setCursor(Qt.CursorShape.ArrowCursor if locked
+                       else Qt.CursorShape.PointingHandCursor)
+        self._apply_style()
+
+    def _apply_text_style(self):
+        if self._locked:
+            title_color = "#a7aaa7"
+            meta_color = "#8f948d"
+            hint_color = "#8f948d"
+        elif self._selected:
+            title_color = "#f2f3f0"
+            meta_color = "#d4d7d0"
+            hint_color = "#d4d7d0"
+        else:
+            title_color = "#d4d7d0"
+            meta_color = "#aeb2ad"
+            hint_color = "#aeb2ad"
+        self.title_lbl.setStyleSheet(
+            f"color:{title_color}; font-size:14px; font-weight:600; "
+            "background:transparent;")
+        self.panels_lbl.setStyleSheet(
+            f"color:{meta_color}; font-size:12px; font-weight:600; "
+            "background:transparent;")
+        self.hint_lbl.setStyleSheet(
+            f"color:{hint_color}; font-size:11px; background:transparent;")
+
     def _apply_style(self):
-        if self._selected:
+        if self._locked:
             self.setStyleSheet(
-                "QFrame#variant-card { background:#2a1f3d;"
-                " border:2px solid #8e6cd4; border-radius:10px; }")
+                "QFrame#variant-card { background:#131516;"
+                " border:1px solid #1d1e20; border-radius:10px; }"
+                "QFrame#variant-card:hover { background:#131516;"
+                " border-color:#1d1e20; }")
+        elif self._selected:
+            self.setStyleSheet(
+                "QFrame#variant-card { background:#191b1d;"
+                " border:1px solid #191b1d; border-radius:10px; }"
+                "QFrame#variant-card:hover { background:#191b1d;"
+                " border-color:#191b1d; }")
         else:
             self.setStyleSheet(
-                "QFrame#variant-card { background:#1a1424;"
-                " border:1px solid #2a1f3d; border-radius:10px; }"
-                "QFrame#variant-card:hover { border:1px solid #5a4a82; }")
+                "QFrame#variant-card { background:#131516;"
+                " border:1px solid #131516; border-radius:10px; }"
+                "QFrame#variant-card:hover { background:#191b1d;"
+                " border-color:#191b1d; }")
+        self._apply_text_style()
 
     def mousePressEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton:
+        if not self._locked and ev.button() == Qt.MouseButton.LeftButton:
             self.chosen.emit(self.variant_id)
         super().mousePressEvent(ev)
 
@@ -876,38 +910,43 @@ class CreateActorRefDialog(QDialog):
         self.setMaximumSize(max_w, max_h)
         self.resize(min(640, max_w), min(700, max_h))
         self.setStyleSheet(
-            "QDialog { background:#15101e; }"
-            "QLabel#cr-section { color:#cfcfcf; font-size:12px;"
+            "QDialog { background:#121313; }"
+            "QLabel#cr-section { color:#d4d7d0; font-size:12px;"
             " font-weight:700; letter-spacing:1px; }"
-            "QLabel#cr-hint { color:#aaa; font-size:12px; }"
+            "QLabel#cr-hint { color:#aeb2ad; font-size:12px; }"
             "QPlainTextEdit#cr-desc {"
-            " background:#1a1424; border:1px solid #2a1f3d; border-radius:8px;"
-            " color:#fff; padding:10px; font-size:13px; }"
-            "QPlainTextEdit#cr-desc:focus { border:1px solid #6e4cc4; }"
+            " background:#191b1d; border:1px solid #1d1e20; border-radius:8px;"
+            " color:#d4d7d0; padding:10px; font-size:13px; }"
+            "QPlainTextEdit#cr-desc:focus { border:1px solid rgba(207,255,36,0.45); }"
             "QLineEdit#cr-filename {"
-            " background:#15101e; border:1px solid #2a1f3d; border-radius:6px;"
+            " background:#191b1d; border:1px solid #1d1e20; border-radius:6px;"
             " color:#888; padding:7px 10px; font-size:13px;"
             " font-family: 'Menlo','Courier New',monospace; }"
             "QLineEdit#cr-newchar {"
-            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
-            " color:#fff; padding:7px 10px; font-size:13px; }"
-            "QLineEdit#cr-newchar:focus { border:1px solid #6e4cc4; }"
+            " background:#191b1d; border:1px solid #1d1e20; border-radius:6px;"
+            " color:#d4d7d0; padding:7px 10px; font-size:13px; }"
+            "QLineEdit#cr-newchar:focus { border:1px solid rgba(207,255,36,0.45); }"
             "QComboBox#cr-show, QComboBox#cr-character {"
-            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
-            " color:#fff; padding:6px 10px; font-size:13px; }"
+            " background:#191b1d; border:1px solid #1d1e20; border-radius:6px;"
+            " color:#d4d7d0; padding:6px 10px; font-size:13px; }"
             "QComboBox#cr-show::drop-down, QComboBox#cr-character::drop-down {"
             " border:0; width:18px; }"
-            "QComboBox QAbstractItemView { background:#1a1424; color:#ddd;"
-            " selection-background-color:#322545; border:1px solid #322545; }"
-            "QPushButton#cr-generate { background:#6e4cc4; color:#fff;"
-            " border:none; border-radius:8px; padding:10px 22px;"
+            "QComboBox QAbstractItemView { background:#191b1d; color:#d4d7d0;"
+            " selection-background-color:#303335; border:1px solid #303335; }"
+            "QPushButton#cr-generate { background:#cfff24; color:#151713;"
+            " border:none; border-radius:8px; padding:0 22px;"
             " font-size:14px; font-weight:600; }"
-            "QPushButton#cr-generate:hover { background:#7d5bd4; }"
-            "QPushButton#cr-cancel { background:transparent; color:#aaa;"
-            " border:1px solid #3a2c52; border-radius:6px; padding:8px 16px;"
-            " font-size:13px; }"
-            "QPushButton#cr-cancel:hover { color:#fff;"
-            " border-color:#5a4a82; }")
+            "QPushButton#cr-generate:hover { background:#d9ff45; color:#101112; }"
+            "QPushButton#cr-generate:pressed { background:#bde91f; color:#101112; }"
+            "QPushButton#cr-generate:disabled { background:#cfff24;"
+            " color:#151713; }"
+            "QPushButton#cr-cancel { background:#242628; color:#f2f3f0;"
+            " border:1px solid #242628; border-radius:8px; padding:0 22px;"
+            " font-size:14px; font-weight:600; }"
+            "QPushButton#cr-cancel:hover { background:#2c2f31; color:#ffffff;"
+            " border-color:#2c2f31; }"
+            "QPushButton#cr-cancel:pressed { background:#1f2123;"
+            " border-color:#1f2123; }")
 
         # 2026-05-19: контент обёрнут в QScrollArea, чтобы при ужатом
         # окне на маленьком экране (14" MBP) нижние кнопки/поля не
@@ -924,8 +963,10 @@ class CreateActorRefDialog(QDialog):
         content_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content_scroll.setStyleSheet(
-            "QScrollArea { background:transparent; border:none; }")
+            "QScrollArea { background:transparent; border:none; }"
+            "QScrollArea > QWidget > QWidget { background:transparent; }")
         content_widget = QWidget()
+        content_widget.setStyleSheet("background:transparent;")
         outer = QVBoxLayout(content_widget)
         outer.setContentsMargins(22, 18, 22, 18)
         outer.setSpacing(10)
@@ -967,7 +1008,7 @@ class CreateActorRefDialog(QDialog):
         sh_row = QHBoxLayout()
         sh_row.setSpacing(8)
         self.show_lbl = QLabel(tr('create_ref_show_label'))
-        self.show_lbl.setStyleSheet("color:#cfcfcf; font-size:12px;"
+        self.show_lbl.setStyleSheet("color:#c3c7c1; font-size:12px;"
                                     " min-width:80px;")
         sh_row.addWidget(self.show_lbl)
         self.show_combo = QComboBox()
@@ -982,7 +1023,7 @@ class CreateActorRefDialog(QDialog):
         ch_row = QHBoxLayout()
         ch_row.setSpacing(8)
         self.char_lbl = QLabel(tr('create_ref_character_label'))
-        self.char_lbl.setStyleSheet("color:#cfcfcf; font-size:12px;"
+        self.char_lbl.setStyleSheet("color:#c3c7c1; font-size:12px;"
                                     " min-width:80px;")
         ch_row.addWidget(self.char_lbl)
         self.char_combo = QComboBox()
@@ -1006,7 +1047,7 @@ class CreateActorRefDialog(QDialog):
         fn_row = QHBoxLayout()
         fn_row.setSpacing(8)
         self.fn_lbl = QLabel(tr('create_ref_filename_label'))
-        self.fn_lbl.setStyleSheet("color:#cfcfcf; font-size:12px;"
+        self.fn_lbl.setStyleSheet("color:#c3c7c1; font-size:12px;"
                                   " min-width:80px;")
         fn_row.addWidget(self.fn_lbl)
         self.filename_edit = QLineEdit()
@@ -1015,7 +1056,7 @@ class CreateActorRefDialog(QDialog):
         self.filename_edit.setPlaceholderText("character_red_suit")
         fn_row.addWidget(self.filename_edit, stretch=1)
         self.fn_ext_lbl = QLabel(".jpg")
-        self.fn_ext_lbl.setStyleSheet("color:#888; font-size:13px;"
+        self.fn_ext_lbl.setStyleSheet("color:#8f948d; font-size:13px;"
                                       " font-family:'Menlo','Courier New',monospace;")
         fn_row.addWidget(self.fn_ext_lbl)
         outer.addLayout(fn_row)
@@ -1038,15 +1079,10 @@ class CreateActorRefDialog(QDialog):
             tr('create_ref_variant_detailed_title'),
             tr('create_ref_variant_detailed_hint'),
             14)
-        # 2026-06-20: «Расширенный» — заглушка (видно, но недоступно).
-        # setEnabled(False) → mousePressEvent не доходит, клик невозможен.
-        # QGraphicsOpacityEffect 0.4 → визуально приглушён; эффект НЕ зависит
-        # от stylesheet карточки, поэтому _apply_style (дёргается setSelected
-        # при клике по «Базовому») его НЕ затирает.
-        self.card_detailed.setEnabled(False)
-        _detailed_dim = QGraphicsOpacityEffect(self.card_detailed)
-        _detailed_dim.setOpacity(0.4)
-        self.card_detailed.setGraphicsEffect(_detailed_dim)
+        # «Расширенный» пока видим, но недоступен. Не используем
+        # setEnabled(False)/opacity, потому что Qt сам приглушает весь текст
+        # и получается разнобой цветов. Locked блокирует клик стилем.
+        self.card_detailed.setLocked(True)
         self.card_simple = _LayoutVariantCard(
             "simple",
             tr('create_ref_variant_simple_title'),
@@ -1072,12 +1108,27 @@ class CreateActorRefDialog(QDialog):
         self.cancel_btn = QPushButton(tr('create_ref_cancel'))
         self.cancel_btn.setObjectName("cr-cancel")
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.setFixedSize(170, 42)
         self.cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self.cancel_btn)
 
-        self.generate_btn = QPushButton(tr('create_ref_generate'))
+        self.generate_btn = QPushButton(
+            tr('create_ref_generate').replace("✨", "").strip())
         self.generate_btn.setObjectName("cr-generate")
         self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.generate_btn.setIcon(_sa.get_icon('sparkles-dark'))
+        self.generate_btn.setIconSize(QSize(16, 16))
+        self.generate_btn.setFixedSize(170, 42)
+        self.generate_btn.setStyleSheet(
+            "QPushButton#cr-generate { background:#cfff24; color:#151713;"
+            " border:none; border-radius:8px; padding:0 22px;"
+            " font-size:14px; font-weight:700; }"
+            "QPushButton#cr-generate:hover { background:#d9ff45;"
+            " color:#101112; }"
+            "QPushButton#cr-generate:pressed { background:#bde91f;"
+            " color:#101112; }"
+            "QPushButton#cr-generate:disabled { background:#cfff24;"
+            " color:#151713; }")
         self.generate_btn.clicked.connect(self._on_generate)
         btn_row.addWidget(self.generate_btn)
         outer.addLayout(btn_row)
@@ -1145,6 +1196,10 @@ class CreateActorRefDialog(QDialog):
                                 self.char_combo.setCurrentIndex(i)
                                 break
                         self.new_char_edit.setText(want)
+                    try:
+                        self.generate_btn.setEnabled(True)
+                    except Exception:
+                        pass
                 else:
                     # 2026-06-24 (монстры 3б-fix): нет персонажа из чата →
                     # placeholder-режим (красная рамка + дисейбл «Сгенерировать»,
@@ -1194,13 +1249,15 @@ class CreateActorRefDialog(QDialog):
                         " border:0; width:18px; }"
                         "QComboBox QAbstractItemView { background:#1a1424;"
                         " color:#ddd;"
-                        " selection-background-color:#322545;"
-                        " border:1px solid #322545; }")
+                        " selection-background-color:#303335;"
+                        " border:1px solid #303335; }")
                 except Exception:
                     pass
-                # Дисейблим «Сгенерировать» — реактивируется при выборе.
+                # Кнопку не выключаем визуально: disabled-state в Qt сильно
+                # приглушает custom QSS и делает CTA почти невидимым. Валидация
+                # пустого персонажа остаётся в `_on_generate`.
                 try:
-                    self.generate_btn.setEnabled(False)
+                    self.generate_btn.setEnabled(True)
                 except Exception:
                     pass
                 # Хендлер для реактивации.
@@ -1233,13 +1290,10 @@ class CreateActorRefDialog(QDialog):
             traceback.print_exc()
 
     def _on_wildcard_selection_changed(self):
-        """Wildcard-режим: реактивируем «Сгенерировать» когда юзер
-        выбрал реального персонажа в combo. Placeholder (data=None)
-        не считается — кнопка остаётся disabled."""
+        """Wildcard/custom-mode: кнопка всегда видимая, а валидность выбора
+        проверяется в `_on_generate`, чтобы disabled-state не ломал CTA."""
         try:
-            data = self.char_combo.currentData()
-            slug = str(data) if data else ""
-            self.generate_btn.setEnabled(bool(slug))
+            self.generate_btn.setEnabled(True)
         except Exception:
             self.generate_btn.setEnabled(True)
 
@@ -1247,7 +1301,7 @@ class CreateActorRefDialog(QDialog):
         """2026-06-24 (монстры 3б-fix): custom_mode — поле «Персонаж» 1:1 как
         у актёрского wildcard: placeholder «👇 Выбери персонажа» (data=None) на
         index 0, та же красная рамка (НЕ снимается после выбора — как у актёра),
-        «Сгенерировать» дисейблится. «➕ Создать нового» СОХРАНЕНА. Реальный
+        «Сгенерировать» остаётся видимой. «➕ Создать нового» СОХРАНЕНА. Реальный
         персонаж НЕ предвыбирается (раньше combo вставал на первого = «guest_1»).
         Реактивация кнопки — общим _on_wildcard_selection_changed. Вызывается
         после каждого _populate_character_combo (в т.ч. при смене сериала).
@@ -1277,9 +1331,9 @@ class CreateActorRefDialog(QDialog):
                 " border:0; width:18px; }"
                 "QComboBox QAbstractItemView { background:#1a1424;"
                 " color:#ddd;"
-                " selection-background-color:#322545;"
-                " border:1px solid #322545; }")
-            self.generate_btn.setEnabled(False)
+                " selection-background-color:#303335;"
+                " border:1px solid #303335; }")
+            self.generate_btn.setEnabled(True)
         except Exception:
             traceback.print_exc()
 
@@ -1533,27 +1587,27 @@ class RefResultDialog(QDialog):
         self.setModal(False)
         self.resize(900, 880)
         self.setStyleSheet(
-            "QDialog { background:#15101e; }"
+            "QDialog { background:#121313; }"
             "QLabel#rr-section { color:#cfcfcf; font-size:12px;"
             " font-weight:700; letter-spacing:1px; }"
             "QLabel#rr-hint { color:#aaa; font-size:12px; }"
             "QLabel#rr-counter { color:#ffd24d; font-size:12px;"
             " font-weight:600; }"
             "QPlainTextEdit#rr-desc {"
-            " background:#1a1424; border:1px solid #2a1f3d; border-radius:8px;"
+            " background:#191b1d; border:1px solid #1d1e20; border-radius:8px;"
             " color:#fff; padding:10px; font-size:13px; }"
-            "QPlainTextEdit#rr-desc:focus { border:1px solid #6e4cc4; }"
+            "QPlainTextEdit#rr-desc:focus { border:1px solid rgba(207,255,36,0.45); }"
             "QLineEdit#rr-filename {"
-            " background:#1a1424; border:1px solid #2a1f3d; border-radius:6px;"
+            " background:#191b1d; border:1px solid #1d1e20; border-radius:6px;"
             " color:#fff; padding:7px 10px; font-size:13px;"
             " font-family: 'Menlo','Courier New',monospace; }"
-            "QLineEdit#rr-filename:focus { border:1px solid #6e4cc4; }"
-            "QPushButton#rr-regen { background:#6e4cc4; color:#fff;"
+            "QLineEdit#rr-filename:focus { border:1px solid rgba(207,255,36,0.45); }"
+            "QPushButton#rr-regen { background:#6e4cc4; color:#fdfdfd;"
             " border:none; border-radius:8px; padding:10px 20px;"
             " font-size:13px; font-weight:600; }"
             "QPushButton#rr-regen:hover { background:#7d5bd4; }"
             "QPushButton#rr-regen:disabled { background:#3a2c52; color:#888; }"
-            "QPushButton#rr-done { background:#3a8c52; color:#fff;"
+            "QPushButton#rr-done { background:#3a8c52; color:#fdfdfd;"
             " border:none; border-radius:6px; padding:8px 18px;"
             " font-size:13px; font-weight:600; }"
             "QPushButton#rr-done:hover { background:#4d9e6b; }"
@@ -1625,7 +1679,7 @@ class RefResultDialog(QDialog):
             "QPushButton { background:transparent; color:#c4304c;"
             " border:1px solid #c4304c; border-radius:6px;"
             " padding:8px 14px; font-size:12px; font-weight:600; }"
-            "QPushButton:hover { background:#c4304c; color:#fff; }")
+            "QPushButton:hover { background:#c4304c; color:#fafafa; }")
         self.delete_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_all_btn.clicked.connect(self._on_delete_all)
         btn_row.addWidget(self.delete_all_btn)
@@ -1747,7 +1801,7 @@ class RefResultDialog(QDialog):
             "QPushButton { background:#3a2c52; color:#d8c8ff;"
             " border:none; border-radius:4px; padding:2px 4px;"
             " font-size:11px; font-weight:600; }"
-            "QPushButton:hover { background:#c4304c; color:#fff; }")
+            "QPushButton:hover { background:#c4304c; color:#fafafa; }")
         del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         del_btn.clicked.connect(lambda _, _i=idx: self._on_delete_variant(_i))
         v.addWidget(del_btn)
@@ -2160,7 +2214,7 @@ class ApplyTextureDialog(QDialog):
         self.setModal(True)
         self.resize(740, 520)
         self.setStyleSheet(
-            "QDialog { background:#15101e; }"
+            "QDialog { background:#121313; }"
             "QLabel#apply-tex-section { color:#d8c8ff;"
             " font-size:12px; font-weight:600;"
             " background:transparent; padding:4px 0; }"
@@ -2172,7 +2226,7 @@ class ApplyTextureDialog(QDialog):
             "QLabel#apply-tex-opacity { color:#ddd;"
             " font-size:13px; background:transparent; }"
             "QPushButton#apply-tex-apply { background:#3a2c52;"
-            " color:#fff; border:none; border-radius:6px;"
+            " color:#fdfdfd; border:none; border-radius:6px;"
             " padding:8px 18px; font-size:13px; font-weight:600; }"
             "QPushButton#apply-tex-apply:hover { background:#4d3a6b; }"
             "QPushButton#apply-tex-apply:disabled { color:#666;"
@@ -2181,7 +2235,7 @@ class ApplyTextureDialog(QDialog):
             " color:#cfcfcf; border:1px solid #3a2c52;"
             " border-radius:6px; padding:8px 16px; font-size:13px; }"
             "QPushButton#apply-tex-cancel:hover {"
-            " background:#1f1730; color:#fff; }")
+            " background:#1f1730; color:#fbfbfb; }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 16, 18, 14)

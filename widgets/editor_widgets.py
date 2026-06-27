@@ -35,6 +35,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QApplication,
 )
 
+from views.theme import theme_qcolor
+
 from i18n import tr, get_lang
 from widgets.shimmer_paint import ShimmerOverlay
 
@@ -150,6 +152,7 @@ class ShotCard(QFrame):
     # контентной области): 4×(CARD_W+20 padding QFrame) + 3×12 spacing = 944,
     # что = 1000 - 28×2 margins. Высота сохраняет строгое соотношение 9:16.
     CARD_W, CARD_H  = 207, 368
+    SURFACE_COLOR = "#131516"
 
     def __init__(self, panel_idx: int, aspect: str = "9:16", parent=None):
         super().__init__(parent)
@@ -207,11 +210,15 @@ class ShotCard(QFrame):
         # Контейнер чтобы overlay позиционировался относительно картинки
         self.img_container = QWidget()
         self.img_container.setFixedSize(self.CARD_W, self.CARD_H)
+        self.img_container.setStyleSheet(
+            f"background:{self.SURFACE_COLOR}; border:none; border-radius:6px;"
+        )
         self.img_label = QLabel(tr('empty_shot'), self.img_container)
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setGeometry(0, 0, self.CARD_W, self.CARD_H)
         self.img_label.setStyleSheet(
-            "background:#1a1424; border-radius:6px; color:#333; font-size:12px;")
+            f"background:{self.SURFACE_COLOR}; border:none; border-radius:6px;"
+            " color:#333; font-size:12px;")
 
         # Hover-overlay — БЕЗ затемнения всей картинки. Прозрачный контейнер
         # на всю площадь img_container; внутри — нижняя полоска с лёгким
@@ -232,6 +239,9 @@ class ShotCard(QFrame):
         self.regen_overlay.setObjectName("shot-overlay")
         self.regen_overlay.setGeometry(0, 0, self.CARD_W, self.CARD_H)
         self.regen_overlay.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.regen_overlay.setStyleSheet(
+            "QFrame#shot-overlay { background: transparent; border: none; }"
+        )
 
         self.strip = QFrame(self.regen_overlay)
         self.strip.setObjectName("shot-overlay-strip")
@@ -244,6 +254,7 @@ class ShotCard(QFrame):
         hint_lbl.setObjectName("shot-overlay-hint")
         hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sh.addWidget(hint_lbl, stretch=1)
+        self.strip.hide()
 
         # 2026-06-02: угловые кнопки Copy/Paste (правый верхний угол overlay).
         # Дети regen_overlay → появляются/прячутся вместе с overlay по hover,
@@ -281,17 +292,17 @@ class ShotCard(QFrame):
             traceback.print_exc()
         # Инлайн-стиль (НЕ через theme.py — общий не ломаем): полупрозрачный
         # тёмный фон чтобы иконка читалась поверх светлой картинки, скругление.
-        # 2026-06-24: hover copy/paste — янтарь (LUMZ accent_gold #d4a256 =
-        # rgb 212,162,86); корзина — красный (LUMZ accent_red #e4344a =
-        # rgb 228,52,74), см. corner_qss_delete. Никакого синего/фиолетового.
+        # 2026-06-24: hover copy/paste — LUMZ lime/yellow accent как Seedance;
+        # корзина — красный (LUMZ accent_red #e4344a = rgb 228,52,74),
+        # см. corner_qss_delete. Никакого синего/фиолетового.
         # disabled («Вставить» без буфера) — приглушённый фон, видно что неактивна.
         corner_qss = (
             "QPushButton#shot-corner-btn {"
             " background:rgba(10,10,13,0.55); border:none; border-radius:6px; }"
             "QPushButton#shot-corner-btn:hover {"
-            " background:rgba(212,162,86,0.85); }"
+            " background:#cfff22; }"
             "QPushButton#shot-corner-btn:pressed {"
-            " background:rgba(180,135,70,0.95); }"
+            " background:#b9e81f; }"
             "QPushButton#shot-corner-btn:disabled {"
             " background:rgba(10,10,13,0.20); }"
         )
@@ -879,7 +890,7 @@ class RoundedTopImage(QWidget):
         super().__init__(parent)
         self._radius = radius
         self._pixmap: Optional[QPixmap] = None
-        self._bg = QColor(40, 30, 60, 102)  # тот же цвет что был в QLabel
+        self._bg = theme_qcolor("rgba(40,30,60,0.40)")
         # Кэш отмасштабированного pixmap'а — пересчитывается ТОЛЬКО при
         # setPixmap или resizeEvent. До этого `scaled(...)` с SmoothTransformation
         # вызывался при каждом paintEvent → 60 fps × N карточек = scroll-glitch.
@@ -1053,7 +1064,8 @@ class RefCard(QFrame):
             self.overlay_delete.setIconSize(QSize(16, 16))
             self.overlay_delete.setCursor(Qt.CursorShape.PointingHandCursor)
             self.overlay_delete.setToolTip(tr('overlay_remove_char_from_ep'))
-            self.overlay_delete.clicked.connect(self.delete_requested)
+            self.overlay_delete.clicked.connect(
+                lambda _checked=False: self.delete_requested.emit())
             sh.addWidget(self.overlay_delete)
             self._overlay_anim = _sa.setup_fade_overlay(self.overlay)
         elif self._kind in ('location', 'object'):
@@ -1094,7 +1106,8 @@ class RefCard(QFrame):
             self.overlay_edit.setIconSize(QSize(16, 16))
             self.overlay_edit.setCursor(Qt.CursorShape.PointingHandCursor)
             self.overlay_edit.setToolTip(tr('overlay_edit').split('\n')[-1])
-            self.overlay_edit.clicked.connect(self.edit_requested)
+            self.overlay_edit.clicked.connect(
+                lambda _checked=False: self.edit_requested.emit())
             sh.addWidget(self.overlay_edit)
 
             # Точечное удаление этого рефа с диска (с подтверждением).
@@ -1104,7 +1117,8 @@ class RefCard(QFrame):
             self.overlay_delete.setIconSize(QSize(16, 16))
             self.overlay_delete.setCursor(Qt.CursorShape.PointingHandCursor)
             self.overlay_delete.setToolTip(tr('overlay_delete_ref'))
-            self.overlay_delete.clicked.connect(self.delete_requested)
+            self.overlay_delete.clicked.connect(
+                lambda _checked=False: self.delete_requested.emit())
             sh.addWidget(self.overlay_delete)
 
             self.overlay_regen = QPushButton()
@@ -1114,7 +1128,8 @@ class RefCard(QFrame):
             self.overlay_regen.setIconSize(QSize(16, 16))
             self.overlay_regen.setCursor(Qt.CursorShape.PointingHandCursor)
             self.overlay_regen.setToolTip(tr('overlay_regen').split('\n')[-1])
-            self.overlay_regen.clicked.connect(self.regen_requested)
+            self.overlay_regen.clicked.connect(
+                lambda _checked=False: self.regen_requested.emit())
             sh.addWidget(self.overlay_regen)
             # strip позиционируется абсолютно в resizeEvent (внизу overlay)
 

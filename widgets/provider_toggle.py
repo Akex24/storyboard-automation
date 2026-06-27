@@ -44,6 +44,8 @@ from PyQt6.QtCore import Qt, QRectF, QSize, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 
+from views.theme import theme_qcolor
+
 
 class ProviderToggle(QWidget):
     """Сегмент-контрол «ванна + пилюля» с кастомной отрисовкой.
@@ -56,12 +58,17 @@ class ProviderToggle(QWidget):
 
     valueChanged = pyqtSignal(str)
 
-    # ── Палитра (хардкод — кроссплатформенно идентична, без QSS/нативного скина) ──
-    _BATH_BG = QColor("#241c34")           # тёмная ванна, в тон карточки
-    _BATH_BORDER = QColor("#3a2f52")       # рамка ванны
-    _PILL_BG = QColor("#ececf0")           # активная пилюля — мягкий сероватый белый
-    _TEXT_ACTIVE = QColor("#1a1424")       # текст на пилюле — тёмный
-    _TEXT_INACTIVE = QColor(255, 255, 255, 179)  # 0.70 * 255 — читаемый светло-серый
+    # ── Палитра (literal'ы пропускаются через theme_qcolor в paintEvent) ──
+    # 2026-06-26 / Codex:
+    # Раньше тут лежали готовые QColor на уровне класса. При импортированной
+    # пользовательской теме это ломало перекраску: модуль импортировался до
+    # загрузки QSettings-темы, и ProviderToggle навсегда оставался в старой
+    # фиолетово-белой палитре.
+    _BATH_BG = "#151718"     # graphite-ванна
+    _BATH_BORDER = "rgba(255,255,255,0.10)"
+    _PILL_BG = "#303335"     # активная пилюля без светлого пятна
+    _TEXT_ACTIVE = "#d8d8d8" # светлый текст на активной пилюле
+    _TEXT_INACTIVE = "rgba(255,255,255,0.70)"
 
     _HEIGHT = 40        # фикс. высота контрола
     _BATH_RADIUS = 8    # скругление ванны
@@ -144,8 +151,8 @@ class ProviderToggle(QWidget):
 
             # Ванна (на полпикселя внутрь — чтобы рамка 1px не обрезалась).
             bath = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            p.setBrush(self._BATH_BG)
-            p.setPen(QPen(self._BATH_BORDER, 1))
+            p.setBrush(theme_qcolor(self._BATH_BG))
+            p.setPen(QPen(theme_qcolor(self._BATH_BORDER), 1))
             p.drawRoundedRect(bath, self._BATH_RADIUS, self._BATH_RADIUS)
 
             # Геометрия половин (внутри ванны, с отступом _PILL_PAD).
@@ -158,7 +165,7 @@ class ProviderToggle(QWidget):
 
             # Пилюля на активной половине.
             pill = left_half if self._index == 0 else right_half
-            p.setBrush(self._PILL_BG)
+            p.setBrush(theme_qcolor(self._PILL_BG))
             p.setPen(Qt.PenStyle.NoPen)
             pill_radius = max(self._BATH_RADIUS - pad, 3)
             p.drawRoundedRect(pill, pill_radius, pill_radius)
@@ -172,7 +179,9 @@ class ProviderToggle(QWidget):
                 active = (i == self._index)
                 font.setBold(active)
                 p.setFont(font)
-                p.setPen(self._TEXT_ACTIVE if active else self._TEXT_INACTIVE)
+                p.setPen(theme_qcolor(
+                    self._TEXT_ACTIVE if active else self._TEXT_INACTIVE
+                ))
                 p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label or "")
         finally:
             p.end()

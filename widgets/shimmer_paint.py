@@ -25,18 +25,20 @@ from PyQt6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath,
                           QRadialGradient)
 from PyQt6.QtWidgets import QWidget
 
+from views.theme import theme_qcolor
+
 
 # ── Цветовые константы (копия значений из ShimmerCell, единый источник тут) ──
 # pulse колеблется между _BASE_DARK и _BASE_LIGHT по sin(angle); амплитуда ~10%.
 _BASE_DARK_R, _BASE_DARK_G, _BASE_DARK_B = 20, 15, 30      # ≈ #14 0F 1E
 _BASE_LIGHT_R, _BASE_LIGHT_G, _BASE_LIGHT_B = 32, 24, 46   # ≈ #20 18 2E
 # Статичные слои объёма — НЕ зависят от фазы.
-_DEPTH_TOP = QColor(255, 255, 255, 14)     # лёгкая подсветка сверху
-_DEPTH_BOTTOM = QColor(0, 0, 0, 18)        # лёгкая тень снизу
-_WARM_ACCENT_INNER = QColor(212, 162, 86, 26)   # янтарь, центр радиалки
-_WARM_ACCENT_OUTER = QColor(212, 162, 86, 0)    # затухание к 0
+_DEPTH_TOP = theme_qcolor("rgba(255,255,255,0.055)")  # лёгкая подсветка сверху
+_DEPTH_BOTTOM = theme_qcolor("rgba(0,0,0,0.071)")     # лёгкая тень снизу
+_WARM_ACCENT_INNER = theme_qcolor("rgba(212,162,86,0.102)")  # янтарь, центр
+_WARM_ACCENT_OUTER = theme_qcolor("rgba(212,162,86,0)")      # затухание к 0
 # Тёмная подложка ДО pulse (без неё на первом кадре виден фон родителя).
-_BASE_COLOR = QColor(22, 16, 32)           # #161020
+_BASE_COLOR = theme_qcolor("#161020")
 
 # Радиус скругления rounded-rect (как у ShimmerCell.paintEvent).
 _SHIMMER_RADIUS = 8

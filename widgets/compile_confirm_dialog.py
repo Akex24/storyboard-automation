@@ -39,7 +39,7 @@ class CompileConfirmDialog(QDialog):
         self.setModal(True)
         self.setMinimumSize(440, 280)
         self.resize(480, 320)
-        self.setStyleSheet("QDialog { background: #1a1424; }")
+        self.setStyleSheet("QDialog { background: #121313; }")
 
         v = QVBoxLayout(self)
         v.setContentsMargins(28, 24, 28, 20)
@@ -105,7 +105,7 @@ class CompileConfirmDialog(QDialog):
         self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.confirm_btn.setEnabled(False)
         self.confirm_btn.setStyleSheet(
-            "QPushButton { background: #e4344a; color: #fff;"
+            "QPushButton { background: #e4344a; color: #fefefe;"
             " border: none; border-radius: 6px;"
             " padding: 8px 18px; font-size: 13px; font-weight: 600; }"
             "QPushButton:hover { background: #ec4d62; }"

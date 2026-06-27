@@ -171,7 +171,7 @@ class NewEpisodeView(QWidget):
         self.paste_edit = QPlainTextEdit()
         self.paste_edit.setPlaceholderText(tr('new_ep_paste_placeholder'))
         self.paste_edit.setStyleSheet(
-            "QPlainTextEdit { background:#15101e; border:1px solid #322545;"
+            "QPlainTextEdit { background:#191b1d; border:1px solid #1d1e20;"
             " border-radius:6px; padding:8px; color:#ddd; font-size:13px; }")
         # Phase 2 hotfix #6: paste-поле выше (юзер просил «блок ввода
         # сценария можно сделать повыше»). Min 120, max снят чтобы при
@@ -189,7 +189,7 @@ class NewEpisodeView(QWidget):
         self.ep_edit = QLineEdit()
         self.ep_edit.setPlaceholderText(tr('new_ep_episode_placeholder'))
         self.ep_edit.setStyleSheet(
-            "QLineEdit { background:#15101e; border:1px solid #322545;"
+            "QLineEdit { background:#191b1d; border:1px solid #1d1e20;"
             " border-radius:6px; padding:6px 10px; color:#ddd; font-size:13px; }")
         self.ep_edit.setMaximumWidth(260)
         self.ep_edit.textChanged.connect(self._update_run_btn_state)
@@ -290,7 +290,7 @@ class NewEpisodeView(QWidget):
         self.chat_input = ChatInputEdit()
         self.chat_input.setPlaceholderText(tr('new_ep_chat_placeholder'))
         self.chat_input.setStyleSheet(
-            "QPlainTextEdit { background:#15101e; border:1px solid #322545;"
+            "QPlainTextEdit { background:#191b1d; border:1px solid #1d1e20;"
             " border-radius:6px; padding:8px; color:#ddd; font-size:13px; }")
         self.chat_input.setFixedHeight(70)
         self.chat_input.submit_requested.connect(self._on_send_followup)

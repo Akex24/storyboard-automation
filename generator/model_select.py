@@ -83,7 +83,7 @@ class ModelSelect(QWidget):
         # фон НЕ трогаем, текст приглушён → светлеет. Перекраску делаем по
         # Enter/Leave кнопки в eventFilter (надёжнее хрупкого parent:hover child).
         self.setStyleSheet(
-            "QPushButton#model-combo { background:#100b18; border:none;"
+            "QPushButton#model-combo { background:#131516; border:none;"
             " border-radius:10px; min-width:120px; }"
             "QLabel#model-combo-label { color:rgba(255,255,255,0.55);"
             " font-size:13px; background:transparent; }"
@@ -139,12 +139,12 @@ class ModelSelect(QWidget):
         self._popup = QFrame(win)
         self._popup.setObjectName("model-popup")
         self._popup.setStyleSheet(
-            "QFrame#model-popup { background:#221b2e; border:1px solid #322a40;"
+            "QFrame#model-popup { background:#191b1d; border:1px solid rgba(255,255,255,0.08);"
             " border-radius:12px; }"
             "QPushButton#model-popup-item { background:transparent; color:#e8e3f0;"
             " border:none; border-radius:8px; font-size:13px; text-align:left; }"
-            "QPushButton#model-popup-item:hover { background:#2c2438; }"
-            "QPushButton#model-popup-item[selected=\"true\"] { color:#ffffff; }"
+            "QPushButton#model-popup-item:hover { background:#242627; }"
+            "QPushButton#model-popup-item[selected=\"true\"] { color:#fdfdfd; }"
             "QLabel#model-popup-text { background:transparent; }"
             "QLabel#model-popup-check { color:#d4a256; background:transparent; }")
         self._rows_box = QVBoxLayout(self._popup)

@@ -23,7 +23,7 @@ import subprocess
 import traceback
 import unicodedata
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Any, Optional, List, Dict, Tuple
 
 # i18n — TRANSLATIONS / get_lang / set_lang / tr / _pick_lang / SUPPORTED_LANGUAGES
 # вытащены в i18n.py 2026-05-04 чтобы уменьшить размер этого файла на ~600 строк.
@@ -214,6 +214,19 @@ from PyQt6.QtCore import (
     QByteArray,
 )
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPainterPath, QAction, QGuiApplication, QKeySequence, QShortcut, QColor, QTextCursor, QIcon
+
+from views.theme import (
+    build_llm_theme_prompt,
+    install_theme_runtime,
+    load_active_theme_overrides,
+    load_theme_store,
+    normalize_theme_payload,
+    save_theme_store,
+    set_theme_overrides_from_payload,
+    theme_qcolor,
+    theme_qss,
+    validate_theme_payload,
+)
 
 
 class _BlockCarouselScrollArea(QScrollArea):
@@ -1064,19 +1077,19 @@ class _SceneHighlighter:
                 # тёмно-янтарный `#3d2c14` (почти невидимый pill, но даёт
                 # форму). Long-read friendly, глаз не режет.
                 self._scene_fmt = QTextCharFormat()
-                self._scene_fmt.setForeground(QColor("#ffd47a"))
-                self._scene_fmt.setBackground(QColor("#3d2c14"))
+                self._scene_fmt.setForeground(theme_qcolor("#ffd47a"))
+                self._scene_fmt.setBackground(theme_qcolor("#3d2c14"))
                 self._scene_fmt.setFontWeight(QFont.Weight.Bold)
                 # Эпизод-заголовок: ярко-фиолетовый «#c9a8ff», bold —
                 # юзер сказал что этот цвет «ещё нормально», оставляем.
                 self._ep_fmt = QTextCharFormat()
-                self._ep_fmt.setForeground(QColor("#c9a8ff"))
+                self._ep_fmt.setForeground(theme_qcolor("#c9a8ff"))
                 self._ep_fmt.setFontWeight(QFont.Weight.Bold)
                 # 2026-05-08: реплики в кавычках (диалоги) — спокойный
                 # холодный голубой, italic. Не конфликтует со scene
                 # (тёплый янтарь) и episode (фиолетовый).
                 self._dialog_fmt = QTextCharFormat()
-                self._dialog_fmt.setForeground(QColor("#7fb8ff"))
+                self._dialog_fmt.setForeground(theme_qcolor("#7fb8ff"))
                 self._dialog_fmt.setFontItalic(True)
                 # 2026-05-07: ОБЯЗАТЕЛЬНО UseUnicodePropertiesOption —
                 # без него `\b` в Qt не считает кириллицу word-character'ом
@@ -3031,7 +3044,7 @@ def github_configured() -> bool:
 # ─── Тема ─────────────────────────────────────────────────────────────────────
 # Акцентный красный (с макета LUMZ): #E63946
 DARK = """
-QMainWindow                 { background: #0a0a0d; }
+QMainWindow                 { background: #121313; }
 QWidget                     { color: #e0e0e0; font-family: __FONT_FAMILY__; }
 /* 2026-05-08: фон главного окна теперь рисуется paintEvent'ом класса
    `views.theme.LumzBackground` (радиальный градиент сверху по центру).
@@ -3042,7 +3055,7 @@ QWidget                     { color: #e0e0e0; font-family: __FONT_FAMILY__; }
    правила QScrollArea ниже. */
 QScrollArea                 { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
-QDialog                     { background: #1a1424; }
+QDialog                     { background: #121313; }
 
 QPushButton {
     background: #221a30; border: 1px solid #2e2440; border-radius: 6px;
@@ -3166,6 +3179,23 @@ QPushButton#save:disabled {
     color: rgba(255, 255, 255, 0.30);
     border-color: rgba(255, 255, 255, 0.06);
 }
+QPushButton#storyboard-save {
+    background: #131516;
+    border: 1px solid #1d1e20;
+    color: #f2f3f0;
+    font-size: 13px; padding: 11px; font-weight: 600;
+    border-radius: 8px;
+}
+QPushButton#storyboard-save:hover {
+    background: #131516;
+    border-color: #1d1e20;
+    color: #ffffff;
+}
+QPushButton#storyboard-save:disabled {
+    background: #131516;
+    border-color: #1d1e20;
+    color: rgba(255, 255, 255, 0.30);
+}
 QPushButton#secondary {
     background: transparent;
     color: rgba(255, 255, 255, 0.55);
@@ -3192,31 +3222,31 @@ QPushButton#pill:hover {
     color: rgba(255, 255, 255, 0.85);
 }
 QPushButton#pill[active="true"] {
-    background: #e4344a; border: 1px solid #e4344a; color: #ffffff;
+    background: #303438; border: 1px solid rgba(255,255,255,0.14); color: #f5f7f1;
     font-weight: 500;
 }
-QPushButton#pill[active="true"]:hover { background: #d92d44; }
+QPushButton#pill[active="true"]:hover { background: #383d41; }
 
 /* Pill-кнопка «+ Новый эпизод» — красная subtle (LUMZ accent_red_subtle).
    Активна когда юзер на странице NewEpisodeView. */
 QPushButton#pill-new {
-    background: rgba(228, 52, 74, 0.10);
-    border: 1px solid rgba(228, 52, 74, 0.25);
+    background: rgba(199, 240, 74, 0.10);
+    border: 1px solid rgba(199, 240, 74, 0.24);
     border-radius: 6px; padding: 4px 8px;
-    color: #e4344a;
+    color: #d9f68a;
     font-size: 11px; font-weight: 500;
     min-width: 0;
 }
 QPushButton#pill-new:hover {
-    background: rgba(228, 52, 74, 0.18);
-    border-color: rgba(228, 52, 74, 0.40);
+    background: rgba(199, 240, 74, 0.14);
+    border-color: rgba(199, 240, 74, 0.36);
 }
 QPushButton#pill-new[active="true"] {
-    background: rgba(228, 52, 74, 0.25);
-    border: 1px solid rgba(228, 52, 74, 0.50);
-    color: #ffffff;
+    background: #303438;
+    border: 1px solid rgba(255,255,255,0.14);
+    color: #f5f7f1;
 }
-QPushButton#pill-new[active="true"]:hover { background: #7d5bd4; }
+QPushButton#pill-new[active="true"]:hover { background: #383d41; }
 
 /* 2026-05-08 редизайн Этап 4: полоса блоков (Блок 1/2/3/4 + Референсы +
    Чат) обёрнута в один контейнер #blocks-bar (см. _build_editor_tab),
@@ -3256,9 +3286,9 @@ QPushButton#block-carousel-arrow:disabled {
 }
 
 QPushButton#pill-block {
-    background: transparent; border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.018); border: 1px solid transparent;
     border-radius: 6px; padding: 6px 14px;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.46);
     font-size: 12px; font-weight: 500; min-height: 14px;
 }
 QPushButton#pill-block[compact="true"] {
@@ -3521,104 +3551,105 @@ QPushButton#pill-block:hover {
 
 /* Блок с непросмотренными шотами — золотой акцент (LUMZ accent_gold). */
 QPushButton#pill-block[unseen="true"] {
-    background: rgba(212, 162, 86, 0.10);
+    background: rgba(212, 162, 86, 0.101);
     border: 1px solid rgba(212, 162, 86, 0.30);
-    color: #d4a256; font-weight: 500;
+    color: #d4a25a; font-weight: 500;
 }
 QPushButton#pill-block[unseen="true"]:hover {
     background: rgba(212, 162, 86, 0.18);
     color: #e1b46d;
 }
 
-/* АКТИВНЫЙ блок — accent_red подсветка + красная рамка. */
+/* Активный блок — как Higgsfield Video: тёмная плашка + светлый текст. */
 QPushButton#pill-block[active="true"] {
-    background: rgba(228, 52, 74, 0.15);
-    border: 1px solid rgba(228, 52, 74, 0.40);
-    color: #ffffff; font-weight: 500;
+    background: #242628;
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #f2f3f0; font-weight: 700;
 }
 QPushButton#pill-block[active="true"]:hover {
-    background: rgba(228, 52, 74, 0.22);
+    background: #242628;
+    border-color: rgba(255,255,255,0.10);
 }
-/* Активный + unseen: красный фон + золотая рамка (combo). */
+/* Активный + unseen: сохраняем тёмную активную плашку. */
 QPushButton#pill-block[active="true"][unseen="true"] {
-    background: rgba(228, 52, 74, 0.18);
-    border: 1px solid rgba(212, 162, 86, 0.50);
-    color: #ffffff; font-weight: 500;
+    background: #242628;
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #f2f3f0; font-weight: 700;
 }
 QPushButton#pill-block[active="true"][unseen="true"]:hover {
-    background: rgba(228, 52, 74, 0.25);
+    background: #242628;
+    border-color: rgba(255,255,255,0.10);
 }
 
-/* Кнопка «Референсы» — золотой текст (LUMZ accent_gold), прозрачный фон.
-   Когда активна — accent_red подсветка + белый текст. */
+/* Кнопка «Референсы» — Higgsfield Upgrade/Assets style. */
 QPushButton#pill-refs {
-    background: rgba(212, 162, 86, 0.08);
-    border: 1px solid rgba(212, 162, 86, 0.24);
+    background: #242628;
+    border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px; padding: 0 14px;
-    color: #d4a256;
+    color: #f2f3f0;
     font-size: 12px; font-weight: 600;
 }
 QPushButton#pill-refs:hover {
-    background: rgba(212, 162, 86, 0.14);
-    border-color: rgba(212, 162, 86, 0.42);
-    color: #e1b46d;
+    background: #2c2f31;
+    border-color: rgba(255,255,255,0.16);
+    color: #ffffff;
 }
 QPushButton#pill-refs[active="true"] {
-    background: rgba(228, 52, 74, 0.15);
-    border: 1px solid rgba(228, 52, 74, 0.40);
-    color: #ffffff; font-weight: 500;
+    background: #242628;
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #f2f3f0; font-weight: 600;
 }
 
 /* Пульсирующая подсветка «Референсы» — янтарь (LUMZ accent_gold). */
 QPushButton#pill-refs[has_notice="true"] {
     background: rgba(212, 162, 86, 0.18);
     border: 1px solid rgba(212, 162, 86, 0.50);
-    color: #ffffff; font-weight: 500;
+    color: #fefefe; font-weight: 500;
 }
 QPushButton#pill-refs[has_notice="true"][pulse_on="true"] {
     background: rgba(212, 162, 86, 0.30);
     border: 1px solid rgba(212, 162, 86, 0.70);
-    color: #ffffff; font-weight: 500;
+    color: #fefefe; font-weight: 500;
 }
 QPushButton#pill-refs[has_notice="true"]:hover {
     background: rgba(212, 162, 86, 0.25);
-    color: #ffffff;
+    color: #fefefe;
 }
 
-/* Пилюля «ЧАТ» — белый текст (text_primary), прозрачный фон.
-   Когда активен — accent_red подсветка. */
+/* Пилюля «ЧАТ» — Higgsfield Upgrade/Assets style. */
 QPushButton#pill-chat {
-    background: rgba(255, 255, 255, 0.035);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: #242628;
+    border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px; padding: 0 14px;
-    color: #ffffff;
+    color: #f2f3f0;
     font-size: 12px; font-weight: 600;
 }
 QPushButton#pill-chat:hover {
-    background: rgba(255, 255, 255, 0.075);
-    border-color: rgba(255, 255, 255, 0.17);
+    background: #2c2f31;
+    border-color: rgba(255,255,255,0.16);
+    color: #ffffff;
 }
 QPushButton#pill-chat[active="true"] {
-    background: rgba(228, 52, 74, 0.15);
-    border: 1px solid rgba(228, 52, 74, 0.40);
-    color: #ffffff; font-weight: 500;
+    background: #242628;
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #f2f3f0; font-weight: 600;
 }
 
 /* Кнопка «Удалить эпизод» — иконка корзины справа от полосы блоков.
    2026-05-08 редизайн: text_muted по умолчанию, hover → accent_red. */
 QPushButton#delete-episode-btn {
-    background: transparent; border: 1px solid transparent;
+    background: #242628; border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px; padding: 0;
-    color: rgba(255, 255, 255, 0.40);
+    color: #f2f3f0;
     font-size: 16px; font-weight: 500;
 }
 QPushButton#delete-episode-btn:hover {
-    background: rgba(228, 52, 74, 0.15);
-    border: 1px solid rgba(228, 52, 74, 0.40);
-    color: #e4344a;
+    background: #2c2f31;
+    border: 1px solid rgba(255,255,255,0.16);
+    color: #ffffff;
 }
 QPushButton#delete-episode-btn:disabled {
-    background: transparent; border: 1px solid transparent;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
     color: rgba(255, 255, 255, 0.20);
 }
 
@@ -3632,11 +3663,14 @@ QLabel#refs-section-count {
     color: rgba(255, 255, 255, 0.40); font-size: 11px; font-weight: 500;
 }
 QFrame#ref-card {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: #191b1d;
+    border: 1px solid #191b1d;
     border-radius: 8px;
 }
-QFrame#ref-card:hover { border-color: rgba(255, 255, 255, 0.12); }
+QFrame#ref-card:hover {
+    background: #191b1d;
+    border-color: #191b1d;
+}
 QWidget#ref-card-info { background: transparent; }
 QLabel#ref-name { color: #ffffff; font-size: 13px; font-weight: 500; }
 QLabel#ref-tag  { color: rgba(255, 255, 255, 0.40); font-size: 11px; }
@@ -3645,11 +3679,11 @@ QLabel#ref-tag  { color: rgba(255, 255, 255, 0.40); font-size: 11px; }
    карточка — фон bg_subtle (rgba(255,255,255,0.04)), border default
    (rgba(255,255,255,0.06)), radius 8px. На hover чуть ярче border. */
 QFrame#card {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: #191b1d;
+    border: none;
     border-radius: 8px;
 }
-QFrame#card:hover { border-color: rgba(255, 255, 255, 0.12); }
+QFrame#card:hover { border: none; }
 
 /* Hover overlay — полупрозрачная плашка с двумя кнопками действий.
    Используется для refs view (overlay-action — composite кнопка с текстом).
@@ -3727,25 +3761,25 @@ QLabel#shot-overlay-hint {
    SVG-иконки Lucide. Default — нейтральный тёмный, primary (regen) —
    LUMZ accent_red. */
 QPushButton#ref-overlay-btn {
-    background: #1f1828;
+    background: rgba(20,20,24,0.82);
     color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(20,20,24,0.82);
     border-radius: 6px;
     padding: 0;
     min-width: 36px; max-width: 36px;
     min-height: 32px; max-height: 32px;
 }
 QPushButton#ref-overlay-btn:hover {
-    background: #2a2138;
-    border: 1px solid rgba(255, 255, 255, 0.20);
+    background: rgba(207,255,34,0.22);
+    border: 1px solid rgba(207,255,34,0.22);
 }
 QPushButton#ref-overlay-btn[primary="true"] {
-    background: #e4344a;
-    border: 1px solid #e4344a;
+    background: rgba(20,20,24,0.82);
+    border: 1px solid rgba(20,20,24,0.82);
 }
 QPushButton#ref-overlay-btn[primary="true"]:hover {
-    background: #d92d44;
-    border: 1px solid #d92d44;
+    background: rgba(207,255,34,0.22);
+    border: 1px solid rgba(207,255,34,0.22);
 }
 
 /* Header — LUMZ + красный квадрат + Storyboard Studio (всё в одной rich-text QLabel).
@@ -3755,8 +3789,8 @@ QLabel#header-version    { font-size: 12px; color: #666; }
 
 /* Header card — карточка шапки с лого LUMZ слева и табами справа */
 QFrame#header-card {
-    background: rgba(20, 15, 30, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: #121313;
+    border: none;
     border-radius: 14px;
 }
 
@@ -3787,23 +3821,23 @@ QPushButton#tab-pill {
     max-height: 28px;
 }
 QPushButton#tab-pill:hover {
-    color: rgba(255, 255, 255, 0.85);
+    color: #e8b86a;
 }
-/* Активный таб — приглушённый светлый фон + белый текст */
+/* Активный таб — тёмная плашка + жёлтый текст как hover. */
 QPushButton#tab-pill[active="true"] {
-    background: rgba(255, 255, 255, 0.06); color: #ffffff;
+    background: #242628; color: #e8b86a; font-weight: 600;
 }
 /* 2026-06-20: акцентная pill «Генератор» — тёплый янтарь (#d4a256, accent_gold
    из палитры), выделяется среди серых табов. Через [accent="true"] поверх
    objectName tab-pill, чтобы не ломать общий _sync_header_tab_active. */
 QPushButton#tab-pill[accent="true"] {
-    color: #d4a256;
+    color: #d4a257;
 }
 QPushButton#tab-pill[accent="true"]:hover {
     color: #e8b86a;
 }
 QPushButton#tab-pill[accent="true"][active="true"] {
-    background: #d4a256; color: #15101e;
+    background: #242628; color: #e8b86a; font-weight: 600;
 }
 /* Этап 2 (формат): сегмент-переключатель 9:16 | 16:9 в шапке. Активная
    половина — фирменный красный (#e63946, как точка в логотипе), неактивная
@@ -3822,8 +3856,12 @@ QPushButton#aspect-seg-btn {
     min-height: 28px;
     max-height: 28px;
 }
-QPushButton#aspect-seg-btn:hover { color: rgba(255, 255, 255, 0.85); }
-QPushButton#aspect-seg-btn[active="true"] { background: #e63946; color: #ffffff; }
+QPushButton#aspect-seg-btn:hover { color: #e8b86a; }
+QPushButton#aspect-seg-btn[active="true"] {
+    background: #242628;
+    color: #e8b86a;
+    border: none;
+}
 QPushButton#aspect-seg-btn:disabled { color: rgba(255, 255, 255, 0.25); }
 
 /* Старый QTabBar — оставлен в QSS на случай если где-то ещё используется,
@@ -3852,22 +3890,21 @@ QFrame#pills-vsep {
 
 /* Заголовки */
 QLabel#episode-title    { font-size: 16px; color: #fff; font-weight: 500; }
-/* Плашка «СЕРИЯ NN» / название эпизода — кликабельная, открывает попап
-   со сценарием. 2026-05-08 редизайн: LUMZ accent_gold (тёплый янтарь). */
+/* Плашка «СЕРИЯ NN» / название эпизода — Higgsfield Upgrade/Assets style. */
 QPushButton#episode-title-btn {
-    font-size: 11px; color: #d4a256; font-weight: 500;
-    background: rgba(212, 162, 86, 0.10);
-    border: 1px solid rgba(212, 162, 86, 0.30);
+    font-size: 11px; color: #f2f3f0; font-weight: 600;
+    background: #242628;
+    border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px; padding: 0 12px;
     text-align: left;
     letter-spacing: 0.3px;
 }
 QPushButton#episode-title-btn:hover {
-    background: rgba(212, 162, 86, 0.18);
-    border-color: rgba(212, 162, 86, 0.50);
+    background: #2c2f31;
+    border-color: rgba(255,255,255,0.16);
 }
 QPushButton#episode-title-btn:pressed {
-    background: rgba(212, 162, 86, 0.25);
+    background: #1f2123;
 }
 QLabel#episode-duration { font-size: 13px; color: #888; }
 /* 2026-05-08 редизайн Этап 5: заголовок над сторибордами в LUMZ-стиле —
@@ -3875,10 +3912,10 @@ QLabel#episode-duration { font-size: 13px; color: #888; }
 QLabel#block-title      { font-size: 14px; color: #ffffff; font-weight: 500; letter-spacing: 0; }
 
 /* Карточка шота — внутренние подписи */
-QLabel#shot-num         { font-size: 13px; font-weight: 600; color: #fff; }
-QLabel#shot-dur         { font-size: 11px; color: #666; }
-QLabel#shot-desc        { font-size: 11px; color: #888; }
-QLabel#shot-dialog      { font-size: 11px; color: #b9a7e6; font-style: italic; }
+QLabel#shot-num         { font-size: 13px; font-weight: 600; color: #fdfdff; }
+QLabel#shot-dur         { font-size: 11px; color: #666667; }
+QLabel#shot-desc        { font-size: 11px; color: #878788; }
+QLabel#shot-dialog      { font-size: 11px; color: #b9a7e5; font-style: italic; }
 QLabel#step-label       { font-size: 11px; color: #5a8a5a; }
 QLabel#new-badge {
     color: #ffaa44; font-size: 10px; font-weight: bold;
@@ -3899,7 +3936,8 @@ QFrame#settings-group-tile {
     background: #241c34; border: 1px solid #3a2f52; border-radius: 12px;
 }
 QLabel#settings-section {
-    font-size: 11px; font-weight: 700; color: #5a5070; letter-spacing: 2.5px;
+    font-size: 11px; font-weight: 700;
+    color: rgba(255, 255, 255, 0.55); letter-spacing: 2.5px;
 }
 
 /* Кнопка-строка внутри #settings-group (открыть папку): без рамки внутри, как пункт меню */
@@ -3910,19 +3948,17 @@ QPushButton#settings-row-btn {
 QPushButton#settings-row-btn:hover  { background: rgba(60, 48, 90, 0.25); color: #fff; }
 QPushButton#settings-row-btn:pressed { background: rgba(60, 48, 90, 0.4); }
 
-/* Светлая компактная кнопка настроек (Коммит 7, 2026-06-17) — единый стиль
-   кнопок в колонках Проект/О приложении/AI-аккаунт. Светлая #ececf0 как пилюля
-   Mode C / ProviderToggle. НЕ checkable → QSS на macOS берётся (#aspect-seg-btn). */
+/* Компактная кнопка настроек — dark action-style как References/Chat. */
 QPushButton#settings-light-btn {
-    background: #ececf0; color: #1a1424;
-    border: 1px solid #ececf0; border-radius: 6px;
+    background: #242628; color: #f2f3f0;
+    border: 1px solid #242628; border-radius: 8px;
     padding: 8px 14px; font-size: 13px; font-weight: 600;
     text-align: center;
 }
-QPushButton#settings-light-btn:hover { background: #ffffff; border-color: #ffffff; }
-QPushButton#settings-light-btn:pressed { background: #d8d4e0; border-color: #d8d4e0; }
+QPushButton#settings-light-btn:hover { background: #2c2f31; color: #ffffff; border-color: #2c2f31; }
+QPushButton#settings-light-btn:pressed { background: #1f2123; color: #ffffff; border-color: #1f2123; }
 QPushButton#settings-light-btn:disabled {
-    background: rgba(236,236,240,0.30); color: rgba(26,20,36,0.40); border-color: transparent;
+    background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.30); border-color: rgba(255,255,255,0.04);
 }
 
 /* Строка ключ-значение внутри about (Версия приложения  v1.0.12) */
@@ -3931,7 +3967,7 @@ QLabel#settings-row-key  { color: #aaa; font-size: 13px; }
 QLabel#settings-row-val  { color: #fff; font-size: 13px; font-weight: 500; }
 QFrame#settings-divider  { background: rgba(255, 255, 255, 0.06); border: none; }
 
-QStatusBar              { background: rgba(10, 8, 14, 0.95); color: #777; font-size: 11px; border-top: 1px solid #1a141f; }
+QStatusBar              { background: #121313; color: #777; font-size: 11px; border-top: none; }
 QStatusBar::item        { border: none; }
 
 /* Скроллбары — тонкие, полупрозрачные. Кросс-платформенный стиль (Mac + Windows). */
@@ -3959,6 +3995,23 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     background: none; border: none; height: 0; width: 0;
 }
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
+
+QSlider::groove:horizontal {
+    background: rgba(255,255,255,0.12); height: 4px; border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #8a8d92; border-radius: 2px;
+}
+QSlider::add-page:horizontal {
+    background: rgba(255,255,255,0.10); border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #b8bbc0; border: 1px solid rgba(255,255,255,0.20);
+    width: 16px; height: 16px; margin: -6px 0; border-radius: 8px;
+}
+QSlider::handle:horizontal:hover {
+    background: #d0d3d8; border-color: #8a8d92;
+}
 
 QProgressBar {
     background: #1a1a1a; border: none; border-radius: 3px; height: 5px;
@@ -4011,7 +4064,7 @@ QFrame#admin-zone {
     border-radius: 12px;
 }
 QLabel#admin-zone-badge {
-    color: #ffffff; background: #e4344a; border-radius: 6px;
+    color: #fefefe; background: #e4344a; border-radius: 6px;
     padding: 4px 12px; font-size: 12px; font-weight: 700; letter-spacing: 1px;
 }
 
@@ -4031,7 +4084,7 @@ QComboBox {
 QComboBox:hover         { border-color: rgba(255, 255, 255, 0.20); }
 QComboBox::drop-down    { border: none; width: 22px; }
 QComboBox QAbstractItemView {
-    background: #15101e;
+    background: #191b1d;
     border: 1px solid rgba(255, 255, 255, 0.12);
     selection-background-color: rgba(228, 52, 74, 0.20);
     color: #ddd; padding: 4px;
@@ -4062,7 +4115,7 @@ QPushButton#lang-btn:pressed { background: rgba(255, 255, 255, 0.10); }
 
 /* Выпадающий список языков (как на макете LUMZ) */
 QMenu#lang-menu {
-    background: #1a1424; border: 1px solid #322545; border-radius: 10px;
+    background: #121313; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px;
     padding: 6px;
 }
 QMenu#lang-menu::item {
@@ -4070,7 +4123,7 @@ QMenu#lang-menu::item {
     min-width: 160px;
 }
 QMenu#lang-menu::item:selected {
-    background: rgba(70, 55, 105, 0.7); color: #fff;
+    background: #242628; color: #f2f3f0;
 }
 
 /* Сегмент-контрол провайдера генерации (ProviderToggle) — БЕЗ QSS.
@@ -8820,21 +8873,22 @@ class MainWindow(QMainWindow):
         self.compile_ep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.compile_ep_btn.setStyleSheet(
             "QPushButton#compile-ep-btn {"
-            " background: rgba(228, 52, 74, 0.10);"
-            " border: 1px solid rgba(228, 52, 74, 0.25);"
+            " background: #242628;"
+            " border: 1px solid rgba(255,255,255,0.10);"
             " border-radius: 8px;"
-            " color: #e4344a;"
+            " color: #f2f3f0;"
             " padding: 0 14px;"
-            " font-size: 12px; font-weight: 500;"
+            " font-size: 12px; font-weight: 600;"
             "}"
             "QPushButton#compile-ep-btn:hover {"
-            " background: rgba(228, 52, 74, 0.18);"
-            " border-color: rgba(228, 52, 74, 0.40); }"
+            " background: #2c2f31;"
+            " border-color: rgba(255,255,255,0.16); }"
             "QPushButton#compile-ep-btn:pressed {"
-            " background: rgba(228, 52, 74, 0.25); }"
+            " background: #1f2123; }"
             "QPushButton#compile-ep-btn:disabled {"
-            " color: rgba(228, 52, 74, 0.55);"
-            " background: rgba(228, 52, 74, 0.06); }"
+            " color: rgba(242,244,239,0.30);"
+            " background: rgba(255,255,255,0.055);"
+            " border-color: rgba(255,255,255,0.08); }"
         )
         self.compile_ep_btn.setFixedHeight(NAV_H)
         self.compile_ep_btn.setVisible(False)
@@ -8978,18 +9032,19 @@ class MainWindow(QMainWindow):
         self.block_refs_btn.setIconSize(QSize(16, 16))
         self.block_refs_btn.setStyleSheet(
             "QPushButton#block-refs-btn {"
-            " background: rgba(228, 52, 74, 0.10);"
-            " border: 1px solid rgba(228, 52, 74, 0.25);"
+            " background: #242628;"
+            " border: 1px solid rgba(255,255,255,0.10);"
             " border-radius: 8px;"
-            " color: #e4344a;"
+            " color: #f2f3f0;"
             " padding: 8px 10px;"
-            " font-size: 12px; font-weight: 500;"
+            " font-size: 12px; font-weight: 600;"
             "}"
             "QPushButton#block-refs-btn:hover {"
-            " background: rgba(228, 52, 74, 0.18);"
-            " border-color: rgba(228, 52, 74, 0.40); }"
+            " background: #2c2f31;"
+            " border-color: rgba(255,255,255,0.16);"
+            " color: #ffffff; }"
             "QPushButton#block-refs-btn:pressed {"
-            " background: rgba(228, 52, 74, 0.25); }"
+            " background: #1f2123; }"
         )
         self.block_refs_btn.clicked.connect(self._on_block_refs_btn)
         self.block_refs_btn.setVisible(False)
@@ -9008,7 +9063,7 @@ class MainWindow(QMainWindow):
         # «следующему шагу» (запуск промпта Seedance для видео).
         self.seedance_btn.setStyleSheet(
             "QPushButton#seedance-btn {"
-            " background: #e4344a; color: #ffffff;"
+            " background: #e4344a; color: #fefefe;"
             " border: none; border-radius: 8px;"
             " padding: 8px 10px;"
             " font-size: 12px; font-weight: 500;"
@@ -9056,12 +9111,13 @@ class MainWindow(QMainWindow):
         self.clear_block_btn.setIconSize(QSize(16, 16))
         self.clear_block_btn.setStyleSheet(
             "QPushButton#clear-block-btn {"
-            " background: transparent; color: #9a9aa5;"
-            " border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;"
-            " padding: 8px 10px; font-size: 12px; font-weight: 500; }"
+            " background: #242628; color: #f2f3f0;"
+            " border: 1px solid rgba(255,255,255,0.10); border-radius: 8px;"
+            " padding: 8px 10px; font-size: 12px; font-weight: 600; }"
             "QPushButton#clear-block-btn:hover {"
-            " background: rgba(255,255,255,0.06); color: #ccc;"
-            " border-color: rgba(255,255,255,0.28); }")
+            " background: #2c2f31; color: #ffffff;"
+            " border-color: rgba(255,255,255,0.16); }"
+            "QPushButton#clear-block-btn:pressed { background: #1f2123; }")
         self.clear_block_btn.clicked.connect(self._on_clear_block_btn)
         self.clear_block_btn.setVisible(False)
         if getattr(self, '_compact_nav_enabled', False):
@@ -9144,7 +9200,7 @@ class MainWindow(QMainWindow):
         # убрано из текста, добавлена Lucide SVG иконка `download.svg`
         # (как остальные иконки в шапке/корзине).
         self.save_btn = QPushButton(tr('save_png'))
-        self.save_btn.setObjectName("save")
+        self.save_btn.setObjectName("storyboard-save")
         self.save_btn.setEnabled(False)
         try:
             from PyQt6.QtCore import QSize
@@ -9295,7 +9351,7 @@ class MainWindow(QMainWindow):
         self.claude_acc_switch_btn.clicked.connect(self._on_auth_switch_requested)
         cf.addWidget(self.claude_acc_switch_btn)
 
-        # 2026-06-17 (Коммит 7): три колонки рядом — «Проект» | «О приложении» |
+        # 2026-06-17 (Коммит 7): колонки рядом — «Проект» | «О приложении» |
         # «AI-аккаунт». В каждой свой заголовок секции + frame. Карточки
         # растягиваются на одну высоту через frame со stretch=1 (выравнивание
         # высоты); кнопки внутри прижаты к низу (addStretch внутри frame'ов).
@@ -9345,7 +9401,7 @@ class MainWindow(QMainWindow):
         # #settings-section — блок видно при быстрой прокрутке Settings.
         self.sec_apikey_lbl.setStyleSheet(
             "QLabel#settings-section { font-size:11px; font-weight:700;"
-            " color:#d9b96a; letter-spacing:2.5px; }")
+            " color:rgba(255,255,255,0.55); letter-spacing:2.5px; }")
         lay.addWidget(self.sec_apikey_lbl)
 
         apikey_frame = QFrame()
@@ -9407,7 +9463,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.apikey_input.setStyleSheet(
-            "QLineEdit { background:#1a1424; border:1px solid #3a2c52;"
+            "QLineEdit { background:#191b1d; border:1px solid #1d1e20;"
             " border-radius:6px; padding:8px 10px; color:#ddd;"
             " font-size:13px; font-family: 'Menlo', monospace; }")
         ak_row.addWidget(self.apikey_input, stretch=1)
@@ -9451,7 +9507,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             _inp.setStyleSheet(
-                "QLineEdit { background:#1a1424; border:1px solid #3a2c52;"
+                "QLineEdit { background:#191b1d; border:1px solid #1d1e20;"
                 " border-radius:6px; padding:8px 10px; color:#ddd;"
                 " font-size:13px; font-family: 'Menlo', monospace;"
                 " margin-top:6px; }")
@@ -9569,6 +9625,7 @@ class MainWindow(QMainWindow):
         self.proxy_host_label.setFixedWidth(_LABEL_W)
         host_row.addWidget(self.proxy_host_label)
         self.proxy_host_input = QLineEdit()
+        self.proxy_host_input.setObjectName("proxy-input")
         self.proxy_host_input.setPlaceholderText(tr('proxy_host_placeholder'))
         self.proxy_host_input.setText(
             qs_proxy.value("proxy/host", "", type=str))
@@ -9581,6 +9638,7 @@ class MainWindow(QMainWindow):
         self.proxy_port_label.setFixedWidth(_LABEL_W)
         port_row.addWidget(self.proxy_port_label)
         self.proxy_port_input = QLineEdit()
+        self.proxy_port_input.setObjectName("proxy-input")
         self.proxy_port_input.setPlaceholderText(tr('proxy_port_placeholder'))
         self.proxy_port_input.setText(
             qs_proxy.value("proxy/port", "", type=str))
@@ -9593,6 +9651,7 @@ class MainWindow(QMainWindow):
         self.proxy_username_label.setFixedWidth(_LABEL_W)
         user_row.addWidget(self.proxy_username_label)
         self.proxy_username_input = QLineEdit()
+        self.proxy_username_input.setObjectName("proxy-input")
         self.proxy_username_input.setPlaceholderText(
             tr('proxy_username_placeholder'))
         self.proxy_username_input.setText(
@@ -9608,6 +9667,7 @@ class MainWindow(QMainWindow):
         self.proxy_password_label.setFixedWidth(_LABEL_W)
         pwd_row.addWidget(self.proxy_password_label)
         self.proxy_password_input = QLineEdit()
+        self.proxy_password_input.setObjectName("proxy-input")
         self.proxy_password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.proxy_password_input.setText(
             qs_proxy.value("proxy/password", "", type=str))
@@ -9626,6 +9686,21 @@ class MainWindow(QMainWindow):
             self._on_proxy_password_visibility_toggled)
         pwd_row.addWidget(self.proxy_password_toggle_btn)
         pxf.addLayout(pwd_row)
+
+        _proxy_input_qss = (
+            "QLineEdit#proxy-input { background:#191b1d; color:#dddddc;"
+            " border:1px solid #1d1e20; border-radius:6px;"
+            " padding:6px 8px; font-size:12px; }"
+            "QLineEdit#proxy-input:disabled { background:#191b1d;"
+            " color:rgba(255,255,255,0.30); }"
+        )
+        for _proxy_inp in (
+            self.proxy_host_input,
+            self.proxy_port_input,
+            self.proxy_username_input,
+            self.proxy_password_input,
+        ):
+            _proxy_inp.setStyleSheet(_proxy_input_qss)
 
         # Применяем начальное состояние enabled полей по чекбоксу
         self._on_proxy_checkbox_toggled(self.proxy_use_chk.isChecked())
@@ -10058,7 +10133,7 @@ class MainWindow(QMainWindow):
             from PyQt6.QtWidgets import QGraphicsDropShadowEffect as _QGDSE
             _admin_glow = _QGDSE(admin_zone)
             _admin_glow.setBlurRadius(24)
-            _admin_glow.setColor(QColor(228, 52, 74, 140))
+            _admin_glow.setColor(theme_qcolor("rgba(228,52,74,0.55)"))
             _admin_glow.setOffset(0, 0)
             admin_zone.setGraphicsEffect(_admin_glow)
 
@@ -12365,12 +12440,12 @@ class MainWindow(QMainWindow):
                         # ON state: жирный + оранжевый
                         font = _QFont(self._actors_orig_font)
                         font.setBold(True)
-                        bar.setTabTextColor(idx, _QColor("#ffd24d"))
+                        bar.setTabTextColor(idx, theme_qcolor("#ffd24d"))
                     else:
                         # OFF state: обычный шрифт + дефолтный цвет
                         font = _QFont(self._actors_orig_font)
                         font.setBold(False)
-                        bar.setTabTextColor(idx, _QColor("#cfcfcf"))
+                        bar.setTabTextColor(idx, theme_qcolor("#cfcfcf"))
                     # Применяем шрифт через setTabFont (PyQt6) или fallback
                     try:
                         bar.setTabFont(idx, font)
@@ -12485,7 +12560,7 @@ class MainWindow(QMainWindow):
             edit.setPlainText(
                 text if text else tr('ep_scenario_dialog_empty', ep=ep_id))
             edit.setStyleSheet(
-                "QPlainTextEdit { background:#15101e; border:1px solid #2c2240; "
+                "QPlainTextEdit { background:#191b1d; border:1px solid #1d1e20; "
                 "border-radius:6px; color:#ddd; padding:10px; font-size:13px;"
                 " font-family:'Menlo','Monaco','Courier New',monospace; }")
             # 2026-05-07: подсветка «СЦЕНА N:» / «СЦЕНА N:» / «SCENE N:» —
@@ -14665,6 +14740,22 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Правка промпта SHOT {panel_idx + 1}")
         dlg.setMinimumSize(720, 620)
+        dlg.setStyleSheet(theme_qss("""
+            QDialog { background:#121313; color:#ffffff; }
+            QLabel { color:#ddd; background:transparent; }
+            QDialogButtonBox QPushButton {
+                background:#242628;
+                color:#f2f3f0;
+                border:1px solid rgba(255,255,255,0.10);
+                border-radius:8px;
+                padding:8px 14px;
+                font-weight:600;
+            }
+            QDialogButtonBox QPushButton:hover {
+                background:#2c2f31;
+                border-color:rgba(255,255,255,0.16);
+            }
+        """))
         v = QVBoxLayout(dlg)
         v.setSpacing(10)
         v.setContentsMargins(20, 16, 20, 16)
@@ -14686,22 +14777,23 @@ class MainWindow(QMainWindow):
 
         text = QPlainTextEdit()
         text.setPlainText(current_body)
-        text.setStyleSheet(
-            "QPlainTextEdit { background:#15101e; border:1px solid #2c2240; "
-            "border-radius:6px; color:#ddd; padding:10px; "
-            "font-size:12px; font-family: 'Menlo','Consolas',monospace; }")
+        text.setStyleSheet(theme_qss(
+            "QPlainTextEdit { background:#191b1d; "
+            "border:1px solid rgba(255,255,255,0.055); "
+            "border-radius:8px; color:#a8a8a8; padding:10px; "
+            "font-size:12px; font-family: 'Menlo','Consolas',monospace; }"))
         v.addWidget(text, stretch=1)
 
         # 2026-05-07: разделитель + второе поле «короткая инструкция AI».
         sep = QLabel("──────  ИЛИ  ──────")
-        sep.setStyleSheet("color:#6e4cc4; font-size:11px; font-weight:600;")
+        sep.setStyleSheet("color:#cfff24; font-size:11px; font-weight:600;")
         sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(sep)
 
         short_title = QLabel(
             "Короткая правка существующей картинки (AI-edit режим)")
         short_title.setStyleSheet(
-            "color:#d8c8ff; font-size:13px; font-weight:600;")
+            "color:#d8d8d8; font-size:13px; font-weight:600;")
         v.addWidget(short_title)
 
         short_field = QPlainTextEdit()
@@ -14713,15 +14805,22 @@ class MainWindow(QMainWindow):
         if initial_short:
             short_field.setPlainText(initial_short)
         short_field.setMinimumHeight(150)
-        short_field.setStyleSheet(
-            "QPlainTextEdit { background:#1a1330; border:1px solid #4a3470; "
-            "border-radius:6px; color:#fff; padding:8px; font-size:12px; }")
+        short_field.setStyleSheet(theme_qss(
+            "QPlainTextEdit { background:#191b1d; "
+            "border:1px solid rgba(255,255,255,0.055); "
+            "border-radius:8px; color:#fff; padding:8px; font-size:12px; }"))
         v.addWidget(short_field)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.button(QDialogButtonBox.StandardButton.Ok).setText("Сохранить и регенерировать")
         btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        ok_btn = btns.button(QDialogButtonBox.StandardButton.Ok)
+        cancel_btn = btns.button(QDialogButtonBox.StandardButton.Cancel)
+        if ok_btn is not None:
+            ok_btn.setFixedSize(250, 40)
+        if cancel_btn is not None:
+            cancel_btn.setFixedSize(150, 40)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
 
@@ -14732,14 +14831,42 @@ class MainWindow(QMainWindow):
         # картинку, что увидит Nano Banana (целится в обведённый объект).
         improve_row = QHBoxLayout()
         improve_btn = QPushButton(tr('improve_btn'))
-        improve_btn.setObjectName("save")
+        improve_btn.setObjectName("improve-compact")
         # лево-выравнивание текста: при анимации точек слово «Улучшаю промпт»
-        # стоит у левого края, точки растут вправо (не ездит). Тем же #save-
-        # селектором — фон/border/радиус берутся от глобального QSS, добавляем
-        # только text-align+padding-left (Qt мерджит стили по свойствам). В
-        # статике кнопка content-sized → выравнивание визуально незаметно.
-        improve_btn.setStyleSheet(
-            "QPushButton#save { text-align: left; padding-left: 14px; }")
+        # стоит у левого края, точки растут вправо (не ездит). Отдельный
+        # objectName нужен, чтобы кнопка не наследовала глобальный #save и не
+        # раздувалась вместе с другими action-кнопками.
+        improve_btn.setStyleSheet(theme_qss("""
+            QPushButton#improve-compact {
+                background:#242628;
+                border:1px solid #242628;
+                border-radius:8px;
+                color:#f2f3f0;
+                font-size:13px;
+                font-weight:600;
+                min-width:132px;
+                max-width:132px;
+                min-height:40px;
+                max-height:40px;
+                padding:0 12px;
+                text-align:left;
+            }
+            QPushButton#improve-compact:hover {
+                background:#2c2f31;
+                border-color:#2c2f31;
+                color:#ffffff;
+            }
+            QPushButton#improve-compact:disabled {
+                background:#1f2123;
+                border-color:#1f2123;
+                color:rgba(255,255,255,0.42);
+            }
+        """))
+        improve_btn.setFixedSize(132, 40)
+        improve_btn.setMinimumSize(132, 40)
+        improve_btn.setMaximumSize(132, 40)
+        improve_btn.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         improve_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         improve_btn.setEnabled(bool(short_field.toPlainText().strip()))
         improve_row.addWidget(improve_btn)
@@ -14803,11 +14930,6 @@ class MainWindow(QMainWindow):
             improve_btn.setEnabled(False)
             _improve_state['dots'] = 1
             improve_btn.setText(_improve_base + '.')
-            # резерв ширины под максимум «…промпт...» (3 точки) — кнопка не
-            # дёргается при смене 1/2/3 точек (паттерн как в _start_animation).
-            _ifm = improve_btn.fontMetrics()
-            _iw = _ifm.horizontalAdvance(_improve_base + '...') + 30
-            improve_btn.setMinimumWidth(max(improve_btn.width(), _iw))
             _improve_timer.start()
             short_field.setReadOnly(True)
             if ok_btn is not None:
@@ -14820,7 +14942,6 @@ class MainWindow(QMainWindow):
             def _restore():
                 try:
                     _improve_timer.stop()
-                    improve_btn.setMinimumWidth(0)   # вернуть плавающую ширину
                     improve_btn.setText(tr('improve_btn'))
                     short_field.setReadOnly(False)
                     improve_btn.setEnabled(
@@ -14902,7 +15023,7 @@ class MainWindow(QMainWindow):
         text = QPlainTextEdit()
         text.setPlaceholderText(tr('edit_dialog_placeholder'))
         text.setStyleSheet(
-            "QPlainTextEdit { background:#15101e; border:1px solid #2c2240; "
+            "QPlainTextEdit { background:#191b1d; border:1px solid #1d1e20; "
             "border-radius:6px; color:#ddd; padding:8px; font-size:13px; }")
         v.addWidget(text, stretch=1)
 
@@ -17206,6 +17327,14 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(tr('seedance_popup_title', block_n=block_n))
         dlg.setMinimumSize(780, 720)
+        dlg.setStyleSheet(theme_qss("""
+            QDialog { background:#121313; color:#ffffff; }
+            QLabel { color:#aaa; }
+            QSpinBox {
+                background:#191b1d; color:#dddddf; border:1px solid #1d1e20;
+                border-radius:4px; padding:3px 6px; font-size:12px;
+            }
+        """))
         v = QVBoxLayout(dlg)
         v.setSpacing(10)
         v.setContentsMargins(20, 16, 20, 16)
@@ -17220,14 +17349,11 @@ class MainWindow(QMainWindow):
         # игнорировать subcontrol-position для close-button) — см. план Б ниже
         # в _disable_tab_close (закомментирован _ensure_close_btn_right).
         tabs_widget.setStyleSheet(
-            "QTabWidget::pane { border:1px solid #2c2240; border-radius:6px; "
-            "background:#15101e; }"
-            "QTabBar::tab { background:#1a1424; color:#aaa; padding:6px 14px; "
-            "border:1px solid #2c2240; border-bottom:none; "
-            "border-top-left-radius:6px; border-top-right-radius:6px; "
-            "margin-right:2px; }"
-            "QTabBar::tab:selected { background:#2a1d44; color:#d8c8ff; }"
-            "QTabBar::tab:hover { background:#221a30; }"
+            "QTabWidget::pane { border:none; background:transparent; }"
+            "QTabBar::tab { background:transparent; color:rgba(255,255,255,0.58); "
+            "padding:9px 16px; border:none; border-radius:8px; margin-right:6px; }"
+            "QTabBar::tab:selected { background:#242628; color:#e8b86a; }"
+            "QTabBar::tab:hover:!selected { background:#191b1d; color:#f2f3f0; }"
             "QTabBar::close-button { subcontrol-position: right; }")
         v.addWidget(tabs_widget, stretch=1)
 
@@ -17245,8 +17371,8 @@ class MainWindow(QMainWindow):
         instr_ta.setPlaceholderText(tr('seedance_popup_instruction_placeholder'))
         instr_ta.setMaximumHeight(80)
         instr_ta.setStyleSheet(
-            "QPlainTextEdit { background:#181024; border:1px solid #3a2c52; "
-            "border-radius:6px; color:#ddd; padding:8px; font-size:12px; }")
+            "QPlainTextEdit { background:#191b1d; border:1px solid #1d1e20; "
+            "border-radius:6px; color:#dddddf; padding:8px; font-size:12px; }")
         v.addWidget(instr_ta)
 
         regen_status = QLabel("")
@@ -17257,25 +17383,37 @@ class MainWindow(QMainWindow):
 
         # ── Кнопки: regen / copy / close ──
         btns_row = QHBoxLayout()
+        btns_row.setSpacing(8)
+        seedance_action_qss = (
+            "QPushButton { background:#242628; color:#f2f3f0; "
+            "border:1px solid rgba(255,255,255,0.10); border-radius:8px; "
+            "padding:0 10px; font-size:13px; font-weight:600; }"
+            "QPushButton:hover { background:#2c2f31; "
+            "border-color:rgba(255,255,255,0.16); color:#ffffff; }"
+            "QPushButton:pressed { background:#1f2123; border-color:#1f2123; }"
+            "QPushButton:disabled { background:#242628; border-color:#242628; "
+            "color:rgba(242,244,239,0.35); }")
+
+        def _style_seedance_action_button(btn: QPushButton) -> None:
+            btn.setFixedSize(176, 40)
+            btn.setStyleSheet(seedance_action_qss)
+
         regen_btn = QPushButton(tr('seedance_popup_regen'))
         regen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        regen_btn.setStyleSheet(
-            "QPushButton { background:#2a1d44; color:#c9aaff; border:1px solid "
-            "#4a2f7a; border-radius:6px; padding:8px 14px; font-size:13px; "
-            "font-weight:600; }"
-            "QPushButton:hover { background:#372659; }"
-            "QPushButton:disabled { background:#1a1428; color:#666; "
-            "border-color:#2a2240; }")
+        _style_seedance_action_button(regen_btn)
         copy_btn = QPushButton(tr('seedance_popup_copy'))
         copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _style_seedance_action_button(copy_btn)
         # 2026-05-19: «💾 Сохранить» — пишет текст активной вкладки в
         # shows/<show>/.cache/_block_view/<ep_id>_block<N>/<show>_<ep_id>_block_<N>.txt
         # (ту же папку открывает кнопка «🗂 Рефы блока» на странице эпизода).
         # Стиль наследует от copy_btn — единая action-кнопка.
         save_btn = QPushButton(tr('seedance_popup_save'))
         save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _style_seedance_action_button(save_btn)
         close_btn = QPushButton(tr('seedance_popup_close'))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _style_seedance_action_button(close_btn)
 
         # ── Compress row: target/limit/compress ──
         try:
@@ -17303,8 +17441,8 @@ class MainWindow(QMainWindow):
         target_spin.setSingleStep(100)
         target_spin.setValue(cur_target)
         target_spin.setStyleSheet(
-            "QSpinBox { background:#181024; color:#ddd; border:1px solid "
-            "#3a2c52; border-radius:4px; padding:3px 6px; font-size:12px; "
+            "QSpinBox { background:#191b1d; color:#ddd; border:1px solid "
+            "#1d1e20; border-radius:4px; padding:3px 6px; font-size:12px; "
             "min-width: 80px; }")
         block_wheel_event(target_spin)
         compress_row.addWidget(target_spin)
@@ -17322,14 +17460,14 @@ class MainWindow(QMainWindow):
 
         compress_btn = QPushButton(tr('compress_btn'))
         compress_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        compress_btn.setStyleSheet(regen_btn.styleSheet())
+        _style_seedance_action_button(compress_btn)
         compress_row.addWidget(compress_btn)
         compress_row.addStretch()
 
         # ── Helper closures ──
         TAB_TEXTAREA_QSS = (
-            "QPlainTextEdit { background:#15101e; border:none; "
-            "color:#ddd; padding:10px; font-size:12px; "
+            "QPlainTextEdit { background:#191b1d; border:none; "
+            "color:#ddddde; padding:10px; font-size:12px; "
             "font-family: 'Menlo','Consolas',monospace; }")
 
         def _build_textarea(text_val: str) -> QPlainTextEdit:
@@ -17350,7 +17488,8 @@ class MainWindow(QMainWindow):
             lim = int(limit_spin.value())
             try:
                 bar = tabs_widget.tabBar()
-                color = _QColor("#7cc97c") if text_len <= lim else _QColor("#ff8a8a")
+                color = (theme_qcolor("#7cc97c") if text_len <= lim
+                         else theme_qcolor("#ff8a8a"))
                 bar.setTabTextColor(pos_idx, color)
             except Exception:
                 pass
@@ -17535,17 +17674,6 @@ class MainWindow(QMainWindow):
             _anim["base"] = base_text
             _anim["tick"] = 0
             btn.setText(f"{base_text}.")  # сразу 1 точка, без задержки
-            # БАГ 6 — кнопка дёргалась при смене точек (1→2→3). Резервируем
-            # минимальную ширину под самый длинный вариант «base...» через
-            # fontMetrics. setMinimumWidth не препятствует росту при смене
-            # i18n-языка на более длинный текст. +30 px — запас под padding
-            # `8px 14px` (28) + border (2).
-            try:
-                fm = btn.fontMetrics()
-                reserved = fm.horizontalAdvance(base_text + "...") + 30
-                btn.setMinimumWidth(max(btn.width(), reserved))
-            except Exception:
-                pass
             t = QTimer(dlg)
             t.setInterval(400)
             t.timeout.connect(_tick_anim)
@@ -17561,11 +17689,8 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             if btn is not None:
-                # БАГ 6 — возвращаем layout-естественную ширину кнопки.
-                # Кнопки regen_btn/compress_btn явно не задают min/fixed width
-                # в QSS, так что setMinimumWidth(0) корректно восстанавливает.
                 try:
-                    btn.setMinimumWidth(0)
+                    btn.setFixedSize(176, 40)
                 except Exception:
                     pass
             _anim["timer"] = None
@@ -18485,30 +18610,30 @@ class MainWindow(QMainWindow):
     _KEY_COL_YELLOW = "#e0b341"   # лимит (temp, 429)
     _KEY_COL_RED    = "#ff2b2b"   # выбит насовсем (perm, 401/403/license)
 
-    # 2026-06-10 (UX очередь #1): стили кнопки «Проверить сервер» — вторичный
-    # синий акцент (#6fb6ff, цвет «Ты:» из чата). IDLE — обычное состояние,
-    # RUNNING — выделение во время теста (фон+яркий текст, держится и в disabled).
+    # 2026-06-26 / Codex: кнопки проверки сервера подключены к theme tokens.
+    # Раньше тут жил отдельный синий акцент, который ломал импортированные
+    # палитры вроде Higgsfield.
     _SERVER_CHECK_QSS_IDLE = (
-        "QPushButton { border:1px solid #6fb6ff; color:#6fb6ff; }"
-        "QPushButton:hover { background: rgba(111,182,255,0.10); }"
-        "QPushButton:disabled { color: rgba(111,182,255,0.45);"
-        " border-color: rgba(111,182,255,0.35); }")
+        "QPushButton { border:1px solid #d4a256; color:#d4a256; }"
+        "QPushButton:hover { background: rgba(212,162,86,0.10); }"
+        "QPushButton:disabled { color: rgba(255,255,255,0.40);"
+        " border-color: rgba(255,255,255,0.08); }")
     _SERVER_CHECK_QSS_RUNNING = (
-        "QPushButton { border:1px solid #6fb6ff; color:#cfe6ff;"
-        " background: rgba(111,182,255,0.16);"
+        "QPushButton { border:1px solid #d4a256; color:#fcfcfc;"
+        " background: rgba(212,162,86,0.18);"
         " text-align:left; padding-left:12px; }"
-        "QPushButton:disabled { color:#cfe6ff;"
-        " background: rgba(111,182,255,0.16); border-color:#6fb6ff;"
+        "QPushButton:disabled { color:#fcfcfc;"
+        " background: rgba(212,162,86,0.18); border-color:#d4a256;"
         " text-align:left; padding-left:12px; }")
 
-    # 2026-06-10 (UX очередь #1): кнопка «Написать в техподдержку» — фиолетовый
-    # акцент (палитра regen_btn: текст #c9aaff, рамка #4a2f7a, hover #372659).
-    # Отличается от синего «Проверить сервер», структура как у *_QSS_IDLE.
+    # 2026-06-26 / Codex: «Написать в техподдержку» — обычная secondary-кнопка,
+    # без собственного фиолетового острова поверх пользовательской темы.
     _SERVER_SUPPORT_QSS = (
-        "QPushButton { border:1px solid #4a2f7a; color:#c9aaff; }"
-        "QPushButton:hover { background:#372659; border-color:#5a3f8a; }"
-        "QPushButton:disabled { color: rgba(201,170,255,0.4);"
-        " border-color: rgba(74,47,122,0.5); }")
+        "QPushButton { border:1px solid rgba(255,255,255,0.12); color:#fbfbfb; }"
+        "QPushButton:hover { background:rgba(255,255,255,0.10);"
+        " border-color:rgba(255,255,255,0.20); }"
+        "QPushButton:disabled { color: rgba(255,255,255,0.40);"
+        " border-color: rgba(255,255,255,0.08); }")
 
     def _refresh_key_status_indicators(self):
         """Перекрашивает индикаторы и пишет статус-лейблы 5 полей ключей по
@@ -18993,6 +19118,329 @@ class MainWindow(QMainWindow):
             subprocess.run(["explorer", str(target)])
         else:
             subprocess.run(["open", str(target)])
+
+    def _copy_theme_template(self):
+        """Копирует professionalPalette-шаблон темы в буфер обмена."""
+        try:
+            QApplication.clipboard().setText(build_llm_theme_prompt())
+            QMessageBox.information(
+                self,
+                "Шаблон темы скопирован",
+                "Профессиональный шаблон палитры скопирован в буфер обмена.\n\n"
+                "Теперь вставь его в ChatGPT/Claude и добавь скриншот или "
+                "ссылку на сайт, стиль которого хочешь повторить."
+            )
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Не удалось скопировать шаблон",
+                str(e)
+            )
+
+    def _parse_theme_payload_text(self, text: str) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Достаёт JSON-тему из вставленного текста."""
+        text = (text or "").strip()
+        if not text:
+            return None, "Вставь JSON темы в поле импорта."
+        try:
+            payload = json.loads(text)
+        except Exception:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start < 0 or end <= start:
+                return None, "Не нашёл JSON-объект в тексте."
+            try:
+                payload = json.loads(text[start:end + 1])
+            except Exception as e:
+                return None, f"JSON не читается: {e}"
+        if not isinstance(payload, dict):
+            return None, "Тема должна быть JSON-объектом."
+        return payload, ""
+
+    def _open_theme_manager(self):
+        """Окно импорта/экспорта и выбора цветовых тем интерфейса."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Интерфейс")
+        dlg.resize(760, 640)
+        dlg.setStyleSheet(theme_qss("""
+            QDialog { background:#121313; color:#ffffff; }
+            QLabel { color:#ffffff; }
+            QLabel#theme-manager-note { color:rgba(255,255,255,0.58); font-size:12px; }
+            QFrame#theme-manager-panel {
+                background:#15151d;
+                border:1px solid rgba(255,255,255,0.10);
+                border-radius:8px;
+            }
+            QComboBox, QPlainTextEdit {
+                background:#191b1d;
+                color:#ffffff;
+                border:1px solid #1d1e20;
+                border-radius:7px;
+                padding:8px 10px;
+                selection-background-color:#e4344a;
+                selection-color:#fefefe;
+            }
+            QComboBox QAbstractItemView {
+                background:#191b1d;
+                color:#ffffff;
+                border:1px solid #1d1e20;
+                selection-background-color:#e4344a;
+                selection-color:#fefefe;
+                outline:0;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                color:#fefefe;
+            }
+            QPlainTextEdit { font-family:Menlo, Consolas, monospace; font-size:11px; }
+            QPushButton {
+                background:#20182c;
+                color:#fbfbfb;
+                border:1px solid rgba(255,255,255,0.18);
+                border-radius:7px;
+                padding:9px 12px;
+                font-weight:700;
+            }
+            QPushButton:hover { border-color:rgba(255,255,255,0.32); }
+            QPushButton#theme-primary {
+                background:#e4344a;
+                color:#fefefe;
+                border-color:#e4344a;
+            }
+            QPushButton#theme-danger {
+                background:rgba(228,52,74,0.16);
+                color:#fafafa;
+                border-color:rgba(228,52,74,0.52);
+            }
+        """))
+
+        root = QVBoxLayout(dlg)
+        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        title = QLabel("Темы интерфейса")
+        title.setStyleSheet("font-size:18px; font-weight:800;")
+        root.addWidget(title)
+
+        note = QLabel(
+            "Скопируй шаблон, вставь его в ChatGPT/Claude вместе со скриншотом "
+            "или ссылкой на понравившийся интерфейс. Studio принимает короткую "
+            "professionalPalette или старую полную JSON-тему, сама собирает "
+            "безопасные цвета для кнопок, полей, попапов и карточек."
+        )
+        note.setObjectName("theme-manager-note")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        saved_panel = QFrame()
+        saved_panel.setObjectName("theme-manager-panel")
+        saved_lay = QVBoxLayout(saved_panel)
+        saved_lay.setSpacing(10)
+        saved_lay.setContentsMargins(12, 12, 12, 12)
+
+        saved_title = QLabel("Сохранённые темы")
+        saved_title.setStyleSheet("font-size:13px; font-weight:800;")
+        saved_lay.addWidget(saved_title)
+
+        theme_combo = QComboBox()
+        saved_lay.addWidget(theme_combo)
+
+        saved_btn_row = QHBoxLayout()
+        saved_btn_row.setSpacing(8)
+        apply_btn = QPushButton("Сделать активной")
+        apply_btn.setObjectName("theme-primary")
+        copy_selected_btn = QPushButton("Скопировать тему")
+        delete_btn = QPushButton("Удалить тему")
+        delete_btn.setObjectName("theme-danger")
+        saved_btn_row.addWidget(apply_btn)
+        saved_btn_row.addWidget(copy_selected_btn)
+        saved_btn_row.addWidget(delete_btn)
+        saved_lay.addLayout(saved_btn_row)
+        root.addWidget(saved_panel)
+
+        import_panel = QFrame()
+        import_panel.setObjectName("theme-manager-panel")
+        import_lay = QVBoxLayout(import_panel)
+        import_lay.setSpacing(10)
+        import_lay.setContentsMargins(12, 12, 12, 12)
+
+        import_title = QLabel("Импорт новой темы")
+        import_title.setStyleSheet("font-size:13px; font-weight:800;")
+        import_lay.addWidget(import_title)
+
+        import_text = QPlainTextEdit()
+        import_text.setPlaceholderText(
+            "Вставь сюда professionalPalette или полную JSON-тему, которую вернул ChatGPT/Claude..."
+        )
+        import_text.setMinimumHeight(220)
+        import_lay.addWidget(import_text, stretch=1)
+
+        import_btn_row = QHBoxLayout()
+        import_btn_row.setSpacing(8)
+        copy_template_btn = QPushButton("Скопировать шаблон для чата")
+        save_theme_btn = QPushButton("Сохранить вставленную тему")
+        save_theme_btn.setObjectName("theme-primary")
+        import_btn_row.addWidget(copy_template_btn)
+        import_btn_row.addWidget(save_theme_btn)
+        import_lay.addLayout(import_btn_row)
+        root.addWidget(import_panel, stretch=1)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(dlg.accept)
+        close_row.addWidget(close_btn)
+        root.addLayout(close_row)
+
+        settings = QSettings(APP_ORG, APP_NAME)
+
+        def refresh_combo():
+            store = load_theme_store(settings)
+            active_name = store.get("active") or ""
+            theme_combo.blockSignals(True)
+            theme_combo.clear()
+            theme_combo.addItem("Оригинальная LUMZ", "")
+            for item in store.get("themes", []):
+                theme_combo.addItem(str(item.get("name", "Theme")), item.get("name", ""))
+            index = 0
+            if active_name:
+                for i in range(theme_combo.count()):
+                    if theme_combo.itemData(i) == active_name:
+                        index = i
+                        break
+            theme_combo.setCurrentIndex(index)
+            theme_combo.blockSignals(False)
+
+        def selected_theme_item() -> Optional[Dict[str, Any]]:
+            name = theme_combo.currentData()
+            if not name:
+                return None
+            store = load_theme_store(settings)
+            for item in store.get("themes", []):
+                if item.get("name") == name:
+                    return item
+            return None
+
+        def copy_template():
+            QApplication.clipboard().setText(build_llm_theme_prompt())
+            QMessageBox.information(
+                dlg,
+                "Шаблон скопирован",
+                "Шаблон professionalPalette скопирован. Вставь его в ChatGPT/Claude "
+                "и добавь скриншот или ссылку на интерфейс, стиль которого хочешь взять."
+            )
+
+        def save_imported_theme():
+            payload, err = self._parse_theme_payload_text(import_text.toPlainText())
+            if err:
+                QMessageBox.warning(dlg, "Тема не сохранена", err)
+                return
+            assert payload is not None
+            ok, validation_err = validate_theme_payload(payload)
+            if not ok:
+                QMessageBox.warning(dlg, "Тема не сохранена", validation_err)
+                return
+
+            normalized = normalize_theme_payload(payload)
+            name = str(normalized.get("themeName") or "Custom Theme").strip()
+            store = load_theme_store(settings)
+            themes = [
+                item for item in store.get("themes", [])
+                if item.get("name") != name
+            ]
+            themes.append({"name": name, "payload": normalized})
+            store["themes"] = themes
+            store["active"] = name
+            save_theme_store(store, settings)
+            set_theme_overrides_from_payload(normalized)
+            refresh_combo()
+            import_text.clear()
+            QMessageBox.information(
+                dlg,
+                "Тема сохранена",
+                f"Тема «{name}» сохранена и выбрана активной.\n\n"
+                "Перезапусти Storyboard Studio, чтобы вся палитра применилась полностью."
+            )
+
+        def apply_selected_theme():
+            name = theme_combo.currentData()
+            store = load_theme_store(settings)
+            if not name:
+                store["active"] = ""
+                save_theme_store(store, settings)
+                QMessageBox.information(
+                    dlg,
+                    "Оригинальная тема выбрана",
+                    "Оригинальная тема выбрана активной.\n\n"
+                    "Перезапусти Storyboard Studio, чтобы вся палитра применилась полностью."
+                )
+                return
+            item = selected_theme_item()
+            if not item:
+                QMessageBox.warning(dlg, "Тема не найдена", "Не удалось найти выбранную тему.")
+                return
+            store["active"] = name
+            save_theme_store(store, settings)
+            set_theme_overrides_from_payload(item["payload"])
+            QMessageBox.information(
+                dlg,
+                "Тема выбрана",
+                f"Тема «{name}» выбрана активной.\n\n"
+                "Перезапусти Storyboard Studio, чтобы вся палитра применилась полностью."
+            )
+
+        def copy_selected_theme():
+            item = selected_theme_item()
+            if not item:
+                QMessageBox.information(
+                    dlg,
+                    "Нет темы для копирования",
+                    "Оригинальная тема встроена в приложение. Скопировать можно сохранённую тему."
+                )
+                return
+            QApplication.clipboard().setText(
+                json.dumps(item["payload"], ensure_ascii=False, indent=2)
+            )
+            QMessageBox.information(
+                dlg,
+                "Тема скопирована",
+                f"Тема «{item.get('name')}» скопирована как JSON. Её можно отправить коллеге."
+            )
+
+        def delete_selected_theme():
+            name = theme_combo.currentData()
+            if not name:
+                QMessageBox.information(
+                    dlg,
+                    "Нельзя удалить",
+                    "Оригинальная тема не удаляется."
+                )
+                return
+            if QMessageBox.question(
+                dlg,
+                "Удалить тему?",
+                f"Удалить тему «{name}» из сохранённых?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            store = load_theme_store(settings)
+            store["themes"] = [
+                item for item in store.get("themes", [])
+                if item.get("name") != name
+            ]
+            if store.get("active") == name:
+                store["active"] = ""
+            save_theme_store(store, settings)
+            refresh_combo()
+
+        copy_template_btn.clicked.connect(copy_template)
+        save_theme_btn.clicked.connect(save_imported_theme)
+        apply_btn.clicked.connect(apply_selected_theme)
+        copy_selected_btn.clicked.connect(copy_selected_theme)
+        delete_btn.clicked.connect(delete_selected_theme)
+
+        refresh_combo()
+        dlg.exec()
 
     def _open_studio_log(self):
         """Открывает runtime.log в системной программе по умолчанию.
@@ -19614,9 +20062,40 @@ def studio_logs_dir() -> Path:
     return d
 
 
+_STUDIO_LOG_PATH: Optional[Path] = None
+
+
 def studio_log_path() -> Path:
     """Путь к текущему runtime-логу."""
-    return studio_logs_dir() / "runtime.log"
+    return _STUDIO_LOG_PATH or (studio_logs_dir() / "runtime.log")
+
+
+def _studio_log_path_candidates() -> list[Path]:
+    """Кандидаты для runtime.log, от системной папки до безопасного fallback."""
+    candidates = [studio_logs_dir() / "runtime.log"]
+    try:
+        candidates.append(Path.cwd() / "runtime.log")
+    except Exception:
+        pass
+    try:
+        candidates.append(Path(__file__).resolve().parent / "runtime.log")
+    except Exception:
+        pass
+    try:
+        import tempfile as _tempfile
+        candidates.append(
+            Path(_tempfile.gettempdir()) / "storyboard-studio-runtime.log")
+    except Exception:
+        pass
+
+    unique: list[Path] = []
+    seen = set()
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            unique.append(path)
+            seen.add(key)
+    return unique
 
 
 class _StudioTeeStream:
@@ -19699,10 +20178,12 @@ def _init_studio_file_logging() -> Optional[Path]:
     Файл-rotation простой: если размер > 5MB — создаём новый, старый
     переименовываем в runtime.log.1 (вытесняет предыдущий .1).
     """
-    try:
-        log_path = studio_log_path()
+    global _STUDIO_LOG_PATH
+    errors = []
+    for log_path in _studio_log_path_candidates():
         # Простая ротация чтобы лог не разрастался бесконечно
         try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
             if log_path.exists() and log_path.stat().st_size > 5 * 1024 * 1024:
                 old = log_path.with_suffix('.log.1')
                 if old.exists():
@@ -19710,26 +20191,31 @@ def _init_studio_file_logging() -> Optional[Path]:
                 log_path.rename(old)
         except Exception:
             pass
-        log_file = open(log_path, 'a', encoding='utf-8', buffering=1)
-        from datetime import datetime as _dt
-        # Маркер запуска — без timestamps (отдельная разделительная строка).
-        log_file.write(
-            f"\n=== Storyboard Studio session started at "
-            f"{_dt.now().isoformat()} ===\n")
-        log_file.flush()
-        # Для файла tag=True (добавлять timestamps), для console tag=False.
-        sys.stdout = _StudioTeeStream(sys.__stdout__, (log_file, True))
-        sys.stderr = _StudioTeeStream(sys.__stderr__, (log_file, True))
-        return log_path
-    except Exception:
-        # Если файл нельзя открыть (права, диск полный) — просто работаем
-        # без файлового лога, не падаем.
         try:
-            import traceback as _tb
-            _tb.print_exc()
-        except Exception:
-            pass
-        return None
+            log_file = open(log_path, 'a', encoding='utf-8', buffering=1)
+            _STUDIO_LOG_PATH = log_path
+            from datetime import datetime as _dt
+            # Маркер запуска — без timestamps (отдельная разделительная строка).
+            log_file.write(
+                f"\n=== Storyboard Studio session started at "
+                f"{_dt.now().isoformat()} ===\n")
+            log_file.flush()
+            # Для файла tag=True (добавлять timestamps), для console tag=False.
+            sys.stdout = _StudioTeeStream(sys.__stdout__, (log_file, True))
+            sys.stderr = _StudioTeeStream(sys.__stderr__, (log_file, True))
+            return log_path
+        except Exception as e:
+            errors.append((log_path, e))
+            continue
+
+    # Если файл нельзя открыть нигде (права, диск полный) — просто работаем
+    # без файлового лога, не падаем.
+    try:
+        print("[logging] runtime.log disabled; all candidates failed:",
+              errors, file=sys.__stderr__)
+    except Exception:
+        pass
+    return None
 
 
 def _install_qt_message_handler():
@@ -19800,6 +20286,8 @@ def main():
     # _init_studio_file_logging выше попадёт в runtime.log.
     apply_proxy_from_settings()
     app = QApplication(sys.argv)
+    load_active_theme_overrides(QSettings(APP_ORG, APP_NAME))
+    install_theme_runtime()
     app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("Storyboard Studio")
     app.setOrganizationName(APP_ORG)
@@ -19813,7 +20301,7 @@ def main():
         _font_stack = '"Segoe UI", Arial'
     else:
         _font_stack = '"DejaVu Sans", Arial'
-    app.setStyleSheet(DARK.replace("__FONT_FAMILY__", _font_stack))
+    app.setStyleSheet(theme_qss(DARK.replace("__FONT_FAMILY__", _font_stack)))
 
     # Глобально блокируем все tooltips (они портят интерфейс)
     _tooltip_blocker = _ToolTipBlocker(app)

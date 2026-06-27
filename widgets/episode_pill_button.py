@@ -29,7 +29,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QPainter
 from PyQt6.QtWidgets import QPushButton
 
-from views.theme import LUMZ_THEME
+from views.theme import LUMZ_THEME, theme_qcolor
 
 
 class EpisodePillButton(QPushButton):
@@ -100,7 +100,7 @@ class EpisodePillButton(QPushButton):
 
         # Цвет + blink-таймер per state.
         if state == "failed":
-            self._indicator_color = QColor(
+            self._indicator_color = theme_qcolor(
                 LUMZ_THEME.get("accent_red", "#e4344a"))
             # При переходе → ON: запускаем blink с visible=True (точка
             # сразу видна, не ждём первого тика). Если уже было failed —
@@ -109,7 +109,7 @@ class EpisodePillButton(QPushButton):
                 self._blink_visible = True
                 self._blink_timer.start(self.BLINK_INTERVAL_MS)
         elif state == "completed_unseen":
-            self._indicator_color = QColor(
+            self._indicator_color = theme_qcolor(
                 LUMZ_THEME.get("accent_green", "#10B981"))
             # Статичная точка — таймер остановлен, всегда видна.
             self._blink_timer.stop()

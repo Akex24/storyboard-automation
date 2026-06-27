@@ -23,19 +23,26 @@ from widgets.actor_dialogs import (
     CreateActorRefDialog,
     RefResultDialog,
 )
+# 2026-06-27: импорты, которые ИСПОЛЬЗУЕТ views/episode_chat.py на уровне
+# модуля (GenButton, CharacterOutfitPicker, MontageCTA, MontageSummaryDialog),
+# ПОДНЯТЫ выше editor_widgets/shot_viewer_dialog. Эти последние тянут
+# views.theme → views/__init__ → views.episode_chat → `from widgets import …`.
+# Если на этот момент нужные имена уже в namespace `widgets` — цикл
+# разрывается естественно, без правки episode_chat / без ленивых импортов.
+from widgets.gen_button import GenButton
+from widgets.character_outfit_picker import CharacterOutfitPicker
+from widgets.montage_cta import MontageCTA
+from widgets.montage_summary_dialog import MontageSummaryDialog
+
 from widgets.editor_widgets import (
     OverlayActionBtn,
     ShotCard,
     RoundedTopImage,
     RefCard,
 )
-from widgets.gen_button import GenButton
 from widgets.ref_picker_dialog import RefPickerDialog
-from widgets.character_outfit_picker import CharacterOutfitPicker
 from widgets.prompt_retry_dialog import PromptRetryDialog
 from widgets.auth_banner import AuthBanner
-from widgets.montage_cta import MontageCTA
-from widgets.montage_summary_dialog import MontageSummaryDialog
 from widgets.active_gens_panel import ActiveGensPanel
 from widgets.shot_viewer_dialog import ShotViewerDialog
 from widgets.provider_toggle import ProviderToggle

@@ -42,13 +42,13 @@ class MontageSummaryDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr('montage_summary_title'))
         self.setMinimumSize(700, 500)
-        # 2026-05-08: LUMZ-стиль. Цвета из views/theme.py:LUMZ_THEME.
+        # Higgsfield-like palette: window bg, input bg, minimal borders.
         self.setStyleSheet("""
-            QDialog { background: #0e0a18; }
-            QLabel { color: #ffffff; }
-            QTextEdit { background: rgba(255,255,255,0.04);
-                        color: #ffffff;
-                        border: 1px solid rgba(255,255,255,0.06);
+            QDialog { background: #121313; }
+            QLabel { color: #d4d7d0; }
+            QTextEdit { background: #191b1d;
+                        color: #d4d7d0;
+                        border: 1px solid #1d1e20;
                         border-radius: 8px;
                         padding: 8px; }
             QPushButton { padding: 6px 14px; border-radius: 6px; }
@@ -115,18 +115,18 @@ class MontageSummaryDialog(QDialog):
         # 2026-05-08: LUMZ-стиль таблицы.
         table.setStyleSheet("""
             QTableWidget {
-                background: rgba(255,255,255,0.04);
-                color: #ffffff;
-                border: 1px solid rgba(255,255,255,0.06);
+                background: #191b1d;
+                color: #d4d7d0;
+                border: 1px solid #1d1e20;
                 border-radius: 8px;
-                gridline-color: rgba(255,255,255,0.06);
+                gridline-color: #1d1e20;
             }
             QHeaderView::section {
-                background: rgba(255,255,255,0.06);
-                color: rgba(255,255,255,0.70);
+                background: #242628;
+                color: #d4d7d0;
                 padding: 8px;
                 border: 0;
-                border-right: 1px solid rgba(255,255,255,0.06);
+                border-right: 1px solid #1d1e20;
                 font-weight: 500;
             }
             QTableWidget::item {
@@ -204,7 +204,7 @@ class MontageSummaryDialog(QDialog):
         self.confirm_btn = QPushButton(tr('montage_summary_btn_storyboards'))
         # 2026-05-08: LUMZ red primary CTA. Раньше был фиолетовый #4a5fcc.
         self.confirm_btn.setStyleSheet(
-            "QPushButton { background: #e4344a; color: #ffffff;"
+            "QPushButton { background: #e4344a; color: #fefefe;"
             " font-weight: 500; border: none;"
             " padding: 8px 18px; font-size: 13px;"
             " border-radius: 6px; }"

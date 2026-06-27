@@ -119,7 +119,7 @@ class RefDoneNoticeDialog(QDialog):
         title_text = tr(title_key)
         self.setWindowTitle(title_text)
         self.setFixedSize(580, 320)
-        self.setStyleSheet("QDialog { background: #1a1424; }")
+        self.setStyleSheet("QDialog { background: #121313; }")
 
         phrase = tr('ref_chat_phrase_location', name=ref_name)
 
@@ -139,7 +139,7 @@ class RefDoneNoticeDialog(QDialog):
         # Поле с фразой для копирования
         phrase_lbl = QLabel(phrase)
         phrase_lbl.setStyleSheet(
-            "background: #15101e; border: 1px solid #322545; border-radius: 6px;"
+            "background: #191b1d; border: 1px solid #1d1e20; border-radius: 6px;"
             "padding: 12px 14px; color: #c8a8ff; font-size: 14px; font-weight: 600;"
             "font-family: 'Menlo', 'Consolas', monospace;")
         phrase_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -188,7 +188,7 @@ class GeometryDoneNoticeDialog(QDialog):
         title_text = tr(title_key)
         self.setWindowTitle(title_text)
         self.setFixedSize(520, 200)
-        self.setStyleSheet("QDialog { background: #1a1424; }")
+        self.setStyleSheet("QDialog { background: #121313; }")
 
         v = QVBoxLayout(self)
         v.setContentsMargins(28, 24, 28, 20)
@@ -229,7 +229,7 @@ class CloseConfirmDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr('close_confirm_title'))
         self.setFixedSize(560, 320)
-        self.setStyleSheet("QDialog { background: #1a1424; }")
+        self.setStyleSheet("QDialog { background: #121313; }")
 
         v = QVBoxLayout(self)
         v.setContentsMargins(28, 24, 28, 20)

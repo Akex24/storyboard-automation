@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QRectF, QTimer, QPoint, QRect, QPointF
-from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon, QPolygonF, QCursor
+from PyQt6.QtGui import QPixmap, QTransform, QColor, QPainter, QPen, QPolygon, QPolygonF, QCursor, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QFrame, QSizePolicy, QApplication,
@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
-from views.theme import lumz_button_qss
+from views.theme import lumz_button_qss, theme_qcolor
 
 
 # 2026-05-07 (фикс UI): уменьшено чтобы попап влезал на 14" MacBook
@@ -58,9 +58,9 @@ THUMB_H_LAND = 70  # 125 × 9/16 ≈ 70 → 16:9
 # 2026-06-13 (дерево версий, Слой 2.2): фон/рамка карточки версии по depth.
 # Заметный шаг между уровнями. depth>=2 → последний элемент (повтор, не падаем).
 _VERSION_DEPTH_COLORS = [
-    ("#2b2142", "#4a3a6e"),  # depth 0 (корень)  — фиолетовый
-    ("#5a2440", "#b3445f"),  # depth 1           — приглушённая малина (семья #e4344a)
-    ("#3a3520", "#8a7a3e"),  # depth 2+          — тёмный янтарь (чтоб золотая рамка активной не сливалась)
+    ("#191b1d", "rgba(255,255,255,0.10)"),  # depth 0 — фон как shot-card
+    ("#191b1d", "rgba(255,255,255,0.10)"),  # depth 1 — без фиолетовой заливки
+    ("#191b1d", "rgba(255,255,255,0.10)"),  # depth 2+ — без фиолетовой заливки
 ]
 
 # Шаг горизонтальной прокрутки ленты версий колесом для классической мыши
@@ -73,7 +73,7 @@ _STRIP_WHEEL_STEP_PX = 80
 # толщина ОДИНАКОВА на Retina (Mac) и обычных экранах (Windows). НЕ умножать на
 # dpr вручную. «Средняя» фиксированная толщина (регулировки пока нет).
 _MARKER_WIDTH = 3
-_MARKER_COLOR = QColor(230, 30, 30)   # фиксированный красный
+_MARKER_COLOR = theme_qcolor("#e61e1e")   # фиксированный красный
 
 # Курсор-кисть режима маркера: диаметр круга и толщина контура в ЛОГИЧЕСКИХ px
 # (device-independent, как _MARKER_WIDTH — Qt масштабирует по dpr → одинаковый
@@ -126,7 +126,7 @@ class VersionThumb(QFrame):
         self.img_lbl.setFixedSize(self._thumb_w, self._thumb_h)
         self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_lbl.setStyleSheet(
-            "background:#1a1424; border-radius:4px;")
+            "background:#131516; border-radius:4px;")
         # Загружаем картинку.
         try:
             pix = QPixmap(str(self.image_path))
@@ -171,7 +171,7 @@ class VersionThumb(QFrame):
                 "color:#7fbf7f; font-size:11px; font-weight:600;")
         else:
             self.label.setStyleSheet(
-                "color:#bba4d6; font-size:11px;")
+                "color:#b8b8b8; font-size:11px;")
         lay.addWidget(self.label)
 
     def set_selected(self, selected: bool):
@@ -195,7 +195,7 @@ class VersionThumb(QFrame):
         if self._is_active:
             border = "3px solid #ffc83a"          # яркое золото — сильнейший сигнал
         elif self._is_selected:
-            border = "2px solid #6e4cc4"
+            border = "2px solid rgba(255,255,255,0.18)"
         else:
             border = f"1px solid {base_border}"
         self.setStyleSheet(
@@ -210,7 +210,7 @@ class VersionThumb(QFrame):
                 _eff = QGraphicsDropShadowEffect(self)
                 _eff.setBlurRadius(18)
                 _eff.setOffset(0, 0)
-                _eff.setColor(QColor(255, 200, 58, 200))  # #ffc83a + alpha
+                _eff.setColor(theme_qcolor("rgba(255,200,58,0.78)"))
                 self.setGraphicsEffect(_eff)
             except Exception:
                 self.setGraphicsEffect(None)
@@ -442,13 +442,26 @@ class ShotViewerDialog(QDialog):
         # Раскладка 4 кнопок: edit=subtle, regen=primary (главное действие),
         # use=secondary (outline), close=subtle.
         self.setStyleSheet(
-            "QDialog { background:#0a0a0d; }"
+            "QDialog { background:#121313; }"
             "QLabel#header { color:#fff; font-size:14px; font-weight:600; }"
             "QLabel#hint { color:rgba(255,255,255,0.55); font-size:11px; }"
             "QLabel#empty { color:rgba(255,255,255,0.40);"
             " font-style:italic; font-size:12px; }"
-            + lumz_button_qss('subtle', 'btn_edit')
-            + lumz_button_qss('primary', 'btn_regen')
+            "QPushButton#btn_edit, QPushButton#btn_regen {"
+            " background:#242628;"
+            " border:1px solid rgba(255,255,255,0.10);"
+            " border-radius:8px;"
+            " color:#f2f3f0;"
+            " padding:8px 14px;"
+            " font-weight:600;"
+            "}"
+            "QPushButton#btn_edit:hover, QPushButton#btn_regen:hover {"
+            " background:#2c2f31;"
+            " border-color:rgba(255,255,255,0.16);"
+            "}"
+            "QPushButton#btn_edit:pressed, QPushButton#btn_regen:pressed {"
+            " background:#1f2123;"
+            "}"
             + lumz_button_qss('secondary', 'btn_realistic')
         )
         lay = QVBoxLayout(self)
@@ -483,7 +496,7 @@ class ShotViewerDialog(QDialog):
         self.no_img_lbl = QLabel()
         self.no_img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.no_img_lbl.setStyleSheet(
-            "background:#1a1424; border:1px solid #322545; border-radius:8px;"
+            "background:#191b1d; border:1px solid rgba(255,255,255,0.055); border-radius:8px;"
             " color:#666; font-size:13px;")
         self.preview_stack.addWidget(self.no_img_lbl)
         # Контейнер тянется stretch=1 (занимает доступную вертикаль), стек
@@ -562,13 +575,13 @@ class ShotViewerDialog(QDialog):
         if self._description or self._dialog:
             if self._description:
                 action_lbl = QLabel(self._description)
-                action_lbl.setStyleSheet("color:#d8d8d8; font-size:12px;")
+                action_lbl.setStyleSheet("color:#878788; font-size:12px;")
                 action_lbl.setWordWrap(True)
                 lay.addWidget(action_lbl)
             if self._dialog:
                 replica_lbl = QLabel(self._dialog)
                 replica_lbl.setStyleSheet(
-                    "color:#b9a7e6; font-style:italic; font-size:12px;")
+                    "color:#b9a7e5; font-style:italic; font-size:12px;")
                 replica_lbl.setWordWrap(True)
                 lay.addWidget(replica_lbl)
         else:
@@ -591,8 +604,8 @@ class ShotViewerDialog(QDialog):
         self.strip_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.strip_scroll.setStyleSheet(
-            "QScrollArea { border:1px solid #25193a; border-radius:6px;"
-            " background:#0a0612; }")
+            "QScrollArea { border:1px solid rgba(255,255,255,0.055); border-radius:6px;"
+            " background:#191b1d; }")
         strip_container = QWidget()
         self.strip_layout = QHBoxLayout(strip_container)
         self.strip_layout.setContentsMargins(8, 6, 8, 6)
@@ -624,7 +637,7 @@ class ShotViewerDialog(QDialog):
         self.btn_edit = QPushButton(tr('shot_viewer_btn_edit'))
         self.btn_edit.setObjectName("btn_edit")
         self.btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_edit.setMinimumWidth(130)
+        self.btn_edit.setFixedSize(150, 40)
         # 2026-06-01: перед редактированием выделенная версия становится
         # активной (см. _activate_selected_version) — редактируется именно она.
         def _on_edit_clicked():
@@ -644,7 +657,14 @@ class ShotViewerDialog(QDialog):
         self.btn_regen = QPushButton(tr('shot_viewer_btn_regen'))
         self.btn_regen.setObjectName("btn_regen")
         self.btn_regen.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_regen.setMinimumWidth(155)
+        try:
+            from storyboard_app import get_icon as _get_icon
+            self.btn_regen.setText(tr('shot_viewer_btn_regen').replace('↻', '').strip())
+            self.btn_regen.setIcon(_get_icon('corner-up-left'))
+            self.btn_regen.setIconSize(QSize(16, 16))
+        except Exception:
+            self.btn_regen.setIcon(QIcon())
+        self.btn_regen.setFixedSize(210, 40)
         # 2026-05-17: клик «Перегенерировать» закрывает попап (юзер просил —
         # не нужно вручную крестить после клика).
         # 2026-06-01: перед regen выделенная версия становится активной →

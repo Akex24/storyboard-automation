@@ -60,7 +60,7 @@ class PromptRetryDialog(QDialog):
         self.setModal(True)
         self.resize(640, 560)
         self.setStyleSheet(
-            "QDialog { background:#15101e; }"
+            "QDialog { background:#121313; }"
             "QLabel#err-title { color:#ffd0d0; font-size:15px;"
             " font-weight:700; }"
             "QLabel#err-section { color:#cfcfcf; font-size:12px;"

@@ -25,13 +25,17 @@ generator/result_cell.py — ячейка сетки результатов «Г
 from __future__ import annotations
 
 import math
+import re
 import time
+from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QSize
+from PyQt6.QtCore import Qt, QTimer, QRectF, QSize, QEvent, QByteArray
 from PyQt6.QtGui import (QPainter, QPainterPath, QLinearGradient, QColor, QPixmap,
-                         QFont)
+                         QFont, QIcon)
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton, QWidget
+
+from views.theme import theme_qcolor
 
 
 # Модуль-уровневые константы — не пересоздаём в paintEvent (дёшево для CPU).
@@ -40,20 +44,20 @@ from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButto
 # по синусоиде (бесшовна МАТЕМАТИЧЕСКИ) + статичный вертикальный градиент
 # для объёма + лёгкая тёплая статичная точка в верх-левом углу для нюанса.
 # Никаких движущихся элементов → «слепых зон» нет, рывок невозможен.
-_BORDER_COLOR = QColor(42, 31, 61)         # #2a1f3d — мягкая рамка
-_ERR_BASE = QColor(42, 20, 20)             # #2a1414 — тёмно-красная база ошибки
-_ERR_BORDER = QColor(138, 77, 77)
+_BORDER_COLOR = theme_qcolor("#2a1f3d")    # мягкая рамка
+_ERR_BASE = theme_qcolor("#2a1414")        # тёмно-красная база ошибки
+_ERR_BORDER = theme_qcolor("#8a4d4d")
 # «Дыхание» базы: цвет колеблется между _BASE_DARK и _BASE_LIGHT по sin(angle).
 # Амплитуда ~10% яркости — деликатно, премиально.
 _BASE_DARK_R, _BASE_DARK_G, _BASE_DARK_B = 20, 15, 30      # ≈ #14 0F 1E
 _BASE_LIGHT_R, _BASE_LIGHT_G, _BASE_LIGHT_B = 32, 24, 46   # ≈ #20 18 2E
 # Статичные слои объёма — НЕ зависят от фазы, можно держать как константы.
-_DEPTH_TOP = QColor(255, 255, 255, 14)     # лёгкая «подсветка» сверху
-_DEPTH_BOTTOM = QColor(0, 0, 0, 18)        # лёгкая «тень» снизу
-_WARM_ACCENT_INNER = QColor(212, 162, 86, 26)   # янтарь (как кнопка запуска) — низкая α
-_WARM_ACCENT_OUTER = QColor(212, 162, 86, 0)    # затухание к 0
+_DEPTH_TOP = theme_qcolor("rgba(255,255,255,0.055)")  # лёгкая «подсветка»
+_DEPTH_BOTTOM = theme_qcolor("rgba(0,0,0,0.071)")     # лёгкая «тень»
+_WARM_ACCENT_INNER = theme_qcolor("rgba(212,162,86,0.102)")  # янтарь
+_WARM_ACCENT_OUTER = theme_qcolor("rgba(212,162,86,0)")      # затухание
 # Для статичного фолбэка под image-letterbox (отдельный «нейтральный» цвет).
-_BASE_COLOR = QColor(22, 16, 32)           # #161020 — используется в letterbox
+_BASE_COLOR = theme_qcolor("#161020")      # используется в letterbox
 
 # Полоска-прогресс видео: гориз. вставка от краёв (≥ радиус скругления 8px →
 # концы не на углах) и подъём от самого низа (чище визуально, не липнет к кромке).
@@ -73,13 +77,15 @@ _ACTIONS_OVERLAY_QSS = (
     " padding: 0px;"
     "}"
     "QToolButton:hover {"
-    " background: rgba(35,35,40,0.85);"
+    " background: rgba(52,54,58,0.92);"
+    " border: 1px solid rgba(255,255,255,0.38);"
     "}"
     "QToolButton#cell-act-trash {"
     " border: 1px solid rgba(232,75,74,0.35);"
     "}"
     "QToolButton#cell-act-trash:hover {"
-    " background: rgba(20,20,24,0.72);"
+    " background: rgba(52,32,34,0.92);"
+    " border: 1px solid rgba(255,105,105,0.70);"
     "}"
     # 2026-06-25 (апскейл): «2K» — золотой LUMZ accent_gold #d4a256, текстом без иконки.
     "QToolButton#cell-act-2k {"
@@ -89,9 +95,9 @@ _ACTIONS_OVERLAY_QSS = (
     " font-size: 11px; font-weight: 700;"
     "}"
     "QToolButton#cell-act-2k:hover {"
-    " background: rgba(212,162,86,0.32);"
-    " border-color: rgba(212,162,86,0.78);"
-    " color: #fff3c4;"
+    " background: #cfff22;"
+    " border-color: #cfff22;"
+    " color: #111213;"
     "}"
     "QToolButton#cell-act-2k:disabled {"
     " background: rgba(212,162,86,0.06);"
@@ -103,6 +109,34 @@ _ACTIONS_OVERLAY_QSS = (
     " border: 1px solid rgba(255,255,255,0.08);"
     "}"
 )
+
+
+def _tinted_icon(icon_name: str, color: str) -> QIcon:
+    """Load Lucide SVG and recolor its stroke for hover-only states."""
+    if not icon_name:
+        return QIcon()
+    try:
+        import sys
+        candidates = [
+            Path(__file__).parent.parent / "assets" / "icons" / f"{icon_name}.svg",
+        ]
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(Path(sys._MEIPASS) / "assets" / "icons" / f"{icon_name}.svg")
+        svg_path = next((p for p in candidates if p.exists()), None)
+        if svg_path is None:
+            return QIcon()
+        svg = svg_path.read_text(encoding="utf-8")
+        svg = re.sub(r'stroke="#[0-9a-fA-F]{3,8}"', f'stroke="{color}"', svg)
+        from PyQt6.QtSvg import QSvgRenderer
+        pix = QPixmap(24, 24)
+        pix.fill(Qt.GlobalColor.transparent)
+        renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        painter = QPainter(pix)
+        renderer.render(painter)
+        painter.end()
+        return QIcon(pix)
+    except Exception:
+        return QIcon()
 
 
 class ShimmerCell(QFrame):
@@ -206,6 +240,10 @@ class ShimmerCell(QFrame):
             ic = _get_icon(icon_name)
             if ic is not None:
                 b.setIcon(ic)
+                b._normal_icon = ic
+                hover_color = "#ff5a5a" if obj_name == "cell-act-trash" else "#ffffff"
+                b._hover_icon = _tinted_icon(icon_name, hover_color)
+                b.installEventFilter(self)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             return b
 
@@ -559,7 +597,7 @@ class ShimmerCell(QFrame):
                 avail = max(0, self.width() - 2 * _PROG_INSET)
                 p.fillRect(QRectF(_PROG_INSET, self.height() - 3 - _PROG_LIFT,
                                   avail * frac, 3),
-                           QColor(255, 255, 255, 217))   # ≈ rgba(255,255,255,0.85)
+                           theme_qcolor("rgba(255,255,255,0.85)"))
         except Exception:
             pass
 
@@ -640,6 +678,18 @@ class ShimmerCell(QFrame):
         # Стоп видео+звука, сброс кадра/флагов → плитка возвращается к превью+▶
         # (paintEvent). Поздний кадр после этого игнорится (_video_active=False).
         self._stop_video_playback()
+
+    def eventFilter(self, obj, event):
+        if isinstance(obj, QToolButton) and hasattr(obj, "_normal_icon"):
+            if event.type() == QEvent.Type.Enter and obj.isEnabled():
+                hover_icon = getattr(obj, "_hover_icon", None)
+                if hover_icon is not None and not hover_icon.isNull():
+                    obj.setIcon(hover_icon)
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.EnabledChange):
+                normal_icon = getattr(obj, "_normal_icon", None)
+                if normal_icon is not None:
+                    obj.setIcon(normal_icon)
+        return super().eventFilter(obj, event)
 
     # ── btn_back ("вернуть промпт"): оживление ─────────────────────────
     def _refresh_back_enabled(self):
@@ -812,7 +862,7 @@ class ShimmerCell(QFrame):
         r = max(16.0, min(self.width(), self.height()) * 0.16)   # радиус круга
         circle = QPainterPath()
         circle.addEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
-        p.fillPath(circle, QColor(0, 0, 0, 110))
+        p.fillPath(circle, theme_qcolor("rgba(0,0,0,0.43)"))
         # Равнобедренный треугольник «play», вписанный в круг (чуть сдвинут вправо
         # для оптической центровки).
         s = r * 0.9
@@ -821,7 +871,7 @@ class ShimmerCell(QFrame):
         tri.lineTo(cx - s * 0.4, cy + s * 0.55)
         tri.lineTo(cx + s * 0.6, cy)
         tri.closeSubpath()
-        p.fillPath(tri, QColor(255, 255, 255, 230))
+        p.fillPath(tri, theme_qcolor("rgba(255,255,255,0.90)"))
 
     # ── бейдж модели поверх картинки (UI-only, в файл не вшивается) ──────
     def _draw_model_badge(self, p: QPainter):
@@ -841,8 +891,8 @@ class ShimmerCell(QFrame):
         y = self.height() - margin - rect_h
         bg = QPainterPath()
         bg.addRoundedRect(QRectF(x, y, rect_w, rect_h), 4, 4)
-        p.fillPath(bg, QColor(0, 0, 0, 140))   # rgba(0,0,0,≈0.55)
-        p.setPen(QColor(255, 255, 255))
+        p.fillPath(bg, theme_qcolor("rgba(0,0,0,0.55)"))
+        p.setPen(theme_qcolor("#ffffff"))
         p.drawText(int(x + pad_x), int(y + pad_y + fm.ascent()), self._model_label)
 
     # ── отрисовка базы/блика/ошибки ─────────────────────────────────────

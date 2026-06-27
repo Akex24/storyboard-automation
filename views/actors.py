@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
+from views.theme import theme_qcolor
 from threads import (
     GenerateActorRefThread, EditActorRefThread, ApplyTextureThread,
 )
@@ -101,7 +102,7 @@ class ActorCard(QFrame):
         painter = QPainter(out)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setClipPath(path)
-        painter.fillRect(out.rect(), QColor("#2f2110"))
+        painter.fillRect(out.rect(), theme_qcolor("#2f2110"))
         x = int((width - pix.width()) / 2)
         y = int((height - pix.height()) / 2)
         painter.drawPixmap(x, y, pix)
@@ -116,25 +117,38 @@ class ActorCard(QFrame):
         super().__init__(parent)
         self.slug = slug
         self.is_custom = bool(is_custom)
-        self.setObjectName("ref-card")
+        self.setObjectName("monster-card" if self.is_custom else "actor-card")
         self.setFixedWidth(card_width)
         self._card_width = card_width
         if self.is_custom:
             self.setStyleSheet(
-                "QFrame#ref-card {"
+                "QFrame#monster-card {"
                 " background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
-                " stop:0 #4a3416, stop:0.52 #24180b, stop:1 #0d0a08);"
-                " border:1px solid rgba(232,178,72,0.78);"
+                " stop:0 #654a22, stop:0.52 #352512, stop:1 #17110b);"
+                " border:1px solid rgba(0,0,0,0);"
                 " border-radius:12px; }"
-                "QFrame#ref-card:hover {"
-                " border-color:rgba(255,214,120,0.95);"
+                "QFrame#monster-card:hover {"
+                " border-color:rgba(0,0,0,0);"
                 " background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
-                " stop:0 #563d1b, stop:0.52 #2a1c0d, stop:1 #0d0a08); }"
+                " stop:0 #654a22, stop:0.52 #352512, stop:1 #17110b); }"
                 "QWidget#ref-card-info { background: transparent; }"
                 "QLabel#ref-name { color:#fff8eb; font-size:13px;"
                 " font-weight:600; background:transparent; }"
                 "QLabel#ref-tag { color:rgba(242,205,143,0.72);"
                 " font-size:11px; background:transparent; }")
+        else:
+            self.setStyleSheet(
+                "QFrame#actor-card {"
+                " background:#191b1d;"
+                " border:1px solid #191b1d;"
+                " border-radius:8px; }"
+                "QFrame#actor-card:hover {"
+                " border-color:#191b1d; }"
+                "QWidget#ref-card-info { background:#191b1d; }"
+                "QLabel#ref-name { color:#fff; font-size:13px;"
+                " font-weight:600; background:transparent; }"
+                "QLabel#ref-tag { color:#888; font-size:11px;"
+                " background:transparent; }")
         # Курсор-палец на всей карточке — намёк что кликабельно.
         # На кнопке Переименовать он переопределится автоматически Qt.
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -146,7 +160,7 @@ class ActorCard(QFrame):
         # Контейнер для превью с overlay (плашка прогресса поверх).
         self.img_container = QWidget()
         self.img_container.setFixedSize(card_width, card_width)
-        img_bg = "#2f2110" if self.is_custom else "#1a1424"
+        img_bg = "#2f2110" if self.is_custom else "#131516"
         self.img_container.setStyleSheet(
             f"background:{img_bg}; border-top-left-radius:11px;"
             " border-top-right-radius:11px;")
@@ -190,7 +204,7 @@ class ActorCard(QFrame):
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.progress_label.setWordWrap(True)
         self.progress_label.setStyleSheet(
-            "color:#fff; font-size:13px; font-weight:600;"
+            "color:#fbfbfb; font-size:13px; font-weight:600;"
             " background: transparent;")
         po.addWidget(self.progress_label)
         po.addSpacing(8)
@@ -243,7 +257,7 @@ class ActorCard(QFrame):
         self.error_dismiss_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.error_dismiss_btn.setStyleSheet(
             "QPushButton { background: rgba(255,255,255,0.10);"
-            " color:#fff; border:1px solid rgba(255,255,255,0.30);"
+            " color:#fbfbfb; border:1px solid rgba(255,255,255,0.30);"
             " border-radius:6px; padding:5px 10px; font-size:11px; }"
             "QPushButton:hover { background: rgba(255,255,255,0.18); }")
         self.error_dismiss_btn.clicked.connect(self._on_error_dismiss)
@@ -290,18 +304,19 @@ class ActorCard(QFrame):
         create_ref_btn.setIconSize(QSize(14, 14))
         if self.is_custom:
             create_ref_btn.setStyleSheet(
-                "QPushButton { background:#7a5524; color:#fff8eb;"
-                " border:1px solid rgba(255,204,112,0.42);"
+                "QPushButton { background:rgba(255,204,112,0.065); color:#f6dca7;"
+                " border:none;"
                 " border-radius:5px; padding:6px 8px; font-size:11px;"
                 " font-weight:600; text-align:left; }"
-                "QPushButton:hover { background:#8e642b;"
-                " border-color:rgba(255,214,136,0.70); }")
+                "QPushButton:hover { background:rgba(214,161,70,0.165);"
+                " color:#fff8ea; border:none; }")
         else:
             create_ref_btn.setStyleSheet(
-                "QPushButton { background:#3a2c52; color:#fff; border:none;"
+                "QPushButton { background:rgba(255,255,255,0.06); color:#fbfbfb;"
+                " border:none;"
                 " border-radius:5px; padding:6px 8px; font-size:11px;"
                 " font-weight:600; text-align:left; }"
-                "QPushButton:hover { background:#4d3a6b; }")
+                "QPushButton:hover { background:rgba(255,255,255,0.10); border:none; }")
         create_ref_btn.clicked.connect(
             lambda: self.create_ref_requested.emit(self.slug))
         il.addWidget(create_ref_btn)
@@ -315,18 +330,20 @@ class ActorCard(QFrame):
             view_refs_btn.setIconSize(QSize(14, 14))
             if self.is_custom:
                 view_refs_btn.setStyleSheet(
-                    "QPushButton { background:rgba(255,204,112,0.06);"
-                    " border:1px solid rgba(214,161,70,0.82);"
-                    " border-radius:5px; padding:5px 8px; color:#f6dca8;"
+                    "QPushButton { background:rgba(255,204,112,0.065);"
+                    " border:none;"
+                    " border-radius:5px; padding:5px 8px; color:#f6dca7;"
                     " font-size:11px; font-weight:600; text-align:left; }"
-                    "QPushButton:hover { background:rgba(214,161,70,0.16);"
-                    " color:#fff8eb; }")
+                    "QPushButton:hover { background:rgba(214,161,70,0.165);"
+                    " color:#fff8ea; border:none; }")
             else:
                 view_refs_btn.setStyleSheet(
-                    "QPushButton { background:transparent; border:1px solid #6e4cc4;"
-                    " border-radius:5px; padding:5px 8px; color:#d8c8ff;"
+                    "QPushButton { background:rgba(255,204,112,0.065);"
+                    " border:none;"
+                    " border-radius:5px; padding:5px 8px; color:#f6dca7;"
                     " font-size:11px; font-weight:600; text-align:left; }"
-                    "QPushButton:hover { background:#2a1f3d; }")
+                    "QPushButton:hover { background:rgba(214,161,70,0.165);"
+                    " color:#fff8ea; border:none; }")
             view_refs_btn.clicked.connect(
                 lambda: self.view_refs_requested.emit(self.slug))
             il.addWidget(view_refs_btn)
@@ -340,17 +357,18 @@ class ActorCard(QFrame):
             if self.is_custom:
                 rename_btn.setStyleSheet(
                     "QPushButton { background:transparent;"
-                    " border:1px solid rgba(214,161,70,0.42);"
-                    " border-radius:4px; padding:4px 8px; color:#cdb081;"
+                    " border:none;"
+                    " border-radius:4px; padding:4px 8px; color:#d8c8fd;"
                     " font-size:11px; text-align:left; }"
-                    "QPushButton:hover { color:#fff8eb;"
-                    " border-color:rgba(255,204,112,0.70); }")
+                    "QPushButton:hover { background:#2a1f3c; color:#fbfbfa;"
+                    " border:none; }")
             else:
                 rename_btn.setStyleSheet(
-                    "QPushButton { background:transparent; border:1px solid #3a2c52;"
-                    " border-radius:4px; padding:4px 8px; color:#aaa;"
+                    "QPushButton { background:transparent; border:none;"
+                    " border-radius:4px; padding:4px 8px; color:#d8c8fd;"
                     " font-size:11px; text-align:left; }"
-                    "QPushButton:hover { color:#fff; border-color:#5a4a82; }")
+                    "QPushButton:hover { background:#2a1f3c; color:#fbfbfa;"
+                    " border:none; }")
             rename_btn.clicked.connect(lambda: self.rename_requested.emit(self.slug))
             il.addWidget(rename_btn)
 
@@ -361,10 +379,10 @@ class ActorCard(QFrame):
             del_btn.setIcon(_sa.get_icon('trash-2'))
             del_btn.setIconSize(QSize(14, 14))
             del_btn.setStyleSheet(
-                "QPushButton { background:transparent; border:1px solid #5a2c2c;"
+                "QPushButton { background:transparent; border:none;"
                 " border-radius:4px; padding:4px 8px; color:#c47878;"
                 " font-size:11px; text-align:left; }"
-                "QPushButton:hover { color:#fff; border-color:#c4304c;"
+                "QPushButton:hover { color:#fafafa; border:none;"
                 " background:rgba(196,48,76,0.1); }")
             del_btn.clicked.connect(lambda: self.delete_requested.emit(self.slug))
             il.addWidget(del_btn)
@@ -475,7 +493,7 @@ class ActorCard(QFrame):
             f"QPushButton {{ background:{bg}; color:#15101e;"
             f" border:none; border-radius:5px; padding:7px 8px;"
             f" font-size:12px; font-weight:700; text-align:left; }}"
-            "QPushButton:hover { background:#ffe27a; }")
+            "QPushButton:hover { background:#ffe27a; border:none; }")
 
 
 # ─── Вкладка «Актёры» ────────────────────────────────────────────
@@ -644,7 +662,7 @@ class ActorsView(QWidget):
             self.drop_lbl = QLabel(tr('actors_drop_label'))
             self.drop_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.drop_lbl.setStyleSheet(
-                "color:#d8c8ff; font-size:14px; font-weight:600; background:transparent;")
+                "color:#d8c8fe; font-size:14px; font-weight:600; background:transparent;")
             df_lay.addWidget(self.drop_lbl)
             self.drop_hint = QLabel(tr('actors_drop_hint'))
             self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2987,7 +3005,7 @@ class _TextureThumb(QFrame):
             " color:#c47878; border:1px solid #5a2c2c;"
             " border-radius:4px; padding:2px 6px; font-size:10px;"
             " font-weight:500; }"
-            "QPushButton#texture-del:hover { color:#fff;"
+            "QPushButton#texture-del:hover { color:#fafafa;"
             " border-color:#c4304c;"
             " background:rgba(196,48,76,0.10); }")
         lay = QVBoxLayout(self)
@@ -3092,7 +3110,7 @@ class TexturesDropZone(QWidget):
         self._drop_lbl = QLabel(tr('actors_textures_drop_label'))
         self._drop_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drop_lbl.setStyleSheet(
-            "color:#d8c8ff; font-size:13px; font-weight:600;"
+            "color:#d8c8fe; font-size:13px; font-weight:600;"
             " background:transparent;")
         df_lay.addWidget(self._drop_lbl)
         self._drop_hint = QLabel(tr('actors_textures_drop_hint'))

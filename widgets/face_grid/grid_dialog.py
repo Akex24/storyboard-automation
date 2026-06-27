@@ -44,7 +44,7 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
-from views.theme import lumz_button_qss
+from views.theme import lumz_button_qss, theme_qcolor
 from widgets.face_grid import library
 
 # 2026-06-02 (Этап 5): запас наложения сетки относительно бокса лица YuNet.
@@ -200,8 +200,8 @@ class _ResizeHandle(QGraphicsRectItem):
         super().__init__(-(self.SIZE + self.INSET), -(self.SIZE + self.INSET),
                          self.SIZE, self.SIZE, parent)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
-        self.setBrush(QBrush(QColor(110, 76, 196)))
-        pen = QPen(QColor(255, 255, 255))
+        self.setBrush(QBrush(theme_qcolor("#6e4cc4")))
+        pen = QPen(theme_qcolor("#ffffff"))
         pen.setWidth(1)
         pen.setCosmetic(True)
         self.setPen(pen)
@@ -251,7 +251,7 @@ class _DeleteHandle(QGraphicsRectItem):
         # целиком ВНУТРИ квадрата у внутреннего угла. Координаты — экранные px.
         super().__init__(self.INSET, self.INSET, self.SIZE, self.SIZE, parent)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
-        self.setBrush(QBrush(QColor(228, 52, 74)))   # LUMZ red
+        self.setBrush(QBrush(theme_qcolor("#cfff22")))
         self.setPen(QPen(Qt.PenStyle.NoPen))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setZValue(41)
@@ -261,7 +261,7 @@ class _DeleteHandle(QGraphicsRectItem):
     def paint(self, painter, option, widget=None):
         super().paint(painter, option, widget)   # красный фон
         r = self.rect()
-        pen = QPen(QColor(255, 255, 255))
+        pen = QPen(theme_qcolor("#111213"))
         pen.setWidth(2)
         pen.setCosmetic(True)
         painter.setPen(pen)
@@ -363,7 +363,7 @@ class GridItem(QGraphicsPixmapItem):
         option.state &= ~QStyle.StateFlag.State_Selected
         super().paint(painter, option, widget)
         if self._hover or self.isSelected():
-            pen = QPen(QColor(110, 76, 196))   # LUMZ accent
+            pen = QPen(theme_qcolor("#6e4cc4"))   # LUMZ accent
             pen.setWidth(2)
             pen.setCosmetic(True)              # постоянная толщина при зуме
             painter.setPen(pen)
@@ -403,11 +403,9 @@ class _GridThumb(QFrame):
 
         # «×» удаления — дочерний QPushButton (нативно потребляет клик, не
         # триггерит выбор миниатюры). Позиционируем абсолютно в правый угол.
-        from storyboard_app import get_icon
         self.del_btn = QPushButton(self)
         self.del_btn.setObjectName("grid-thumb-del")
-        self.del_btn.setIcon(get_icon('x'))
-        self.del_btn.setIconSize(QSize(12, 12))
+        self.del_btn.setText("×")
         self.del_btn.setFixedSize(16, 16)
         self.del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.del_btn.setToolTip(tr('grid_del_tooltip'))
@@ -422,17 +420,18 @@ class _GridThumb(QFrame):
         self._refresh_style()
 
     def _refresh_style(self):
-        border = ("2px solid #e4344a" if self._active
-                  else "1px solid #322545")
-        bg = "#231840" if self._active else "transparent"
+        border = ("2px solid #cfff22" if self._active
+                  else "1px solid #242628")
+        bg = "#1a1c1d" if self._active else "transparent"
         self.setStyleSheet(
             f"#GridThumb {{ background:{bg}; border:{border};"
             f" border-radius:6px; }}"
             "QPushButton#grid-thumb-del {"
-            " background:rgba(10,6,18,0.7); border:none;"
-            " border-radius:8px; }"
+            " background:rgba(207,255,34,0.92); border:none;"
+            " border-radius:8px; color:#111213; font-weight:900;"
+            " font-size:13px; padding:0; }"
             "QPushButton#grid-thumb-del:hover {"
-            " background:rgba(150,40,40,0.9); }")
+            " background:#d8ff4a; color:#111213; }")
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
@@ -477,11 +476,20 @@ class GridDialog(QDialog):
             "QLabel#hint { color:rgba(255,255,255,0.55); font-size:11px; }"
             "QLabel#empty { color:rgba(255,255,255,0.40);"
             " font-style:italic; font-size:13px; }"
-            + lumz_button_qss('subtle', 'grid_btn_add')
-            + lumz_button_qss('primary', 'grid_btn_apply')
-            + lumz_button_qss('secondary', 'grid_btn_save')
-            + lumz_button_qss('subtle', 'grid_btn_help')
-            + lumz_button_qss('subtle', 'grid_btn_close')
+            "QPushButton#grid_btn_add, QPushButton#grid_btn_apply,"
+            " QPushButton#grid_btn_save, QPushButton#grid_btn_help,"
+            " QPushButton#grid_btn_close {"
+            " background:#242628; color:#f2f3f0;"
+            " border:1px solid #242628; border-radius:8px;"
+            " padding:8px 14px; font-size:13px; font-weight:600; }"
+            "QPushButton#grid_btn_add:hover, QPushButton#grid_btn_apply:hover,"
+            " QPushButton#grid_btn_save:hover, QPushButton#grid_btn_help:hover,"
+            " QPushButton#grid_btn_close:hover {"
+            " background:#2c2f31; color:#ffffff; border-color:#2c2f31; }"
+            "QPushButton#grid_btn_add:pressed, QPushButton#grid_btn_apply:pressed,"
+            " QPushButton#grid_btn_save:pressed, QPushButton#grid_btn_help:pressed,"
+            " QPushButton#grid_btn_close:pressed {"
+            " background:#1f2123; border-color:#1f2123; }"
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
@@ -518,8 +526,8 @@ class GridDialog(QDialog):
         self._grids_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._grids_scroll.setStyleSheet(
-            "QScrollArea { border:1px solid #25193a; border-radius:6px;"
-            " background:#0a0612; }")
+            "QScrollArea { border:1px solid #111213; border-radius:6px;"
+            " background:#111213; }")
         strip = QWidget()
         self._grids_strip = QHBoxLayout(strip)
         self._grids_strip.setContentsMargins(6, 2, 6, 2)

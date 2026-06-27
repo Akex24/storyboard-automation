@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
+from views.theme import theme_qcolor
 
 
 _IMG_EXT = {'.jpg', '.jpeg', '.png', '.webp'}
@@ -72,18 +73,18 @@ _DIALOG_QSS = (
     "QFrame#img-slot { background:#0e0a16;"
     " border:1px solid rgba(255,255,255,0.06); border-radius:8px; }"
     "QFrame#img-slot:hover { border-color:rgba(228,52,74,0.40); }"
-    "QPlainTextEdit#instruction-edit { background:#15101e;"
-    " border:1px solid #2c2240; border-radius:6px; color:#ddd;"
+    "QPlainTextEdit#instruction-edit { background:#191b1d;"
+    " border:1px solid #1d1e20; border-radius:6px; color:#ddd;"
     " padding:8px; font-size:13px; }"
     "QPushButton#crest-close { background:transparent;"
     " color:rgba(255,255,255,0.45); border:none; font-size:16px; }"
-    "QPushButton#crest-close:hover { color:#ffffff; }"
+    "QPushButton#crest-close:hover { color:#fbfbfb; }"
     "QPushButton#btn-secondary { background:transparent;"
     " color:rgba(255,255,255,0.60); border:1px solid rgba(255,255,255,0.14);"
     " border-radius:8px; padding:8px 18px; font-size:12px; }"
     "QPushButton#btn-secondary:hover { background:rgba(255,255,255,0.06);"
-    " color:#ffffff; border-color:rgba(255,255,255,0.22); }"
-    "QPushButton#btn-primary { background:#e4344a; color:#ffffff;"
+    " color:#fbfbfb; border-color:rgba(255,255,255,0.22); }"
+    "QPushButton#btn-primary { background:#e4344a; color:#fefefe;"
     " border:none; border-radius:8px; padding:8px 18px; font-size:12px;"
     " font-weight:600; }"
     "QPushButton#btn-primary:hover { background:#d92d44; }"
@@ -105,7 +106,7 @@ _PICKER_QSS = (
     " color:rgba(255,255,255,0.55); border:1px solid rgba(255,255,255,0.12);"
     " border-radius:8px; padding:6px 18px; font-size:12px; }"
     "QPushButton#close-btn:hover { background:rgba(255,255,255,0.06);"
-    " color:#ffffff; border-color:rgba(255,255,255,0.20); }"
+    " color:#fbfbfb; border-color:rgba(255,255,255,0.20); }"
 )
 
 
@@ -269,8 +270,8 @@ class _ReplaceableImageSlot(QFrame):
 
             # Фон слота #0e0a16 (виден по бокам картинки) + тонкая рамка.
             slot = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            p.setBrush(QColor("#0e0a16"))
-            p.setPen(QPen(QColor(255, 255, 255, 16), 1))
+            p.setBrush(theme_qcolor("#0e0a16"))
+            p.setPen(QPen(theme_qcolor("rgba(255,255,255,0.063)"), 1))
             p.drawRoundedRect(slot, 8, 8)
 
             # Картинка по центру (или плейсхолдер «—»).
@@ -279,18 +280,18 @@ class _ReplaceableImageSlot(QFrame):
                 y = (self.height() - self._pixmap.height()) // 2
                 p.drawPixmap(int(x), int(y), self._pixmap)
             else:
-                p.setPen(QColor(255, 255, 255, 90))
+                p.setPen(theme_qcolor("rgba(255,255,255,0.35)"))
                 p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "—")
 
             # Плюсик-оверлей: квадрат с закруглением + белый «+».
             r = QRectF(self._btn_rect())
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#d92d44" if self._btn_hover else "#e4344a"))
+            p.setBrush(theme_qcolor("#d92d44" if self._btn_hover else "#e4344a"))
             p.drawRoundedRect(r, self._BTN_RADIUS, self._BTN_RADIUS)
 
             cx, cy = r.center().x(), r.center().y()
             half = self._PLUS_LEN / 2.0
-            plus = QPen(QColor("#ffffff"))
+            plus = QPen(theme_qcolor("#fefefe"))
             plus.setWidthF(self._PLUS_WIDTH)
             plus.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(plus)

@@ -203,6 +203,10 @@ class EpisodeChatView(QWidget):
         self._build()
 
     def _build(self):
+        self.setObjectName("episode-chat-view")
+        self.setStyleSheet(
+            "QWidget#episode-chat-view { background: #121313; }")
+
         lay = QVBoxLayout(self)
         lay.setSpacing(8)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -212,9 +216,9 @@ class EpisodeChatView(QWidget):
         # 2026-05-08 редизайн Этап 6: LUMZ-стиль — приглушённый фон,
         # тонкая граница, белый текст, monospace оставляем (для логов).
         self.log_view.setStyleSheet(
-            "QTextEdit { background: rgba(255, 255, 255, 0.03);"
-            " border: 1px solid rgba(255, 255, 255, 0.06);"
-            " border-radius: 8px; padding: 14px; color: #ffffff;"
+            "QTextEdit { background: #191b1d;"
+            " border: 1px solid #191b1d;"
+            " border-radius: 8px; padding: 14px; color: #d4d7d0;"
             " font-family:'Menlo','Consolas',monospace; font-size: 12px; }")
         lay.addWidget(self.log_view, stretch=1)
 
