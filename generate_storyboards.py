@@ -98,7 +98,7 @@ def upload_ref(path: Path, session: requests.Session) -> str:
 def poll_operation(op_id: str, session: requests.Session) -> bytes:
     while True:
         time.sleep(1.5)
-        r = session.get(f"{API_BASE}/api/v5/generations/{op_id}",
+        r = session.get(f"{API_BASE}/api/v6/generations/{op_id}",
                         params={"result_format": "ref"}, timeout=30)
         r.raise_for_status()
         data = r.json()
@@ -106,8 +106,17 @@ def poll_operation(op_id: str, session: requests.Session) -> bytes:
         print(f"    status: {status}")
         # v5: успешные статусы — множество.
         if status in ("succeeded", "success", "completed", "done"):
-            # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
             results = data.get("results") or data.get("result") or []
+            # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+            # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{file_hash}/raw).
+            download_url = ""
+            if results and isinstance(results[0], dict):
+                download_url = results[0].get("download_url") or ""
+            if download_url:
+                r2 = session.get(download_url, timeout=120)
+                r2.raise_for_status()
+                return r2.content
+            # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
             uri = ""
             if results and isinstance(results[0], dict):
                 uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
@@ -242,7 +251,7 @@ def main():
                                  for i, h in enumerate(ref_hashes)]
 
         # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
-        endpoint = "/api/v5/generations"
+        endpoint = "/api/v6/generations"
         print(f"  Prompt length: {len(clean_prompt)} chars | "
               f"Refs: {len(ref_hashes)} | Provider: {provider}")
         _fastgen_t0 = time.monotonic()  # [FASTGEN] засечка времени генерации
