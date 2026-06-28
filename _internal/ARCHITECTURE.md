@@ -2251,6 +2251,18 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
   чтобы при скролле страницы значения не съезжали. Применяется к КАЖДОМУ
   новому виджету настройки. См. CRITICAL_RULES.md.
 - `cross_fade_swap` — анимация смены превью.
+- **Генератор: дроп-картинка кладётся как JPEG + стем-резолв файла плитки**
+  (2026-06-28). `_import_dropped_files` ([generator/generator_page.py](generator/generator_page.py))
+  конвертирует дропнутую картинку в `gen_<ts>.jpg` (q=95, без даунскейла) для
+  ВСЕХ форматов кроме уже-`.jpg/.jpeg`. Причина: на машинах с Adobe watch-folder
+  внешний процесс сам пере-кодирует любой `.png` в папке холста в `.jpg` за
+  секунды и удаляет оригинал → путь плитки в meta/`_result_path` (с `.png`)
+  протухал, клик/реф/папка ломались. Видео не трогаем. Defensive-страховка:
+  `resolve_existing_path(path)` + `ShimmerCell._heal_path()`
+  ([generator/result_cell.py](generator/result_cell.py)) — если точный путь файла
+  плитки исчез, ищем файл с тем же СТЕМОМ `<stem>.*` в той же папке и обновляем
+  `_result_path`+`meta['file']` на реальное расширение. НЕ удаляй — это защита от
+  внешней подмены расширения (клик/reveal/ref + `add_ref_from_meta` зовут резолв).
 - `_active_regens` — словарь активных регенераций шотов.
 - `_unseen_shots` — set новых шотов для NEW-бейджей.
 - `_dot_step` — счётчик «…» в индикаторах загрузки.
