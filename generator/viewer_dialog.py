@@ -684,8 +684,16 @@ class GeneratorViewerDialog(QDialog):
 
     # ── action-кнопки ряда ─────────────────────────────────────────────
     def _on_return_clicked(self):
-        """Вернуть результат в генератор. Заглушка — логика в Кусках 3-4."""
-        pass
+        """Стрелка возврата → «повторить генерацию»: промпт + ВСЕ рефы + настройки (модель,
+        формат, длительность, режим) этой карточки в поле генератора, попап закрыть.
+        Делегирует page.restore_from_meta (контролы генератора живут там; родитель = page)."""
+        page = self.parent()
+        if page is not None and hasattr(page, "restore_from_meta"):
+            try:
+                page.restore_from_meta(self._meta)
+            except Exception:
+                pass
+        self.close()
 
     def _on_grab_frame(self):
         """Клик по плюсику у playhead → захватить текущий кадр видео (из videoSink, на паузе

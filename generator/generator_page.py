@@ -2162,6 +2162,63 @@ class GeneratorPage(QWidget):
         except Exception:
             pass
 
+    def restore_from_meta(self, meta: dict):
+        """«Повторить генерацию»: выставить в нижнее поле генератора промпт + ВСЕ рефы +
+        настройки (режим image/video, модель, формат, длительность) из meta карточки.
+        Зовётся стрелкой возврата в попапе просмотра (GeneratorViewerDialog). Любая
+        отсутствующая настройка — гард, не падаем.
+
+        Порядок важен: режим и модель ВНУТРИ дёргают _update_duration_visibility → clear_refs,
+        поэтому рефы добавляем В КОНЦЕ (иначе сотрутся)."""
+        if not isinstance(meta, dict):
+            return
+        # 1) режим image/video (репопулирует список моделей под режим)
+        mtype = meta.get("type")
+        if mtype in ("image", "video"):
+            try:
+                self._on_mode_change(mtype)
+            except Exception:
+                pass
+        # 2) модель по id (из уже репопулированного под режим списка)
+        mid = meta.get("model_id")
+        if mid:
+            try:
+                self.model_combo.set_current_id(mid)
+                self._update_duration_visibility()
+            except Exception:
+                pass
+        # 3) формат 16:9 / 9:16
+        asp = meta.get("aspect")
+        if asp in ("16:9", "9:16"):
+            try:
+                self._on_seg_click(self.fmt_btns, asp)
+            except Exception:
+                pass
+        # 4) длительность видео (4/6/8/10), если есть
+        dur = meta.get("duration")
+        try:
+            if dur is not None and int(dur) in (4, 6, 8, 10):
+                self._on_duration_change(str(int(dur)))
+        except Exception:
+            pass
+        # 5) рефы — ПОСЛЕ режима/модели (они чистят поле); сначала очистка, потом добавление
+        try:
+            self.clear_refs()
+            from pathlib import Path as _Path
+            for rp in (meta.get("ref_paths") or []):
+                try:
+                    if rp and _Path(str(rp)).exists():
+                        self.add_ref(str(rp))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # 6) промпт
+        try:
+            self.prompt_input.setPlainText(meta.get("prompt") or "")
+        except Exception:
+            pass
+
     def remove_ref(self, file_path: str):
         """Открепить файл по пути. Если список опустел — скрыть ряд."""
         if file_path not in self._pending_refs:

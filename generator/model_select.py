@@ -119,6 +119,20 @@ class ModelSelect(QWidget):
             return self._items[self._index][0]
         return ""
 
+    def set_current_id(self, model_id) -> bool:
+        """Выбрать модель по её id (для «повторить генерацию» из попапа). True если id есть
+        в текущем списке. Обновляет кнопку и эмитит changed (как обычный выбор) при смене."""
+        for i, it in enumerate(self._items):
+            if it[1] == model_id:
+                if i != self._index:
+                    self._index = i
+                    self._sync_trigger()
+                    self.changed.emit()
+                else:
+                    self._sync_trigger()
+                return True
+        return False
+
     # ── триггер ─────────────────────────────────────────────────────────
     def _sync_trigger(self):
         """Текст кнопки = название выбранной модели (без эмодзи)."""
