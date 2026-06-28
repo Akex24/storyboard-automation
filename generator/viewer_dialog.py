@@ -672,9 +672,40 @@ class GeneratorViewerDialog(QDialog):
         pass
 
     def _on_grab_frame(self):
-        """Клик по плюсику у playhead → взять этот кадр в референс. ЗАГЛУШКА.
-        Кусок 3: захват кадра playhead → реф в генератор."""
-        pass
+        """Клик по плюсику у playhead → захватить текущий кадр видео (из videoSink, на паузе
+        = кадр под playhead) → сохранить PNG в папку холста (рядом с видео) → добавить как
+        реф к следующей генерации (page.add_ref) → закрыть попап. Кадр — обычная картинка-
+        реф: VEO 3.1 / OmniFlash уже умеют image-to-video, дальше юзер сам пишет промпт."""
+        vw = getattr(self, "_video_widget", None)
+        if vw is None:
+            return
+        # текущий кадр из QVideoSink → QImage (полное разрешение видео, не размер виджета)
+        try:
+            frame = vw.videoSink().videoFrame()
+            img = frame.toImage() if frame is not None else None
+        except Exception:
+            img = None
+        if img is None or img.isNull():
+            return
+        # сохранить PNG рядом с видео (та же папка холста shows/<slug>/generator/), имя с
+        # таймстампом+позицией — чтобы не затереть существующие файлы холста.
+        try:
+            from datetime import datetime
+            pos = int(self._player.position()) if self._player is not None else 0
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out = Path(self._result_path).parent / f"frame_{stamp}_{pos}ms.png"
+            if not img.save(str(out), "PNG"):
+                return
+        except Exception:
+            return
+        # добавить в поле рефов страницы генератора (родитель попапа = generator_page)
+        page = self.parent()
+        if page is not None and hasattr(page, "add_ref"):
+            try:
+                page.add_ref(str(out))
+            except Exception:
+                pass
+        self.close()
 
     def _on_reveal_clicked(self):
         """Показать файл результата в Finder/Explorer (reveal-and-select). Делегирует
