@@ -47,6 +47,27 @@ except Exception:
     pass
 
 
+def resolve_existing_path(path) -> Optional[str]:
+    """Defensive-резолв реального пути файла плитки. Если точный `path` существует —
+    возвращаем его. Если файла по точному пути НЕТ (внешний инструмент подменил
+    расширение — напр. Adobe watch-folder пере-кодирует .png → .jpg за секунды и
+    удаляет оригинал), ищем в той же папке файл с ТЕМ ЖЕ стемом (`<stem>.*`) и берём
+    первый существующий. None — если ни точного файла, ни собрата по стему нет.
+    Никогда не бросает (UI-удобство)."""
+    try:
+        if not path:
+            return None
+        p = Path(path)
+        if p.exists():
+            return str(p)
+        for h in sorted(p.parent.glob(p.stem + ".*")):
+            if h.is_file():
+                return str(h)
+    except Exception:
+        pass
+    return None
+
+
 # Модуль-уровневые константы — не пересоздаём в paintEvent (дёшево для CPU).
 # 2026-06-20 (Этап 3): отказались от бегущего блика (любая «беговая» полоса
 # даёт слепые зоны/wrap-артефакты). Теперь — ЧИСТАЯ ПУЛЬСАЦИЯ яркости базы
@@ -670,6 +691,27 @@ class ShimmerCell(QFrame):
         except Exception:
             pass
 
+    def _heal_path(self) -> Optional[str]:
+        """Defensive: если _result_path исчез (внешний тул сменил расширение файла —
+        напр. Adobe png→jpg), найти файл по стему в той же папке и обновить
+        _result_path + meta['file'] на реальное имя. Возвращает актуальный (существующий)
+        путь или None. Видео не страдает: его _result_path = .mp4 на месте → exists()
+        короткозамыкает на тот же путь, ничего не меняем."""
+        rp = getattr(self, "_result_path", None)
+        real = resolve_existing_path(rp)
+        if real and real != rp:
+            self._result_path = real
+            try:
+                if isinstance(self._meta, dict) and self._meta.get("file"):
+                    self._meta["file"] = Path(real).name
+            except Exception:
+                pass
+            try:
+                self._refresh_reveal_enabled()
+            except Exception:
+                pass
+        return real
+
     def _refresh_reveal_enabled(self):
         """reveal-кнопка активна только когда _result_path указывает на реально
         существующий файл (готовый результат). На loading/error файла нет → флаг
@@ -691,14 +733,20 @@ class ShimmerCell(QFrame):
         кросс-платформенному storyboard_app.reveal_in_file_manager. Ленивый импорт
         (circular-import / frozen guard, как get_icon). Любая ошибка — тихий выход
         (UI-удобство, не критично)."""
-        path = getattr(self, "_result_path", None)
+        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
+        import traceback
+        path = self._heal_path()   # defensive: подмена расширения извне → стем-резолв
+        diag("REVEAL ENTER result_path=%r state=%r healed=%r" % (
+            getattr(self, "_result_path", None), self._state, path))
         if not path:
+            diag("REVEAL skip (no path)")
             return
         try:
             from storyboard_app import reveal_in_file_manager
             reveal_in_file_manager(path)
+            diag("REVEAL OK")
         except Exception:
-            pass
+            diag("REVEAL RAISED:\n" + traceback.format_exc())
 
     def enterEvent(self, ev):
         super().enterEvent(ev)
@@ -755,6 +803,12 @@ class ShimmerCell(QFrame):
     # ── клик по плитке → попап просмотра (Кусок 2/4) ───────────────────
     def mousePressEvent(self, ev):
         """Запоминаем позицию ЛКМ — чтобы в release отличить клик от drag."""
+        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
+        try:
+            diag("PRESS ENTER btn=%r state=%r result_path=%r" % (
+                ev.button(), self._state, self._result_path))
+        except Exception:
+            pass
         try:
             self._press_pos = (ev.position().toPoint()
                                if ev.button() == Qt.MouseButton.LeftButton else None)
@@ -767,26 +821,40 @@ class ShimmerCell(QFrame):
         → открыть попап просмотра. На loading/error — игнор. Клики по hover-кнопкам сюда
         не доходят (их перехватывают дочерние QToolButton)."""
         super().mouseReleaseEvent(ev)
+        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
+        import traceback
         try:
+            diag("RELEASE ENTER btn=%r state=%r result_path=%r press=%r" % (
+                ev.button(), self._state, self._result_path,
+                getattr(self, "_press_pos", "missing")))
             if ev.button() != Qt.MouseButton.LeftButton:
+                diag("RELEASE skip (не ЛКМ)")
                 return
             press = getattr(self, "_press_pos", None)
             self._press_pos = None
             if press is None:
+                diag("RELEASE skip (press=None — press-событие не дошло)")
                 return
             if (ev.position().toPoint() - press).manhattanLength() > 5:
+                diag("RELEASE skip (drag >5px)")
                 return   # был drag, не клик
             if self._state not in ("image", "video"):
+                diag("CLICK ignored: state=%r (не image/video) result_path=%r" % (self._state, self._result_path))
                 return
-            if not self._result_path or not Path(self._result_path).exists():
+            real = self._heal_path()   # defensive: подмена расширения извне → стем-резолв
+            if not real:
+                diag("CLICK ignored: result_path=%r — файла нет даже по стему" % self._result_path)
                 return
+            diag("CLICK → open_viewer state=%r result_path=%r" % (self._state, self._result_path))
             self._open_viewer()
         except Exception:
-            pass
+            diag("CLICK mouseReleaseEvent RAISED:\n" + traceback.format_exc())
 
     def _open_viewer(self):
         """Открыть non-modal попап просмотра этой плитки. Ссылку держим на странице
         (self._page._open_viewer), чтобы окно не съел GC."""
+        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
+        diag("_open_viewer ENTER state=%r result_path=%r" % (self._state, self._result_path))
         try:
             from generator.viewer_dialog import GeneratorViewerDialog
             dlg = GeneratorViewerDialog(
@@ -798,8 +866,10 @@ class ShimmerCell(QFrame):
             dlg.show()
             dlg.raise_()
             dlg.activateWindow()
+            diag("_open_viewer OK (dialog shown)")
         except Exception:
             import traceback
+            diag("_open_viewer RAISED:\n" + traceback.format_exc())
             traceback.print_exc()
 
     def eventFilter(self, obj, event):
@@ -944,10 +1014,18 @@ class ShimmerCell(QFrame):
         (MIME не image/*) → подменяем file на парный .jpg-кадр (gen_<ts>.jpg
         рядом с .mp4). Если .jpg нет — тихий выход. _meta плитки НЕ мутируем —
         работаем с копией."""
+        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
+        import traceback
+        diag("REF click ENTER state=%r result_path=%r meta.file=%r type=%r" % (
+            self._state, self._result_path,
+            (self._meta.get("file") if isinstance(self._meta, dict) else None),
+            (self._meta.get("type") if isinstance(self._meta, dict) else None)))
         if not isinstance(self._meta, dict):
             return
+        self._heal_path()   # defensive: meta['file'] мог устареть (внешняя подмена расширения)
         fname = (self._meta.get("file") or "").strip()
         if not fname:
+            diag("REF skip (no fname)")
             return
         if self._page is None:
             return
@@ -962,8 +1040,9 @@ class ShimmerCell(QFrame):
             meta_for_page["file"] = jpg_name
         try:
             self._page.add_ref_from_meta(meta_for_page)
+            diag("REF add_ref_from_meta OK; AFTER state=%r result_path=%r" % (self._state, self._result_path))
         except Exception:
-            pass
+            diag("REF _on_ref_clicked RAISED:\n" + traceback.format_exc())
 
     def _on_trash_clicked(self):
         """Клик по trash: делегировать удаление странице, где есть доступ к
