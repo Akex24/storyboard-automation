@@ -994,7 +994,13 @@ class GeneratorPage(QWidget):
             # (не полные пути) → попадают в canvas.json через _save_canvas.
             cell.set_meta(prompt=prompt, model_id=model_id, model_label=model_label,
                           aspect=aspect, type=("video" if is_video else "image"),
-                          refs=[Path(r).name for r in refs] if refs else [])
+                          refs=[Path(r).name for r in refs] if refs else [],
+                          # 2026-06-28 (попап-данные): полные пути рефов (для превью рефов
+                          # в попапе; refs выше — только имена, оставлены как есть) +
+                          # длительность видео (Omni: сек; Veo/картинки: None). canvas.json
+                          # локальный у юзера, читается на той же машине → абс. пути ок.
+                          ref_paths=[str(r) for r in refs] if refs else [],
+                          duration=(duration_arg if is_video else None))
             if is_video:
                 th = GeneratorVideoThread(prompt, aspect, model_id, duration_arg,
                                           out_dir, refs=refs,
