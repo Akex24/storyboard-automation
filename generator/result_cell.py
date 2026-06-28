@@ -733,20 +733,14 @@ class ShimmerCell(QFrame):
         кросс-платформенному storyboard_app.reveal_in_file_manager. Ленивый импорт
         (circular-import / frozen guard, как get_icon). Любая ошибка — тихий выход
         (UI-удобство, не критично)."""
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        import traceback
         path = self._heal_path()   # defensive: подмена расширения извне → стем-резолв
-        diag("REVEAL ENTER result_path=%r state=%r healed=%r" % (
-            getattr(self, "_result_path", None), self._state, path))
         if not path:
-            diag("REVEAL skip (no path)")
             return
         try:
             from storyboard_app import reveal_in_file_manager
             reveal_in_file_manager(path)
-            diag("REVEAL OK")
         except Exception:
-            diag("REVEAL RAISED:\n" + traceback.format_exc())
+            pass
 
     def enterEvent(self, ev):
         super().enterEvent(ev)
@@ -803,12 +797,6 @@ class ShimmerCell(QFrame):
     # ── клик по плитке → попап просмотра (Кусок 2/4) ───────────────────
     def mousePressEvent(self, ev):
         """Запоминаем позицию ЛКМ — чтобы в release отличить клик от drag."""
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        try:
-            diag("PRESS ENTER btn=%r state=%r result_path=%r" % (
-                ev.button(), self._state, self._result_path))
-        except Exception:
-            pass
         try:
             self._press_pos = (ev.position().toPoint()
                                if ev.button() == Qt.MouseButton.LeftButton else None)
@@ -821,40 +809,25 @@ class ShimmerCell(QFrame):
         → открыть попап просмотра. На loading/error — игнор. Клики по hover-кнопкам сюда
         не доходят (их перехватывают дочерние QToolButton)."""
         super().mouseReleaseEvent(ev)
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        import traceback
-        try:
-            diag("RELEASE ENTER btn=%r state=%r result_path=%r press=%r" % (
-                ev.button(), self._state, self._result_path,
-                getattr(self, "_press_pos", "missing")))
-            if ev.button() != Qt.MouseButton.LeftButton:
-                diag("RELEASE skip (не ЛКМ)")
-                return
-            press = getattr(self, "_press_pos", None)
-            self._press_pos = None
-            if press is None:
-                diag("RELEASE skip (press=None — press-событие не дошло)")
-                return
-            if (ev.position().toPoint() - press).manhattanLength() > 5:
-                diag("RELEASE skip (drag >5px)")
-                return   # был drag, не клик
-            if self._state not in ("image", "video"):
-                diag("CLICK ignored: state=%r (не image/video) result_path=%r" % (self._state, self._result_path))
-                return
-            real = self._heal_path()   # defensive: подмена расширения извне → стем-резолв
-            if not real:
-                diag("CLICK ignored: result_path=%r — файла нет даже по стему" % self._result_path)
-                return
-            diag("CLICK → open_viewer state=%r result_path=%r" % (self._state, self._result_path))
-            self._open_viewer()
-        except Exception:
-            diag("CLICK mouseReleaseEvent RAISED:\n" + traceback.format_exc())
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+        press = getattr(self, "_press_pos", None)
+        self._press_pos = None
+        if press is None:
+            return
+        if (ev.position().toPoint() - press).manhattanLength() > 5:
+            return   # был drag, не клик
+        if self._state not in ("image", "video"):
+            return
+        # defensive: внешний тул мог сменить расширение файла (Adobe png→jpg) —
+        # резолвим по стему; нет файла даже по стему → не открываем.
+        if not self._heal_path():
+            return
+        self._open_viewer()
 
     def _open_viewer(self):
         """Открыть non-modal попап просмотра этой плитки. Ссылку держим на странице
         (self._page._open_viewer), чтобы окно не съел GC."""
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        diag("_open_viewer ENTER state=%r result_path=%r" % (self._state, self._result_path))
         try:
             from generator.viewer_dialog import GeneratorViewerDialog
             dlg = GeneratorViewerDialog(
@@ -866,10 +839,8 @@ class ShimmerCell(QFrame):
             dlg.show()
             dlg.raise_()
             dlg.activateWindow()
-            diag("_open_viewer OK (dialog shown)")
         except Exception:
             import traceback
-            diag("_open_viewer RAISED:\n" + traceback.format_exc())
             traceback.print_exc()
 
     def eventFilter(self, obj, event):
@@ -1014,35 +985,27 @@ class ShimmerCell(QFrame):
         (MIME не image/*) → подменяем file на парный .jpg-кадр (gen_<ts>.jpg
         рядом с .mp4). Если .jpg нет — тихий выход. _meta плитки НЕ мутируем —
         работаем с копией."""
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        import traceback
-        diag("REF click ENTER state=%r result_path=%r meta.file=%r type=%r" % (
-            self._state, self._result_path,
-            (self._meta.get("file") if isinstance(self._meta, dict) else None),
-            (self._meta.get("type") if isinstance(self._meta, dict) else None)))
         if not isinstance(self._meta, dict):
             return
         self._heal_path()   # defensive: meta['file'] мог устареть (внешняя подмена расширения)
         fname = (self._meta.get("file") or "").strip()
         if not fname:
-            diag("REF skip (no fname)")
             return
         if self._page is None:
             return
         meta_for_page = self._meta
         if self._meta.get("type") == "video":
             # Подмена на парный .jpg (первый кадр). Существование .jpg на диске
-            # проверит add_ref_from_meta через full.exists() — мы только подменяем
-            # имя в КОПИИ meta. Если .jpg не лежит рядом — тихий выход там же.
+            # проверит add_ref_from_meta — мы только подменяем имя в КОПИИ meta.
+            # Если .jpg не лежит рядом — тихий выход там же.
             from pathlib import Path
             jpg_name = Path(fname).with_suffix(".jpg").name
             meta_for_page = dict(self._meta)
             meta_for_page["file"] = jpg_name
         try:
             self._page.add_ref_from_meta(meta_for_page)
-            diag("REF add_ref_from_meta OK; AFTER state=%r result_path=%r" % (self._state, self._result_path))
         except Exception:
-            diag("REF _on_ref_clicked RAISED:\n" + traceback.format_exc())
+            pass
 
     def _on_trash_clicked(self):
         """Клик по trash: делегировать удаление странице, где есть доступ к

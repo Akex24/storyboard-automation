@@ -748,10 +748,6 @@ class GeneratorPage(QWidget):
         (переживает перезапуск). Мультидроп: все наверх, порядок выделения сохранён.
         Оригиналы юзера НЕ трогаются (shutil.copy2). Битый файл не валит остальные."""
         import shutil, time
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        import traceback
-        diag("DROP _import ENTER n=%d paths=%r" % (
-            len(paths), [str(p) for p in paths]))
         import storyboard_app as _sa
         root = _sa.get_stored_root()
         slug = _sa.get_current_show(root) if root else None
@@ -814,19 +810,14 @@ class GeneratorPage(QWidget):
                         img = r.read()
                         if not img.isNull():
                             converted = bool(img.save(str(target), "JPEG", 95))
-                        diag("DROP convert→jpeg src=%r null=%s saved=%s -> %r" % (
-                            str(src), img.isNull(), converted, target.name))
                     except Exception:
-                        diag("DROP convert RAISED:\n" + traceback.format_exc())
+                        pass
                     if not converted:
                         target = out_dir / f"{stem}{ext}"
                         shutil.copy2(str(src), str(target))   # фоллбэк: оригинал как есть
-                        diag("DROP convert FALLBACK copy as-is -> %r" % target.name)
                 else:
                     target = out_dir / f"{stem}{ext}"
                     shutil.copy2(str(src), str(target))   # JPEG/видео — копия без изменений
-                diag("DROP file src=%r srcsuffix=%r ftype=%r -> target=%r exists=%s" % (
-                    str(src), src.suffix, ftype, target.name, target.exists()))
                 if ftype == "video":
                     # первый кадр → gen_<ts>.jpg рядом (для превью); нет кадра → ▶-фолбэк
                     if _frame is not None:
@@ -843,7 +834,6 @@ class GeneratorPage(QWidget):
                 cell.set_model_label("")
                 cell.set_meta(prompt="", model_id="", model_label="",
                               aspect=aspect, type=ftype, file=target.name, ts=ts)
-                diag("DROP set_meta file=%r aspect=%r type=%r" % (target.name, aspect, ftype))
                 if ftype == "video":
                     cell.set_video_placeholder(str(target))
                 else:
@@ -851,7 +841,6 @@ class GeneratorPage(QWidget):
                 self._cells.insert(0, cell)   # дропнутое — сверху
                 added += 1
             except Exception:
-                diag("DROP file RAISED:\n" + traceback.format_exc())
                 continue   # битый файл не валит остальные
         if added:
             self._cell_count = len(self._cells)
@@ -1979,27 +1968,22 @@ class GeneratorPage(QWidget):
         (setScaledSize по большей стороне ≤ max_side) — НЕ держим полный 4K (~31МБ RAM) ради
         маленькой тумбы (это и был источник переполнения памяти и падения рефа в упакованной
         сборке с кучей 4K). allocation-лимит снят + EXIF-ориентация. null если не прочиталось."""
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        import traceback
         try:
             r = QImageReader(str(src))
             r.setAllocationLimit(0)
             r.setAutoTransform(True)
             sz = r.size()
             w, h = sz.width(), sz.height()
-            diag("_load_thumb ENTER src=%r reader.size=%dx%d max=%d" % (src, w, h, max_side))
             if w > 0 and h > 0 and max(w, h) > max_side:
                 if w >= h:
                     r.setScaledSize(QSize(max_side, max(1, round(h * max_side / w))))
                 else:
                     r.setScaledSize(QSize(max(1, round(w * max_side / h)), max_side))
             img = r.read()
-            diag("_load_thumb read null=%s %dx%d err=%r" % (
-                img.isNull(), img.width(), img.height(), r.errorString()))
             if not img.isNull():
                 return QPixmap.fromImage(img)
         except Exception:
-            diag("_load_thumb RAISED:\n" + traceback.format_exc())
+            pass
         return QPixmap()
 
     def _make_ref_thumb(self, file_path: str) -> QFrame:
@@ -2018,11 +2002,8 @@ class GeneratorPage(QWidget):
         if is_video:
             jpg = str(Path(file_path).with_suffix(".jpg"))
             src = jpg if Path(jpg).exists() else None
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        diag("_make_ref_thumb ENTER file=%r src=%r ext=%r is_video=%s" % (file_path, src, ext, is_video))
         if src is not None:
             pix = self._load_thumb_pixmap(src, 128)   # эконом: декод сразу в ~128px, не 31МБ
-            diag("_make_ref_thumb pix null=%s %dx%d" % (pix.isNull(), pix.width(), pix.height()))
             if pix.isNull():
                 src = None
         if src is not None:
@@ -2191,27 +2172,16 @@ class GeneratorPage(QWidget):
     def add_ref(self, file_path: str):
         """Прикрепить файл к следующей генерации. Дубликат — тихий выход.
         Превышение лимита под текущую модель/режим (_max_refs) — тоже тихий выход."""
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        import traceback
         file_path = str(file_path or "").strip()
-        diag("add_ref ENTER file=%r pending=%d max=%d" % (
-            file_path, len(self._pending_refs), self._max_refs()))
         if not file_path or file_path in self._pending_refs:
-            diag("add_ref skip (empty/dup)")
             return
         if len(self._pending_refs) >= self._max_refs():
-            diag("add_ref skip (limit)")
             return
         self._pending_refs.append(file_path)
-        try:
-            thumb = self._make_ref_thumb(file_path)
-            self._ref_thumbs[file_path] = thumb
-            self._refs_row_lay.addWidget(thumb)
-            self._refs_row.setVisible(True)
-            diag("add_ref OK (thumb built, row shown)")
-        except Exception:
-            diag("add_ref THUMB-BUILD RAISED:\n" + traceback.format_exc())
-            raise
+        thumb = self._make_ref_thumb(file_path)
+        self._ref_thumbs[file_path] = thumb
+        self._refs_row_lay.addWidget(thumb)
+        self._refs_row.setVisible(True)
 
     def add_ref_from_meta(self, meta: dict):
         """Прикрепить файл плитки (по её _meta) как реф к следующей генерации.
@@ -2221,33 +2191,24 @@ class GeneratorPage(QWidget):
         пустой file, файла нет на диске) → тихий выход. Для video-плитки плитка
         ПРЕДВАРИТЕЛЬНО подменяет meta['file'] на парный .jpg-кадр (см.
         result_cell._on_ref_clicked) — сюда уже приходит .jpg-имя или original."""
-        from generator._diag import diag   # ВРЕМЕННАЯ диагностика
-        import traceback
         if not isinstance(meta, dict):
             return
         fname = (meta.get("file") or "").strip()
-        diag("add_ref_from_meta ENTER file=%r type=%r" % (fname, meta.get("type")))
         if not fname:
-            diag("arfm skip (no file)")
             return
         try:
             import storyboard_app as _sa
             root = _sa.get_stored_root()
             slug = _sa.get_current_show(root) if root else None
-            diag("arfm root=%r slug=%r" % (str(root), slug))
             if not (root and slug):
-                diag("arfm skip (no root/slug)")
                 return
             full = root / "shows" / slug / "generator" / fname
             real = resolve_existing_path(str(full))   # defensive: внешняя подмена расширения
-            diag("arfm full=%r exists=%s resolved=%r" % (str(full), full.exists(), real))
             if not real:
-                diag("arfm skip (not exists, даже по стему)")
                 return
             self.add_ref(real)
-            diag("arfm add_ref returned OK")
         except Exception:
-            diag("add_ref_from_meta RAISED:\n" + traceback.format_exc())
+            pass
 
     def restore_from_meta(self, meta: dict):
         """«Повторить генерацию»: выставить в нижнее поле генератора промпт + ВСЕ рефы +

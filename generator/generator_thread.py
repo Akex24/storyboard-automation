@@ -331,13 +331,6 @@ class GeneratorImageThread(QThread):
             while target.exists():
                 target = self.out_dir / f"gen_{ts}_{i}.jpg"
                 i += 1
-            # ВРЕМЕННАЯ диагностика: ловим гонку стема с дропом (.png рядом).
-            try:
-                from generator._diag import diag
-                siblings = [str(p) for p in self.out_dir.glob(f"gen_{ts}.*")]
-                diag("GENSAVE target=%r siblings_same_stem=%r" % (target.name, siblings))
-            except Exception:
-                pass
             target.write_bytes(image_bytes)
             self.finished.emit(str(target))
         except Exception as e:
