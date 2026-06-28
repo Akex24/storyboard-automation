@@ -32,10 +32,19 @@ from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QSize, QEvent, QByteArray
 from PyQt6.QtGui import (QPainter, QPainterPath, QLinearGradient, QColor, QPixmap,
-                         QFont, QIcon)
+                         QFont, QIcon, QImageReader)
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton, QWidget
 
 from views.theme import theme_qcolor, LUMZ_THEME
+
+# Снять глобальный allocation-лимит QImageReader (по умолчанию 256МБ): большие/4K рефы и
+# результаты (3840×2144 ≈ 31МБ RGBA, 8K — больше) должны грузиться без отказа. 0 = без
+# лимита (десктоп-инструмент, доверенные локальные файлы). Влияет на ВСЕ QPixmap/QImage
+# загрузки приложения — QPixmap(path) внутри идёт через QImageReader и проверяет этот лимит.
+try:
+    QImageReader.setAllocationLimit(0)
+except Exception:
+    pass
 
 
 # Модуль-уровневые константы — не пересоздаём в paintEvent (дёшево для CPU).
@@ -391,17 +400,46 @@ class ShimmerCell(QFrame):
         except Exception:
             pass
 
+    def _load_pixmap_robust(self, path: str) -> QPixmap:
+        """Загрузить картинку устойчиво к большому размеру. Прямой QPixmap; если null —
+        фоллбэк QImageReader со снятым allocation-лимитом (тяжёлые 4K/8K не отбрасываются
+        лимитом) + EXIF-ориентация. Возвращает QPixmap (null только для реально битого)."""
+        try:
+            pix = QPixmap(str(path))
+            if not pix.isNull():
+                return pix
+        except Exception:
+            pass
+        try:
+            r = QImageReader(str(path))
+            r.setAllocationLimit(0)      # снять лимит для этого ридера (0 = без лимита)
+            r.setAutoTransform(True)     # учесть EXIF-ориентацию
+            img = r.read()
+            if not img.isNull():
+                return QPixmap.fromImage(img)
+        except Exception:
+            pass
+        return QPixmap()
+
     def set_image(self, path: str):
         self._finish_common()
-        pix = QPixmap(path)
-        if pix.isNull():
+        # Устойчивая загрузка (большие/4K картинки). КРИТИЧНО: если файл на диске ЕСТЬ —
+        # плитка становится готовой (image) и путь проставляется ДАЖЕ если пиксмап не
+        # осилил полную загрузку. Клик/реф/папка работают по ПУТИ к файлу, не по пиксмапу.
+        try:
+            file_ok = bool(path) and Path(path).exists()
+        except Exception:
+            file_ok = False
+        pix = self._load_pixmap_robust(path)
+        if pix.isNull() and not file_ok:
             self.set_error("Не удалось открыть результат")
             return
         self._state = "image"
-        self._result_path = path     # абсолютный путь готового файла → reveal-кнопка
-        self._original_pix = pix     # оригинал — для перемасштаба при смене размера
+        self._result_path = path     # абсолютный путь готового файла → reveal/клик/реф
+        self._original_pix = pix if not pix.isNull() else None  # превью; None не ломает paint
         self._info_lbl.hide()
-        self._rescale_pixmap()
+        if self._original_pix is not None:
+            self._rescale_pixmap()
         self._refresh_reveal_enabled()
         self._refresh_2k_enabled()
         self.update()
