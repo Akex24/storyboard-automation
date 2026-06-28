@@ -28,8 +28,10 @@ import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
-POLL_TIMEOUT_SEC = 600   # потолок ожидания. OpenAI+inputs тянет 150-170с;
-                         # при нагрузке упирается в 300 → подняли до 600.
+POLL_TIMEOUT_SEC = 300   # потолок ожидания ГЕНЕРАЦИИ (поллинг после op_id).
+                         # OpenAI+inputs тянет 150-170с; 2026-06-28 снижен 600→300.
+KEY_SEARCH_TIMEOUT_SEC = 180  # потолок ожидания СВОБОДНОГО ключа (перебор ДО op_id).
+                              # По истечении — error + return, не виснем навсегда.
 _OK_STATUSES = ("succeeded", "success", "completed", "done")
 _FAIL_STATUSES = ("failed", "error", "cancelled")
 
@@ -78,19 +80,14 @@ class GeneratorImageThread(QThread):
     def run(self):
         import storyboard_app as _sa
         try:
-            key, _idx = _sa.next_api_key()
-            if not key:
-                self.error.emit("Нет доступного API-ключа")
-                return
-            session = requests.Session()
-            session.headers.update({"X-API-Key": key})
-
             # Рефы → v5 inputs[].input как base64 data URI (без /upload, без
             # storage hash, без TTL/expiration). Видны любому ключу — фикс 403
             # «hash от ключа A не виден ключу B». Degrade: ошибка на одном
             # НЕ валит всю генерацию (progress + продолжаем без него).
             # Лимит количества — на UI-уровне (generator_page._max_refs/add_ref),
             # сюда уже приходит проверенный self.refs.
+            # 2026-06-28: payload собирается ДО перебора ключей (он от ключа не
+            # зависит) — submit ниже шлёт его на КАЖДЫЙ пробуемый ключ.
             ref_inputs = []
             if self.refs:
                 for _p in self.refs:
@@ -117,15 +114,101 @@ class GeneratorImageThread(QThread):
             # печатаем только размер inputs, не первые байты).
             print(f"[FASTGEN] outgoing payload keys={list(payload.keys())} "
                   f"inputs_count={len(payload.get('inputs', []))}")
-            r = session.post(f"{_sa.API_BASE}/api/v6/generations",
-                             params={"result_format": "ref"},
-                             json=payload, timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            op_id = data.get("id")
-            if not op_id:
-                self.error.emit(f"Сервер не вернул id: {str(data)[:200]}")
-                return
+
+            # ── ПЕРЕБОР КЛЮЧЕЙ ПО КРУГУ (как видео-поток, но НЕ сдаёмся) ──────
+            # dead       — ключи 401/403 (нет доступа): выброшены на ВСЮ сессию.
+            # round_tried — ключи 429 (заняты): до конца круга; круг замкнулся
+            #   (next_api_key вернул уже-пробованный) → пауза 2с + сброс + новый круг.
+            # Потолок поиска — KEY_SEARCH_TIMEOUT_SEC (отдельный таймер search_t0).
+            # Секундомер генерации (t0) стартует ТОЛЬКО после op_id — ниже.
+            try:
+                import key_pool
+                attempts = max(1, int(key_pool.live_key_count()))
+            except Exception:
+                attempts = 5
+            session = None
+            op_id = None
+            dead = set()
+            round_tried = set()
+            spins = 0
+            idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
+            search_t0 = time.monotonic()
+            self.progress.emit("Ищу свободный ключ…")
+            while op_id is None:
+                if self._stop:
+                    return
+                if (time.monotonic() - search_t0) > KEY_SEARCH_TIMEOUT_SEC:
+                    self._fastgen("-", "submit",
+                                  int(time.monotonic() - search_t0),
+                                  "error", " error=key_search_timeout")
+                    self.error.emit(
+                        f"Не нашёл свободный ключ за {KEY_SEARCH_TIMEOUT_SEC}с — "
+                        f"все заняты, попробуй позже.")
+                    return
+                # Все живые ключи мертвы (401/403) — ждать бессмысленно, выходим.
+                if len(dead) >= attempts:
+                    self.error.emit("Нет ключей с доступом к генерации")
+                    return
+                spins += 1
+                key, idx = _sa.next_api_key()
+                if not key:
+                    self.error.emit("Нет доступного API-ключа")
+                    return
+                # idx=None → kill-switch fallback (.env один ключ): СТАБИЛЬНЫЙ tkey
+                # "_fb" (не spin-уникальный) — иначе round_tried-пейсинг не сработал бы.
+                tkey = idx if idx is not None else "_fb"
+                if tkey in dead:
+                    # Мёртвый ключ (401/403) — пропускаем. Guard от busy-loop: если
+                    # next_api_key крутит ТОЛЬКО dead-ключи (live_count завысил attempts
+                    # → top-check len(dead)>=attempts не срабатывает), после полного круга
+                    # вхолостую делаем паузу 2с вместо греющего ядро spin.
+                    idle_skips += 1
+                    if idle_skips >= attempts:
+                        time.sleep(2)
+                        idle_skips = 0
+                    continue
+                if tkey in round_tried:
+                    # Круг замкнулся — все живые ключи заняты → пауза и новый круг.
+                    self.progress.emit("Ожидаю свободный ключ…")
+                    time.sleep(2)
+                    round_tried.clear()
+                    idle_skips = 0
+                    continue
+                # Дошли до реальной попытки submit — сбрасываем idle-счётчик.
+                idle_skips = 0
+                s = requests.Session()
+                s.headers.update({"X-API-Key": key})
+                try:
+                    r = s.post(f"{_sa.API_BASE}/api/v6/generations",
+                               params={"result_format": "ref"},
+                               json=payload, timeout=60)
+                except requests.exceptions.RequestException as e:
+                    # Сетевой сбой — НЕ ключевая проблема, не перебираем.
+                    self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
+                    return
+                code = r.status_code
+                if code in (401, 403):
+                    # Ключ без доступа — выбрасываем из ротации на сессию.
+                    self._fastgen("-", "submit", 0, "error",
+                                  f" error=http_{code} key_idx={idx}")
+                    dead.add(tkey)
+                    continue
+                if code == 429:
+                    # Ключ занят (concurrency) — вернёмся к нему на следующем круге.
+                    self._fastgen("-", "submit", 0, "error",
+                                  f" error=http_{code} key_idx={idx}")
+                    round_tried.add(tkey)
+                    continue
+                if not r.ok:
+                    # 400 битый payload / 5xx — не ключевая, не крутим.
+                    self.error.emit(f"Ошибка отправки запроса: HTTP {code}")
+                    return
+                data = r.json()
+                op_id = data.get("id")
+                if not op_id:
+                    self.error.emit(f"Сервер не вернул id: {str(data)[:200]}")
+                    return
+                session = s   # рабочий ключ — им поллим и качаем
 
             self.progress.emit("Генерирую…")
             t0 = time.monotonic()
