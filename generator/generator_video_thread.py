@@ -36,6 +36,32 @@ _OK_STATUSES = ("succeeded", "success", "completed", "done")
 _FAIL_STATUSES = ("failed", "error", "cancelled")
 
 
+# 2026-06-28: детектор ТРАНЗИЕНТНЫХ ошибок генерации (для авто-ретрая). Порядок
+# КРИТИЧЕН — deny-wins: сперва чёрный список (контент/лицензия/валидация/протухший
+# реф — НЕ ретраить, сразу ошибка юзеру), потом белый (временный сбой — ретрай),
+# иначе по умолчанию НЕ ретраить (безопасно). Дубль из generator_thread.py
+# (генератор изолирован, общего слоя нет).
+_RETRY_DENY = ("unsafe", "sexual", "minor", "prominent people", "guardrails",
+               "safety filters", "audio filtered", "not allowed for this license",
+               "file_not_found_or_expired")
+_RETRY_ALLOW = ("try again", "captcha", "no accounts available", "concurrency",
+                "failed to perform", "failed to generate", "temporarily unavailable",
+                "503", "502", "504", "connection reset", "curl:")
+
+
+def _is_transient(err_text) -> bool:
+    """True → ошибку генерации можно авто-повторить (временный сбой сервера/сети).
+    deny-list проверяется ПЕРВЫМ: контент/лицензия/валидация/протухший реф никогда
+    не ретраятся. Затем allow-list. Не в списках → False (по умолчанию не ретраим)."""
+    t = (err_text or "")
+    t = t.lower() if isinstance(t, str) else str(t).lower()
+    if any(d in t for d in _RETRY_DENY):
+        return False
+    if any(a in t for a in _RETRY_ALLOW):
+        return True
+    return False
+
+
 class GeneratorVideoThread(QThread):
     """Одно видео через FastGen v5. Сигналы: progress(str)/finished(path .mp4)/error(str)."""
 
@@ -140,186 +166,208 @@ class GeneratorVideoThread(QThread):
             #   замкнулся → пауза 2с + сброс + новый круг. НЕ сдаёмся пока не таймаут.
             # Потолок поиска — KEY_SEARCH_TIMEOUT_SEC (отдельный таймер search_t0).
             # Секундомер генерации (t0) стартует ТОЛЬКО после op_id — ниже.
-            session = None
-            op_id = None
-            dead = set()
-            round_tried = set()
-            spins = 0
-            idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
-            search_t0 = time.monotonic()
-            self.progress.emit("Жду в очереди…")
-            while op_id is None:
-                if self._stop:
-                    return
-                if (time.monotonic() - search_t0) > KEY_SEARCH_TIMEOUT_SEC:
-                    self._fastgen("-", "submit",
-                                  int(time.monotonic() - search_t0),
-                                  "error", " error=key_search_timeout")
-                    self.error.emit(
-                        f"Очередь не освободилась за {KEY_SEARCH_TIMEOUT_SEC}с — "
-                        f"все ключи заняты, попробуй позже.")
-                    return
-                # Все живые ключи мертвы (401/403) — ждать бессмысленно, выходим.
-                if len(dead) >= attempts:
-                    self.error.emit("Нет ключей с доступом к видео")
-                    return
-                spins += 1
-                key, idx = _sa.next_api_key()
-                if not key:
-                    self.error.emit("Нет доступного API-ключа")
-                    return
-                # idx=None → kill-switch fallback (.env один ключ): СТАБИЛЬНЫЙ tkey
-                # "_fb" (не spin-уникальный) — иначе round_tried-пейсинг не сработал бы.
-                tkey = idx if idx is not None else "_fb"
-                if tkey in dead:
-                    # Мёртвый ключ (401/403) — пропускаем. Guard от busy-loop: если
-                    # next_api_key крутит ТОЛЬКО dead-ключи (live_count завысил attempts),
-                    # после полного круга вхолостую — пауза 2с вместо греющего ядро spin.
-                    idle_skips += 1
-                    if idle_skips >= attempts:
+            # 2026-06-28: авто-ретрай транзиентных ошибок — ВСЯ генерация (submit+poll)
+            # обёрнута в цикл до 4 попыток. На транзиентном failed (_is_transient) и
+            # retry_attempt<3 → пауза 10с + новая попытка (свежий перебор ключей).
+            # Контент/лицензия/валидация и POLL_TIMEOUT — НЕ ретраятся (см. ниже).
+            for retry_attempt in range(4):
+                # Сброс submit-состояния на КАЖДОЙ попытке (свежий перебор ключей).
+                session = None
+                op_id = None
+                dead = set()
+                round_tried = set()
+                spins = 0
+                idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
+                search_t0 = time.monotonic()
+                self.progress.emit("Жду в очереди…")
+                while op_id is None:
+                    if self._stop:
+                        return
+                    if (time.monotonic() - search_t0) > KEY_SEARCH_TIMEOUT_SEC:
+                        self._fastgen("-", "submit",
+                                      int(time.monotonic() - search_t0),
+                                      "error", " error=key_search_timeout")
+                        self.error.emit(
+                            f"Очередь не освободилась за {KEY_SEARCH_TIMEOUT_SEC}с — "
+                            f"все ключи заняты, попробуй позже.")
+                        return
+                    # Все живые ключи мертвы (401/403) — ждать бессмысленно, выходим.
+                    if len(dead) >= attempts:
+                        self.error.emit("Нет ключей с доступом к видео")
+                        return
+                    spins += 1
+                    key, idx = _sa.next_api_key()
+                    if not key:
+                        self.error.emit("Нет доступного API-ключа")
+                        return
+                    # idx=None → kill-switch fallback (.env один ключ): СТАБИЛЬНЫЙ tkey
+                    # "_fb" (не spin-уникальный) — иначе round_tried-пейсинг не сработал бы.
+                    tkey = idx if idx is not None else "_fb"
+                    if tkey in dead:
+                        # Мёртвый ключ (401/403) — пропускаем. Guard от busy-loop: если
+                        # next_api_key крутит ТОЛЬКО dead-ключи (live_count завысил attempts),
+                        # после полного круга вхолостую — пауза 2с вместо греющего ядро spin.
+                        idle_skips += 1
+                        if idle_skips >= attempts:
+                            time.sleep(2)
+                            idle_skips = 0
+                        continue
+                    if tkey in round_tried:
+                        # Круг замкнулся — все живые ключи заняты → пауза и новый круг.
+                        self.progress.emit("Жду в очереди…")
                         time.sleep(2)
+                        round_tried.clear()
                         idle_skips = 0
-                    continue
-                if tkey in round_tried:
-                    # Круг замкнулся — все живые ключи заняты → пауза и новый круг.
-                    self.progress.emit("Жду в очереди…")
-                    time.sleep(2)
-                    round_tried.clear()
+                        continue
+                    # Дошли до реальной попытки submit — сбрасываем idle-счётчик.
                     idle_skips = 0
-                    continue
-                # Дошли до реальной попытки submit — сбрасываем idle-счётчик.
-                idle_skips = 0
-                s = requests.Session()
-                s.headers.update({"X-API-Key": key})
-                try:
-                    r = s.post(f"{_sa.API_BASE}/api/v6/generations",
-                               params={"result_format": "ref"},
-                               json=payload, timeout=60)
-                except requests.exceptions.RequestException as e:
-                    # Сетевой сбой — НЕ ключевая проблема, не перебираем.
-                    self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
-                    return
-                code = r.status_code
-                if code in (401, 403):
-                    # Нет видео-доступа — выбрасываем ключ из ротации на сессию.
-                    self._fastgen("-", "submit", 0, "error",
-                                  f" error=http_{code} key_idx={idx}")
-                    # Логируем body 4xx — подсказка от сервера (например "model not supported for inputs")
+                    s = requests.Session()
+                    s.headers.update({"X-API-Key": key})
                     try:
-                        body_text = r.text[:500] if r.text else ''
-                        print(f"[FASTGEN] video submit {code} body={body_text}")
-                    except Exception:
-                        pass
-                    dead.add(tkey)
-                    continue
-                if code == 429:
-                    # Ключ занят (concurrency) — вернёмся к нему на следующем круге.
-                    self._fastgen("-", "submit", 0, "error",
-                                  f" error=http_{code} key_idx={idx}")
-                    try:
-                        body_text = r.text[:500] if r.text else ''
-                        print(f"[FASTGEN] video submit {code} body={body_text}")
-                    except Exception:
-                        pass
-                    round_tried.add(tkey)
-                    continue
-                if not r.ok:
-                    # Не ключевая (400 битый payload, 5xx и т.п.) — обычная ошибка.
-                    # Логируем тело — подсказка сервера (например keyframes requires
-                    # 1-2 inputs). Тот же [FASTGEN]-формат что для 401/403/429 выше.
-                    try:
-                        body_text = r.text[:500] if r.text else ''
-                        print(f"[FASTGEN] video submit {code} body={body_text}")
-                    except Exception:
-                        pass
-                    self.error.emit(f"Ошибка отправки запроса: HTTP {code}")
-                    return
-                data = r.json()
-                op_id = data.get("id")
-                if not op_id:
-                    self.error.emit(f"Сервер не вернул id: {str(data)[:200]}")
-                    return
-                session = s   # рабочий ключ — им поллим и качаем
+                        r = s.post(f"{_sa.API_BASE}/api/v6/generations",
+                                   params={"result_format": "ref"},
+                                   json=payload, timeout=60)
+                    except requests.exceptions.RequestException as e:
+                        # Сетевой сбой — НЕ ключевая проблема, не перебираем.
+                        self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
+                        return
+                    code = r.status_code
+                    if code in (401, 403):
+                        # Нет видео-доступа — выбрасываем ключ из ротации на сессию.
+                        self._fastgen("-", "submit", 0, "error",
+                                      f" error=http_{code} key_idx={idx}")
+                        # Логируем body 4xx — подсказка от сервера (например "model not supported for inputs")
+                        try:
+                            body_text = r.text[:500] if r.text else ''
+                            print(f"[FASTGEN] video submit {code} body={body_text}")
+                        except Exception:
+                            pass
+                        dead.add(tkey)
+                        continue
+                    if code == 429:
+                        # Ключ занят (concurrency) — вернёмся к нему на следующем круге.
+                        self._fastgen("-", "submit", 0, "error",
+                                      f" error=http_{code} key_idx={idx}")
+                        try:
+                            body_text = r.text[:500] if r.text else ''
+                            print(f"[FASTGEN] video submit {code} body={body_text}")
+                        except Exception:
+                            pass
+                        round_tried.add(tkey)
+                        continue
+                    if not r.ok:
+                        # Не ключевая (400 битый payload, 5xx и т.п.) — обычная ошибка.
+                        # Логируем тело — подсказка сервера (например keyframes requires
+                        # 1-2 inputs). Тот же [FASTGEN]-формат что для 401/403/429 выше.
+                        try:
+                            body_text = r.text[:500] if r.text else ''
+                            print(f"[FASTGEN] video submit {code} body={body_text}")
+                        except Exception:
+                            pass
+                        self.error.emit(f"Ошибка отправки запроса: HTTP {code}")
+                        return
+                    data = r.json()
+                    op_id = data.get("id")
+                    if not op_id:
+                        self.error.emit(f"Сервер не вернул id: {str(data)[:200]}")
+                        return
+                    session = s   # рабочий ключ — им поллим и качаем
 
-            self.progress.emit("Генерирую видео…")
-            t0 = time.monotonic()
-            last_status = ""
-            while True:
-                if self._stop:
-                    return
-                time.sleep(1.5)
-                if self._stop:
-                    return
-                elapsed = int(time.monotonic() - t0)
-                if elapsed > POLL_TIMEOUT_SEC:
-                    self._fastgen(op_id, last_status or "unknown", elapsed,
-                                  "error", " error=timeout")
-                    self.error.emit(
-                        f"API timeout: статус «{last_status or 'unknown'}» "
-                        f"оставался {elapsed}с (>10 мин). Попробуй ещё раз.")
-                    return
-                try:
-                    rr = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
-                                     params={"result_format": "ref"}, timeout=30)
-                    rr.raise_for_status()
-                except requests.exceptions.HTTPError as e:
-                    # op_id привязан к ключу submit → переключить ключ на poll НЕЛЬЗЯ.
-                    pc = getattr(getattr(e, "response", None), "status_code", None)
-                    self._fastgen(op_id, last_status or "poll", elapsed,
-                                  "error", f" error=poll_http_{pc}")
-                    if pc in (401, 403, 429):
-                        self.error.emit("Ключ исчерпал доступ во время генерации видео — "
-                                        "попробуй ещё раз.")
-                    else:
-                        self.error.emit(f"Ошибка опроса статуса: HTTP {pc}")
-                    return
-                except requests.exceptions.RequestException as e:
-                    self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
-                    return
-                d = rr.json()
-                status = (d.get("status") or "").lower()
-                last_status = status
-                self.progress.emit(f"Генерирую видео… ({elapsed}с · {status or '...'})")
+                self.progress.emit("Генерирую видео…")
+                t0 = time.monotonic()
+                last_status = ""
+                retry_pending = False   # станет True → транзиентный сбой, повторить генерацию
+                while True:
+                    if self._stop:
+                        return
+                    time.sleep(1.5)
+                    if self._stop:
+                        return
+                    elapsed = int(time.monotonic() - t0)
+                    if elapsed > POLL_TIMEOUT_SEC:
+                        self._fastgen(op_id, last_status or "unknown", elapsed,
+                                      "error", " error=timeout")
+                        self.error.emit(
+                            f"API timeout: статус «{last_status or 'unknown'}» "
+                            f"оставался {elapsed}с (>10 мин). Попробуй ещё раз.")
+                        return
+                    try:
+                        rr = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
+                                         params={"result_format": "ref"}, timeout=30)
+                        rr.raise_for_status()
+                    except requests.exceptions.HTTPError as e:
+                        # op_id привязан к ключу submit → переключить ключ на poll НЕЛЬЗЯ.
+                        pc = getattr(getattr(e, "response", None), "status_code", None)
+                        self._fastgen(op_id, last_status or "poll", elapsed,
+                                      "error", f" error=poll_http_{pc}")
+                        if pc in (401, 403, 429):
+                            self.error.emit("Ключ исчерпал доступ во время генерации видео — "
+                                            "попробуй ещё раз.")
+                        else:
+                            self.error.emit(f"Ошибка опроса статуса: HTTP {pc}")
+                        return
+                    except requests.exceptions.RequestException as e:
+                        self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
+                        return
+                    d = rr.json()
+                    status = (d.get("status") or "").lower()
+                    last_status = status
+                    self.progress.emit(f"Генерирую видео… ({elapsed}с · {status or '...'})")
 
-                if status in _OK_STATUSES:
-                    results = d.get("results") or d.get("result") or []
-                    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
-                    # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{fh}/raw).
-                    download_url = ""
-                    if results and isinstance(results[0], dict):
-                        download_url = results[0].get("download_url") or ""
-                    if download_url:
-                        # видео крупнее картинок → больше таймаут на скачивание.
-                        r2 = session.get(download_url, timeout=300)
-                        r2.raise_for_status()
-                        video_bytes = r2.content
-                        fh = download_url   # для диаг-строки [FASTGEN] ниже
-                    else:
-                        # v5: storage_id = results[0].metadata.storage_id; fallback v4-разбор.
-                        uri = ""
+                    if status in _OK_STATUSES:
+                        results = d.get("results") or d.get("result") or []
+                        # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
+                        # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{fh}/raw).
+                        download_url = ""
                         if results and isinstance(results[0], dict):
-                            uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
-                        if not uri:
-                            uri = results[0] if (isinstance(results, list) and results) else results
-                            if isinstance(uri, dict):
-                                uri = (uri.get("url") or uri.get("ref")
-                                       or uri.get("file_hash") or "")
-                            uri = str(uri)
-                        fh = uri[5:] if uri.startswith("file:") else uri
-                        # видео крупнее картинок → больше таймаут на скачивание.
-                        r2 = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw", timeout=300)
-                        r2.raise_for_status()
-                        video_bytes = r2.content
-                    self._fastgen(op_id, status, elapsed, "ok",
-                                  f" storage_id={str(fh)[:8]}")
-                    break
+                            download_url = results[0].get("download_url") or ""
+                        if download_url:
+                            # видео крупнее картинок → больше таймаут на скачивание.
+                            r2 = session.get(download_url, timeout=300)
+                            r2.raise_for_status()
+                            video_bytes = r2.content
+                            fh = download_url   # для диаг-строки [FASTGEN] ниже
+                        else:
+                            # v5: storage_id = results[0].metadata.storage_id; fallback v4-разбор.
+                            uri = ""
+                            if results and isinstance(results[0], dict):
+                                uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
+                            if not uri:
+                                uri = results[0] if (isinstance(results, list) and results) else results
+                                if isinstance(uri, dict):
+                                    uri = (uri.get("url") or uri.get("ref")
+                                           or uri.get("file_hash") or "")
+                                uri = str(uri)
+                            fh = uri[5:] if uri.startswith("file:") else uri
+                            # видео крупнее картинок → больше таймаут на скачивание.
+                            r2 = session.get(f"{_sa.STORAGE_BASE}/file/{fh}/raw", timeout=300)
+                            r2.raise_for_status()
+                            video_bytes = r2.content
+                        self._fastgen(op_id, status, elapsed, "ok",
+                                      f" storage_id={str(fh)[:8]}")
+                        break
 
-                if status in _FAIL_STATUSES:
-                    self._fastgen(op_id, status, elapsed, "error",
-                                  f" error={str(d.get('error') or '<none>')[:120]}")
-                    self.error.emit(f"Ошибка генерации: {d.get('error')}")
-                    return
-                # queued / running / processing / pending — продолжаем poll
+                    if status in _FAIL_STATUSES:
+                        err = d.get('error')
+                        self._fastgen(op_id, status, elapsed, "error",
+                                      f" error={str(err or '<none>')[:120]}")
+                        # Транзиент + остались попытки → пауза 10с (дроблёно по stop) + повтор.
+                        if _is_transient(err) and retry_attempt < 3:
+                            self.progress.emit("Сервер занят, повторяю…")
+                            for _ in range(20):
+                                if self._stop:
+                                    return
+                                time.sleep(0.5)
+                            retry_pending = True
+                            break
+                        # Реальная ошибка (контент/лицензия/валидация) или попытки кончились.
+                        self.error.emit(f"Ошибка генерации: {err}")
+                        return
+                    # queued / running / processing / pending — продолжаем poll
+
+                if retry_pending:
+                    continue   # следующая попытка retry-цикла (новый submit + poll)
+                break          # успех (video_bytes получен) → выходим из retry-цикла
 
             if self._stop:
                 return
