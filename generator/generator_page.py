@@ -1002,6 +1002,7 @@ class GeneratorPage(QWidget):
             self._gen_threads.append(th)
             th.finished.connect(lambda pth, c=cell, t=th: self._on_gen_done(c, t, pth))
             th.error.connect(lambda msg, c=cell, t=th: self._on_gen_fail(c, t, msg))
+            th.progress.connect(lambda msg, c=cell: c.set_loading_text(msg))
             th.start()
         # Генерация запущена → очистить поле промпта (prompt уже скопирован в локальную
         # переменную и в потоки выше; на их работу очистка не влияет). После цикла —
