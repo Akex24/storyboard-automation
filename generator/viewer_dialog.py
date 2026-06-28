@@ -161,16 +161,30 @@ class _TimelineTrack(QWidget):
 
     # --- плюсик у playhead: позиционирование за полоской + сигнал «взять кадр» ---
     def _reposition_plus(self):
-        """Подвинуть кнопку-плюсик так, чтобы её центр был над playhead (cx), с зажимом
-        в границы трека по краям. Зовётся при смене позиции/диапазона/таскании/resize."""
+        """Поставить плюсик строго по X линии playhead + _PLUS_DX, БЕЗ зажима у краёв —
+        он едет за линией всю дорожку и спокойно уезжает ЗА правую границу трека вместе с
+        ней (не упирается раньше, не расходится). Плюсик — дочерний контейнера дорожки
+        (нижней панели), а НЕ трека: иначе клиппинг по краю трека обрезал бы его в конце.
+        Зовётся при смене позиции/диапазона/таскании/resize/move."""
         btn = getattr(self, "_plus_btn", None)
         if btn is None:
             return
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        if btn.parent() is not parent:
+            btn.setParent(parent)
+            btn.show()
         cx = round(self._ms_to_x(self._pos))
-        bw = btn.width()
-        # СПРАВА от линии playhead на _PLUS_DX, с зажимом в границы трека
-        x = int(max(0, min(cx + self._PLUS_DX, self.width() - bw)))
-        btn.move(x, 2)
+        # координаты панели = позиция трека внутри неё + X внутри трека
+        btn.move(self.x() + cx + self._PLUS_DX, self.y() + 2)
+        btn.raise_()
+
+    def moveEvent(self, ev):
+        # трек центрируется в панели → при ресайзе окна он СДВИГАЕТСЯ (не всегда ресайзится),
+        # плюсик (дочерний панели) надо переставить вслед.
+        super().moveEvent(ev)
+        self._reposition_plus()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -225,6 +239,47 @@ class _TimelineTrack(QWidget):
                           QPointF(float(cx), float(head))])
         p.drawPolygon(flag)
         p.end()
+
+
+class _VideoFrame(QWidget):
+    """Контейнер с фоном LUMZ_THEME['bg_main']: вписывает дочерний QVideoWidget в свой
+    прямоугольник ПО АСПЕКТУ видео и центрирует. QVideoWidget при этом ровно по размеру
+    кадра и сам НЕ леттербоксит чёрным — поля вокруг (pillarbox/letterbox) заполняет фон
+    контейнера (bg_main).
+
+    Почему так, а не палитра/setStyleSheet на самом QVideoWidget: нативный видео-слой
+    рисуется ПОВЕРХ фона виджета и закрашивает pillarbox чёрным независимо от палитры
+    (проверено: палитра показывала bg_main в grab пустого виджета, но на реальном .app
+    поля оставались чёрными). Контейнер же — обычный QWidget, его фон рисуется реально.
+    """
+
+    def __init__(self, video_widget, ratio_w, ratio_h, parent=None):
+        super().__init__(parent)
+        self._vw = video_widget
+        self._vw.setParent(self)
+        self._rw = max(1, int(ratio_w))
+        self._rh = max(1, int(ratio_h))
+        self.setObjectName("viewer-videoframe")
+        self.setAutoFillBackground(True)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, theme_qcolor(LUMZ_THEME["bg_main"]))
+        self.setPalette(pal)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit()
+
+    def _fit(self):
+        """Наибольший прямоугольник аспекта _rw:_rh, вписанный в контейнер, по центру."""
+        cw, ch = self.width(), self.height()
+        if cw <= 0 or ch <= 0:
+            return
+        w = cw
+        h = int(w * self._rh / self._rw)
+        if h > ch:
+            h = ch
+            w = int(h * self._rw / self._rh)
+        self._vw.setGeometry((cw - w) // 2, (ch - h) // 2, w, h)
 
 
 class GeneratorViewerDialog(QDialog):
@@ -318,15 +373,9 @@ class GeneratorViewerDialog(QDialog):
                 lbl.setStyleSheet("color:rgba(255,255,255,0.55); font-size:13px;")
             lay.addWidget(lbl)
             return
-        # WA_TransparentForMouseEvents НЕ ставим: он влияет только на доставку mouse-
-        # событий, не на рендер кадров. Управление теперь на панели, а не по клику в видео.
-        vw = QVideoWidget(self)
-        # Фон вокруг кадра (pillarbox/letterbox, когда видео не заполняет область) = bg_main,
-        # а не чёрный по умолчанию QVideoWidget — совпадает с фоном всего приложения.
-        vw.setAutoFillBackground(True)
-        _pal = vw.palette()
-        _pal.setColor(QPalette.ColorRole.Window, theme_qcolor(LUMZ_THEME["bg_main"]))
-        vw.setPalette(_pal)
+        # WA_TransparentForMouseEvents НЕ ставим: он влияет только на доставку mouse-событий,
+        # не на рендер кадров. Управление на панели, а не по клику в видео.
+        vw = QVideoWidget()
         self._video_widget = vw
         self._audio = QAudioOutput(self)
         # Стартовый mute берём из глобального флага генератора, дальше — локальная кнопка звука.
@@ -336,9 +385,14 @@ class GeneratorViewerDialog(QDialog):
         self._player.setAudioOutput(self._audio)
         self._player.setVideoOutput(vw)
         self._player.setSource(QUrl.fromLocalFile(self._result_path))
+        # Видео завёрнуто в контейнер-фон bg_main (_VideoFrame): вписывает кадр по аспекту и
+        # центрирует → поля вокруг = bg_main, а не чёрный (палитра на самом QVideoWidget
+        # pillarbox не красит — нативный видео-слой поверх; проверено эмпирически).
+        rw, rh = (9, 16) if self._meta.get("aspect") == "9:16" else (16, 9)
+        self._video_frame = _VideoFrame(vw, rw, rh, self)
         # Порядок сверху вниз: видео (stretch=1) → РЯД КНОПОК (на фоне окна) → дорожка.
         # Кнопки в своей строке НИЖЕ видео — не перекрывают изображение.
-        lay.addWidget(vw, 1)
+        lay.addWidget(self._video_frame, 1)
         lay.addWidget(self._build_button_row())
         lay.addWidget(self._build_controls())
         # Иконка кнопки следует за состоянием плеера; трек — за длительностью/позицией.
