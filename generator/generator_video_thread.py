@@ -30,6 +30,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 
 POLL_TIMEOUT_SEC = 600   # видео дольше картинок (генерация 60-180с; потолок 10 мин)
+KEY_SEARCH_TIMEOUT_SEC = 180  # потолок ожидания СВОБОДНОГО ключа (перебор ДО op_id).
+                              # По истечении — error + return, не виснем навсегда.
 _OK_STATUSES = ("succeeded", "success", "completed", "done")
 _FAIL_STATUSES = ("failed", "error", "cancelled")
 
@@ -129,26 +131,64 @@ class GeneratorVideoThread(QThread):
             print(f"[FASTGEN] outgoing video payload keys={list(payload.keys())} "
                   f"inputs_count={len(payload.get('inputs', []))}")
 
-            # ── SUBMIT с перебором ключей при КЛЮЧЕ-СПЕЦИФИЧНЫХ ошибках (401/403/429) ──
+            # ── ПЕРЕБОР КЛЮЧЕЙ ПО КРУГУ (как генератор картинок, но НЕ сдаёмся) ──
             # Рабочий ключ держим в session и ИМ же поллим/качаем (чужой ключ на
             # poll = 404, op_id привязан к ключу submit). disable_key НЕ зовём —
             # ключ валиден для картинок; скип чисто локальный, в этом потоке.
+            # dead       — ключи 401/403 (нет видео-доступа): выброс на ВСЮ сессию.
+            # round_tried — ключи 429 (заняты/concurrency): до конца круга; круг
+            #   замкнулся → пауза 2с + сброс + новый круг. НЕ сдаёмся пока не таймаут.
+            # Потолок поиска — KEY_SEARCH_TIMEOUT_SEC (отдельный таймер search_t0).
+            # Секундомер генерации (t0) стартует ТОЛЬКО после op_id — ниже.
             session = None
             op_id = None
-            tried = set()
+            dead = set()
+            round_tried = set()
             spins = 0
-            max_spins = attempts * 4   # предохранитель от бесконечного round-robin
-            while op_id is None and len(tried) < attempts and spins < max_spins:
-                spins += 1
+            idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
+            search_t0 = time.monotonic()
+            self.progress.emit("Ищу свободный ключ для видео…")
+            while op_id is None:
                 if self._stop:
                     return
+                if (time.monotonic() - search_t0) > KEY_SEARCH_TIMEOUT_SEC:
+                    self._fastgen("-", "submit",
+                                  int(time.monotonic() - search_t0),
+                                  "error", " error=key_search_timeout")
+                    self.error.emit(
+                        f"Не нашёл свободный ключ для видео за {KEY_SEARCH_TIMEOUT_SEC}с — "
+                        f"все заняты, попробуй позже.")
+                    return
+                # Все живые ключи мертвы (401/403) — ждать бессмысленно, выходим.
+                if len(dead) >= attempts:
+                    self.error.emit("Нет ключей с доступом к видео")
+                    return
+                spins += 1
                 key, idx = _sa.next_api_key()
                 if not key:
                     self.error.emit("Нет доступного API-ключа")
                     return
-                tkey = idx if idx is not None else f"_fb_{spins}"   # ключ попытки
-                if tkey in tried:
-                    continue   # этот ключ уже пробован — крутим round-robin дальше
+                # idx=None → kill-switch fallback (.env один ключ): СТАБИЛЬНЫЙ tkey
+                # "_fb" (не spin-уникальный) — иначе round_tried-пейсинг не сработал бы.
+                tkey = idx if idx is not None else "_fb"
+                if tkey in dead:
+                    # Мёртвый ключ (401/403) — пропускаем. Guard от busy-loop: если
+                    # next_api_key крутит ТОЛЬКО dead-ключи (live_count завысил attempts),
+                    # после полного круга вхолостую — пауза 2с вместо греющего ядро spin.
+                    idle_skips += 1
+                    if idle_skips >= attempts:
+                        time.sleep(2)
+                        idle_skips = 0
+                    continue
+                if tkey in round_tried:
+                    # Круг замкнулся — все живые ключи заняты → пауза и новый круг.
+                    self.progress.emit("Ожидаю свободный ключ…")
+                    time.sleep(2)
+                    round_tried.clear()
+                    idle_skips = 0
+                    continue
+                # Дошли до реальной попытки submit — сбрасываем idle-счётчик.
+                idle_skips = 0
                 s = requests.Session()
                 s.headers.update({"X-API-Key": key})
                 try:
@@ -160,8 +200,8 @@ class GeneratorVideoThread(QThread):
                     self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
                     return
                 code = r.status_code
-                if code in (401, 403, 429):
-                    # Нет видео-доступа / лимит ключа — пробуем следующий ключ.
+                if code in (401, 403):
+                    # Нет видео-доступа — выбрасываем ключ из ротации на сессию.
                     self._fastgen("-", "submit", 0, "error",
                                   f" error=http_{code} key_idx={idx}")
                     # Логируем body 4xx — подсказка от сервера (например "model not supported for inputs")
@@ -170,7 +210,18 @@ class GeneratorVideoThread(QThread):
                         print(f"[FASTGEN] video submit {code} body={body_text}")
                     except Exception:
                         pass
-                    tried.add(tkey)
+                    dead.add(tkey)
+                    continue
+                if code == 429:
+                    # Ключ занят (concurrency) — вернёмся к нему на следующем круге.
+                    self._fastgen("-", "submit", 0, "error",
+                                  f" error=http_{code} key_idx={idx}")
+                    try:
+                        body_text = r.text[:500] if r.text else ''
+                        print(f"[FASTGEN] video submit {code} body={body_text}")
+                    except Exception:
+                        pass
+                    round_tried.add(tkey)
                     continue
                 if not r.ok:
                     # Не ключевая (400 битый payload, 5xx и т.п.) — обычная ошибка.
@@ -189,10 +240,6 @@ class GeneratorVideoThread(QThread):
                     self.error.emit(f"Сервер не вернул id: {str(data)[:200]}")
                     return
                 session = s   # рабочий ключ — им поллим и качаем
-
-            if op_id is None:
-                self.error.emit("Все ключи недоступны для видео (нет доступа или лимит)")
-                return
 
             self.progress.emit("Генерирую видео…")
             t0 = time.monotonic()
