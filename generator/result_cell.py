@@ -260,6 +260,11 @@ class ShimmerCell(QFrame):
         self.btn_2k.setText("2K")
         self.btn_2k.setIconSize(QSize(0, 0))
         self.btn_2k.setToolTip("Улучшить качество ×2")
+        # 2026-06-28: кнопка mute звука видео. ГЛОБАЛЬНАЯ — клик переключает звук на
+        # ВСЕХ видео приложения (page.toggle_video_muted). Видна только на видео-карточках
+        # (_refresh_mute_visible). Иконка — по текущему глобальному состоянию страницы.
+        self.btn_mute = _mk_btn("volume-x" if getattr(self._page, "_video_muted", False) else "volume-2")
+        self.btn_mute.setToolTip("Звук видео (вкл/выкл, глобально)")
         # Спутник для 9:16: РОДИТЕЛЬ — сама плитка, не _actions_overlay (его
         # позиция считается в углу). _aux_2k_overlay позиционируется отдельно.
         self._aux_2k_overlay = None
@@ -282,8 +287,9 @@ class ShimmerCell(QFrame):
             ah = QVBoxLayout(self._actions_overlay)
             ah.setContentsMargins(0, 0, 0, 0)
             ah.setSpacing(6)
-            # 9:16 — сверху вниз: trash → back → ref → heart.
-            for _b in (self.btn_trash, self.btn_back, self.btn_ref, self.btn_heart):
+            # 9:16 — сверху вниз: trash → back → ref → heart → mute (под сердечком).
+            for _b in (self.btn_trash, self.btn_back, self.btn_ref, self.btn_heart,
+                       self.btn_mute):
                 ah.addWidget(_b)
         else:
             # 16:9 — _actions_overlay = VBox{ HBox{heart,ref,back,trash}, HBox{spacer,btn_2k} }.
@@ -293,7 +299,8 @@ class ShimmerCell(QFrame):
             _top = QHBoxLayout()
             _top.setContentsMargins(0, 0, 0, 0)
             _top.setSpacing(6)
-            for _b in (self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash):
+            # 16:9 — слева направо: mute (первым, слева) → heart → ref → back → trash.
+            for _b in (self.btn_mute, self.btn_heart, self.btn_ref, self.btn_back, self.btn_trash):
                 _top.addWidget(_b)
             _bot = QHBoxLayout()
             _bot.setContentsMargins(0, 0, 0, 0)
@@ -307,10 +314,12 @@ class ShimmerCell(QFrame):
         self.btn_ref.clicked.connect(self._on_ref_clicked)
         self.btn_trash.clicked.connect(self._on_trash_clicked)
         self.btn_2k.clicked.connect(self._on_2k_clicked)
+        self.btn_mute.clicked.connect(self._page.toggle_video_muted)  # ГЛОБАЛЬНЫЙ mute
         self._refresh_back_enabled()   # начальное состояние от текущего _meta
         self._refresh_ref_enabled()    # btn_ref активна, когда есть meta.file
         self._refresh_trash_enabled()  # trash активна, когда есть готовый файл
         self._refresh_2k_enabled()     # 2k активна только когда meta.type=='image' + есть файл
+        self._refresh_mute_visible()   # mute видна только у видео-карточек (старт: loading → скрыта)
         self._actions_overlay.hide()
         self._position_actions_overlay()
         if self._aux_2k_overlay is not None:
@@ -419,6 +428,8 @@ class ShimmerCell(QFrame):
         except Exception:
             pass
         self._refresh_reveal_enabled()
+        self._refresh_mute_visible()   # видео-карточка → показать кнопку mute
+        self._apply_mute_icon(bool(getattr(self._page, "_video_muted", False)))  # синк иконки
         self.update()
 
     def set_model_label(self, text: str):
@@ -549,7 +560,9 @@ class ShimmerCell(QFrame):
             return False
         try:
             self._video_sink = QVideoSink(self)
-            self._audio = QAudioOutput(self)        # звук ВКЛ (как Google Flow)
+            self._audio = QAudioOutput(self)        # звук ВКЛ по умолчанию (Google Flow)
+            # 2026-06-28: новый плеер стартует в ТЕКУЩЕМ глобальном mute-состоянии.
+            self._audio.setMuted(bool(getattr(self._page, "_video_muted", False)))
             self._player = QMediaPlayer(self)
             self._player.setAudioOutput(self._audio)
             self._player.setVideoOutput(self._video_sink)   # sink, не виджет
@@ -676,6 +689,10 @@ class ShimmerCell(QFrame):
                 self._video_active = True            # hover хочет воспроизведение
                 self._video_playing = False          # ждём первый реальный кадр (анти-мерцание)
                 self._last_video_frame = None
+                # 2026-06-28: применить актуальный ГЛОБАЛЬНЫЙ mute перед стартом —
+                # покрывает видео на любом холсте/новое, даже если toggle не обошёл _cells.
+                if self._audio is not None:
+                    self._audio.setMuted(bool(getattr(self._page, "_video_muted", False)))
                 self._player.setPosition(0)          # КАЖДЫЙ hover — с начала
                 self._player.play()
             except Exception as e:
@@ -792,6 +809,45 @@ class ShimmerCell(QFrame):
         aux = getattr(self, "_aux_2k_overlay", None)
         if aux is not None:
             aux.setVisible(False)  # спутник появляется на hover, не сразу
+
+    # ── mute звука видео (ГЛОБАЛЬНЫЙ — общий для всего приложения) ─────────
+    def _refresh_mute_visible(self):
+        """Кнопка mute видна ТОЛЬКО у видео-карточек (state video). На картинках/loading
+        скрыта (звука нет). Зовётся из __init__ (loading → скрыта) и
+        set_video_placeholder (видео → показать)."""
+        btn = getattr(self, "btn_mute", None)
+        if btn is not None:
+            btn.setVisible(self._state == "video")
+
+    def _apply_mute_icon(self, muted: bool):
+        """Иконка кнопки mute: volume-x (звук выкл) / volume-2 (вкл). Обновляет и
+        normal-, и hover-иконку (eventFilter свапает их на hover)."""
+        btn = getattr(self, "btn_mute", None)
+        if btn is None:
+            return
+        name = "volume-x" if muted else "volume-2"
+        try:
+            from storyboard_app import get_icon as _get_icon
+        except Exception:
+            _get_icon = lambda _n: None   # noqa: E731
+        ic = _get_icon(name)
+        if ic is not None:
+            btn.setIcon(ic)
+            btn._normal_icon = ic
+            btn._hover_icon = _tinted_icon(name, "#ffffff")
+
+    def apply_video_muted(self, muted: bool):
+        """Применить ГЛОБАЛЬНОЕ mute-состояние к ЭТОЙ карточке: заглушить аудио (если
+        плеер уже создан) + обновить иконку. Зовётся GeneratorPage.toggle_video_muted
+        по всем карточкам. Если плеер ещё не создан — mute применится при создании
+        (_ensure_player) и на каждом hover-play (enterEvent)."""
+        au = getattr(self, "_audio", None)
+        if au is not None:
+            try:
+                au.setMuted(bool(muted))
+            except Exception:
+                pass
+        self._apply_mute_icon(bool(muted))
 
     def _on_ref_clicked(self):
         """Клик по btn_ref: прикрепить файл этой плитки к prompt-bar как реф

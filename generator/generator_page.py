@@ -79,6 +79,9 @@ class GeneratorPage(QWidget):
         # Счётчик заполненных ячеек + ссылки на ВСЕ плитки (для перераскладки).
         self._cell_count = 0
         self._cells = []
+        # 2026-06-28: ГЛОБАЛЬНЫЙ mute звука видео (всё приложение, все холсты/сериалы).
+        # Хранится в QSettings (переживает перезапуск), НЕ привязан к проекту/странице.
+        self._video_muted = bool(QSettings().value("generator/video_muted", False, type=bool))
         # Мультихолст (КУСОК 1 — только данные/хранение; таб-бар/переключение —
         # куски 2-3). self._cells = плитки АКТИВНОГО холста (как раньше). Секции
         # холстов: [{id,title,cells:[<meta>...]}]; cells активного синкаются из
@@ -1011,6 +1014,23 @@ class GeneratorPage(QWidget):
         self.clear_refs()   # рефы тоже относились к этой генерации → сброс UI/состояния
 
     # ── сетка результатов + параллельные плитки ───────────────────────
+    def toggle_video_muted(self):
+        """ГЛОБАЛЬНЫЙ mute звука видео (всё приложение). Инвертирует флаг, пишет в
+        QSettings (переживает перезапуск, не привязан к проекту/холсту) и применяет ко
+        ВСЕМ живым видео-карточкам активного холста. Видео на других холстах/новые
+        подхватят состояние при следующем hover-play (ShimmerCell.enterEvent) и при
+        создании плеера (_ensure_player)."""
+        self._video_muted = not self._video_muted
+        try:
+            QSettings().setValue("generator/video_muted", self._video_muted)
+        except Exception:
+            pass
+        for cell in self._cells:
+            try:
+                cell.apply_video_muted(self._video_muted)
+            except Exception:
+                pass
+
     def _add_cell(self, aspect: str = "16:9") -> ShimmerCell:
         """Loading-плитка. Ширина под формат (16:9 шире, 9:16 уже), высота ОБЩАЯ.
         Раскладка по рядам с группировкой по формату — в _relayout_grid."""
