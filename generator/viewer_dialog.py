@@ -306,8 +306,9 @@ class GeneratorViewerDialog(QDialog):
         self._icon_volx = None
         self._muted = False           # локальный mute плеера попапа
         self._was_playing = False     # скраб: играло ли видео до захвата ползунка
-        self._seek_timer = None       # троттл-таймер перемотки при таскании
+        self._seek_timer = None       # троттл-таймер перемотки при таскании (добивка)
         self._pending_seek = None     # последняя позиция, ждущая применения троттлом
+        self._last_seek_apply = 0.0   # monotonic-время последнего setPosition (троттл скраба)
         self._is_video = (self._meta.get("type") == "video")
         aspect = self._meta.get("aspect", "16:9")
 
@@ -613,10 +614,21 @@ class GeneratorViewerDialog(QDialog):
             self._seek.setValue(int(pos))
 
     def _on_seek_moved(self, val: int):
-        """Таскание ползунка → копим последнюю позицию; применяет её троттл-таймер
-        (_flush_pending_seek) раз в _SEEK_THROTTLE_MS — декодер успевает рисовать
-        промежуточные кадры по ходу, а не только на остановке мыши."""
+        """Таскание ползунка → перемотка ЖИВЬЁМ. setPosition применяем ПРЯМО здесь (в
+        обработчике mouseMove), троттля по реальному времени (monotonic). Раньше seek шёл
+        ТОЛЬКО через QTimer, который во время активного drag голодал (поток занят потоком
+        mouse-событий) → setPosition доходил лишь на остановке/релизе, кадр не обновлялся
+        по ходу. Таймер оставлен добивкой финальной позиции, когда движение замерло внутри
+        окна троттла (последний move мог не примениться)."""
         self._pending_seek = int(val)
+        import time
+        now = time.monotonic()
+        if self._player is not None and (now - self._last_seek_apply) * 1000.0 >= _SEEK_THROTTLE_MS:
+            self._last_seek_apply = now
+            try:
+                self._player.setPosition(int(val))
+            except Exception:
+                pass
         if self._seek_timer is not None and not self._seek_timer.isActive():
             self._seek_timer.start()
 
@@ -635,15 +647,19 @@ class GeneratorViewerDialog(QDialog):
         except Exception:
             self._was_playing = False
         self._pending_seek = None
+        self._last_seek_apply = 0.0   # сброс → первое же движение применится сразу
         if self._seek_timer is not None and not self._seek_timer.isActive():
             self._seek_timer.start()
 
     def _flush_pending_seek(self):
-        """Тик троттл-таймера: применить накопленную позицию (если пришла новая)."""
+        """Тик троттл-таймера: ДОБИВКА — применить накопленную позицию, если последний
+        mouseMove не успел её применить (движение замерло внутри окна троттла)."""
         if self._player is None or self._pending_seek is None:
             return
         try:
             self._player.setPosition(int(self._pending_seek))
+            import time
+            self._last_seek_apply = time.monotonic()
         except Exception:
             pass
         self._pending_seek = None
@@ -687,6 +703,15 @@ class GeneratorViewerDialog(QDialog):
             img = None
         if img is None or img.isNull():
             return
+        # Нормализуем формат → стандартный RGB32, чей PNG гарантированно читается QPixmap.
+        # На реальном Metal/RHI-бэкенде macOS videoFrame().toImage() может вернуть
+        # нестандартный формат, чей сохранённый PNG QPixmap грузит как null → реф в поле
+        # показывал ▶-видео-заглушку (превью рефа на null-картинку рисует ▶), хотя это PNG.
+        try:
+            from PyQt6.QtGui import QImage as _QImage
+            img = img.convertToFormat(_QImage.Format.Format_RGB32)
+        except Exception:
+            pass
         # сохранить PNG рядом с видео (та же папка холста shows/<slug>/generator/), имя с
         # таймстампом+позицией — чтобы не затереть существующие файлы холста.
         try:
