@@ -703,25 +703,27 @@ class GeneratorViewerDialog(QDialog):
             img = None
         if img is None or img.isNull():
             return
-        # Нормализуем формат → стандартный RGB32, чей PNG гарантированно читается QPixmap.
-        # На реальном Metal/RHI-бэкенде macOS videoFrame().toImage() может вернуть
-        # нестандартный формат, чей сохранённый PNG QPixmap грузит как null → реф в поле
-        # показывал ▶-видео-заглушку (превью рефа на null-картинку рисует ▶), хотя это PNG.
+        # сохранить кадр рядом с видео (та же папка холста shows/<slug>/generator/). JPEG —
+        # как остальные кадры-превью проекта (gen_*.jpg), универсально читается QPixmap.
+        # convertToFormat(RGB32) — на случай нестандартного формата кадра с Metal/RHI.
+        # Имя с таймстампом+позицией — не затирает файлы холста.
         try:
             from PyQt6.QtGui import QImage as _QImage
-            img = img.convertToFormat(_QImage.Format.Format_RGB32)
-        except Exception:
-            pass
-        # сохранить PNG рядом с видео (та же папка холста shows/<slug>/generator/), имя с
-        # таймстампом+позицией — чтобы не затереть существующие файлы холста.
-        try:
             from datetime import datetime
+            if img.format() != _QImage.Format.Format_RGB32:
+                img = img.convertToFormat(_QImage.Format.Format_RGB32)
             pos = int(self._player.position()) if self._player is not None else 0
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out = Path(self._result_path).parent / f"frame_{stamp}_{pos}ms.png"
-            if not img.save(str(out), "PNG"):
+            out = Path(self._result_path).parent / f"frame_{stamp}_{pos}ms.jpg"
+            if not img.save(str(out), "JPEG", 92):
                 return
         except Exception:
+            return
+        # КЛЮЧЕВОЕ от ▶-бага: добавляем реф ТОЛЬКО если сохранённый файл реально читается
+        # QPixmap (тем же загрузчиком, что превью рефа). Так путь в add_ref ГАРАНТИРОВАННО
+        # указывает на существующий читаемый кадр — нечитаемый/несуществующий не добавляем
+        # (иначе превью рефа рисует ▶-видео-заглушку на null-картинку).
+        if QPixmap(str(out)).isNull():
             return
         # добавить в поле рефов страницы генератора (родитель попапа = generator_page)
         page = self.parent()
