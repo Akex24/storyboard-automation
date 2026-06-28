@@ -923,14 +923,15 @@ class GeneratorPage(QWidget):
         Сегменты делят один слот в ctl-ряду (равная ширина), взаимоисключение.
 
         Зовётся model_combo.changed (смена модели) и _on_mode_change (image↔video).
-        После переключения — обнуляем _pending_refs (clear_refs): лимиты у разных
-        моделей разные (_max_refs), оставшиеся рефы могли бы превысить новый лимит."""
+        Рефы и промпт при этом СОХРАНЯЮТСЯ; лишние рефы (сверх нового _max_refs)
+        обрезаются _trim_refs_to_limit — лимиты у разных моделей разные."""
         model = self.model_combo.current_model_id()
         is_video = (self._mode == "video")
         self.dur_seg.setVisible(is_video and model == "flow-video-omni-flash")
         self.veo_mode_seg.setVisible(is_video and model == "flow-video-fast")
-        # Стартовый вызов из __init__ при пустом _pending_refs — no-op.
-        self.clear_refs()
+        # Рефы/промпт СОХРАНЯЮТСЯ при смене режима/модели (раньше clear_refs стирал все
+        # — регрессия da3c435). Обрезаем лишь лишние, если новый лимит меньше.
+        self._trim_refs_to_limit()
 
     def _show_hint(self, text: str):
         """Транзиентная подсказка-тост поверх prompt-bar (4с). НЕ в layout → геометрию
@@ -2298,6 +2299,19 @@ class GeneratorPage(QWidget):
         self._ref_thumbs.clear()
         self._pending_refs.clear()
         self._refs_row.setVisible(False)
+
+    def _trim_refs_to_limit(self):
+        """Обрезать прикреплённые рефы до текущего лимита модели/режима (_max_refs),
+        СОХРАНЯЯ остальные. Зовётся при смене режима/модели вместо безусловного
+        clear_refs (da3c435 стирал ВСЕ рефы — регрессия). Рефы остаются; лишние сверх
+        нового лимита (напр. Omni 7 → Veo «Кадры» 2) убираются с КОНЦА (последние
+        добавленные). Вмещаются в лимит — не трогаем. Промпт не трогаем вовсе."""
+        try:
+            limit = max(0, int(self._max_refs()))
+        except Exception:
+            return
+        while len(self._pending_refs) > limit:
+            self.remove_ref(self._pending_refs[-1])
 
     def pending_refs(self) -> list:
         """Копия списка прикреплённых путей — для коммита 2 (передача в потоки)."""
