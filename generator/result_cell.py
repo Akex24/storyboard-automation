@@ -321,6 +321,7 @@ class ShimmerCell(QFrame):
             for _b in (self.btn_trash, self.btn_back, self.btn_ref, self.btn_heart,
                        self.btn_mute):
                 ah.addWidget(_b)
+            ah.addStretch()   # top-align колонки (mute скрыт у loading → не центрировать)
         else:
             # 16:9 — _actions_overlay = VBox{ HBox{heart,ref,back,trash}, HBox{spacer,btn_2k} }.
             ah = QVBoxLayout(self._actions_overlay)
@@ -339,6 +340,11 @@ class ShimmerCell(QFrame):
             _bot.addWidget(self.btn_2k)
             ah.addLayout(_top)
             ah.addLayout(_bot)
+            # top-align: если overlay-виджет окажется ВЫШЕ контента (btn_2k скрыт у
+            # видео, а adjustSize ещё не ужал виджет — staleness скрытого overlay в
+            # cocoa), лишняя высота уходит в нижний stretch, а ряды кнопок остаются
+            # ПРИЖАТЫ К ВЕРХУ (y=8). Без этого VBox распихивал место → кнопки съезжали.
+            ah.addStretch()
         # btn_back / btn_ref / btn_trash / btn_2k оживлены; heart пока пустая.
         self.btn_back.clicked.connect(self._on_back_clicked)
         self.btn_ref.clicked.connect(self._on_ref_clicked)
@@ -596,12 +602,22 @@ class ShimmerCell(QFrame):
         ov.move(x, y)
 
     def _reanchor_overlays(self):
-        """Пересчитать размер+позицию кластера hover-кнопок после смены ВИДИМОСТИ
-        кнопок внутри него (btn_2k / mute). Без этого overlay держит старую высоту
-        (adjustSize не пересчитан) и верхний ряд кнопок съезжает вниз. Баг был виден
-        только на video-loading: btn_2k скрывается в set_meta(type='video') ПОСЛЕ
-        первичного позиционирования (на пустой meta btn_2k считался видимым), а
-        следующий relayout/set_size self-корректировал. Оба _position_* гардят None."""
+        """Пересчитать размер+позицию кластера hover-кнопок под ТЕКУЩУЮ видимость
+        кнопок внутри него (btn_2k / mute). Баг: на video-loading btn_2k скрывается в
+        set_meta(type='video') ПОСЛЕ первичного позиционирования (на пустой meta
+        btn_2k считался видимым), и верхний ряд кнопок съезжал вниз до смены холста.
+
+        КЛЮЧЕВОЕ: во время loading overlay СКРЫТ — Qt не активирует layout скрытого
+        виджета, поэтому adjustSize отдаёт УСТАРЕВШИЙ sizeHint (btn_2k ещё «учтён»).
+        Перед репозицией ФОРСИРУЕМ layout().activate() — синхронный пересчёт под
+        текущую видимость (иначе фикс срабатывал только после relayout/смены холста,
+        которые ре-парентят плитку и тем активируют layout). Оба _position_* гардят None."""
+        for ov in (getattr(self, "_actions_overlay", None),
+                   getattr(self, "_aux_2k_overlay", None)):
+            if ov is not None:
+                lay = ov.layout()
+                if lay is not None:
+                    lay.activate()   # форсировать пересчёт даже на скрытом overlay
         self._position_actions_overlay()
         self._position_aux_2k_overlay()
 
@@ -758,6 +774,11 @@ class ShimmerCell(QFrame):
         if ov is not None:
             ov.show()
             ov.raise_()
+            # overlay теперь ПОКАЗАН → его layout можно активировать; пересчитать
+            # размер/якорь кластера под текущую видимость кнопок (на video-loading
+            # btn_2k скрыт). Делаем на КАЖДЫЙ hover → кнопки всегда на правильной
+            # высоте сразу, без ожидания relayout/смены холста.
+            self._reanchor_overlays()
         # ЛЕВЫЙ overlay (reveal) — только если файл реально есть (_reveal_ok).
         lov = getattr(self, "_left_overlay", None)
         if lov is not None and getattr(self, "_reveal_ok", False):
