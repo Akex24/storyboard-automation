@@ -35,7 +35,7 @@ from PyQt6.QtGui import (QPainter, QPainterPath, QLinearGradient, QColor, QPixma
                          QFont, QIcon)
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton, QWidget
 
-from views.theme import theme_qcolor
+from views.theme import theme_qcolor, LUMZ_THEME
 
 
 # Модуль-уровневые константы — не пересоздаём в paintEvent (дёшево для CPU).
@@ -71,14 +71,14 @@ _PROG_LIFT = 2
 # зашит в SVG (Lucide stroke), QSS его не перекрашивает.
 _ACTIONS_OVERLAY_QSS = (
     "QToolButton {"
-    " background: rgba(20,20,24,0.72);"
-    " border: 1px solid rgba(255,255,255,0.18);"
+    f" background: {LUMZ_THEME['overlay_btn_bg']};"
+    f" border: 1px solid {LUMZ_THEME['overlay_btn_border']};"
     " border-radius: 8px;"
     " padding: 0px;"
     "}"
     "QToolButton:hover {"
-    " background: rgba(52,54,58,0.92);"
-    " border: 1px solid rgba(255,255,255,0.38);"
+    f" background: {LUMZ_THEME['overlay_btn_bg_hover']};"
+    f" border: 1px solid {LUMZ_THEME['overlay_btn_border_hover']};"
     "}"
     "QToolButton#cell-act-trash {"
     " border: 1px solid rgba(232,75,74,0.35);"
@@ -89,9 +89,9 @@ _ACTIONS_OVERLAY_QSS = (
     "}"
     # 2026-06-25 (апскейл): «2K» — золотой LUMZ accent_gold #d4a256, текстом без иконки.
     "QToolButton#cell-act-2k {"
-    " background: rgba(212,162,86,0.18);"
-    " border: 1px solid rgba(212,162,86,0.55);"
-    " color: #f3d28a;"
+    " background: rgba(207,255,34,0.55);"
+    " border: 1px solid rgba(207,255,34,0.55);"
+    " color: #111213;"
     " font-size: 11px; font-weight: 700;"
     "}"
     "QToolButton#cell-act-2k:hover {"

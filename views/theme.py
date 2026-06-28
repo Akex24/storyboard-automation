@@ -74,6 +74,17 @@ THEME_SECTIONS = {
         "bg_hover": "rgba(255, 255, 255, 0.06)",
     },
 
+    # Оверлеи: плавающие hover-кнопки поверх картинки/видео на карточке
+    # генератора (heart/ref/back и т.п.). Подложка плотнее обычных surface,
+    # чтобы белые иконки читались на ярких кадрах. 2026-06-28: вынесено из
+    # хардкода generator/result_cell.py (_ACTIONS_OVERLAY_QSS).
+    "overlay": {
+        "overlay_btn_bg": "rgba(20,20,24,0.55)",
+        "overlay_btn_bg_hover": "rgba(52,54,58,0.92)",
+        "overlay_btn_border": "rgba(20,20,24,0.55)",
+        "overlay_btn_border_hover": "rgba(52,54,58,0.92)",
+    },
+
     # Обводки: рамки карточек, кнопок, попапов и слабые разделители.
     "border": {
         "border_default": "rgba(255, 255, 255, 0.06)",
