@@ -195,6 +195,11 @@ class ShimmerCell(QFrame):
         # _finish_common (там сбрасываем). Иначе «Скачиваю движок: 24%»
         # мигало бы с секундным счётчиком «12с» каждый тик.
         self._loading_text_external = False
+        self._base_loading_text = ""   # 2026-06-28: базовый текст фазы «Генерирую…»;
+                                       # _tick_seconds дорисовывает к нему «{N}с» 2-й строкой
+        self._gen_t0 = None            # 2026-06-28: момент НАЧАЛА генерации (первый приход
+                                       # фазы «Генерирую…»); None = ещё не началась. Секунды
+                                       # ticking-фазы считаются от него, НЕ от _t0 (создания).
         self._sec_timer = QTimer(self)
         self._sec_timer.setInterval(1000)
         self._sec_timer.timeout.connect(self._tick_seconds)
@@ -335,11 +340,22 @@ class ShimmerCell(QFrame):
     def _tick_seconds(self):
         if self._state != "loading":
             return
-        # 2026-06-25 (апскейл): не топчем внешний прогресс (см. set_loading_text).
+        # 2026-06-25 (апскейл): не топчем внешний СТАТИЧНЫЙ прогресс (см. set_loading_text).
         if getattr(self, "_loading_text_external", False):
             return
         elapsed = max(0, int(time.time() - self._t0))
-        self._info_lbl.setText(f"{elapsed}с")
+        # 2026-06-28: в фазе «Генерирую…» рисуем базовый текст + секунды 2-й строкой;
+        # иначе (до прихода фазы) — голые «{N}с».
+        base = getattr(self, "_base_loading_text", "")
+        if base:
+            # Секунды генерации — от _gen_t0 (начало генерации), а НЕ от _t0
+            # (создание карточки): после очереди счёт стартует с нуля. Fallback
+            # на _t0, если _gen_t0 почему-то не выставлен.
+            gstart = self._gen_t0 if self._gen_t0 is not None else self._t0
+            gelapsed = max(0, int(time.time() - gstart))
+            self._info_lbl.setText(f"{base}\n{gelapsed}с")
+        else:
+            self._info_lbl.setText(f"{elapsed}с")
 
     # ── общий shimmer-такт (зовёт страница) ─────────────────────────────
     def set_phase(self, angle_rad: float):
@@ -359,6 +375,8 @@ class ShimmerCell(QFrame):
         # 2026-06-25 (апскейл): освободить флаг внешнего текста — на случай
         # если плитку позже переиспользуют под другую загрузку.
         self._loading_text_external = False
+        self._base_loading_text = ""   # 2026-06-28: сброс ticking-фазы (переиспользование плитки)
+        self._gen_t0 = None            # 2026-06-28: сброс нулевой точки генерации
         try:
             self._page.unregister_loading(self)
         except Exception:
@@ -827,14 +845,33 @@ class ShimmerCell(QFrame):
         """2026-06-25 (апскейл): публичный API для трансляции прогресса
         («Скачиваю движок: 24%», «Улучшаю качество: 42%») в плашку лоадера.
         Только в state=='loading' — иначе игнорируем (не плодим текст на image).
-        Выставляет _loading_text_external=True, чтобы _tick_seconds не
-        перетёр через секунду. Флаг сбросится в _finish_common."""
+
+        2026-06-28: фаза «Генерирую…» особая — ticking-режим: базовый текст
+        запоминаем, а секунды «{N}с» ПЛАВНО дорисовывает _tick_seconds (раз в
+        секунду, от _t0 ячейки), чтобы цифры не прыгали рывками по poll-ответам.
+        Остальные тексты («Скачиваю движок: 24%», «Жду в очереди…», «Сервер
+        занят, повторяю…») — статичные: _loading_text_external=True, секундомер
+        молчит. Флаги сбросятся в _finish_common."""
         if self._state != "loading":
             return
         try:
-            self._loading_text_external = True
-            self._info_lbl.setText(msg or "")
-            self._info_lbl.show()
+            if msg == "Генерирую…":
+                # ticking: секунды дорисовывает _tick_seconds (плавно, от _gen_t0).
+                self._base_loading_text = msg
+                # Нулевая точка секунд — момент НАЧАЛА генерации. Ставится ОДИН раз
+                # (первый заход в «Генерирую…»); на повторных заходах после ретрая
+                # уже не None → секунды НЕ прыгают назад.
+                if self._gen_t0 is None:
+                    self._gen_t0 = time.time()
+                self._loading_text_external = False
+                self._info_lbl.show()
+                self._tick_seconds()   # сразу отрисовать base+секунды, не ждать тика
+            else:
+                # статичный текст (проценты апскейла / очередь / повтор) — БЕЗ секунд.
+                self._base_loading_text = ""
+                self._loading_text_external = True
+                self._info_lbl.setText(msg or "")
+                self._info_lbl.show()
         except Exception:
             pass
 

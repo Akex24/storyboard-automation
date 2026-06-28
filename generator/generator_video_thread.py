@@ -170,9 +170,6 @@ class GeneratorVideoThread(QThread):
             # обёрнута в цикл до 4 попыток. На транзиентном failed (_is_transient) и
             # retry_attempt<3 → пауза 10с + новая попытка (свежий перебор ключей).
             # Контент/лицензия/валидация и POLL_TIMEOUT — НЕ ретраятся (см. ниже).
-            # 2026-06-28: непрерывный секундомер ПОКАЗА — от ПЕРВОГО старта генерации
-            # через все попытки (t0 ниже остаётся per-attempt для poll-таймаута/диага).
-            gen_t0 = time.monotonic()
             for retry_attempt in range(4):
                 # Сброс submit-состояния на КАЖДОЙ попытке (свежий перебор ключей).
                 session = None
@@ -276,7 +273,7 @@ class GeneratorVideoThread(QThread):
                         return
                     session = s   # рабочий ключ — им поллим и качаем
 
-                self.progress.emit("Генерирую видео…")
+                self.progress.emit("Генерирую…")
                 t0 = time.monotonic()
                 last_status = ""
                 retry_pending = False   # станет True → транзиентный сбой, повторить генерацию
@@ -315,7 +312,7 @@ class GeneratorVideoThread(QThread):
                     d = rr.json()
                     status = (d.get("status") or "").lower()
                     last_status = status
-                    self.progress.emit(f"Генерирую…\n{int(time.monotonic() - gen_t0)}с")
+                    self.progress.emit("Генерирую…")
 
                     if status in _OK_STATUSES:
                         results = d.get("results") or d.get("result") or []
