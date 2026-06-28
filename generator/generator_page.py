@@ -923,15 +923,16 @@ class GeneratorPage(QWidget):
         Сегменты делят один слот в ctl-ряду (равная ширина), взаимоисключение.
 
         Зовётся model_combo.changed (смена модели) и _on_mode_change (image↔video).
-        Рефы и промпт при этом СОХРАНЯЮТСЯ; лишние рефы (сверх нового _max_refs)
-        обрезаются _trim_refs_to_limit — лимиты у разных моделей разные."""
+        Рефы и промпт при этом СОХРАНЯЮТСЯ ПОЛНОСТЬЮ; рефы сверх нового _max_refs не
+        удаляются, а помечаются притухшими (_refresh_ref_activity) — в генерацию уходят
+        только активные первые N (_active_refs)."""
         model = self.model_combo.current_model_id()
         is_video = (self._mode == "video")
         self.dur_seg.setVisible(is_video and model == "flow-video-omni-flash")
         self.veo_mode_seg.setVisible(is_video and model == "flow-video-fast")
-        # Рефы/промпт СОХРАНЯЮТСЯ при смене режима/модели (раньше clear_refs стирал все
-        # — регрессия da3c435). Обрезаем лишь лишние, если новый лимит меньше.
-        self._trim_refs_to_limit()
+        # Рефы/промпт СОХРАНЯЮТСЯ при смене режима/модели; лишние (сверх _max_refs) не
+        # удаляются, а тушатся (_refresh_ref_activity) — в payload идут только активные.
+        self._refresh_ref_activity()
 
     def _show_hint(self, text: str):
         """Транзиентная подсказка-тост поверх prompt-bar (4с). НЕ в layout → геометрию
@@ -995,10 +996,10 @@ class GeneratorPage(QWidget):
             from generator.generator_video_thread import GeneratorVideoThread
         else:
             from generator.generator_thread import GeneratorImageThread
-        # Прикреплённые рефы из prompt-bar (коммит 1 завёл UI/хранение, коммит 2
-        # шлёт в payload["inputs"] для картинок). Копия списка — мутации в UI после
-        # старта не влияют на уже запущенные потоки.
-        refs = self.pending_refs()
+        # Прикреплённые рефы из prompt-bar → payload["inputs"]. ТОЛЬКО активные первые N
+        # (_active_refs по _max_refs); притухшие (сверх лимита режима) НЕ уходят. Копия
+        # списка — мутации в UI после старта не влияют на уже запущенные потоки.
+        refs = self._active_refs()
         # Pre-flight гард: Veo Fast «Кадры» (keyframes) ТРЕБУЕТ ≥1 стартовый кадр
         # (сервер: «flow-video-fast keyframes requires 1-2 inputs; received 0» → HTTP
         # 400). Без рефов не отправляем — иначе заведомо невалидный запрос + плитка
@@ -2183,6 +2184,7 @@ class GeneratorPage(QWidget):
         self._ref_thumbs[file_path] = thumb
         self._refs_row_lay.addWidget(thumb)
         self._refs_row.setVisible(True)
+        self._refresh_ref_activity()   # новый реф: пометить активным/притухшим по лимиту
 
     def add_ref_from_meta(self, meta: dict):
         """Прикрепить файл плитки (по её _meta) как реф к следующей генерации.
@@ -2283,6 +2285,8 @@ class GeneratorPage(QWidget):
                 thumb.deleteLater()
             except Exception:
                 pass
+        # удалили активный → следующий притухший становится активным (пересчёт по лимиту)
+        self._refresh_ref_activity()
         if not self._pending_refs:
             self._refs_row.setVisible(False)
 
@@ -2300,18 +2304,49 @@ class GeneratorPage(QWidget):
         self._pending_refs.clear()
         self._refs_row.setVisible(False)
 
-    def _trim_refs_to_limit(self):
-        """Обрезать прикреплённые рефы до текущего лимита модели/режима (_max_refs),
-        СОХРАНЯЯ остальные. Зовётся при смене режима/модели вместо безусловного
-        clear_refs (da3c435 стирал ВСЕ рефы — регрессия). Рефы остаются; лишние сверх
-        нового лимита (напр. Omni 7 → Veo «Кадры» 2) убираются с КОНЦА (последние
-        добавленные). Вмещаются в лимит — не трогаем. Промпт не трогаем вовсе."""
+    def _active_refs(self) -> list:
+        """Активные рефы — первые N (по _max_refs текущей модели/режима). ТОЛЬКО они
+        уходят в payload генерации (inputs[]); остальные _pending_refs показаны
+        притухшими (про запас при смене режима). _pending_refs при этом НЕ меняется."""
         try:
             limit = max(0, int(self._max_refs()))
         except Exception:
-            return
-        while len(self._pending_refs) > limit:
-            self.remove_ref(self._pending_refs[-1])
+            return list(self._pending_refs)
+        return list(self._pending_refs[:limit])
+
+    def _refresh_ref_activity(self):
+        """Пересчитать активность тумб рефов по текущему лимиту (_max_refs): первые N
+        активны (яркие), остальные — притушены (про запас). Рефы НЕ удаляются (в
+        генерацию идут только _active_refs). Зовётся при смене режима/модели
+        (_update_duration_visibility) и из add_ref/remove_ref (актуализация порядка)."""
+        try:
+            limit = max(0, int(self._max_refs()))
+        except Exception:
+            limit = len(self._pending_refs)
+        for i, path in enumerate(self._pending_refs):
+            thumb = self._ref_thumbs.get(path)
+            if thumb is not None:
+                self._set_thumb_dimmed(thumb, i >= limit)
+
+    def _set_thumb_dimmed(self, thumb, dimmed: bool):
+        """Притушить/вернуть яркость тумбы рефа через QGraphicsOpacityEffect (реверсивно).
+        dimmed → opacity 0.4 + tooltip «про запас»; активна → opacity 1.0. Эффект создаём
+        ЛЕНИВО только при первом притушении (всегда-активные тумбы остаются без эффекта).
+        Клики/hover-попап не страдают — эффект чисто визуальный."""
+        eff = getattr(thumb, "_dim_effect", None)
+        if not dimmed and eff is None:
+            return   # активна и эффекта нет — дефолт (яркая), ничего не делаем
+        if eff is None:
+            eff = QGraphicsOpacityEffect(thumb)
+            thumb.setGraphicsEffect(eff)
+            thumb._dim_effect = eff
+        try:
+            eff.setOpacity(0.4 if dimmed else 1.0)
+            thumb.setToolTip(
+                "Сверх лимита текущего режима — в генерацию не уйдёт (про запас)"
+                if dimmed else "")
+        except Exception:
+            pass
 
     def pending_refs(self) -> list:
         """Копия списка прикреплённых путей — для коммита 2 (передача в потоки)."""
