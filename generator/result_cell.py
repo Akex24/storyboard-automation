@@ -904,17 +904,15 @@ class ShimmerCell(QFrame):
                       if enabled else Qt.CursorShape.ArrowCursor)
 
     def _on_back_clicked(self):
-        """Клик по btn_back: положить prompt из _meta в поле ввода Генератора,
-        ЗАМЕНЯЯ текущий текст. Пустой prompt → выход (кнопка должна быть disabled,
-        но guard всё равно полезен)."""
-        prompt = ""
-        if isinstance(self._meta, dict):
-            prompt = (self._meta.get("prompt") or "").strip()
-        if not prompt:
+        """Клик по btn_back («вернуть в генератор»): восстановить В ПОЛЕ генератора
+        промпт + ВСЕ рефы + настройки (модель/формат/длительность/режим) этой карточки —
+        ИДЕНТИЧНО стрелке возврата в попапе (та же page.restore_from_meta(self._meta)).
+        Раньше ставился ТОЛЬКО промпт (set_prompt) — урезанно. Работает для картинок и видео."""
+        if self._page is None or not isinstance(self._meta, dict):
             return
-        if self._page is not None:
+        if hasattr(self._page, "restore_from_meta"):
             try:
-                self._page.set_prompt(prompt)
+                self._page.restore_from_meta(self._meta)
             except Exception:
                 pass
 
