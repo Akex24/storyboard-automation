@@ -338,14 +338,14 @@ class GeneratorViewerDialog(QDialog):
         except Exception:
             pass
 
-    # ── картинка: StoryboardView (зум колесом + панорама) ──────────────
+    # ── картинка: StoryboardView (зум колесом + панорама) + панель снизу ──
     def _build_image(self, lay: QVBoxLayout):
         pix = QPixmap(self._result_path)
         try:
             # Ленивый импорт (frozen/circular guard — как в shot_viewer_dialog).
             from widgets.face_grid.grid_dialog import StoryboardView
             self._view = StoryboardView(pix)
-            lay.addWidget(self._view)
+            lay.addWidget(self._view, 1)   # картинка занимает всё место над панелью
         except Exception:
             # Фолбэк: StoryboardView недоступен → статичная картинка без зума.
             lbl = QLabel()
@@ -354,7 +354,32 @@ class GeneratorViewerDialog(QDialog):
             if not pix.isNull():
                 lbl.setPixmap(pix)
             lbl.setScaledContents(False)
-            lay.addWidget(lbl)
+            lay.addWidget(lbl, 1)
+        # Нижняя панель: ВОЗВРАТ + ПАПКА (как у видео-ряда, но без плеера/таймлайна/звука).
+        lay.addWidget(self._build_image_button_row())
+
+    # ── ряд кнопок ПОД картинкой: возврат + папка (переиспользует видео-логику) ──
+    def _build_image_button_row(self) -> QWidget:
+        """Нижняя панель картиночного попапа: ДВЕ кнопки — возврат (corner-up-left) и
+        папка (folder-open). Переиспользует _mk_row_btn (28×28, Lucide-иконка), стиль
+        _controls_qss и СУЩЕСТВУЮЩИЕ обработчики _on_return_clicked / _on_reveal_clicked
+        (логику не дублируем). Без play/pause, таймлайна, звука — их у картинки нет."""
+        bar = QWidget(self)
+        bar.setObjectName("viewer-btnrow")
+        bar.setFixedHeight(44)
+        bar.setStyleSheet(self._controls_qss())
+        hb = QHBoxLayout(bar)
+        hb.setContentsMargins(12, 0, 12, 0)
+        hb.setSpacing(6)
+        self._btn_return = self._mk_row_btn(
+            "corner-up-left", 28, 18, self._on_return_clicked, "Вернуть в генератор", bar)
+        self._btn_folder = self._mk_row_btn(
+            "folder-open", 28, 18, self._on_reveal_clicked, "Показать в Finder", bar)
+        hb.addStretch(1)
+        hb.addWidget(self._btn_return)
+        hb.addWidget(self._btn_folder)
+        hb.addStretch(1)
+        return bar
 
     # ── видео: QVideoWidget + плеер + ряд кнопок + таймлайн-трек ────────────
     def _build_video(self, lay: QVBoxLayout):
