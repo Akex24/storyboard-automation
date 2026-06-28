@@ -984,7 +984,7 @@ class GenerateThread(QThread):
                     return
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
-                    print(f"[FASTGEN] path=GenerateThread api=v5 "
+                    print(f"[FASTGEN] path=GenerateThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -1038,7 +1038,7 @@ class GenerateThread(QThread):
                             r2.raise_for_status()
                             image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
-                    print(f"[FASTGEN] path=GenerateThread api=v5 "
+                    print(f"[FASTGEN] path=GenerateThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -1047,7 +1047,7 @@ class GenerateThread(QThread):
                     break
                 # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
-                    print(f"[FASTGEN] path=GenerateThread api=v5 "
+                    print(f"[FASTGEN] path=GenerateThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -1398,7 +1398,7 @@ class RefGenerateThread(QThread):
                 time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
-                    print(f"[FASTGEN] path=RefGenerateThread api=v5 "
+                    print(f"[FASTGEN] path=RefGenerateThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -1452,7 +1452,7 @@ class RefGenerateThread(QThread):
                             r2.raise_for_status()
                             image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
-                    print(f"[FASTGEN] path=RefGenerateThread api=v5 "
+                    print(f"[FASTGEN] path=RefGenerateThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -1461,7 +1461,7 @@ class RefGenerateThread(QThread):
                     break
                 # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
-                    print(f"[FASTGEN] path=RefGenerateThread api=v5 "
+                    print(f"[FASTGEN] path=RefGenerateThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -2071,7 +2071,7 @@ class GenerateActorRefThread(QThread):
                 time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
-                    print(f"[FASTGEN] path=GenerateActorRefThread api=v5 "
+                    print(f"[FASTGEN] path=GenerateActorRefThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -2131,7 +2131,7 @@ class GenerateActorRefThread(QThread):
                             r2.raise_for_status()
                             image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
-                    print(f"[FASTGEN] path=GenerateActorRefThread api=v5 "
+                    print(f"[FASTGEN] path=GenerateActorRefThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -2174,7 +2174,7 @@ class GenerateActorRefThread(QThread):
                     return
                 # v5: queued/running/pending — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
-                    print(f"[FASTGEN] path=GenerateActorRefThread api=v5 "
+                    print(f"[FASTGEN] path=GenerateActorRefThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -2410,7 +2410,7 @@ class EditActorRefThread(QThread):
                 time.sleep(1.5)
                 elapsed = int(time.monotonic() - poll_started)
                 if elapsed > POLL_TIMEOUT_SEC:
-                    print(f"[FASTGEN] path=EditActorRefThread api=v5 "
+                    print(f"[FASTGEN] path=EditActorRefThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -2467,7 +2467,7 @@ class EditActorRefThread(QThread):
                             r2.raise_for_status()
                             image_bytes = r2.content
                     # [FASTGEN] диаг-строка успеха (→ runtime.log через studio tee).
-                    print(f"[FASTGEN] path=EditActorRefThread api=v5 "
+                    print(f"[FASTGEN] path=EditActorRefThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "
@@ -2485,7 +2485,7 @@ class EditActorRefThread(QThread):
                     return
                 # v5: queued/running/pending — НЕ матчатся, цикл продолжает поллинг.
                 if status in ("failed", "error", "cancelled"):
-                    print(f"[FASTGEN] path=EditActorRefThread api=v5 "
+                    print(f"[FASTGEN] path=EditActorRefThread api=v6 "
                           f"endpoint={endpoint} auth=X-API-Key "
                           f"model={payload.get('model')} provider={provider} "
                           f"result_format=ref inputs={len(payload.get('inputs', []))} "

@@ -1,6 +1,6 @@
 # ARCHITECTURE — Storyboard Studio
 
-**Последнее обновление:** 2026-06-27 (FastGen v6 — миграция В ПРОЦЕССЕ: threads/generate.py переведён на /api/v6/generations, результат читается из results[0].download_url с v5-fallback на storage_id → STORAGE_BASE/file/{sid}/raw; остальной стек (pipeline.py, generate_storyboards.py, generator/*, threads/{server_check,cancel,key_usage}) пока на v5 — см. секцию «FastGen v5»)
+**Последнее обновление:** 2026-06-28 (FastGen v6 — миграция ЗАВЕРШЕНА: весь стек генерации/usage/cancel на /api/v6/generations, результат читается из results[0].download_url с v5-fallback на storage_id. Плюс перебор ключей по кругу в генераторе (картинки+видео).)
 
 Снимок текущего устройства кода. Живой документ — обновляется в том же
 коммите что и затрагиваемая правка. Лежит в `_internal/` (не уходит к

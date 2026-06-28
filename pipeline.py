@@ -97,7 +97,7 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
             return data
         # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
         if status in ("failed", "error", "cancelled"):
-            print(f"[FASTGEN] path=pipeline.generate_image api=v5 "
+            print(f"[FASTGEN] path=pipeline.generate_image api=v6 "
                   f"op_id={op_id} status={status} result=error "
                   f"error={str(data.get('error') or '<none>')[:120]}")
             raise RuntimeError(f"Fast Gen error: {data}")
@@ -180,7 +180,7 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
         file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
 
     # [FASTGEN] диаг-строка успеха (stdout → читает агент). inputs=0 (чистый text2img).
-    print(f"[FASTGEN] path=pipeline.generate_image api=v5 "
+    print(f"[FASTGEN] path=pipeline.generate_image api=v6 "
           f"endpoint={endpoint} auth=X-API-Key "
           f"model={model} provider={provider} "
           f"result_format=ref inputs=0 "

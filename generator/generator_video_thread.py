@@ -75,8 +75,8 @@ class GeneratorVideoThread(QThread):
 
     def _fastgen(self, op_id, status, elapsed, result, extra=""):
         """Диаг-строка [FASTGEN] (→ runtime.log через studio tee). provider=generator-video."""
-        print(f"[FASTGEN] path=GeneratorVideoThread api=v5 "
-              f"endpoint=/api/v5/generations auth=X-API-Key "
+        print(f"[FASTGEN] path=GeneratorVideoThread api=v6 "
+              f"endpoint=/api/v6/generations auth=X-API-Key "
               f"model={self.model_id} provider=generator-video result_format=ref "
               f"duration={self.duration} inputs={len(self.refs)} op_id={op_id} status={status} "
               f"time={elapsed} result={result}{extra}")
@@ -147,7 +147,7 @@ class GeneratorVideoThread(QThread):
             spins = 0
             idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
             search_t0 = time.monotonic()
-            self.progress.emit("Ищу свободный ключ для видео…")
+            self.progress.emit("Жду в очереди…")
             while op_id is None:
                 if self._stop:
                     return
@@ -156,8 +156,8 @@ class GeneratorVideoThread(QThread):
                                   int(time.monotonic() - search_t0),
                                   "error", " error=key_search_timeout")
                     self.error.emit(
-                        f"Не нашёл свободный ключ для видео за {KEY_SEARCH_TIMEOUT_SEC}с — "
-                        f"все заняты, попробуй позже.")
+                        f"Очередь не освободилась за {KEY_SEARCH_TIMEOUT_SEC}с — "
+                        f"все ключи заняты, попробуй позже.")
                     return
                 # Все живые ключи мертвы (401/403) — ждать бессмысленно, выходим.
                 if len(dead) >= attempts:
@@ -182,7 +182,7 @@ class GeneratorVideoThread(QThread):
                     continue
                 if tkey in round_tried:
                     # Круг замкнулся — все живые ключи заняты → пауза и новый круг.
-                    self.progress.emit("Ожидаю свободный ключ…")
+                    self.progress.emit("Жду в очереди…")
                     time.sleep(2)
                     round_tried.clear()
                     idle_skips = 0
