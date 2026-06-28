@@ -714,6 +714,56 @@ class ShimmerCell(QFrame):
         # (paintEvent). Поздний кадр после этого игнорится (_video_active=False).
         self._stop_video_playback()
 
+    # ── клик по плитке → попап просмотра (Кусок 2/4) ───────────────────
+    def mousePressEvent(self, ev):
+        """Запоминаем позицию ЛКМ — чтобы в release отличить клик от drag."""
+        try:
+            self._press_pos = (ev.position().toPoint()
+                               if ev.button() == Qt.MouseButton.LeftButton else None)
+        except Exception:
+            self._press_pos = None
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        """ЛКМ без смещения (<5px = не drag) по ГОТОВОЙ плитке (image/video + файл есть)
+        → открыть попап просмотра. На loading/error — игнор. Клики по hover-кнопкам сюда
+        не доходят (их перехватывают дочерние QToolButton)."""
+        super().mouseReleaseEvent(ev)
+        try:
+            if ev.button() != Qt.MouseButton.LeftButton:
+                return
+            press = getattr(self, "_press_pos", None)
+            self._press_pos = None
+            if press is None:
+                return
+            if (ev.position().toPoint() - press).manhattanLength() > 5:
+                return   # был drag, не клик
+            if self._state not in ("image", "video"):
+                return
+            if not self._result_path or not Path(self._result_path).exists():
+                return
+            self._open_viewer()
+        except Exception:
+            pass
+
+    def _open_viewer(self):
+        """Открыть non-modal попап просмотра этой плитки. Ссылку держим на странице
+        (self._page._open_viewer), чтобы окно не съел GC."""
+        try:
+            from generator.viewer_dialog import GeneratorViewerDialog
+            dlg = GeneratorViewerDialog(
+                result_path=str(self._result_path),
+                meta=dict(self._meta) if isinstance(self._meta, dict) else {},
+                parent=self._page)
+            if self._page is not None:
+                self._page._open_viewer = dlg   # держим ссылку (анти-GC; анти-дубль — Кусок 3-4)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
     def eventFilter(self, obj, event):
         if isinstance(obj, QToolButton) and hasattr(obj, "_normal_icon"):
             if event.type() == QEvent.Type.Enter and obj.isEnabled():
