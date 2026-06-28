@@ -30,7 +30,7 @@ from PyQt6.QtCore import (
     Qt, QSize, QTimer, QSettings, QEvent, QPoint, QRect,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve,
 )
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
@@ -1939,6 +1939,29 @@ class GeneratorPage(QWidget):
             pass
 
     # ── прикреплённые рефы (per-session) ──────────────────────────────
+    def _load_thumb_pixmap(self, src: str, max_side: int) -> QPixmap:
+        """Экономно загрузить превью: QImageReader декодирует СРАЗУ в уменьшенный размер
+        (setScaledSize по большей стороне ≤ max_side) — НЕ держим полный 4K (~31МБ RAM) ради
+        маленькой тумбы (это и был источник переполнения памяти и падения рефа в упакованной
+        сборке с кучей 4K). allocation-лимит снят + EXIF-ориентация. null если не прочиталось."""
+        try:
+            r = QImageReader(str(src))
+            r.setAllocationLimit(0)
+            r.setAutoTransform(True)
+            sz = r.size()
+            w, h = sz.width(), sz.height()
+            if w > 0 and h > 0 and max(w, h) > max_side:
+                if w >= h:
+                    r.setScaledSize(QSize(max_side, max(1, round(h * max_side / w))))
+                else:
+                    r.setScaledSize(QSize(max(1, round(w * max_side / h)), max_side))
+            img = r.read()
+            if not img.isNull():
+                return QPixmap.fromImage(img)
+        except Exception:
+            pass
+        return QPixmap()
+
     def _make_ref_thumb(self, file_path: str) -> QFrame:
         """Создать превьюшку 64×64 для прикреплённого рефа: rounded-clip pixmap
         + крестик в углу (remove). Для видео ищет парный .jpg рядом; если нет —
@@ -1956,7 +1979,7 @@ class GeneratorPage(QWidget):
             jpg = str(Path(file_path).with_suffix(".jpg"))
             src = jpg if Path(jpg).exists() else None
         if src is not None:
-            pix = QPixmap(src)
+            pix = self._load_thumb_pixmap(src, 128)   # эконом: декод сразу в ~128px, не 31МБ
             if pix.isNull():
                 src = None
         if src is not None:
@@ -2023,7 +2046,7 @@ class GeneratorPage(QWidget):
             src = jpg if Path(jpg).exists() else None
         pix = None
         if src is not None:
-            p0 = QPixmap(src)
+            p0 = self._load_thumb_pixmap(src, 400)     # эконом: декод сразу в ~400px, не 31МБ
             if not p0.isNull():
                 pix = p0
         # Ленивая сборка popup (QLabel parented к странице) + opacity-effect.
