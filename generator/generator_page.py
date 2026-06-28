@@ -560,7 +560,7 @@ class GeneratorPage(QWidget):
             [("Кадры", "keyframes"), ("Рефы", "refs")], active_key="keyframes")
         for _k, _b in self.veo_mode_btns.items():
             _b.clicked.connect(
-                lambda _checked=False, key=_k: self._on_seg_click(self.veo_mode_btns, key))
+                lambda _checked=False, key=_k: self._on_veo_mode_change(key))
         self.veo_mode_seg.setVisible(False)
         ctl.addWidget(self.veo_mode_seg)
         # Оба сегмента — одинаковая фиксированная ширина (максимум из двух sizeHint).
@@ -914,6 +914,13 @@ class GeneratorPage(QWidget):
             self._duration = int(key)
         except Exception:
             pass
+
+    def _on_veo_mode_change(self, key: str):
+        """Клик Кадры/Рефы (Veo): подсветка сегмента + ПЕРЕСЧЁТ активности рефов.
+        _max_refs зависит от под-режима Veo (Кадры=2, Рефы=3), поэтому притухшие/активные
+        тумбы надо переразметить — иначе при Кадры→Рефы 3-й реф остался бы серым."""
+        self._on_seg_click(self.veo_mode_btns, key)
+        self._refresh_ref_activity()
 
     def _update_duration_visibility(self):
         """Видимость сегментов dur_seg / veo_mode_seg по режиму+модели:
