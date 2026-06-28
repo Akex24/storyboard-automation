@@ -595,6 +595,16 @@ class ShimmerCell(QFrame):
         y = 8
         ov.move(x, y)
 
+    def _reanchor_overlays(self):
+        """Пересчитать размер+позицию кластера hover-кнопок после смены ВИДИМОСТИ
+        кнопок внутри него (btn_2k / mute). Без этого overlay держит старую высоту
+        (adjustSize не пересчитан) и верхний ряд кнопок съезжает вниз. Баг был виден
+        только на video-loading: btn_2k скрывается в set_meta(type='video') ПОСЛЕ
+        первичного позиционирования (на пустой meta btn_2k считался видимым), а
+        следующий relayout/set_size self-корректировал. Оба _position_* гардят None."""
+        self._position_actions_overlay()
+        self._position_aux_2k_overlay()
+
     # ── hover-автоплей видео (QVideoSink → кадры рисуем в paintEvent) ──────
     def _ensure_player(self) -> bool:
         """ЛЕНИВО создать QMediaPlayer+QAudioOutput+QVideoSink для ЭТОЙ плитки на
@@ -938,6 +948,9 @@ class ShimmerCell(QFrame):
         aux = getattr(self, "_aux_2k_overlay", None)
         if aux is not None:
             aux.setVisible(False)  # спутник появляется на hover, не сразу
+        # btn_2k видимость поменялась → пересчитать высоту/якорь кластера (16:9:
+        # btn_2k в нижнем ряду; видео скрывает его → без adjustSize кнопки съезжали).
+        self._reanchor_overlays()
 
     # ── mute звука видео (ГЛОБАЛЬНЫЙ — общий для всего приложения) ─────────
     def _refresh_mute_visible(self):
@@ -947,6 +960,9 @@ class ShimmerCell(QFrame):
         btn = getattr(self, "btn_mute", None)
         if btn is not None:
             btn.setVisible(self._state == "video")
+        # mute видимость поменялась → пересчитать размер/якорь кластера (9:16: mute в
+        # вертикальной колонке; 16:9: в верхнем ряду) — чтобы кнопки не съезжали.
+        self._reanchor_overlays()
 
     def _apply_mute_icon(self, muted: bool):
         """Иконка кнопки mute: volume-x (звук выкл) / volume-2 (вкл). Обновляет и
