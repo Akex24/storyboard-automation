@@ -34,6 +34,7 @@ from threads.upscale_engine import (
     get_upscayl_paths,
     is_engine_ready,
 )
+from i18n import tr   # локализация UI (i18n — лист-модуль, без circular import)
 
 
 def _no_console_kwargs() -> dict:
@@ -78,14 +79,14 @@ class UpscaleThread(QThread):
             if total > 0:
                 pct = int(min(100, done * 100 // total))
                 label = {
-                    "binary": "движок",
-                    "model_bin": "модель",
-                    "model_param": "параметры",
+                    "binary": tr('gen_up_label_engine'),
+                    "model_bin": tr('gen_up_label_model'),
+                    "model_param": tr('gen_up_label_params'),
                 }.get(phase, phase)
-                self.progress.emit(f"Скачиваю {label}: {pct}%")
+                self.progress.emit(tr('gen_up_dl', label=label, pct=pct))
             else:
                 kb = done // 1024
-                self.progress.emit(f"Скачиваю движок: {kb} КБ")
+                self.progress.emit(tr('gen_up_dl_kb', kb=kb))
         except Exception:
             pass
 
@@ -98,7 +99,7 @@ class UpscaleThread(QThread):
 
     def run(self) -> None:  # noqa: C901 — линейный поток событий
         try:
-            self.progress.emit("Подготовка…")
+            self.progress.emit(tr('gen_loading_prep'))
             # 1. Движок: проверка/догрузка. Если ready — сразу же.
             if not is_engine_ready():
                 ok = ensure_engine_downloaded(
@@ -106,20 +107,19 @@ class UpscaleThread(QThread):
                     on_log=self._emit_engine_log,
                 )
                 if not ok:
-                    self.failed.emit(
-                        "Не удалось подготовить движок улучшения качества")
+                    self.failed.emit(tr('gen_up_engine_fail'))
                     return
             paths = get_upscayl_paths()
             bin_path = paths["bin_path"]
             models_dir = paths["models_dir"]
             if not bin_path.is_file():
-                self.failed.emit("Бинарь Real-ESRGAN не найден")
+                self.failed.emit(tr('gen_up_binary_missing'))
                 return
             if not models_dir.is_dir():
-                self.failed.emit("Папка моделей не найдена")
+                self.failed.emit(tr('gen_up_models_missing'))
                 return
             if not self._src.is_file():
-                self.failed.emit("Исходный файл не найден")
+                self.failed.emit(tr('gen_up_src_missing'))
                 return
 
             # 2. CLI Real-ESRGAN. Параметры из ТЗ Alex:
@@ -134,7 +134,7 @@ class UpscaleThread(QThread):
                 "-s", str(self._scale),
                 "-f", self._fmt,
             ]
-            self.progress.emit("Улучшаю качество: 0%")
+            self.progress.emit(tr('gen_up_enhancing', pct=0))
             try:
                 self._proc = subprocess.Popen(
                     cmd,
@@ -143,7 +143,7 @@ class UpscaleThread(QThread):
                     **_no_console_kwargs(),
                 )
             except Exception as e:
-                self.failed.emit(f"Не удалось запустить: {type(e).__name__}: {e}")
+                self.failed.emit(tr('gen_up_launch_fail', detail=f'{type(e).__name__}: {e}'))
                 return
 
             # 3. Парсим stderr построчно: ncnn пишет проценты. Stdout обычно пустой.
@@ -163,20 +163,20 @@ class UpscaleThread(QThread):
                 if m:
                     try:
                         pct = int(float(m.group(1)))
-                        self.progress.emit(f"Улучшаю качество: {pct}%")
+                        self.progress.emit(tr('gen_up_enhancing', pct=pct))
                     except Exception:
                         pass
 
             rc = self._proc.wait()
             if rc != 0:
                 tail = " | ".join(stderr_tail[-3:]) if stderr_tail else "—"
-                self.failed.emit(f"Код {rc}. {tail}"[:240])
+                self.failed.emit(tr('gen_up_code_fail', rc=rc, tail=tail)[:240])
                 return
             if not self._out.is_file() or self._out.stat().st_size < 1024:
                 tail = " | ".join(stderr_tail[-3:]) if stderr_tail else "—"
-                self.failed.emit(f"Файл не появился. {tail}"[:240])
+                self.failed.emit(tr('gen_up_no_file', tail=tail)[:240])
                 return
-            self.progress.emit("Готово")
+            self.progress.emit(tr('gen_up_done'))
             self.finished.emit(str(self._out))
         except Exception as e:
             traceback.print_exc()
