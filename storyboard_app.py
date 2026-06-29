@@ -220,6 +220,7 @@ from views.theme import (
     install_theme_runtime,
     load_active_theme_overrides,
     load_theme_store,
+    lumz_button_qss,
     normalize_theme_payload,
     save_theme_store,
     set_theme_overrides_from_payload,
@@ -9538,7 +9539,11 @@ class MainWindow(QMainWindow):
         self.server_check_btn.clicked.connect(self._on_server_check_click)
         self.server_support_btn = QPushButton(tr('server_support_btn'))
         self.server_support_btn.setFixedHeight(34)
-        self.server_support_btn.setStyleSheet(self._SERVER_SUPPORT_QSS)
+        # Центральный secondary-стиль темы (lumz_button_qss): полный QSS с background
+        # → текст рендерится белым (токен secondaryButtonText). Раньше был ad-hoc
+        # _SERVER_SUPPORT_QSS без background в normal → на macOS QPushButton падал в
+        # нативный рендер и текст был чёрным. Меняется в ОДНОМ месте (тема).
+        self.server_support_btn.setStyleSheet(lumz_button_qss('secondary'))
         self.server_support_btn.clicked.connect(self._on_server_support_click)
 
         _btns_row = QHBoxLayout()
@@ -18626,14 +18631,10 @@ class MainWindow(QMainWindow):
         " background: rgba(212,162,86,0.18); border-color:#d4a256;"
         " text-align:left; padding-left:12px; }")
 
-    # 2026-06-26 / Codex: «Написать в техподдержку» — обычная secondary-кнопка,
-    # без собственного фиолетового острова поверх пользовательской темы.
-    _SERVER_SUPPORT_QSS = (
-        "QPushButton { border:1px solid rgba(255,255,255,0.12); color:#fbfbfb; }"
-        "QPushButton:hover { background:rgba(255,255,255,0.10);"
-        " border-color:rgba(255,255,255,0.20); }"
-        "QPushButton:disabled { color: rgba(255,255,255,0.40);"
-        " border-color: rgba(255,255,255,0.08); }")
+    # 2026-06-29: «Написать в техподдержку» переведена на центральный
+    # lumz_button_qss('secondary') (см. _build_apikey_section). Ad-hoc
+    # _SERVER_SUPPORT_QSS удалён — он не задавал background в normal → на macOS
+    # текст рендерился чёрным (нативный bezel игнорировал color).
 
     def _refresh_key_status_indicators(self):
         """Перекрашивает индикаторы и пишет статус-лейблы 5 полей ключей по
