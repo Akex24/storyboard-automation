@@ -992,7 +992,7 @@ class GeneratorPage(QWidget):
         extra = len(self._pending_refs) - limit
         if extra > 0:
             self._show_hint(
-                f"У вас {extra} лишних рефов — для этого режима можно только {limit}. "
+                f"У вас лишних рефов: {extra}. Для этого режима можно только {limit}. "
                 f"Удалите лишние.")
             return
         aspect = self._active_seg_key(self.fmt_btns) or "16:9"
