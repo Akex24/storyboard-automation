@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
+from views.theme import LUMZ_THEME
 
 
 class _ClickableLabelButton(QFrame):
@@ -54,7 +55,7 @@ class _ClickableLabelButton(QFrame):
     Высота автоматически растёт под содержимое.
 
     Параметр `obj_name` определяет CSS-селектор: `outfit-variant`
-    (фиолетовая solid-граница) или `outfit-custom` (синяя dashed).
+    (нейтральная solid-граница) или `outfit-custom` (нейтральная dashed).
     """
 
     clicked = pyqtSignal()
@@ -141,62 +142,66 @@ class CharacterOutfitPicker(QFrame):
 
     def _setup_ui(self):
         self.setFrameShape(QFrame.Shape.NoFrame)
+        # 2026-06-29: весь блок переведён на нейтральный стиль кнопок
+        # Settings (`settingsButton*` токены LUMZ_THEME) — убраны все
+        # посторонние цвета (фиолетовые рамка/варианты, синие custom/
+        # retry/pick-existing, красный error, оранжевый loading). Hex не
+        # хардкодим — значения из темы. `#outfit-cancel` (мёртвый QSS —
+        # кнопка убрана 2026-05-10) удалён. Dashed-граница у custom
+        # сохранена как форм-подсказка «свой вариант» (это не цвет).
+        _t = LUMZ_THEME
+        _bg = _t.get('settingsButtonBackground', '#222528')
+        _bg_h = _t.get('settingsButtonHoverBackground', '#2a2e31')
+        _bd = _t.get('settingsButtonBorder', 'rgba(255,255,255,0.12)')
+        _bd_h = _t.get('settingsButtonHoverBorder', 'rgba(255,255,255,0.20)')
+        _fg = _t.get('settingsButtonText', '#f2f4ef')
+        _fg_h = _t.get('settingsButtonHoverText', '#ffffff')
+        _muted = _t.get('textMuted', 'rgba(242,244,239,0.44)')
+        _sub = _t.get('textSecondary', 'rgba(242,244,239,0.68)')
         self.setStyleSheet(
-            "CharacterOutfitPicker { background:#1a1424;"
-            " border:1px solid #3a2a55; border-radius:8px; }"
-            "CharacterOutfitPicker[state=\"loading\"] {"
-            " border-color:#7a4ad8; }"
-            "CharacterOutfitPicker[state=\"error\"] {"
-            " border-color:#8a4d4d; background:#221616; }"
-            "QLabel#outfit-title { color:#cfcfcf; font-size:13px;"
-            " font-weight:600; }"
-            "QLabel#outfit-hint { color:#888; font-size:11px; }"
-            "QLabel#outfit-loading { color:#ffaa44; font-size:12px;"
-            " font-family:'Menlo','Consolas',monospace; }"
-            "QLabel#outfit-error { color:#cc6666; font-size:12px; }"
-            # 2026-05-10: variant и custom кнопки переписаны на
-            # QFrame+QLabel. CSS-селекторы:
-            #   QFrame#outfit-variant — внешний вид кнопки.
-            #   QLabel#outfit-variant-text — цвет/размер текста.
-            # padding переместили внутрь QFrame layout (см. _ClickableLabelButton),
-            # чтобы word-wrap на QLabel работал стабильно.
-            "QFrame#outfit-variant {"
-            " background:#2a1f3d; border:1px solid #4a3a72;"
-            " border-radius:6px; }"
-            "QFrame#outfit-variant:hover {"
-            " background:#3a2a52; border-color:#6e4cc4; }"
-            "QLabel#outfit-variant-text {"
-            " color:#e8e0ff; font-size:13px; background:transparent; }"
-            "QFrame#outfit-variant:hover QLabel#outfit-variant-text {"
-            " color:#fff; }"
-            "QFrame#outfit-custom {"
-            " background:#1a1424; border:1px dashed #4d6a8a;"
-            " border-radius:6px; }"
-            "QFrame#outfit-custom:hover {"
-            " background:#1a2638; border-color:#7d9bdb; }"
-            "QLabel#outfit-custom-text {"
-            " color:#a8c8ff; font-size:13px; background:transparent; }"
-            "QFrame#outfit-custom:hover QLabel#outfit-custom-text {"
-            " color:#d8e8ff; }"
-            "QPushButton#outfit-retry { background:transparent;"
-            " color:#a8c8ff; border:1px solid #4d6a8a; border-radius:6px;"
-            " padding:6px 12px; font-size:12px; }"
-            "QPushButton#outfit-retry:hover { background:#1a2638;"
-            " color:#d8e8ff; }"
-            # 2026-05-10: «Pick existing» внутри picker'а bottom row
-            # (рядом с retry). Раньше эту функцию выполняла кнопка на
-            # GenButton (source_btn) — но source_btn находился над
-            # picker'ом, плохо читалось как UX-флоу.
-            "QPushButton#outfit-pick-existing { background:transparent;"
-            " color:#a8c8ff; border:1px solid #4d6a8a; border-radius:6px;"
-            " padding:6px 12px; font-size:12px; }"
-            "QPushButton#outfit-pick-existing:hover { background:#1a2638;"
-            " color:#d8e8ff; }"
-            "QPushButton#outfit-cancel { background:transparent;"
-            " color:#aaa; border:1px solid #4a4a4a; border-radius:6px;"
-            " padding:6px 12px; font-size:12px; }"
-            "QPushButton#outfit-cancel:hover { background:#2a2a2a;"
-            " color:#ddd; }")
+            f"CharacterOutfitPicker {{ background:{_bg};"
+            f" border:1px solid {_bd}; border-radius:8px; }}"
+            f"CharacterOutfitPicker[state=\"loading\"] {{"
+            f" border-color:{_bd_h}; }}"
+            f"CharacterOutfitPicker[state=\"error\"] {{"
+            f" border-color:{_bd_h}; background:{_bg}; }}"
+            f"QLabel#outfit-title {{ color:{_fg}; font-size:13px;"
+            f" font-weight:600; }}"
+            f"QLabel#outfit-hint {{ color:{_muted}; font-size:11px; }}"
+            f"QLabel#outfit-loading {{ color:{_sub}; font-size:12px;"
+            f" font-family:'Menlo','Consolas',monospace; }}"
+            f"QLabel#outfit-error {{ color:{_fg}; font-size:12px; }}"
+            # variant и custom — QFrame+QLabel (word-wrap), padding внутри
+            # QFrame layout (см. _ClickableLabelButton).
+            f"QFrame#outfit-variant {{"
+            f" background:{_bg}; border:1px solid {_bd};"
+            f" border-radius:6px; }}"
+            f"QFrame#outfit-variant:hover {{"
+            f" background:{_bg_h}; border-color:{_bd_h}; }}"
+            f"QLabel#outfit-variant-text {{"
+            f" color:{_fg}; font-size:13px; background:transparent; }}"
+            f"QFrame#outfit-variant:hover QLabel#outfit-variant-text {{"
+            f" color:{_fg_h}; }}"
+            f"QFrame#outfit-custom {{"
+            f" background:{_bg}; border:1px dashed {_bd};"
+            f" border-radius:6px; }}"
+            f"QFrame#outfit-custom:hover {{"
+            f" background:{_bg_h}; border-color:{_bd_h}; }}"
+            f"QLabel#outfit-custom-text {{"
+            f" color:{_fg}; font-size:13px; background:transparent; }}"
+            f"QFrame#outfit-custom:hover QLabel#outfit-custom-text {{"
+            f" color:{_fg_h}; }}"
+            f"QPushButton#outfit-retry {{ background:{_bg};"
+            f" color:{_fg}; border:1px solid {_bd}; border-radius:6px;"
+            f" padding:6px 12px; font-size:12px; }}"
+            f"QPushButton#outfit-retry:hover {{ background:{_bg_h};"
+            f" color:{_fg_h}; border-color:{_bd_h}; }}"
+            # «Pick existing» — bottom row рядом с retry.
+            f"QPushButton#outfit-pick-existing {{ background:{_bg};"
+            f" color:{_fg}; border:1px solid {_bd}; border-radius:6px;"
+            f" padding:6px 12px; font-size:12px; }}"
+            f"QPushButton#outfit-pick-existing:hover {{ background:{_bg_h};"
+            f" color:{_fg_h}; border-color:{_bd_h}; }}")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 16, 18, 16)
@@ -267,7 +272,7 @@ class CharacterOutfitPicker(QFrame):
         # - cancel убрана (персонаж обязателен).
         # - pick-existing добавлен сюда из source_btn (GenButton сверху
         #   picker'а): UX чище когда обе альтернативы внутри одной
-        #   фиолетовой панели.
+        #   нейтральной панели.
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         self.retry_btn = QPushButton(tr('outfit_picker_retry'))
