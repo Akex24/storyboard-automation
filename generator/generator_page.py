@@ -196,8 +196,8 @@ class GeneratorPage(QWidget):
             " padding:8px 10px; border-radius:8px; }"
             # Кнопка запуска (акцент — янтарь, как вкладка)
             "QPushButton#run-btn { background:#d4a256; color:#15101e;"
-            " border:none; border-radius:17px;"
-            " font-size:20px; font-weight:600; }"
+            " border:none; border-radius:14px;"
+            " font-size:26px; font-weight:600; }"
             "QPushButton#run-btn:hover { background:#e8b86a; }")
 
         root = QVBoxLayout(self)
@@ -484,8 +484,15 @@ class GeneratorPage(QWidget):
         bar = QFrame()
         bar.setObjectName("prompt-bar")
         self._prompt_bar = bar   # ссылка для позиционирования тост-подсказки
-        outer = QVBoxLayout(bar)
-        outer.setContentsMargins(14, 12, 14, 12)
+        # Верхний layout бара — ГОРИЗОНТАЛЬНЫЙ: слева колонка (рефы+промпт+контролы),
+        # справа крупная кнопка отправки, прижатая к НИЗУ (AlignBottom). Кнопка ниже
+        # своей колонки по высоте → НЕ распирает бар (высоту задаёт левая колонка),
+        # поэтому её увеличение НЕ двигает промпт/рефы вверх.
+        root_h = QHBoxLayout(bar)
+        root_h.setContentsMargins(14, 12, 14, 12)
+        root_h.setSpacing(10)
+        outer = QVBoxLayout()             # левая колонка (без своих внешних полей)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(8)
 
         # Ряд прикреплённых рефов — ВЫШЕ поля ввода (как Google Flow). Скрыт пока
@@ -596,17 +603,24 @@ class GeneratorPage(QWidget):
         ctl.addWidget(self.cols_seg)
 
         ctl.addStretch()
+        outer.addLayout(ctl)
 
-        # Кнопка запуска — круглая, стрелка вверх (Flow-стиль).
+        # Левая колонка собрана → в горизонтальный root_h (растягивается на всю ширину
+        # минус правая кнопка).
+        root_h.addLayout(outer, 1)
+
+        # Кнопка запуска — ПРЯМОУГОЛЬНАЯ со скруглением (не круг), КРУПНАЯ; стрелка ↑.
+        # Прижата к НИЗУ колонки (AlignBottom): нижний край вровень с нижним рядом
+        # кнопок (ctl), а сама тянется вверх к строке промпта. Высота 60 < высоты левой
+        # колонки (мин 88) → бар не распирается, промпт/рефы не двигаются. Правая
+        # колонка → не перекрывает промпт по горизонтали.
         self.run_btn = QPushButton()
         self.run_btn.setObjectName("run-btn")
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.run_btn.setFixedSize(34, 34)
-        self.run_btn.setText("↑")   # стрелка вверх; при необходимости заменим на svg
+        self.run_btn.setFixedSize(56, 60)
+        self.run_btn.setText("↑")   # только стрелка, без текста
         self.run_btn.clicked.connect(self._on_run)   # MVP: запуск генерации
-        ctl.addWidget(self.run_btn)
-
-        outer.addLayout(ctl)
+        root_h.addWidget(self.run_btn, 0, Qt.AlignmentFlag.AlignBottom)
 
         # Транзиентная подсказка — ТОСТ поверх (родитель = страница, НЕ в layout),
         # чтобы НЕ двигать геометрию prompt-bar. Всплывает над панелью на 4с.
