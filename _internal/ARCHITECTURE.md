@@ -253,6 +253,17 @@ slug-miss → лог+пропуск, не падает. Режется СОХР�
 button-only handler → пост-сборочный smoke-тест старта его не дёргает), поэтому
 `'seedance_shot_slicer'` добавлен в `hiddenimports` [StoryboardStudio.spec](StoryboardStudio.spec).
 
+**Также в «Собрать эпизод» (2026-06-29):** нарезка работает И в
+`CompileEpisodeThread` ([threads/compile_episode.py](threads/compile_episode.py)) —
+для каждого блока тем же `slice_block_to_shots` в `block_<n>/shots/`. Источник/гейт —
+тот же Save-файл: `_copy_seedance_txt` упрощён (fallback на активную вкладку `_tabs.json`
+и генерационный `output/seedance/<ep>_block_<n>.txt` УБРАН) — в zip кладётся ТОЛЬКО
+Save-файл; несохранённый блок → НЕТ ни промпта, ни `shots/` (строго как кнопка «Рефы»).
+`_copy_block_refs` возвращает `resolved` (DRY, та же резолюция → маппинг
+`[@]imgK → resolved[K-1]` байт-в-байт совпадает с одиночной кнопкой); aspect/раскладка
+из `show_manager.show_aspect`. `compile_episode.py` импортит `slice_block_to_shots`
+(уже в hiddenimports) и `show_manager`.
+
 **НЕ затронуто:** `seedance_prompts.py` (SYSTEM-правила), montage_card/episodes.json/
 seedance .txt — только ЧИТАЮТСЯ. Голосовая чистка (`_purge_phantom_voice`) — отдельный
 шаг, не связан.

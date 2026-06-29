@@ -6,7 +6,10 @@ CompileEpisodeThread проходит по всем блокам эпизода
 (`episodes.json[ep_id].montage_card.blocks`) и для каждого собирает:
   • рефы (location/objects/characters из refs_decisions)
   • сторибоарды (output/storyboards/<ep>_block<n>(_<x>).jpg)
-  • Seedance промпт .txt (fallback chain: active tab → original → save-copy)
+  • Seedance промпт .txt — ТОЛЬКО Save-файл <show>_<ep>_block_<n>.txt (нажата
+    «💾 Save» в попапе). Блок без Save → нет промпта и нет shots/ в zip.
+  • shots/shot_<k>/ — пошотовая нарезка (только для сохранённых блоков),
+    через seedance_shot_slicer (тот же путь, что у кнопки «🗂 Рефы блока»).
 
 Всё кладётся в staging-папку `shows/<show>/.cache/_episode_compile/<ep>/`
 с подпапками `block_<n>/`. Затем zipуется в одном архиве:
@@ -31,9 +34,12 @@ import shutil
 import sys
 import zipfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
+
+import show_manager
+from seedance_shot_slicer import slice_block_to_shots
 
 
 class CompileEpisodeThread(QThread):
@@ -77,9 +83,12 @@ class CompileEpisodeThread(QThread):
                 self.step.emit(f"Блок {n}/{total}", pct)
                 block_dir = temp_dir / f"block_{n}"
                 block_dir.mkdir(parents=True, exist_ok=True)
-                self._copy_block_refs(show_root, block, decisions, block_dir)
+                resolved = self._copy_block_refs(
+                    show_root, block, decisions, block_dir)
                 self._copy_storyboards(show_root, n, block_dir)
                 self._copy_seedance_txt(show_root, n, block_dir)
+                # Пошотовая нарезка — только для сохранённых блоков (Save-файл).
+                self._slice_shots(show_root, block, n, resolved, block_dir)
 
             # 4. Зипуем всё.
             self.step.emit("Архивирую…", 88)
@@ -141,11 +150,16 @@ class CompileEpisodeThread(QThread):
         return ep if isinstance(ep, dict) else {}
 
     def _copy_block_refs(self, show_root: Path, block: dict,
-                          decisions: dict, dest_dir: Path) -> None:
-        """Копирует рефы блока (location/objects/characters) в dest_dir.
-        Логика повторяет _on_block_refs_btn в storyboard_app.py (этап 3+5):
-        slug → refs_decisions[<cat>][<slug>].filename → реальный путь
-        на диске → shutil.copy2. На пропавшие — log в stderr, продолжаем.
+                          decisions: dict, dest_dir: Path
+                          ) -> List[Tuple[str, str, Path, str]]:
+        """Копирует рефы блока (location/objects/characters) в dest_dir и
+        ВОЗВРАЩАЕТ resolved-список [(cat, slug, src, basename)] в порядке
+        [location, *objects, *characters] (плоский basename=src.name) — для
+        нарезки по шотам (`[@]imgK → resolved[K-1]`, байт-в-байт как
+        _on_block_refs_btn). Логика повторяет _on_block_refs_btn (этап 3+5):
+        slug → refs_decisions[<cat>][<slug>].filename → путь на диске →
+        shutil.copy2. Пропавшие — log в stderr + skip (в resolved НЕ входят,
+        как в одиночной кнопке — паритет маппинга).
         """
         cat_to_plural = {'location': 'locations',
                          'object': 'objects',
@@ -163,6 +177,7 @@ class CompileEpisodeThread(QThread):
                 targets.append(('character', s))
 
         seen_basenames: set = set()
+        resolved: List[Tuple[str, str, Path, str]] = []
         for cat, slug in targets:
             bucket = (decisions.get(cat)
                       if isinstance(decisions, dict) else None)
@@ -176,6 +191,9 @@ class CompileEpisodeThread(QThread):
             if not src.is_file():
                 self._log(f"file not on disk: {src}")
                 continue
+            # resolved для нарезки: плоский basename (slicer делает свою
+            # коллизию ref__). Порядок/skip — как в _on_block_refs_btn.
+            resolved.append((cat, slug, src, src.name))
             final_name = src.name
             if final_name in seen_basenames:
                 final_name = f"{cat}__{src.name}"
@@ -211,6 +229,8 @@ class CompileEpisodeThread(QThread):
                     self._log(f"grid copy failed for {slug}/{src.stem}: "
                               f"{type(e).__name__}: {e}")
 
+        return resolved
+
     def _copy_storyboards(self, show_root: Path, n: int,
                            dest_dir: Path) -> None:
         """Копирует ОДИН landscape-лист блока из
@@ -241,67 +261,59 @@ class CompileEpisodeThread(QThread):
     def _copy_seedance_txt(self, show_root: Path, n: int,
                             dest_dir: Path) -> None:
         """Копирует Seedance промпт блока в dest_dir под именем
-        <show>_<ep>_block_<n>.txt. Fallback цепь:
-          1) Активная вкладка из <ep>_block_<n>_tabs.json (если active_idx
-             ссылается на конкретный _tab<K>.txt → берём его).
-          2) Оригинал <ep>_block_<n>.txt.
-          3) Save-button копия .cache/_block_view/<ep>_block<n>/
-             <show>_<ep>_block_<n>.txt.
-        Если все 3 пусты — пропускаем без error (log).
+        <show>_<ep>_block_<n>.txt — ТОЛЬКО из Save-файла (нажата «💾 Save» в
+        попапе Seedance): .cache/_block_view/<ep>_block<n>/
+        <show>_<ep>_block_<n>.txt (утверждённая активная версия).
+
+        Save-файла нет (Save не нажат) → промпт в zip НЕ кладём (skip + log).
+        Так сборка строгая как кнопка «🗂 Рефы блока». Fallback на активную
+        вкладку tabs.json / генерационный output/seedance/<ep>_block_<n>.txt
+        УБРАН (2026-06-29) — раньше промпт уезжал в zip даже без Save.
         """
-        seed_dir = show_root / "output" / "seedance"
-        original = seed_dir / f"{self.ep_id}_block_{n}.txt"
-        tabs_json = seed_dir / f"{self.ep_id}_block_{n}_tabs.json"
         save_copy = (show_root / ".cache" / "_block_view"
                      / f"{self.ep_id}_block{n}"
                      / f"{self.show_slug}_{self.ep_id}_block_{n}.txt")
-
-        chosen_path: Optional[Path] = None
-        chosen_text: Optional[str] = None
-
-        # (1) Active tab из _tabs.json.
-        if tabs_json.is_file():
-            try:
-                state = json.loads(tabs_json.read_text(encoding="utf-8"))
-                active_idx = state.get('active_idx')
-                tabs = state.get('tabs') or []
-                if (isinstance(active_idx, int)
-                        and 0 <= active_idx < len(tabs)):
-                    tab_entry = tabs[active_idx]
-                    if isinstance(tab_entry, dict):
-                        tab_file = tab_entry.get('file')
-                        if isinstance(tab_file, str) and tab_file:
-                            tab_path = seed_dir / tab_file
-                            if tab_path.is_file():
-                                chosen_path = tab_path
-            except Exception as e:
-                self._log(f"tabs.json read failed for block {n}: "
-                          f"{type(e).__name__}: {e}")
-
-        # (2) Оригинал.
-        if chosen_path is None and original.is_file():
-            chosen_path = original
-
-        # (3) Save-copy.
-        if chosen_path is None and save_copy.is_file():
-            chosen_path = save_copy
-
-        if chosen_path is None:
-            self._log(f"no Seedance .txt found for block {n}")
+        if not save_copy.is_file():
+            self._log(f"block {n} not saved (no «💾 Save») → no Seedance "
+                      f"prompt in zip")
             return
-
         try:
-            chosen_text = chosen_path.read_text(encoding="utf-8")
+            shutil.copy2(save_copy, dest_dir / save_copy.name)
         except Exception as e:
-            self._log(f"Seedance .txt read failed {chosen_path}: "
+            self._log(f"Seedance .txt copy failed {save_copy}: "
                       f"{type(e).__name__}: {e}")
-            return
 
-        dest_name = f"{self.show_slug}_{self.ep_id}_block_{n}.txt"
+    def _slice_shots(self, show_root: Path, block: dict, n: int,
+                      resolved: List[Tuple[str, str, Path, str]],
+                      block_dir: Path) -> None:
+        """Пошотовая нарезка блока в block_dir/shots/ — ТОЛЬКО если блок
+        сохранён (Save-файл есть). Тот же `slice_block_to_shots`, тот же
+        источник (Save-файл) / лист с face-сетками / раскладка панелей, что у
+        кнопки «🗂 Рефы блока». resolved (порядок [location,*objects,
+        *characters]) обеспечивает идентичный маппинг [@]imgK → resolved[K-1].
+        """
+        save_copy = (show_root / ".cache" / "_block_view"
+                     / f"{self.ep_id}_block{n}"
+                     / f"{self.show_slug}_{self.ep_id}_block_{n}.txt")
+        if not save_copy.is_file():
+            return  # не сохранён → нет shots (промпт тоже не уехал в zip)
+        sheet = (show_root / ".cache" / "_block_view"
+                 / f"{self.ep_id}_block{n}" / f"{self.ep_id}_block{n}.jpg")
         try:
-            (dest_dir / dest_name).write_text(chosen_text, encoding="utf-8")
+            aspect = show_manager.show_aspect(
+                self.project_root, self.show_slug)
+        except Exception:
+            aspect = "9:16"
+        # Раскладка как stitch_shots_to_landscape: 16:9 → 2×2, иначе PANELS(=4)×1.
+        grid_cols, grid_rows = (2, 2) if aspect == "16:9" else (4, 1)
+        try:
+            slice_block_to_shots(
+                save_copy, block, resolved,
+                sheet if sheet.is_file() else None,
+                grid_cols, grid_rows,
+                block_dir / "shots", self.ep_id, n, log=self._log)
         except Exception as e:
-            self._log(f"Seedance .txt write failed: "
+            self._log(f"shot-slicing failed for block {n}: "
                       f"{type(e).__name__}: {e}")
 
     def _log(self, msg: str) -> None:
