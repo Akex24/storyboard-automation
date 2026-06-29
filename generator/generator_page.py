@@ -58,34 +58,19 @@ N_VERT_BY_COLS = {2: 5, 3: 8, 4: 11}
 
 class _RunButton(QToolButton):
     """Кнопка отправки с КАСТОМНОЙ отрисовкой (paintEvent). На macOS крупный нативный
-    QPushButton/QToolButton рисуется серым бевелом и игнорирует QSS-фон (золото видно
-    лишь на hover) — поэтому рисуем сами: золотой скруглённый квадрат + стрелка ↑ по
-    центру, на hover чуть светлее. Сохраняет clicked/cursor/сигналы QToolButton."""
+    QPushButton/QToolButton рисуется серым бевелом и игнорирует QSS-фон — поэтому рисуем
+    сами: золотой скруглённый квадрат + стрелка ↑ по центру. Цвет ВСЕГДА один (#e8b86a,
+    как активная вкладка «Холст»), БЕЗ смены на hover."""
 
-    _BG = "#d4a256"
-    _BG_HOVER = "#e8b86a"
+    _BG = "#e8b86a"   # золотистый ВСЕГДА (цвет слова «Холст»); hover НЕ меняет
     _FG = "#15101e"
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._hover = False
-
-    def enterEvent(self, ev):
-        self._hover = True
-        self.update()
-        super().enterEvent(ev)
-
-    def leaveEvent(self, ev):
-        self._hover = False
-        self.update()
-        super().leaveEvent(ev)
 
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         path = QPainterPath()
         path.addRoundedRect(0.0, 0.0, float(self.width()), float(self.height()), 14.0, 14.0)
-        p.fillPath(path, QColor(self._BG_HOVER if self._hover else self._BG))
+        p.fillPath(path, QColor(self._BG))
         f = QFont()
         f.setPixelSize(26)
         f.setBold(True)
@@ -214,14 +199,14 @@ class GeneratorPage(QWidget):
             "QPushButton#seg { background:transparent; color:rgba(255,255,255,0.55);"
             " border:none; border-radius:6px; padding:0px 11px; font-size:12px; }"
             "QPushButton#seg:hover { color:rgba(255,255,255,0.85); }"
-            "QPushButton#seg[active=\"true\"] { background:#cfff24;"
+            "QPushButton#seg[active=\"true\"] { background:#e8b86a;"
             " color:#101208; border-radius:7px; font-weight:700; }"
             # Акцентный сегмент (режим Картинка/Видео): активная — янтарь
             "QPushButton#seg-accent { background:transparent;"
             " color:rgba(255,255,255,0.55); border:none; border-radius:6px;"
             " padding:0px 11px; font-size:12px; }"
             "QPushButton#seg-accent:hover { color:rgba(255,255,255,0.85); }"
-            "QPushButton#seg-accent[active=\"true\"] { background:#cfff24;"
+            "QPushButton#seg-accent[active=\"true\"] { background:#e8b86a;"
             " color:#101208; border-radius:7px; font-weight:700; }"
             # Выпадашка моделей
             "QComboBox#model-combo { background:#131516; color:#fff;"
