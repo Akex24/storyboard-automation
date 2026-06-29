@@ -30,7 +30,7 @@ from PyQt6.QtCore import (
     Qt, QSize, QTimer, QSettings, QEvent, QPoint, QRect,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve,
 )
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader, QColor, QFont
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader, QColor, QFont, QPen
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
@@ -77,6 +77,37 @@ class _RunButton(QToolButton):
         p.setFont(f)
         p.setPen(QColor(self._FG))
         p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), "↑")
+        p.end()
+
+
+class _DragBorderOverlay(QWidget):
+    """Прозрачный оверлей ПОВЕРХ пиксмапа тумбы рефа: когда тумба — цель drag-to-swap,
+    рисует ТОЛСТУЮ ПУНКТИРНУЮ белую скруглённую рамку (QPainter в paintEvent — надёжно на
+    macOS, в отличие от QSS dashed+radius). Иначе прозрачен. Мышь не ловит
+    (WA_TransparentForMouseEvents ставится при создании) → drag/hover не мешает."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._on = False
+
+    def set_active(self, on: bool):
+        on = bool(on)
+        if on != self._on:
+            self._on = on
+            self.update()
+
+    def paintEvent(self, ev):
+        if not self._on:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(255, 255, 255, 235))
+        pen.setWidth(3)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        ins = 2.0   # чтобы 3px штрих не обрезался краем виджета
+        p.drawRoundedRect(ins, ins, self.width() - 2 * ins, self.height() - 2 * ins, 6.0, 6.0)
         p.end()
 
 
@@ -175,8 +206,8 @@ class GeneratorPage(QWidget):
             "QWidget#refs-row { background:transparent; }"
             "QFrame#ref-thumb { background:#1a1428;"
             " border:1px solid rgba(255,255,255,0.15); border-radius:6px; }"
-            # drag-to-swap: подсветка тумбы-цели при перетаскивании (рамка ярче, из темы)
-            "QFrame#ref-thumb[drag-target=\"true\"] { border:1px solid rgba(255,255,255,0.65); }"
+            # drag-to-swap: подсветка тумбы-цели рисуется _DragBorderOverlay (paintEvent),
+            # НЕ QSS — пунктир+радиус на macOS QSS ненадёжен.
             "QPushButton#ref-thumb-x { background:rgba(0,0,0,0.7); color:#ffffff;"
             " border:none; border-radius:9px; font-weight:600; font-size:14px;"
             " padding:0px; text-align:center; }"
@@ -2154,6 +2185,14 @@ class GeneratorPage(QWidget):
             lambda _checked=False, fp=file_path: self.remove_ref(fp))
         x_btn.raise_()
         x_btn.setVisible(False)        # видимый только при hover на thumb
+        # Оверлей drag-target рамки — ПОВЕРХ пиксмапа (дочерние рисуются поверх paintEvent
+        # тумбы), но НИЖЕ крестика. Прозрачный, мышь не ловит; пунктир рисует в paintEvent.
+        border_ov = _DragBorderOverlay(thumb)
+        border_ov.setGeometry(0, 0, 64, 64)
+        border_ov.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        border_ov.raise_()
+        x_btn.raise_()                 # крестик выше рамки
+        thumb._border_ov = border_ov
         # Ссылки для eventFilter (Enter/Leave → показать/скрыть ✕ + popup).
         thumb._x_btn = x_btn
         thumb._file_path = file_path
@@ -2401,12 +2440,9 @@ class GeneratorPage(QWidget):
         for th in (getattr(self, "_drag_target", None), target):
             if th is None:
                 continue
-            th.setProperty("drag-target", th is target)
-            try:
-                th.style().unpolish(th)
-                th.style().polish(th)
-            except Exception:
-                pass
+            ov = getattr(th, "_border_ov", None)
+            if ov is not None:
+                ov.set_active(th is target)   # пунктирная рамка только на цели
         self._drag_target = target
 
     def _finish_drag_swap(self, global_pt):
@@ -2445,12 +2481,9 @@ class GeneratorPage(QWidget):
         """Завершить drag: снять подсветку цели, вернуть курсор, отпустить мышь, сброс."""
         old = getattr(self, "_drag_target", None)
         if old is not None:
-            old.setProperty("drag-target", False)
-            try:
-                old.style().unpolish(old)
-                old.style().polish(old)
-            except Exception:
-                pass
+            ov = getattr(old, "_border_ov", None)
+            if ov is not None:
+                ov.set_active(False)
         if getattr(self, "_drag_active", False):
             try:
                 QApplication.restoreOverrideCursor()
