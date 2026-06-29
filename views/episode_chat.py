@@ -233,16 +233,13 @@ class EpisodeChatView(QWidget):
         # в текущем эпизоде). Клик открывает попап `ActiveGensPanel`.
         # См. `tick_active_gens_button` / `refresh_active_gens_button`.
         self.active_gens_btn = QPushButton("")
-        self.active_gens_btn.setObjectName("active_gens_btn")
+        # Нейтральный стиль кнопок Settings — наследуется из глобального
+        # DARK-QSS по objectName (storyboard_app.py `settings-light-btn`,
+        # как «Открыть папку проекта»/«Открыть лог»). Был локальный
+        # фиолетовый QSS (#2a1d4a) — убран ради единого нейтрала.
+        self.active_gens_btn.setObjectName("settings-light-btn")
         self.active_gens_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.active_gens_btn.setFixedHeight(32)
-        self.active_gens_btn.setStyleSheet(
-            "QPushButton#active_gens_btn { background:#2a1d4a;"
-            " border:1px solid #4a3470; border-radius:6px;"
-            " color:#fff; font-size:13px; padding:4px 14px; }"
-            "QPushButton#active_gens_btn:hover { background:#3a2a60;"
-            " border-color:#6a4ea0; }"
-        )
         self.active_gens_btn.clicked.connect(self._on_active_gens_btn_clicked)
         self.active_gens_btn.hide()
         lay.addWidget(self.active_gens_btn)
