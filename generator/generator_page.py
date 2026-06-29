@@ -982,6 +982,19 @@ class GeneratorPage(QWidget):
         if not model_id:
             self._show_hint("Модель недоступна")
             return
+        # ФИШКА 1б: сверхлимитные (притухшие) рефы блокируют запуск — юзер убирает лишние.
+        # limit = _max_refs текущего режима (картинки 10, Veo «Кадры» 2 / «Рефы» 3, Omni 7).
+        # Сообщение — в ту же плашку (_show_hint), что прочие pre-flight гарды выше.
+        try:
+            limit = max(0, int(self._max_refs()))
+        except Exception:
+            limit = len(self._pending_refs)
+        extra = len(self._pending_refs) - limit
+        if extra > 0:
+            self._show_hint(
+                f"У вас {extra} лишних рефов — для этого режима можно только {limit}. "
+                f"Удалите лишние.")
+            return
         aspect = self._active_seg_key(self.fmt_btns) or "16:9"
         count_key = self._active_seg_key(self.count_btns) or "1"
         try:
