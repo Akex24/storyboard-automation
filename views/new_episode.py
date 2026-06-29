@@ -101,10 +101,6 @@ class NewEpisodeView(QWidget):
         # chunks/сообщения идут только в jsonl и в EpisodeChatView (не в
         # наш log_view, чтобы при возврате на «+» он был чистый).
         self._handed_off: bool = False
-        # Phase 2 hotfix #8: накопитель полного ответа AI для fallback-парсера.
-        # Сбрасывается в `_on_run` перед стартом потока. Если AI не вставил
-        # [[GEN:...]] маркеры — синтезируем их в `_on_thread_finished`.
-        self._stream_full: str = ''
         # ID эпизода над которым сейчас работает Claude. Устанавливается
         # в `_on_run` как только мы распарсили номер серии («эпизод 22» → "ep22").
         # Все строки чата (юзер, Claude, системные) пишутся в
@@ -1214,8 +1210,6 @@ class NewEpisodeView(QWidget):
         )
 
         # Стартуем поток
-        # Phase 2 hotfix #8: сбрасываем накопитель fallback-парсера.
-        self._stream_full = ''
         # 2026-05-06: сбрасываем флаг что auth/quota-ошибка уже поймана —
         # на новом запуске надо детектить заново.
         self._auth_error_signaled = False
@@ -1412,19 +1406,18 @@ class NewEpisodeView(QWidget):
                 self.chat_input.setFocus()
                 if first_run and self._current_ep_id:
                     self._show_open_chat_btn(self._current_ep_id)
-        # Phase 2 hotfix #8: если AI не вставил [[GEN:...]] маркеры,
-        # синтезируем их из строк «- ✗ name —» под секциями. Делаем
-        # для target_ep чтобы кнопки попали в правильный чат.
-        if rc == 0 and target_ep and self._stream_full and is_current_form_thread:
-            # `_stream_full` накапливался для текущей формы — синтез
-            # делаем только если этот тред = текущий ep формы. Параллельные
-            # треды накапливают свой stream в своих JSONL, а кнопки
-            # синтезируются в EpisodeChatView при заходе в эпизод
-            # (через `_restore_gen_buttons_from_history`).
+        # GEN-кнопки рефов: единый детерминированный путь. На финише треда
+        # просим EpisodeChatView перестроить кнопки из сохранённой истории
+        # (jsonl уже полный — каждый чанк писался `append_chat_message`).
+        # Метод сам гейтится по видимости: если target_ep сейчас НЕ открыт,
+        # это no-op, а кнопки построит вход в эпизод через `set_episode` →
+        # `_restore_gen_buttons_from_history`. Без хрупких live-гейтов
+        # (`_stream_full`/`is_current_form_thread`/`_gen_button`).
+        if rc == 0 and target_ep:
             try:
                 ev = getattr(self._mw, 'episode_chat_view', None)
-                if ev is not None and getattr(ev, '_gen_button', None) is None:
-                    ev.try_synthesize_gen_markers(target_ep, self._stream_full)
+                if ev is not None:
+                    ev.rebuild_gen_buttons_for(target_ep)
             except Exception:
                 traceback.print_exc()
         # Поток завершился — отвязываем NewEpisodeView от ушедшего
@@ -1679,8 +1672,6 @@ class NewEpisodeView(QWidget):
         ep5/ep6/ep7 чанки старых тредов попадали в чат последнего ep'а.
         """
         clean_text, markers = parse_gen_markers(text)
-        # Phase 2 hotfix #8: накапливаем clean_text для fallback-парсера.
-        self._stream_full += clean_text
         # 2026-05-06: detect AI-auth/quota ошибок в стриме CLI. Когда лимит
         # на текущем аккаунте исчерпан, CLI пишет в stdout строки типа:
         #   "You're out of extra usage · resets 4pm (Europe/Kiev)"
