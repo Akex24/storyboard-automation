@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QToolButton, QWidget)
 
 from views.theme import LUMZ_THEME, theme_qcolor
+from i18n import tr   # локализация UI (i18n — лист-модуль, без circular import)
 
 # Частота применения перемотки при таскании seek-bar (троттл): setPosition НЕ шлём на
 # каждый sliderMoved — декодер захлёбывается и коалесцирует быстрые seek'и (кадр застывает
@@ -93,7 +94,7 @@ class _TimelineTrack(QWidget):
         self._plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._plus_btn.setFixedSize(self._PLUS_SZ, self._PLUS_SZ)
         self._plus_btn.setIconSize(QSize(13, 13))
-        self._plus_btn.setToolTip("Взять этот кадр в референс")
+        self._plus_btn.setToolTip(tr('gen_tt_grab_frame'))
         try:
             from generator.result_cell import _tinted_icon
             # ТЁМНЫЙ знак «+» (bg_main) на accent-фоне кнопки — как флажок, читаемо
@@ -408,7 +409,7 @@ class GeneratorViewerDialog(QDialog):
         self._is_video = (self._meta.get("type") == "video")
         aspect = self._meta.get("aspect", "16:9")
 
-        self.setWindowTitle("Просмотр")
+        self.setWindowTitle(tr('gen_viewer_title'))
         # Фон окна — из темы (bg_main), не сырой hex.
         self.setStyleSheet(f"QDialog {{ background:{LUMZ_THEME['bg_main']}; }}")
 
@@ -468,9 +469,9 @@ class GeneratorViewerDialog(QDialog):
         hb.setContentsMargins(12, 0, 12, 0)
         hb.setSpacing(6)
         self._btn_return = self._mk_row_btn(
-            "corner-up-left", 28, 18, self._on_return_clicked, "Вернуть в генератор", bar)
+            "corner-up-left", 28, 18, self._on_return_clicked, tr('gen_tt_return'), bar)
         self._btn_folder = self._mk_row_btn(
-            "folder-open", 28, 18, self._on_reveal_clicked, "Показать в Finder", bar)
+            "folder-open", 28, 18, self._on_reveal_clicked, tr('gen_tt_show_finder'), bar)
         hb.addStretch(1)
         hb.addWidget(self._btn_return)
         hb.addWidget(self._btn_folder)
@@ -491,7 +492,7 @@ class GeneratorViewerDialog(QDialog):
             if not pm.isNull():
                 lbl.setPixmap(pm)
             else:
-                lbl.setText("Видео-плеер недоступен")
+                lbl.setText(tr('gen_viewer_no_player'))
                 lbl.setStyleSheet("color:rgba(255,255,255,0.55); font-size:13px;")
             lay.addWidget(lbl)
             return
@@ -572,11 +573,11 @@ class GeneratorViewerDialog(QDialog):
         # левая группа мелких кнопок (28×28), 3 шт — начинается на левом крае дорожки
         LG_GAP = 6
         self._btn_return = self._mk_row_btn("corner-up-left", 28, 18, self._on_return_clicked,
-                                            "Вернуть в генератор", inner)
+                                            tr('gen_tt_return'), inner)
         self._btn_folder = self._mk_row_btn("folder-open", 28, 18, self._on_reveal_clicked,
-                                            "Показать в Finder", inner)
+                                            tr('gen_tt_show_finder'), inner)
         self._btn_mute = self._mk_row_btn("volume-2", 28, 18, self._on_toggle_mute,
-                                          "Звук", inner)
+                                          tr('gen_tt_sound'), inner)
         left = QHBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(LG_GAP)
@@ -585,7 +586,7 @@ class GeneratorViewerDialog(QDialog):
         lg_w = 3 * 28 + 2 * LG_GAP   # ширина левой группы (3 кнопки) → симметричный spacer справа
 
         # play/pause — крупная (40×40), главная, ровно по центру контейнера
-        self._btn_play = self._mk_row_btn("play", 40, 24, self._toggle_play_pause, "Плей/пауза", inner)
+        self._btn_play = self._mk_row_btn("play", 40, 24, self._toggle_play_pause, tr('gen_tt_playpause'), inner)
         self._btn_play.setObjectName("viewer-playpause")
 
         ih.addLayout(left)
