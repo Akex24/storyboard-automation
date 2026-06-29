@@ -42,13 +42,14 @@ from views.theme import LUMZ_THEME, theme_qcolor
 # идёт по RAM-кэшу мгновенно (см. scrub_decoder + _frame_at), троттл/таймер не участвуют.
 _SEEK_THROTTLE_MS = 50
 
-# Режим overlay скраб-превью поверх НАТИВНОГО QVideoWidget — ТОЧКА ПРОВЕРКИ НА .app
-# (нативный видео-слой капризен, как было с pillarbox-фоном). Меняется ОДНОЙ строкой
-# после проверки глазами на собранном .app:
-#  • "child" — overlay дочерний САМОГО vw, raise_() поверх; vw НЕ прячем (первичный).
+# Режим overlay скраб-превью поверх НАТИВНОГО QVideoWidget.
+#  • "child" — overlay дочерний САМОГО vw, raise_() поверх; vw НЕ прячем.
 #  • "hide"  — overlay дочерний _video_frame (сиблинг vw); на время drag vw.hide(),
-#              на release vw.show() (фоллбэк, если нативный слой перекрывает overlay).
-_SCRUB_OVERLAY_MODE = "child"
+#              на release vw.show().
+# ПРОВЕРЕНО НА .app (2026-06-29): "child" НЕ работает — нативный видео-слой macOS
+# перекрывает QLabel-overlay (при drag чёрный экран вместо кадра, как было с pillarbox).
+# Рабочий режим — "hide": прячем vw на время drag, показываем overlay-сиблинг.
+_SCRUB_OVERLAY_MODE = "hide"
 
 
 class _TimelineTrack(QWidget):
@@ -528,6 +529,7 @@ class GeneratorViewerDialog(QDialog):
             self._player.playbackStateChanged.connect(lambda *_: self._update_play_icon())
             self._player.durationChanged.connect(self._on_duration)
             self._player.positionChanged.connect(self._on_position)
+            self._player.mediaStatusChanged.connect(self._on_media_status)
         except Exception:
             pass
         self._update_play_icon()
@@ -742,6 +744,25 @@ class GeneratorViewerDialog(QDialog):
         """positionChanged → двигать ползунок сам, но НЕ когда юзер его держит."""
         if self._seek is not None and not self._seek.isSliderDown():
             self._seek.setValue(int(pos))
+
+    def _on_media_status(self, status):
+        """Видео доиграло (EndOfMedia): QMediaPlayer уходит в Stopped, нативный слой macOS
+        чернеет (последний кадр не держится). Отматываем на первый кадр — тем же проверенным
+        приёмом, что прайминг в showEvent (pause()+setPosition(0) рендерит кадр 0). Playhead
+        синхронно встанет в 0 через positionChanged. Play не ломаем: следующий ▶ играет с 0."""
+        try:
+            from PyQt6.QtMultimedia import QMediaPlayer
+        except Exception:
+            return
+        if self._player is None:
+            return
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            try:
+                self._player.pause()
+                self._player.setPosition(0)
+            except Exception:
+                pass
+            self._update_play_icon()
 
     def _on_seek_moved(self, val: int):
         """Таскание ползунка. ОСНОВНОЙ путь (кэш готов): рисуем кадр из RAM-кэша в overlay
