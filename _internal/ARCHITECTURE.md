@@ -123,12 +123,24 @@ LUMZ_THEME) поверх превью + ползунок/play `setEnabled(False)
 videoSink с playhead. Если pre-decode `failed` → `_scrub_cache=None` → ГРЕЙСФУЛ-
 фоллбэк на старый троттл-`setPosition` (`_SEEK_THROTTLE_MS`, попап рабочий).
 
-**Overlay поверх НАТИВНОГО QVideoWidget — ТОЧКА ПРОВЕРКИ НА .app** (нативный слой
-капризен, как pillarbox): константа `_SCRUB_OVERLAY_MODE`:
-- `"child"` (default) — overlay дочерний vw, `raise_()` поверх; vw не прячем.
-- `"hide"` — overlay сиблинг в `_video_frame`; на drag `vw.hide()`, на release
-  `vw.show()` (если нативный слой перекрывает overlay). Меняется ОДНОЙ строкой
-  после проверки глазами на собранном .app.
+**Overlay поверх НАТИВНОГО QVideoWidget** — константа `_SCRUB_OVERLAY_MODE`:
+- `"child"` — overlay дочерний vw, `raise_()` поверх; vw не прячем.
+- `"hide"` (**рабочий default с 2026-06-29**) — overlay сиблинг в `_video_frame`;
+  на drag `vw.hide()`, на release `vw.show()`+`setPosition(final)`.
+
+ПРОВЕРЕНО НА .app (2026-06-29): `"child"` НЕ работает — нативный видео-слой macOS
+перекрывает QLabel-overlay (при drag ЧЁРНЫЙ экран вместо кадра, тот же класс бага,
+что pillarbox: нативный слой композитится поверх Qt-сиблингов). Поэтому shipping-
+default = `"hide"`: на время drag прячем `vw`, показываем overlay-сиблинг (честный
+Qt z-order), на release возвращаем `vw`. `_begin/_update/_end_scrub_overlay`
+ветвятся по константе; `_sync_scrub_geometry` для `"hide"` ставит overlay в
+`vw.geometry()` (overlay и vw — оба дети `_video_frame`, одни координаты).
+
+**Чёрный экран в конце видео (EndOfMedia, 2026-06-29):** доиграв до конца,
+QMediaPlayer уходит в Stopped, нативный слой чернеет (последний кадр не держится).
+`_on_media_status` на `mediaStatusChanged==EndOfMedia` отматывает на кадр 0 тем же
+проверенным приёмом, что прайминг в showEvent (`pause()`+`setPosition(0)`). Play не
+ломается — следующий ▶ играет с 0; playhead встаёт в 0 через `positionChanged`.
 
 **Cross-platform:** macOS cyrillic-путь подтверждён замером (40/40; репо под
 «…/Работа/…»). Windows .exe (VideoCapture+не-ASCII+MSMF на random/sequential) —
