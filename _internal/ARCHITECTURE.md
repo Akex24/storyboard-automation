@@ -91,16 +91,18 @@ v1.0.45 — дренаж реестров stop()→wait()).
   причина, что в `_extract_first_frame`: FFMPEG-бэкенд cv2 в PyInstaller не
   собирается, системные фреймворки работают frozen. cv2 ленивый.
 - `ScrubPreloadThread(QThread)` — фоновый ПОСЛЕДОВАТЕЛЬНЫЙ декод (`grab()`+
-  `retrieve()`, не seek-per-frame) всех кадров: downscale ~480px (INTER_AREA) →
-  `cv2.imencode(".jpg", q85)` → **байты В ПАМЯТИ** (НИ ОДНОГО write на диск). Кэш =
-  `list[(ts_ms, jpeg_bytes)]`. Сигналы `ready(cache)` / `failed()`. Мягкий кап
-  памяти (`mem_cap_mb=40`) с прореживанием по `stride` — страховка для аномально
-  длинных/HFR видео (на 6-15с@24-30fps stride=1). Замер: 6с/144 кадра = **2.7МБ**,
-  500мс; 15с ≈ 7МБ, ~1.3с.
-- `grab_full_frame_jpeg(path, pos_ms, q92)` — одноразовый ПОЛНОКАДРОВЫЙ (полное
-  разрешение) захват по playhead для кнопки-плюсика «взять кадр в реф»: реф резкий
-  как видео, НЕ из 480px-кэша. Детерминированный seek POS_MSEC, не зависит от
-  async videoSink.
+  `retrieve()`, не seek-per-frame) всех кадров в **ПОЛНОМ разрешении видео** (без
+  downscale — кэш = качество видео, скраб не мылит): `cv2.imencode(".jpg", q90)` →
+  **байты В ПАМЯТИ** (НИ ОДНОГО write на диск). Кэш = `list[(ts_ms, jpeg_bytes)]`.
+  Сигналы `ready(cache)` / `failed()`. Мягкий кап памяти (`mem_cap_mb=128`) с
+  прореживанием по `stride` — страховка для аномально длинных/HFR/4K видео (на
+  обычных 6-15с@24-30fps stride=1). Замер (720p q90, ~100КБ/кадр): 6с=**14МБ**/500мс,
+  10с≈23МБ, 15с≈35МБ. (Изначально кэш был 480px/q85≈2.7МБ — давал блюр при апскейле;
+  Alex: кэш в полном разрешении, память 14-35МБ приемлема.)
+- `grab_full_frame_jpeg(path, pos_ms, q92)` — одноразовый ПОЛНОКАДРОВЫЙ захват по
+  playhead для кнопки-плюсика «взять кадр в реф»: детерминированный seek POS_MSEC,
+  не зависит от async videoSink (кэш и так уже полноразмерный — но grab отдельный
+  путь, q92, без участия прогрева).
 
 **Цвет:** ручной BGR→RGB НЕ нужен — кэш и grab идут через JPEG (cv2.imencode пишет
 из BGR корректный стандартный JPEG, `QPixmap.loadFromData`/Qt декодит в RGB).
@@ -118,15 +120,26 @@ LUMZ_THEME) поверх превью + ползунок/play `setEnabled(False)
 `if not self.isEnabled(): return` + dim в paintEvent + `changeEvent` прячет плюсик.
 
 **Скраб по кэшу:** `_on_seek_moved` → `_frame_at(pos)` (`bisect_right` по `_scrub_ts`
-→ ближайший слева → `QPixmap.loadFromData`, ~1-2мс) → overlay.setPixmap. Плеер при
-скрабе НЕ дёргаем; на `release` ОДИН `setPosition(final)` синхронизирует плеер/
-videoSink с playhead. Если pre-decode `failed` → `_scrub_cache=None` → ГРЕЙСФУЛ-
-фоллбэк на старый троттл-`setPosition` (`_SEEK_THROTTLE_MS`, попап рабочий).
+→ ближайший слева → `QPixmap.loadFromData`) → `pm.scaled(overlay, KeepAspectRatio,
+SmoothTransformation)` (кадр полноразмерный, гладко вписан, без блюра; БЕЗ
+`setScaledContents` — он масштабирует грубо) → overlay.setPixmap. Плеер при скрабе НЕ
+дёргаем. Если pre-decode `failed` → `_scrub_cache=None` → ГРЕЙСФУЛ-фоллбэк на старый
+троттл-`setPosition` (`_SEEK_THROTTLE_MS`, попап рабочий).
+
+**Гладкий стык overlay→видео на release (анти-мерцание «кадр назад», 2026-06-29):**
+наивный порядок (overlay.hide()+vw.show() ДО того как `setPosition(final)` догнал) →
+на миг виден предыдущий видео-кадр. Фикс: на `release` сначала `setPosition(final)`,
+overlay ДЕРЖИМ на финальном кадре, и `_begin_overlay_handoff` ждёт `videoFrameChanged`
+(vw декодировал кадр на новой позиции) ИЛИ страховочный таймаут ~120мс → только потом
+`_end_scrub_overlay` (порядок: `vw.show()` ПОТОМ `overlay.hide()`). Идемпотентно
+(`_handoff_active`); teardown отменяет незавершённый handoff (disconnect+stop) — иначе
+singleShot/сигнал выстрелит на закрытом диалоге.
 
 **Overlay поверх НАТИВНОГО QVideoWidget** — константа `_SCRUB_OVERLAY_MODE`:
 - `"child"` — overlay дочерний vw, `raise_()` поверх; vw не прячем.
 - `"hide"` (**рабочий default с 2026-06-29**) — overlay сиблинг в `_video_frame`;
-  на drag `vw.hide()`, на release `vw.show()`+`setPosition(final)`.
+  на drag `vw.hide()`, на release `setPosition(final)`→handoff→`vw.show()` (см.
+  «Гладкий стык» ниже).
 
 ПРОВЕРЕНО НА .app (2026-06-29): `"child"` НЕ работает — нативный видео-слой macOS
 перекрывает QLabel-overlay (при drag ЧЁРНЫЙ экран вместо кадра, тот же класс бага,
