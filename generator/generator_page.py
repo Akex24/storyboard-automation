@@ -47,6 +47,7 @@ from generator.model_select import ModelSelect
 MODELS_BY_MODE = {
     "image": [("Nano Banana 2", "nano-banana-2"), ("OpenAI", "openai-image")],
     "video": [("Veo 3.1 Fast (8s)", "flow-video-fast"),
+              ("Veo 3.1 Light (8s)", "flow-video-light"),
               ("Omni Flash", "flow-video-omni-flash")],
 }
 
@@ -1041,7 +1042,7 @@ class GeneratorPage(QWidget):
     def _update_duration_visibility(self):
         """Видимость сегментов dur_seg / veo_mode_seg по режиму+модели:
           • video + Omni Flash → dur_seg (4/6/8/10s)
-          • video + Veo (flow-video-fast) → veo_mode_seg (Кадры/Рефы)
+          • video + Veo (flow-video-fast / flow-video-light) → veo_mode_seg (Кадры/Рефы)
           • image → оба скрыты.
         Сегменты делят один слот в ctl-ряду (равная ширина), взаимоисключение.
 
@@ -1052,7 +1053,8 @@ class GeneratorPage(QWidget):
         model = self.model_combo.current_model_id()
         is_video = (self._mode == "video")
         self.dur_seg.setVisible(is_video and model == "flow-video-omni-flash")
-        self.veo_mode_seg.setVisible(is_video and model == "flow-video-fast")
+        self.veo_mode_seg.setVisible(
+            is_video and model in ("flow-video-fast", "flow-video-light"))
         # Рефы/промпт СОХРАНЯЮТСЯ при смене режима/модели; лишние (сверх _max_refs) не
         # удаляются, а тушатся (_refresh_ref_activity) — в payload идут только активные.
         self._refresh_ref_activity()
@@ -1120,13 +1122,15 @@ class GeneratorPage(QWidget):
         model_label = self.model_combo.current_label()   # читаемое имя для бейджа
         out_dir = root / "shows" / slug / "generator"
         is_video = (self._mode == "video")
-        # Veo (flow-video-fast) — без duration; Omni — текущая длительность сегмента.
-        duration_arg = None if model_id == "flow-video-fast" else self._duration
+        # Veo (flow-video-fast / flow-video-light) — без duration; Omni — текущая
+        # длительность сегмента. Light по API идентичен Fast (фикс ~8с).
+        duration_arg = (None if model_id in ("flow-video-fast", "flow-video-light")
+                        else self._duration)
         # Veo: "Кадры" → payload.keyframes=True (start/end frame guidance);
         # "Рефы" → без флага (ingredients-режим, default сервера). Для Omni и
         # картинок keyframes_arg остаётся False, в payload поле не уйдёт.
         keyframes_arg = False
-        if is_video and model_id == "flow-video-fast":
+        if is_video and model_id in ("flow-video-fast", "flow-video-light"):
             keyframes_arg = (self._active_seg_key(self.veo_mode_btns) == "keyframes")
         if is_video:
             from generator.generator_video_thread import GeneratorVideoThread
@@ -1136,11 +1140,12 @@ class GeneratorPage(QWidget):
         # (_active_refs по _max_refs); притухшие (сверх лимита режима) НЕ уходят. Копия
         # списка — мутации в UI после старта не влияют на уже запущенные потоки.
         refs = self._active_refs()
-        # Pre-flight гард: Veo Fast «Кадры» (keyframes) ТРЕБУЕТ ≥1 стартовый кадр
-        # (сервер: «flow-video-fast keyframes requires 1-2 inputs; received 0» → HTTP
+        # Pre-flight гард: Veo Fast/Light «Кадры» (keyframes) ТРЕБУЕТ ≥1 стартовый кадр
+        # (сервер: «flow-video-* keyframes requires 1-2 inputs; received 0» → HTTP
         # 400). Без рефов не отправляем — иначе заведомо невалидный запрос + плитка
         # с ошибкой. Тот же _show_hint-паттерн, что у промпта/сериала/модели выше.
-        if is_video and model_id == "flow-video-fast" and keyframes_arg and not refs:
+        if (is_video and model_id in ("flow-video-fast", "flow-video-light")
+                and keyframes_arg and not refs):
             self._show_hint(
                 "В режиме Кадры нужен стартовый кадр. Прикрепи реф или переключись на Рефы.")
             return
@@ -2591,7 +2596,7 @@ class GeneratorPage(QWidget):
         Гарды hasattr() — на случай вызова до полной инициализации UI."""
         model_id = (self.model_combo.current_model_id()
                     if hasattr(self, "model_combo") else "")
-        if model_id == "flow-video-fast":
+        if model_id in ("flow-video-fast", "flow-video-light"):
             veo_mode = (self._active_seg_key(self.veo_mode_btns)
                         if hasattr(self, "veo_mode_btns") else None) or "keyframes"
             return 2 if veo_mode == "keyframes" else 3
