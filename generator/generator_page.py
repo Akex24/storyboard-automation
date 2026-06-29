@@ -2337,7 +2337,7 @@ class GeneratorPage(QWidget):
 
     def _set_thumb_dimmed(self, thumb, dimmed: bool):
         """Притушить/вернуть яркость тумбы рефа через QGraphicsOpacityEffect (реверсивно).
-        dimmed → opacity 0.4 + tooltip «про запас»; активна → opacity 1.0. Эффект создаём
+        dimmed → opacity 0.3 + tooltip «про запас»; активна → opacity 1.0. Эффект создаём
         ЛЕНИВО только при первом притушении (всегда-активные тумбы остаются без эффекта).
         Клики/hover-попап не страдают — эффект чисто визуальный."""
         eff = getattr(thumb, "_dim_effect", None)
@@ -2348,7 +2348,7 @@ class GeneratorPage(QWidget):
             thumb.setGraphicsEffect(eff)
             thumb._dim_effect = eff
         try:
-            eff.setOpacity(0.4 if dimmed else 1.0)
+            eff.setOpacity(0.3 if dimmed else 1.0)
             thumb.setToolTip(
                 "Сверх лимита текущего режима — в генерацию не уйдёт (про запас)"
                 if dimmed else "")
