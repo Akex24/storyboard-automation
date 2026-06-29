@@ -412,13 +412,35 @@ class GeneratorVideoThread(QThread):
         """
         try:
             import cv2
+            import sys
             import numpy as np  # noqa: F401  (cv2 возвращает numpy-массив кадра)
-            cap = cv2.VideoCapture(str(mp4_path))
-            try:
-                ok, frame = cap.read()
-            finally:
-                cap.release()
-            if not ok or frame is None or getattr(frame, "size", 0) == 0:
+            # 2026-06-29: на macOS форсим AVFoundation-backend. cv2 по умолчанию декодит
+            # .mp4 через FFMPEG, чьи dylib'ы (cv2/.dylibs/libav*) PyInstaller в .app НЕ
+            # собирает → в frozen-сборке VideoCapture не читает кадр (превью пропадало,
+            # оставался только ▶). AVFoundation — системный фреймворк macOS, скомпилирован
+            # в cv2, внешних dylib НЕ требует → работает и в .app. То же на Win: MSMF
+            # (Media Foundation — системный, без внешних DLL). Список с фоллбэком на default
+            # (cv2 ffmpeg, если его dylib/DLL всё же собрались).
+            if sys.platform == "darwin":
+                backends = [cv2.CAP_AVFOUNDATION, 0]
+            elif sys.platform == "win32":
+                backends = [cv2.CAP_MSMF, 0]
+            else:
+                backends = [0]
+            frame = None
+            for be in backends:
+                try:
+                    cap = cv2.VideoCapture(str(mp4_path), be)
+                    try:
+                        ok, fr = cap.read()
+                    finally:
+                        cap.release()
+                except Exception:
+                    ok, fr = False, None
+                if ok and fr is not None and getattr(fr, "size", 0) > 0:
+                    frame = fr
+                    break
+            if frame is None:
                 return None
             ok2, buf = cv2.imencode(".jpg", frame)
             if not ok2:

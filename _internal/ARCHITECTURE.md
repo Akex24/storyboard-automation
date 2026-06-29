@@ -2251,6 +2251,14 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
   чтобы при скролле страницы значения не съезжали. Применяется к КАЖДОМУ
   новому виджету настройки. См. CRITICAL_RULES.md.
 - `cross_fade_swap` — анимация смены превью.
+- **Видео-превью в .app: cv2 backend ОБЯЗАН быть системным** (2026-06-29).
+  `GeneratorVideoThread._extract_first_frame` ([generator/generator_video_thread.py](generator/generator_video_thread.py))
+  извлекает первый кадр .mp4 → `gen_<ts>.jpg` (превью плитки). cv2 по умолчанию декодит
+  .mp4 через FFMPEG, чьи dylib (`cv2/.dylibs/libav*`) PyInstaller в бандл НЕ кладёт → в
+  frozen .app `VideoCapture` молча не читает кадр (превью пропадает, остаётся ▶). Поэтому
+  форсим СИСТЕМНЫЙ backend: macOS `cv2.CAP_AVFOUNDATION`, Win `cv2.CAP_MSMF` (оба
+  скомпилированы в cv2, внешних dylib/DLL не требуют), с фоллбэком на default. НЕ убирать
+  ветку по `sys.platform` — иначе в .app снова пропадут превью видео.
 - **Генератор: дроп-картинка кладётся как JPEG + стем-резолв файла плитки**
   (2026-06-28). `_import_dropped_files` ([generator/generator_page.py](generator/generator_page.py))
   конвертирует дропнутую картинку в `gen_<ts>.jpg` (q=95, без даунскейла) для
