@@ -5,13 +5,14 @@ generator/scrub_decoder.py — пред-декод кадров видео дл�
 Зачем: QMediaPlayer.setPosition на паузе перематывает по keyframe и коалесцирует
 частые seek'и → при таскании playhead кадр застывает/догоняет с задержкой. Решение
 (вариант A+C): при открытии видео-попапа фоновым потоком декодируем ВСЕ кадры в
-УМЕНЬШЕННОМ размере (~480px) и держим их как JPEG-БАЙТЫ В ОПЕРАТИВНОЙ ПАМЯТИ
-(cv2.imencode → буфер, БЕЗ записи на диск). Скраб = мгновенный lookup из RAM →
-QPixmap.loadFromData. Кадр следует за playhead без задержки.
+ПОЛНОМ разрешении видео (без downscale — кэш = качество видео, скраб не мылит) и
+держим их как JPEG-БАЙТЫ В ОПЕРАТИВНОЙ ПАМЯТИ (cv2.imencode → буфер, БЕЗ записи на
+диск). Скраб = мгновенный lookup из RAM → QPixmap.loadFromData. Кадр следует за
+playhead без задержки и без блюра.
 
-Память (JPEG q85, 480px): ~25-35КБ/кадр → 6с≈5МБ, 15с≈13МБ (в пределах 15-25МБ).
-Мягкий кап (mem_cap_mb) с прореживанием — страховка для аномально длинных/HFR видео
-(на 6-15с@24-30fps не срабатывает).
+Память (JPEG q90, полный 720p): ~100КБ/кадр (замер) → 6с≈14МБ, 10с≈23МБ, 15с≈35МБ.
+Мягкий кап (mem_cap_mb=128) с прореживанием — страховка для аномально длинных/HFR/4K
+видео (на обычных 6-15с@24-30fps не срабатывает).
 
 cv2 тянется ЛЕНИВО (паттерн detector.py / generator_video_thread — модуль не падает
 без opencv). Backend форсится системный (macOS=AVFoundation, win32=MSMF, иначе
@@ -103,7 +104,7 @@ def grab_full_frame_jpeg(video_path: str, pos_ms: float, jpeg_q: int = 92) -> Op
 
 
 class ScrubPreloadThread(QThread):
-    """Фоновый пред-декод ВСЕХ кадров видео в уменьшенные JPEG-байты (RAM, без диска).
+    """Фоновый пред-декод ВСЕХ кадров видео в полноразмерные JPEG-байты (RAM, без диска).
 
     Lifecycle: создаётся parent=None, ссылка хранится на диалоге (ARCHITECTURE «QThread
     из QDialog» — паттерн A: parent=None исключает Qt-destructor SIGABRT, даже если
@@ -119,13 +120,14 @@ class ScrubPreloadThread(QThread):
     ready = pyqtSignal(object)
     failed = pyqtSignal()
 
-    def __init__(self, video_path: str, long_side: int = 480, jpeg_q: int = 85,
-                 mem_cap_mb: int = 40, parent=None):
+    def __init__(self, video_path: str, jpeg_q: int = 90,
+                 mem_cap_mb: int = 128, parent=None):
         super().__init__(parent)
         self._video_path = str(video_path or "")
-        self._long_side = max(160, int(long_side))
-        self._jpeg_q = max(40, min(95, int(jpeg_q)))
-        self._mem_cap_bytes = max(8, int(mem_cap_mb)) * 1024 * 1024
+        # ПОЛНОЕ разрешение видео (без downscale) — кэш = качество видео, скраб не мылит.
+        # JPEG q90 ≈ 100КБ/кадр на 720p (замер): 6с≈14МБ, 10с≈23МБ, 15с≈35МБ.
+        self._jpeg_q = max(40, min(98, int(jpeg_q)))
+        self._mem_cap_bytes = max(16, int(mem_cap_mb)) * 1024 * 1024
         self._abort = False
 
     def stop(self):
@@ -145,15 +147,16 @@ class ScrubPreloadThread(QThread):
             return
         cache: List[Tuple[int, bytes]] = []
         try:
-            # Прореживание (страховка): оценка кадров × ~30КБ/JPEG. Если проекция памяти
-            # выше мягкого капа → берём каждый stride-й кадр. На 6-15с@24-30fps stride=1.
+            # Прореживание (страховка): оценка кадров × ~100КБ/JPEG (720p q90, замер). Если
+            # проекция памяти выше мягкого капа (128МБ) → берём каждый stride-й кадр. На
+            # обычных 6-15с@24-30fps (≤35МБ) stride=1; кап ловит только аномалии (4K/долгие).
             try:
                 n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             except Exception:
                 n = 0
             stride = 1
             if n > 0:
-                projected = n * 30000
+                projected = n * 100000
                 if projected > self._mem_cap_bytes:
                     stride = max(1, (projected + self._mem_cap_bytes - 1) // self._mem_cap_bytes)
             jpeg_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_q]
@@ -172,8 +175,8 @@ class ScrubPreloadThread(QThread):
                             ts_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
                         except Exception:
                             ts_ms = 0
-                        small = self._downscale(frame, cv2)
-                        ok2, buf = cv2.imencode(".jpg", small, jpeg_params)
+                        # ПОЛНОЕ разрешение видео (без downscale) → кэш = качество видео.
+                        ok2, buf = cv2.imencode(".jpg", frame, jpeg_params)
                         if ok2:
                             b = buf.tobytes()
                             cache.append((ts_ms, b))
@@ -201,18 +204,3 @@ class ScrubPreloadThread(QThread):
         # ts монотонно растёт по ходу декода → список уже отсортирован; гарантируем.
         cache.sort(key=lambda t: t[0])
         self.ready.emit(cache)
-
-    def _downscale(self, frame, cv2):
-        """Кадр BGR → уменьшенный по большей стороне до _long_side (INTER_AREA — лучшее
-        качество при уменьшении). Если кадр уже меньше — оставляем как есть."""
-        try:
-            h, w = frame.shape[:2]
-            m = max(h, w)
-            if m <= self._long_side:
-                return frame
-            scale = self._long_side / float(m)
-            nw = max(1, int(round(w * scale)))
-            nh = max(1, int(round(h * scale)))
-            return cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
-        except Exception:
-            return frame
