@@ -243,6 +243,33 @@ def _check_characters_whitelist(card: Dict[str, Any],
     return out
 
 
+def _check_geometry_presence(card: Dict[str, Any]) -> List[Dict[str, str]]:
+    """ГЕОМЕТРИЯ — для шотов блока с 2+ персонажами (len(characters) >= 2) поле
+    `geometry` ОБЯЗАТЕЛЬНО. Проверяем ТОЛЬКО ФАКТ наличия непустой строки, НЕ
+    содержание/качество. Код ошибки совместим с Editor:
+    "block_N_shot_M_missing_geometry" (montage_prompts.py:267).
+
+    Цитата правила (ГЛАВНАЯ_ИНСТРУКЦИЯ_c.md «ПРОСТРАНСТВЕННАЯ ГЕОМЕТРИЯ СЦЕНЫ»):
+      "Для каждой сцены где 2 и более персонажа — после описания действия
+       добавлять строку ГЕОМЕТРИЯ." Механический прокси (без AI): len(characters)
+       блока >= 2 → у каждого его шота geometry непустая."""
+    out: List[Dict[str, str]] = []
+    for i, b in enumerate(card.get("blocks") or []):
+        bn = b.get("n", i + 1)
+        nchars = len(b.get("characters") or [])
+        if nchars < 2:
+            continue
+        for j, s in enumerate(b.get("shots") or []):
+            sn = s.get("n", j + 1)
+            if not (s.get("geometry") or "").strip():
+                out.append(_err(
+                    f"block_{bn}_shot_{sn}_missing_geometry",
+                    f"blocks[{i}].shots[{j}].geometry",
+                    f"В блоке {nchars} персонажа — поле geometry шота обязательно "
+                    f"(строка ГЕОМЕТРИЯ), сейчас пусто."))
+    return out
+
+
 def prefilter_check(card: Dict[str, Any],
                      refs: Dict[str, Any]) -> Tuple[List[Dict[str, str]], Set[str]]:
     """Прогоняет 10 механических правил Validator'а на карте.
@@ -274,4 +301,5 @@ def prefilter_check(card: Dict[str, Any],
     errors += _check_speaker_in_characters(card)
     errors += _check_location_whitelist(card, locations)
     errors += _check_characters_whitelist(card, characters)
+    errors += _check_geometry_presence(card)
     return errors, set(PREFILTER_RULES)
