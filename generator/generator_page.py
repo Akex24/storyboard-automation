@@ -30,7 +30,7 @@ from PyQt6.QtCore import (
     Qt, QSize, QTimer, QSettings, QEvent, QPoint, QRect,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve,
 )
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader, QColor, QFont
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
@@ -54,6 +54,45 @@ MODELS_BY_MODE = {
 # под доступную ширину так, чтобы ровно n_v штук легли без дыры справа; высота 9:16 —
 # производная (w*16//9, выше 16:9). 16:9 при этом не меняется (как было).
 N_VERT_BY_COLS = {2: 5, 3: 8, 4: 11}
+
+
+class _RunButton(QToolButton):
+    """Кнопка отправки с КАСТОМНОЙ отрисовкой (paintEvent). На macOS крупный нативный
+    QPushButton/QToolButton рисуется серым бевелом и игнорирует QSS-фон (золото видно
+    лишь на hover) — поэтому рисуем сами: золотой скруглённый квадрат + стрелка ↑ по
+    центру, на hover чуть светлее. Сохраняет clicked/cursor/сигналы QToolButton."""
+
+    _BG = "#d4a256"
+    _BG_HOVER = "#e8b86a"
+    _FG = "#15101e"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hover = False
+
+    def enterEvent(self, ev):
+        self._hover = True
+        self.update()
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self.update()
+        super().leaveEvent(ev)
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        path = QPainterPath()
+        path.addRoundedRect(0.0, 0.0, float(self.width()), float(self.height()), 14.0, 14.0)
+        p.fillPath(path, QColor(self._BG_HOVER if self._hover else self._BG))
+        f = QFont()
+        f.setPixelSize(26)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor(self._FG))
+        p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), "↑")
+        p.end()
 
 
 class GeneratorPage(QWidget):
@@ -205,7 +244,17 @@ class GeneratorPage(QWidget):
         root.setSpacing(10)
         root.addWidget(self._build_canvas_row())
         root.addWidget(self._build_results_area(), stretch=1)
-        root.addWidget(self._build_prompt_bar())
+        # Промпт-бар НЕ растягивается на всю ширину максимизированного окна: оборачиваем
+        # в ряд со stretch'ами по бокам (центрирование), а ширину фиксируем по ПЕРВОМУ
+        # показу (launch-ширина) в _freeze_prompt_bar_width. Доминирующий stretch у бара
+        # (1000) → при запуске он заполняет всю доступную ширину (её и фиксируем); шире
+        # окна — остаётся той же шириной по центру (лишнее уходит в боковые stretch'и).
+        _bar_row = QHBoxLayout()
+        _bar_row.setContentsMargins(0, 0, 0, 0)
+        _bar_row.addStretch(1)
+        _bar_row.addWidget(self._build_prompt_bar(), 1000)
+        _bar_row.addStretch(1)
+        root.addLayout(_bar_row)
         self._update_duration_visibility()   # стартово скрыт (дефолт — режим image)
 
     # ── (B) ряд холстов — вкладки браузерного типа (только ВИД; логика — заход 2) ──
@@ -614,14 +663,13 @@ class GeneratorPage(QWidget):
         # кнопок (ctl), а сама тянется вверх к строке промпта. Высота 56 < высоты левой
         # колонки (мин 88) → бар не распирается, промпт/рефы не двигаются. Правая
         # колонка → не перекрывает промпт по горизонтали.
-        # QToolButton (НЕ QPushButton): на macOS высокий нативный QPushButton рисуется
-        # серым бевелом, а QSS-фон (#d4a256) применяется ТОЛЬКО на hover. QToolButton
-        # рисует QSS-фон надёжно сразу (как overlay-кнопки плиток). Квадрат 56×56.
-        self.run_btn = QToolButton()
+        # _RunButton — КАСТОМНАЯ отрисовка (paintEvent): золотой скруглённый квадрат +
+        # стрелка ↑, золото СРАЗУ (нативный крупный QToolButton на macOS рисовался серым,
+        # QSS-золото лишь на hover). Квадрат 56×56.
+        self.run_btn = _RunButton()
         self.run_btn.setObjectName("run-btn")
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_btn.setFixedSize(56, 56)
-        self.run_btn.setText("↑")   # только стрелка, без текста
         self.run_btn.clicked.connect(self._on_run)   # MVP: запуск генерации
         root_h.addWidget(self.run_btn, 0, Qt.AlignmentFlag.AlignBottom)
 
@@ -709,6 +757,24 @@ class GeneratorPage(QWidget):
             if self._cells:
                 self._relayout_grid()
             self._shown_once = True
+            # Зафиксировать ширину промпт-бара = его launch-ширина (после того как layout
+            # посчитает реальную ширину). singleShot(0) — дать layout устаканиться.
+            QTimer.singleShot(0, self._freeze_prompt_bar_width)
+
+    def _freeze_prompt_bar_width(self):
+        """Зафиксировать максимальную ширину промпт-бара = его ширина при ПЕРВОМ показе
+        (launch). Дальше окно можно растягивать — бар останется этой ширины по центру
+        (не распирается). Один раз; на узких окнах бар по-прежнему сжимается (это максимум,
+        не fixed)."""
+        if getattr(self, "_bar_w_frozen", False):
+            return
+        bar = getattr(self, "_prompt_bar", None)
+        if bar is None:
+            return
+        w = bar.width()
+        if w > 0:
+            bar.setMaximumWidth(w)
+            self._bar_w_frozen = True
 
     def resizeEvent(self, event):
         """Ресайз окна → переразмерить уже выложенные плитки под новую ширину.
