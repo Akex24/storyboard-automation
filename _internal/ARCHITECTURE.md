@@ -203,7 +203,8 @@ geometry/reviewer (никогда не триггерятся, краша нет
 Кнопка «Рефы» (`MainWindow._on_block_refs_btn`, [storyboard_app.py](storyboard_app.py))
 кроме сборки папки блока (`.cache/_block_view/<ep>_block<N>/`) теперь нарезает
 блочный Seedance-промпт на пошотовые папки `shots/shot_<k>/` — у каждого шота
-свой самодостаточный промпт + только его рефы.
+свой самодостаточный промпт + только его рефы + ПАНЕЛЬ ЭТОГО шота (кроп из
+склеенного листа сториборда, с face-сетками).
 
 **Новый leaf-модуль [seedance_shot_slicer.py](seedance_shot_slicer.py)** (только
 stdlib re/shutil/pathlib, без Qt/subprocess → нет циклов, кросс-платформенно):
@@ -226,9 +227,19 @@ stdlib re/shutil/pathlib, без Qt/subprocess → нет циклов, крос
 и `name.lower().replace(' ','_')==slug`. Легенда даёт `@image(K+1)=name` (storyboard
 `@image1` впереди → сдвиг +1). `@image1` (Storyboard) — в каждом шоте всегда.
 
+**Панель шота (кроп из склейки, 2026-06-29):** в `shots/shot_<k>/` кладётся НЕ весь
+лист, а ПАНЕЛЬ этого шота, вырезанная из склеенного `<ep>_block<N>.jpg` (он несёт
+face-сетки) по детерминированной раскладке `stitch_shots_to_landscape`
+([storyboard_app.py:5607](storyboard_app.py:5607)): `PANELS=4`, для `aspect 16:9`
+сетка `2×2`, для `9:16` — `4×1`. `panel_w=W//cols`, `panel_h=H//rows`; панель шота N
+= `cell(N-1) = ((N-1)%cols·pw, (N-1)//cols·ph)` (без зазоров). Caller
+(`_on_block_refs_btn`) берёт aspect через `show_manager.show_aspect`. Подпись «SHOT N»
+уже внутри панели. PIL ленивый (как в stitch; PIL уже в бандле для face-grid). Нет
+листа в dest_dir → панель не кладётся (лог).
+
 **Условия/edge:** seedance-промпт `output/seedance/<ep>_block_<N>.txt` отсутствует →
 молча скип + лог `[block_refs]` (нарезка работает ПОСЛЕ генерации Seedance). Шот без
-`[@]img` → только сториборд (`used_imageN={1}`). tag out-of-range / slug-miss →
+`[@]img` → только панель сториборда (`used_imageN={1}`). tag out-of-range / slug-miss →
 лог+пропуск, не падает. Режется ОСНОВНОЙ `.txt` (вкладка 1), `_tab<K>.txt`/`_tabs.json`
 не трогаются. `shots/` — dir → текущий cleanup-rmtree-цикл в `_on_block_refs_btn`
 сносит её на следующем клике и пересоздаёт (без накопления стале).

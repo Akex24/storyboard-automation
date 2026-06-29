@@ -17034,12 +17034,23 @@ class MainWindow(QMainWindow):
                                 / f"{ep_id}_block_{block_n}.txt")
                 if seedance_txt.exists() and seedance_txt.stat().st_size > 50:
                     from seedance_shot_slicer import slice_block_to_shots
-                    sb_paths = [
-                        p for p in dest_dir.iterdir()
-                        if p.is_file() and storyboard_pattern.match(p.name)
-                    ]
+                    # Главный склеенный лист (с face-сетками) в dest_dir —
+                    # БЕЗ суффикса _N; из него режется панель шота.
+                    sheet = None
+                    for p in sorted(dest_dir.glob(f"{ep_id}_block{block_n}.*")):
+                        if (p.is_file()
+                                and p.suffix.lower() in ('.jpg', '.jpeg', '.png')):
+                            sheet = p
+                            break
+                    # Раскладка панелей листа = как у stitch_shots_to_landscape:
+                    # 16:9 → сетка 2×2, иначе (9:16) → PANELS в ряд.
+                    _aspect = show_manager.show_aspect(
+                        self._project_root, self._current_show)
+                    grid_cols, grid_rows = (
+                        (2, 2) if _aspect == "16:9" else (PANELS, 1))
                     slice_block_to_shots(
-                        seedance_txt, block, resolved, sb_paths,
+                        seedance_txt, block, resolved, sheet,
+                        grid_cols, grid_rows,
                         dest_dir / "shots", ep_id, block_n,
                         log=_sys_log.stderr.write,
                     )

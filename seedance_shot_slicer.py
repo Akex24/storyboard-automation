@@ -10,7 +10,8 @@ seedance_shot_slicer.py — нарезка блочного Seedance-промп�
     рефы шота блоком 参考说明 и внешней легендой) + ОДИН сегмент 镜头<k>
     (с предшествующим transition-маркером если был) + общий хвост (技术参数/
     限制). Текст шота слово в слово, не меняется.
-  • картинки-рефы, которые использует ИМЕННО этот шот, + сториборд.
+  • картинки-рефы, которые использует ИМЕННО этот шот, + ПАНЕЛЬ ЭТОГО шота,
+    вырезанную из склеенного листа сториборда (на ней уже face-сетки).
 
 Источник истины «какие рефы у шота» — montage_card: shots[].scene_action с
 тегами [@]imgK. Конвенция нумерации (agents/montage_rules_d.py:166,
@@ -192,7 +193,9 @@ def slice_block_to_shots(
     seedance_txt_path: Path,
     block: dict,
     resolved: List[Tuple[str, str, Path, str]],
-    storyboard_paths: List[Path],
+    storyboard_sheet: Optional[Path],
+    grid_cols: int,
+    grid_rows: int,
     shots_root: Path,
     ep_id: str,
     block_n: int,
@@ -205,10 +208,16 @@ def slice_block_to_shots(
       block             — montage_card блок (shots[] со scene_action)
       resolved          — [(category, slug, src_path, basename)] в порядке
                           [location, *objects, *characters] — ровно [@]imgK
-      storyboard_paths  — сториборд jpg(ы) блока (кладутся в каждый шот = @image1)
+      storyboard_sheet  — склеенный лист блока <ep>_block<N>.jpg (С face-сетками,
+                          из dest_dir). Из него ВЫРЕЗАЕТСЯ панель шота (@image1)
+                          по детерминированной раскладке stitch_shots_to_landscape.
+                          None / нет файла → панель не кладём (лог).
+      grid_cols/rows    — раскладка панелей листа (stitch): 16:9 → 2×2, 9:16 → 4×1.
+                          panel_w=W//cols, panel_h=H//rows; панель шота N = cell(N-1)
+                          = ((N-1)%cols*pw, (N-1)//cols*ph) (без зазоров).
       shots_root        — <dest_dir>/shots (создаётся; caller уже снёс старую
                           rmtree-циклом)
-      ep_id, block_n    — для имени файла <ep>_block<N>_shot<k>.txt
+      ep_id, block_n    — для имени файла <ep>_block<N>_shot<k>.txt/.jpg
       log               — callable(str) для диагностики [block_refs]; может быть None
 
     Возвращает количество нарезанных шотов (0 если промпт нераспознан/нет шотов).
@@ -246,6 +255,22 @@ def slice_block_to_shots(
 
     shots_struct = block.get('shots') or []
     by_n = {s.get('n'): s for s in shots_struct if isinstance(s, dict)}
+
+    # Склеенный лист (с face-сетками) — открываем ОДИН раз, режем панель на шот.
+    # PIL ленивый (как в stitch_shots_to_landscape); бандлится для face-grid.
+    sheet_img = None
+    if storyboard_sheet is not None:
+        try:
+            if storyboard_sheet.exists():
+                from PIL import Image as _PILImage
+                sheet_img = _PILImage.open(storyboard_sheet).convert("RGB")
+        except Exception as e:
+            _log(f"[block_refs] ep={ep_id} block={block_n}: cannot open "
+                 f"storyboard sheet {storyboard_sheet}: {type(e).__name__}: {e}\n")
+            sheet_img = None
+    if sheet_img is None:
+        _log(f"[block_refs] ep={ep_id} block={block_n}: no storyboard sheet "
+             f"→ shots get no panel\n")
 
     sliced = 0
     for k, (shot_num, shot_lines) in enumerate(parsed['shots'], start=1):
@@ -301,14 +326,33 @@ def slice_block_to_shots(
             except Exception as e:
                 _log(f"[block_refs] ep={ep_id} block={block_n} shot{shot_num}: "
                      f"copy ref failed {src}: {type(e).__name__}: {e}\n")
-        for sb in storyboard_paths:
-            try:
-                shutil.copy2(sb, shot_dir / sb.name)
-            except Exception as e:
+        # панель ЭТОГО шота — кроп из склеенного листа по раскладке stitch
+        if sheet_img is not None:
+            i = shot_num - 1
+            cells = grid_cols * grid_rows
+            if grid_cols >= 1 and grid_rows >= 1 and 0 <= i < cells:
+                W, H = sheet_img.size
+                pw, ph = W // grid_cols, H // grid_rows
+                cx, cy = (i % grid_cols) * pw, (i // grid_cols) * ph
+                try:
+                    panel = sheet_img.crop((cx, cy, cx + pw, cy + ph))
+                    panel.save(
+                        shot_dir / f"{ep_id}_block{block_n}_shot{shot_num}.jpg",
+                        quality=95)
+                except Exception as e:
+                    _log(f"[block_refs] ep={ep_id} block={block_n} shot{shot_num}: "
+                         f"crop panel failed: {type(e).__name__}: {e}\n")
+            else:
                 _log(f"[block_refs] ep={ep_id} block={block_n} shot{shot_num}: "
-                     f"copy storyboard failed {sb}: {type(e).__name__}: {e}\n")
+                     f"panel index {i} out of grid {grid_cols}x{grid_rows} → no panel\n")
 
         sliced += 1
+
+    if sheet_img is not None:
+        try:
+            sheet_img.close()
+        except Exception:
+            pass
 
     _log(f"[block_refs] ep={ep_id} block={block_n}: shots sliced={sliced} "
          f"dest={shots_root}\n")
