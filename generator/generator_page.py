@@ -175,6 +175,8 @@ class GeneratorPage(QWidget):
             "QWidget#refs-row { background:transparent; }"
             "QFrame#ref-thumb { background:#1a1428;"
             " border:1px solid rgba(255,255,255,0.15); border-radius:6px; }"
+            # drag-to-swap: подсветка тумбы-цели при перетаскивании (рамка ярче, из темы)
+            "QFrame#ref-thumb[drag-target=\"true\"] { border:1px solid rgba(255,255,255,0.65); }"
             "QPushButton#ref-thumb-x { background:rgba(0,0,0,0.7); color:#ffffff;"
             " border:none; border-radius:9px; font-weight:600; font-size:14px;"
             " padding:0px; text-align:center; }"
@@ -715,6 +717,38 @@ class GeneratorPage(QWidget):
                 if btn is not None:
                     btn.setVisible(False)
                 self._hide_thumb_popup()
+            elif t == QEvent.Type.MouseButtonPress:
+                # ЛКМ по тумбе (крестик — отдельный child, его клики сюда не доходят) →
+                # начать ВОЗМОЖНЫЙ drag-to-swap. grabMouse: иначе QFrame не accept'ит press
+                # и не получит move/release. Реальный drag — в MouseMove при сдвиге >5px.
+                if ev.button() == Qt.MouseButton.LeftButton:
+                    self._drag_thumb = obj
+                    self._drag_start_pos = ev.globalPosition().toPoint()
+                    self._drag_active = False
+                    self._drag_target = None
+                    try:
+                        obj.grabMouse()
+                    except Exception:
+                        pass
+                    return True
+            elif t == QEvent.Type.MouseMove:
+                if (getattr(self, "_drag_thumb", None) is obj
+                        and getattr(self, "_drag_start_pos", None) is not None):
+                    gp = ev.globalPosition().toPoint()
+                    if not self._drag_active and (gp - self._drag_start_pos).manhattanLength() > 5:
+                        self._drag_active = True   # порог 5px: клик/крестик ≠ drag
+                        self._hide_thumb_popup()
+                        QApplication.setOverrideCursor(Qt.CursorShape.ClosedHandCursor)
+                    if self._drag_active:
+                        self._update_drag_target(gp)
+                    return True
+            elif t == QEvent.Type.MouseButtonRelease:
+                if (getattr(self, "_drag_thumb", None) is obj
+                        and ev.button() == Qt.MouseButton.LeftButton):
+                    if self._drag_active:
+                        self._finish_drag_swap(ev.globalPosition().toPoint())
+                    self._end_drag()
+                    return True
         # canvas-chip: позиция ✕ (Resize) + ЛКМ-релиз → переключить холст (КУСОК 2).
         # ✕ теперь на АКТИВНОЙ вкладке и ВСЕГДА виден (без hover) — Enter/Leave не
         # нужны. ✕ — абсолютная дочерняя кнопка; её клики чипу не доходят (обработчик
@@ -2106,6 +2140,9 @@ class GeneratorPage(QWidget):
                 "color:#ffffff; font-size:18px;"
                 " background:#161020; border-radius:6px;")
             lbl.setGeometry(0, 0, 64, 64)
+        # Лейбл прозрачен для мыши → press/Enter доходят до тумбы (drag-to-swap + hover),
+        # а не съедаются лейблом. Крестик (x_btn, raised) свои клики получает поверх.
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         # Крестик-кнопка в правом верхнем углу (отступ 2px). "✕" (U+2715) —
         # симметричнее обычного "×" и центрируется в кнопке.
         x_btn = QPushButton("✕", thumb)
@@ -2340,6 +2377,95 @@ class GeneratorPage(QWidget):
             self.prompt_input.setPlainText(meta.get("prompt") or "")
         except Exception:
             pass
+
+    # ── drag-to-swap рефов (ФИШКА 2): перетащил реф на другой → меняются местами ──
+    def _ref_thumb_at(self, global_pt):
+        """Тумба рефа под глобальной точкой (hit-test по geometry в глоб. координатах)."""
+        for path, th in list(self._ref_thumbs.items()):
+            try:
+                tl = th.mapToGlobal(QPoint(0, 0))
+                if QRect(tl, th.size()).contains(global_pt):
+                    return th
+            except Exception:
+                continue
+        return None
+
+    def _update_drag_target(self, global_pt):
+        """Подсветить тумбу-цель под курсором (рамка из темы), снять с прежней. Над
+        собой/мимо рефов — без подсветки."""
+        target = self._ref_thumb_at(global_pt)
+        if target is getattr(self, "_drag_thumb", None):
+            target = None
+        if target is getattr(self, "_drag_target", None):
+            return
+        for th in (getattr(self, "_drag_target", None), target):
+            if th is None:
+                continue
+            th.setProperty("drag-target", th is target)
+            try:
+                th.style().unpolish(th)
+                th.style().polish(th)
+            except Exception:
+                pass
+        self._drag_target = target
+
+    def _finish_drag_swap(self, global_pt):
+        """Отпустили над ДРУГОЙ тумбой → SWAP в self._pending_refs (ИСТОЧНИК порядка для
+        генерации, _active_refs/_on_run) + перелокация тумб + пересчёт яркие/серые (Фишка 1а).
+        Визуал тумб — следствие порядка списка, а НЕ наоборот."""
+        src = getattr(self, "_drag_thumb", None)
+        target = self._ref_thumb_at(global_pt)
+        if src is None or target is None or target is src:
+            return
+        pi = getattr(src, "_file_path", None)
+        pj = getattr(target, "_file_path", None)
+        if not pi or not pj or pi not in self._pending_refs or pj not in self._pending_refs:
+            return
+        i = self._pending_refs.index(pi)
+        j = self._pending_refs.index(pj)
+        self._pending_refs[i], self._pending_refs[j] = self._pending_refs[j], self._pending_refs[i]
+        self._relayout_ref_thumbs()
+        self._refresh_ref_activity()   # порядок изменился → пересчёт активных/притухших
+
+    def _relayout_ref_thumbs(self):
+        """Переложить тумбы в _refs_row_lay в порядке self._pending_refs (после swap)."""
+        lay = getattr(self, "_refs_row_lay", None)
+        if lay is None:
+            return
+        for path in self._pending_refs:
+            th = self._ref_thumbs.get(path)
+            if th is not None:
+                lay.removeWidget(th)
+        for path in self._pending_refs:
+            th = self._ref_thumbs.get(path)
+            if th is not None:
+                lay.addWidget(th)
+
+    def _end_drag(self):
+        """Завершить drag: снять подсветку цели, вернуть курсор, отпустить мышь, сброс."""
+        old = getattr(self, "_drag_target", None)
+        if old is not None:
+            old.setProperty("drag-target", False)
+            try:
+                old.style().unpolish(old)
+                old.style().polish(old)
+            except Exception:
+                pass
+        if getattr(self, "_drag_active", False):
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+        src = getattr(self, "_drag_thumb", None)
+        if src is not None:
+            try:
+                src.releaseMouse()
+            except Exception:
+                pass
+        self._drag_thumb = None
+        self._drag_start_pos = None
+        self._drag_active = False
+        self._drag_target = None
 
     def remove_ref(self, file_path: str):
         """Открепить файл по пути. Если список опустел — скрыть ряд."""
