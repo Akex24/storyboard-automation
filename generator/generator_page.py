@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 
 from generator.result_cell import ShimmerCell, resolve_existing_path
 from generator.model_select import ModelSelect
+from i18n import tr   # локализация UI (i18n — лист-модуль, без circular import)
 
 
 # Модели по режиму: (отображаемое имя, внутренний id для payload["model"]).
@@ -339,7 +340,12 @@ class GeneratorPage(QWidget):
         # справа под крестик (✕ — абсолютный дочерний поверх правого края, не в layout).
         lay.setContentsMargins(16, 0, 28 if active else 16, 0)
         lay.setSpacing(8)
-        lbl = QLabel(canvas.get("title", "Холст"))
+        # Отображаемое имя вкладки — ВСЕГДА по номеру из id «cN» (локализовано),
+        # сохранённый title в canvas.json НЕ используется/НЕ переписывается (язык не
+        # запекаем в данные; ручного переименования нет — подтверждено).
+        _cid = canvas.get("id", "")
+        _cn = int(_cid[1:]) if isinstance(_cid, str) and _cid[1:].isdigit() else 1
+        lbl = QLabel(tr('gen_canvas', n=_cn))
         lbl.setObjectName("canvas-title")
         # клик по тексту должен уйти ЧИПУ (не съедаться лейблом).
         lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -524,7 +530,7 @@ class GeneratorPage(QWidget):
         self._empty_host = QWidget()
         eh = QVBoxLayout(self._empty_host)
         eh.addStretch()
-        empty = QLabel("Здесь появятся сгенерированные картинки")
+        empty = QLabel(tr('gen_empty_canvas'))
         empty.setObjectName("results-empty")
         empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         eh.addWidget(empty)
@@ -579,7 +585,7 @@ class GeneratorPage(QWidget):
         self.prompt_input = QTextEdit()
         self.prompt_input.setObjectName("prompt-input")
         self.prompt_input.setAcceptRichText(False)   # вставка только plain-текст
-        self.prompt_input.setPlaceholderText("Что хочешь сгенерировать?")
+        self.prompt_input.setPlaceholderText(tr('gen_prompt_placeholder'))
         # Авто-рост под текст (как Flow): высота по содержимому, потолок _PROMPT_MAX_H,
         # дальше — скролл ВНУТРИ поля; минимум — _PROMPT_MIN_H.
         self.prompt_input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -596,7 +602,7 @@ class GeneratorPage(QWidget):
 
         # Режим: Картинка / Видео (Картинка активна)
         self.mode_seg, self.mode_btns = self._seg_group(
-            [("Картинка", "image"), ("Видео", "video")], active_key="image", accent=True)
+            [(tr('gen_seg_image'), "image"), (tr('gen_seg_video'), "video")], active_key="image", accent=True)
         # Клик по режиму: подсветка + смена списка моделей (см. _on_mode_change).
         for _k, _b in self.mode_btns.items():
             _b.clicked.connect(
@@ -633,7 +639,7 @@ class GeneratorPage(QWidget):
         # style refs). По умолчанию — keyframes. Виден ТОЛЬКО для video + Veo,
         # взаимоисключение с dur_seg (показ — в _update_duration_visibility).
         self.veo_mode_seg, self.veo_mode_btns = self._seg_group(
-            [("Кадры", "keyframes"), ("Рефы", "refs")], active_key="keyframes")
+            [(tr('gen_seg_keyframes'), "keyframes"), (tr('gen_seg_refs'), "refs")], active_key="keyframes")
         for _k, _b in self.veo_mode_btns.items():
             _b.clicked.connect(
                 lambda _checked=False, key=_k: self._on_veo_mode_change(key))
@@ -869,7 +875,7 @@ class GeneratorPage(QWidget):
         root = _sa.get_stored_root()
         slug = _sa.get_current_show(root) if root else None
         if not root or not slug:
-            self._show_hint("Чтобы добавить файлы, создай любой сериал")
+            self._show_hint(tr('gen_hint_create_show_files'))
             return
         out_dir = root / "shows" / slug / "generator"
         try:
@@ -1087,18 +1093,18 @@ class GeneratorPage(QWidget):
         prompt = self.prompt_input.toPlainText().strip()
         if not prompt:
             self.prompt_input.setFocus()
-            self._show_hint("Введи описание")
+            self._show_hint(tr('gen_hint_enter_prompt'))
             return
         import storyboard_app as _sa
         root = _sa.get_stored_root()
         slug = _sa.get_current_show(root) if root else None
         if not root or not slug:
             # Картинки сохраняются в папку сериала — без него генерация невозможна.
-            self._show_hint("Чтобы генерировать, создай любой сериал")
+            self._show_hint(tr('gen_hint_create_show_gen'))
             return
         model_id = self.model_combo.current_model_id()
         if not model_id:
-            self._show_hint("Модель недоступна")
+            self._show_hint(tr('gen_hint_model_unavail'))
             return
         # ФИШКА 1б: сверхлимитные (притухшие) рефы блокируют запуск — юзер убирает лишние.
         # limit = _max_refs текущего режима (картинки 10, Veo «Кадры» 2 / «Рефы» 3, Omni 7).
@@ -1109,9 +1115,7 @@ class GeneratorPage(QWidget):
             limit = len(self._pending_refs)
         extra = len(self._pending_refs) - limit
         if extra > 0:
-            self._show_hint(
-                f"У вас лишних рефов: {extra}. Для этого режима можно только {limit}. "
-                f"Удалите лишние.")
+            self._show_hint(tr('gen_hint_extra_refs', extra=extra, limit=limit))
             return
         aspect = self._active_seg_key(self.fmt_btns) or "16:9"
         count_key = self._active_seg_key(self.count_btns) or "1"
@@ -1146,8 +1150,7 @@ class GeneratorPage(QWidget):
         # с ошибкой. Тот же _show_hint-паттерн, что у промпта/сериала/модели выше.
         if (is_video and model_id in ("flow-video-fast", "flow-video-light")
                 and keyframes_arg and not refs):
-            self._show_hint(
-                "В режиме Кадры нужен стартовый кадр. Прикрепи реф или переключись на Рефы.")
+            self._show_hint(tr('gen_hint_keyframes_need_ref'))
             return
         # ×N независимых параллельных генераций → N плиток. Pattern A: parent=None +
         # ссылка в списке. Захват своей ячейки и потока (default-arg → без late-binding):
@@ -1617,7 +1620,7 @@ class GeneratorPage(QWidget):
                 self._gen_threads.remove(th)
             return
         try:
-            cell.set_error((msg or "Ошибка")[:160])
+            cell.set_error((msg or tr('gen_err_label'))[:160])
         except Exception:
             pass
         if th in self._gen_threads:
@@ -1677,12 +1680,10 @@ class GeneratorPage(QWidget):
             try:
                 box = QMessageBox(self)
                 box.setIcon(QMessageBox.Icon.Question)
-                box.setWindowTitle("Скачать движок улучшения качества?")
-                box.setText(
-                    "Для апскейла нужно один раз скачать движок улучшения "
-                    "качества (~25 МБ). Скачать сейчас?")
-                yes_btn = box.addButton("Скачать", QMessageBox.ButtonRole.AcceptRole)
-                box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+                box.setWindowTitle(tr('gen_upscale_title'))
+                box.setText(tr('gen_upscale_body'))
+                yes_btn = box.addButton(tr('gen_btn_download'), QMessageBox.ButtonRole.AcceptRole)
+                box.addButton(tr('gen_btn_cancel'), QMessageBox.ButtonRole.RejectRole)
                 box.exec()
                 if box.clickedButton() is not yes_btn:
                     return
@@ -1703,7 +1704,7 @@ class GeneratorPage(QWidget):
         try:
             new_cell.set_meta(type="image", aspect=aspect, model_label="2K")
             new_cell.set_model_label("2K")
-            new_cell.set_loading_text("Подготовка…")
+            new_cell.set_loading_text(tr('gen_loading_prep'))
         except Exception:
             pass
 
@@ -1761,7 +1762,7 @@ class GeneratorPage(QWidget):
                 self._upscale_threads.remove(th)
             return
         try:
-            cell.set_error((msg or "Ошибка апскейла")[:200])
+            cell.set_error((msg or tr('gen_err_upscale'))[:200])
         except Exception:
             pass
         if th in self._upscale_threads:
@@ -1800,15 +1801,15 @@ class GeneratorPage(QWidget):
         if not skip_confirm:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
-            box.setWindowTitle("Удалить карточку?")
+            box.setWindowTitle(tr('gen_del_title'))
             if target is not None:
-                box.setText("Удалить эту картинку с холста и с компьютера окончательно?")
+                box.setText(tr('gen_del_img_body'))
             else:
-                box.setText("Удалить эту карточку с ошибкой с холста?")
-            dont_ask = QCheckBox("Больше не спрашивать при удалении")
+                box.setText(tr('gen_del_err_body'))
+            dont_ask = QCheckBox(tr('gen_del_dont_ask'))
             box.setCheckBox(dont_ask)
-            yes_btn = box.addButton("Удалить", QMessageBox.ButtonRole.DestructiveRole)
-            box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            yes_btn = box.addButton(tr('gen_btn_delete'), QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(tr('gen_btn_cancel'), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             if box.clickedButton() is not yes_btn:
                 return
