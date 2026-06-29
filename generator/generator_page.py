@@ -59,10 +59,10 @@ N_VERT_BY_COLS = {2: 5, 3: 8, 4: 11}
 class _RunButton(QToolButton):
     """Кнопка отправки с КАСТОМНОЙ отрисовкой (paintEvent). На macOS крупный нативный
     QPushButton/QToolButton рисуется серым бевелом и игнорирует QSS-фон — поэтому рисуем
-    сами: золотой скруглённый квадрат + стрелка ↑ по центру. Цвет ВСЕГДА один (#e8b86a,
-    как активная вкладка «Холст»), БЕЗ смены на hover."""
+    сами: золотой скруглённый квадрат + стрелка ↑ по центру. Цвет ВСЕГДА один (#cfff24 —
+    золотой, как раньше были активные сегменты), БЕЗ смены на hover."""
 
-    _BG = "#e8b86a"   # золотистый ВСЕГДА (цвет слова «Холст»); hover НЕ меняет
+    _BG = "#cfff24"   # ЗОЛОТОЙ ВСЕГДА (тот яркий, что был у активных сегментов); hover НЕ меняет
     _FG = "#15101e"
 
     def paintEvent(self, ev):
@@ -85,6 +85,8 @@ class GeneratorPage(QWidget):
 
     _PROMPT_MIN_H = 46      # минимум поля промпта (1-2 строки)
     _PROMPT_MAX_H = None    # потолок = 20 строк, считается лениво от ЖИВОГО шрифта поля
+    _PROMPT_BAR_MAX_W = 900  # жёсткий максимум ширины промпт-бара (компактный по центру,
+                             # ≈ стандартный запуск); шире окно — бар не растягивается
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -229,16 +231,15 @@ class GeneratorPage(QWidget):
         root.setSpacing(10)
         root.addWidget(self._build_canvas_row())
         root.addWidget(self._build_results_area(), stretch=1)
-        # Промпт-бар НЕ растягивается на всю ширину максимизированного окна: оборачиваем
-        # в ряд со stretch'ами по бокам (центрирование), а ширину фиксируем по ПЕРВОМУ
-        # показу (launch-ширина) в _freeze_prompt_bar_width. Доминирующий stretch у бара
-        # (1000) → при запуске он заполняет всю доступную ширину (её и фиксируем); шире
-        # окна — остаётся той же шириной по центру (лишнее уходит в боковые stretch'и).
+        # Промпт-бар — КОМПАКТНЫЙ по центру, НЕ растягивается на всю ширину окна. Жёсткий
+        # максимум _PROMPT_BAR_MAX_W; по бокам stretch'и → бар по центру, лишнее в поля.
+        # Окно уже максимума → бар сжимается с окном (это максимум, не fixed).
         _bar_row = QHBoxLayout()
         _bar_row.setContentsMargins(0, 0, 0, 0)
         _bar_row.addStretch(1)
         _bar_row.addWidget(self._build_prompt_bar(), 1000)
         _bar_row.addStretch(1)
+        self._prompt_bar.setMaximumWidth(self._PROMPT_BAR_MAX_W)
         root.addLayout(_bar_row)
         self._update_duration_visibility()   # стартово скрыт (дефолт — режим image)
 
@@ -742,24 +743,6 @@ class GeneratorPage(QWidget):
             if self._cells:
                 self._relayout_grid()
             self._shown_once = True
-            # Зафиксировать ширину промпт-бара = его launch-ширина (после того как layout
-            # посчитает реальную ширину). singleShot(0) — дать layout устаканиться.
-            QTimer.singleShot(0, self._freeze_prompt_bar_width)
-
-    def _freeze_prompt_bar_width(self):
-        """Зафиксировать максимальную ширину промпт-бара = его ширина при ПЕРВОМ показе
-        (launch). Дальше окно можно растягивать — бар останется этой ширины по центру
-        (не распирается). Один раз; на узких окнах бар по-прежнему сжимается (это максимум,
-        не fixed)."""
-        if getattr(self, "_bar_w_frozen", False):
-            return
-        bar = getattr(self, "_prompt_bar", None)
-        if bar is None:
-            return
-        w = bar.width()
-        if w > 0:
-            bar.setMaximumWidth(w)
-            self._bar_w_frozen = True
 
     def resizeEvent(self, event):
         """Ресайз окна → переразмерить уже выложенные плитки под новую ширину.
