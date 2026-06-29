@@ -135,9 +135,9 @@ class MontageOrchestratorThread(QThread):
     # запускается после Editor → Studio видит реальное оставшееся
     # количество ошибок (вместо лживой «поправил 5 ошибок»).
     # Откат при регрессии качества — git revert этого коммита.
-    MODEL_SCRIPTWRITER     = "claude-opus-4-7"
+    MODEL_SCRIPTWRITER     = "claude-opus-4-8"
     MODEL_VALIDATOR        = "claude-haiku-4-5"
-    MODEL_EDITOR           = "claude-opus-4-7"
+    MODEL_EDITOR           = "claude-opus-4-8"
     MODEL_CONTEXT_REVIEWER = "claude-sonnet-4-6"
     # v1.0.75: Geometry Editor — узкий сабагент для shot.geometry.
     # Простая структурная правка → Haiku 4.5 хватает; разгружает
