@@ -27,6 +27,11 @@ from pathlib import Path
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
+# tr() локализованных сообщений (i18n — лист-модуль, без circular import; как в
+# threads/generate.py). gen_errors (классификатор + human_message) импортируется
+# ЛЕНИВО в run() — он в пакете generator, а его __init__ тянет generator_page.
+from i18n import tr
+
 
 POLL_TIMEOUT_SEC = 300   # потолок ожидания ГЕНЕРАЦИИ (поллинг после op_id).
                          # OpenAI+inputs тянет 150-170с; 2026-06-28 снижен 600→300.
@@ -36,30 +41,9 @@ _OK_STATUSES = ("succeeded", "success", "completed", "done")
 _FAIL_STATUSES = ("failed", "error", "cancelled")
 
 
-# 2026-06-28: детектор ТРАНЗИЕНТНЫХ ошибок генерации (для авто-ретрая). Порядок
-# КРИТИЧЕН — deny-wins: сперва чёрный список (контент/лицензия/валидация/протухший
-# реф — НЕ ретраить, сразу ошибка юзеру), потом белый (временный сбой — ретрай),
-# иначе по умолчанию НЕ ретраить (безопасно). Дублируется в generator_video_thread.py
-# (генератор изолирован, общего слоя нет).
-_RETRY_DENY = ("unsafe", "sexual", "minor", "prominent people", "guardrails",
-               "safety filters", "audio filtered", "not allowed for this license",
-               "file_not_found_or_expired")
-_RETRY_ALLOW = ("try again", "captcha", "no accounts available", "concurrency",
-                "failed to perform", "failed to generate", "temporarily unavailable",
-                "503", "502", "504", "connection reset", "curl:")
-
-
-def _is_transient(err_text) -> bool:
-    """True → ошибку генерации можно авто-повторить (временный сбой сервера/сети).
-    deny-list проверяется ПЕРВЫМ: контент/лицензия/валидация/протухший реф никогда
-    не ретраятся. Затем allow-list. Не в списках → False (по умолчанию не ретраим)."""
-    t = (err_text or "")
-    t = t.lower() if isinstance(t, str) else str(t).lower()
-    if any(d in t for d in _RETRY_DENY):
-        return False
-    if any(a in t for a in _RETRY_ALLOW):
-        return True
-    return False
+# Детектор транзиентных ошибок (is_transient) + человеческие локализованные
+# сообщения (human_message) вынесены в generator/gen_errors.py (единый модуль,
+# больше не дублируется в image/video тредах). Импорт — ЛЕНИВЫЙ в run().
 
 
 class GeneratorImageThread(QThread):
@@ -105,6 +89,10 @@ class GeneratorImageThread(QThread):
 
     def run(self):
         import storyboard_app as _sa
+        # gen_errors — ЛЕНИВО (пакет generator → __init__ тянет generator_page; на
+        # момент run() страница уже загружена, circular нет). is_transient — ретрай-
+        # решение; human_message — локализованная причина для юзера.
+        from generator.gen_errors import is_transient, human_message, classify_error
         try:
             # Рефы → v5 inputs[].input как base64 data URI (без /upload, без
             # storage hash, без TTL/expiration). Видны любому ключу — фикс 403
@@ -122,10 +110,10 @@ class GeneratorImageThread(QThread):
                         ref_inputs.append({"filename": pp.name,
                                            "input": self._file_to_data_uri(pp)})
                     except Exception as e:
-                        self.progress.emit(f"Реф не загрузился: {Path(_p).name}")
+                        self.progress.emit(tr('gen_prog_ref_failed', name=Path(_p).name))
                         print(f"[FASTGEN] ref_to_base64 FAILED for {Path(_p).name}: {e}")
                 if not ref_inputs:
-                    self.error.emit("Не удалось подготовить ни одного рефа")
+                    self.error.emit(tr('gen_err_no_refs'))
                     return
 
             # v5: провайдер выбирается полем model; единый эндпоинт.
@@ -153,8 +141,8 @@ class GeneratorImageThread(QThread):
             except Exception:
                 attempts = 5
             # 2026-06-28: авто-ретрай транзиентных ошибок — ВСЯ генерация (submit+poll)
-            # обёрнута в цикл до 4 попыток. На транзиентном failed (_is_transient) и
-            # retry_attempt<3 → пауза 10с + новая попытка (свежий перебор ключей).
+            # обёрнута в цикл до 4 попыток. На транзиентном failed (gen_errors.is_transient)
+            # и retry_attempt<3 → пауза 10с + новая попытка (свежий перебор ключей).
             # Контент/лицензия/валидация и POLL_TIMEOUT — НЕ ретраятся (см. ниже).
             for retry_attempt in range(4):
                 # Сброс submit-состояния на КАЖДОЙ попытке (свежий перебор ключей).
@@ -165,7 +153,7 @@ class GeneratorImageThread(QThread):
                 spins = 0
                 idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
                 search_t0 = time.monotonic()
-                self.progress.emit("Жду в очереди…")
+                self.progress.emit(tr('gen_prog_queue'))
                 while op_id is None:
                     if self._stop:
                         return
@@ -173,18 +161,16 @@ class GeneratorImageThread(QThread):
                         self._fastgen("-", "submit",
                                       int(time.monotonic() - search_t0),
                                       "error", " error=key_search_timeout")
-                        self.error.emit(
-                            f"Очередь не освободилась за {KEY_SEARCH_TIMEOUT_SEC}с — "
-                            f"все ключи заняты, попробуй позже.")
+                        self.error.emit(tr('gen_err_queue_timeout', sec=KEY_SEARCH_TIMEOUT_SEC))
                         return
                     # Все живые ключи мертвы (401/403) — ждать бессмысленно, выходим.
                     if len(dead) >= attempts:
-                        self.error.emit("Нет ключей с доступом к генерации")
+                        self.error.emit(tr('gen_err_no_gen_keys'))
                         return
                     spins += 1
                     key, idx = _sa.next_api_key()
                     if not key:
-                        self.error.emit("Нет доступного API-ключа")
+                        self.error.emit(tr('gen_err_no_api_key'))
                         return
                     # idx=None → kill-switch fallback (.env один ключ): СТАБИЛЬНЫЙ tkey
                     # "_fb" (не spin-уникальный) — иначе round_tried-пейсинг не сработал бы.
@@ -201,7 +187,7 @@ class GeneratorImageThread(QThread):
                         continue
                     if tkey in round_tried:
                         # Круг замкнулся — все живые ключи заняты → пауза и новый круг.
-                        self.progress.emit("Жду в очереди…")
+                        self.progress.emit(tr('gen_prog_queue'))
                         time.sleep(2)
                         round_tried.clear()
                         idle_skips = 0
@@ -216,7 +202,7 @@ class GeneratorImageThread(QThread):
                                    json=payload, timeout=60)
                     except requests.exceptions.RequestException as e:
                         # Сетевой сбой — НЕ ключевая проблема, не перебираем.
-                        self.error.emit(f"Сеть/сервер недоступен: {str(e)[:200]}")
+                        self.error.emit(tr('gen_err_network', detail=str(e)[:200]))
                         return
                     code = r.status_code
                     if code in (401, 403):
@@ -233,16 +219,29 @@ class GeneratorImageThread(QThread):
                         continue
                     if not r.ok:
                         # 400 битый payload / 5xx — не ключевая, не крутим.
-                        self.error.emit(f"Ошибка отправки запроса: HTTP {code}")
+                        b_code = b_err = ''
+                        try:
+                            jb = r.json()
+                            if isinstance(jb, dict):
+                                b_code = str(jb.get('code') or '')
+                                b_err = str(jb.get('error') or '')
+                        except Exception:
+                            pass
+                        # validation.invalid_request одинаков на всех ключах → человеческая
+                        # причина; прочее (5xx) — с HTTP-кодом.
+                        if classify_error(b_code, b_err) == 'invalid_request':
+                            self.error.emit(human_message(b_code, b_err))
+                        else:
+                            self.error.emit(tr('gen_err_submit_http', code=code))
                         return
                     data = r.json()
                     op_id = data.get("id")
                     if not op_id:
-                        self.error.emit(f"Сервер не вернул id: {str(data)[:200]}")
+                        self.error.emit(tr('gen_err_no_id', detail=str(data)[:200]))
                         return
                     session = s   # рабочий ключ — им поллим и качаем
 
-                self.progress.emit("Генерирую…")
+                self.progress.emit(tr('gen_prog_generating'))
                 t0 = time.monotonic()
                 last_status = ""
                 retry_pending = False   # станет True → транзиентный сбой, повторить генерацию
@@ -256,9 +255,7 @@ class GeneratorImageThread(QThread):
                     if elapsed > POLL_TIMEOUT_SEC:
                         self._fastgen(op_id, last_status or "unknown", elapsed,
                                       "error", " error=timeout")
-                        self.error.emit(
-                            f"API timeout: статус «{last_status or 'unknown'}» "
-                            f"оставался {elapsed}с (>5 мин). Попробуй ещё раз.")
+                        self.error.emit(tr('gen_err_poll_timeout', status=last_status or 'unknown', sec=elapsed))
                         return
                     rr = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
                                      params={"result_format": "ref"}, timeout=30)
@@ -266,7 +263,7 @@ class GeneratorImageThread(QThread):
                     d = rr.json()
                     status = (d.get("status") or "").lower()
                     last_status = status
-                    self.progress.emit("Генерирую…")
+                    self.progress.emit(tr('gen_prog_generating'))
 
                     if status in _OK_STATUSES:
                         results = d.get("results") or d.get("result") or []
@@ -304,16 +301,17 @@ class GeneratorImageThread(QThread):
                         self._fastgen(op_id, status, elapsed, "error",
                                       f" error={str(err or '<none>')[:120]}")
                         # Транзиент + остались попытки → пауза 10с (дроблёно по stop) + повтор.
-                        if _is_transient(err) and retry_attempt < 3:
-                            self.progress.emit("Сервер занят, повторяю…")
+                        if is_transient(err) and retry_attempt < 3:
+                            self.progress.emit(tr('gen_prog_retry'))
                             for _ in range(20):
                                 if self._stop:
                                     return
                                 time.sleep(0.5)
                             retry_pending = True
                             break
-                        # Реальная ошибка (контент/лицензия/валидация) или попытки кончились.
-                        self.error.emit(f"Ошибка генерации: {err}")
+                        # Реальная ошибка (контент/лицензия/валидация) или попытки кончились →
+                        # человеческая локализованная причина (модерация без detail, прочие с [code]).
+                        self.error.emit(human_message(d.get('code'), err))
                         return
                     # queued / running / processing / pending — продолжаем poll
 
