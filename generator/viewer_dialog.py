@@ -23,10 +23,12 @@ StoryboardView (frozen guard — если модуля нет, деградир�
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QUrl, QSize, QTimer, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QPixmap, QIcon, QPainter, QPen, QFont, QPolygonF, QPalette
+from PyQt6.QtCore import Qt, QUrl, QSize, QTimer, QRectF, QPointF, QEvent, pyqtSignal
+from PyQt6.QtGui import (QPixmap, QImage, QIcon, QPainter, QPen, QFont, QPolygonF,
+                         QPalette)
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QToolButton, QWidget)
 
@@ -36,7 +38,17 @@ from views.theme import LUMZ_THEME, theme_qcolor
 # каждый sliderMoved — декодер захлёбывается и коалесцирует быстрые seek'и (кадр застывает
 # до остановки мыши). Вместо этого копим последнюю позицию и применяем её по таймеру с
 # этим интервалом, чтобы промежуточные кадры рисовались по ходу таскания.
+# ИСПОЛЬЗУЕТСЯ ТОЛЬКО в грейсфул-фоллбэке (pre-decode провалился). При готовом кэше скраб
+# идёт по RAM-кэшу мгновенно (см. scrub_decoder + _frame_at), троттл/таймер не участвуют.
 _SEEK_THROTTLE_MS = 50
+
+# Режим overlay скраб-превью поверх НАТИВНОГО QVideoWidget — ТОЧКА ПРОВЕРКИ НА .app
+# (нативный видео-слой капризен, как было с pillarbox-фоном). Меняется ОДНОЙ строкой
+# после проверки глазами на собранном .app:
+#  • "child" — overlay дочерний САМОГО vw, raise_() поверх; vw НЕ прячем (первичный).
+#  • "hide"  — overlay дочерний _video_frame (сиблинг vw); на время drag vw.hide(),
+#              на release vw.show() (фоллбэк, если нативный слой перекрывает overlay).
+_SCRUB_OVERLAY_MODE = "child"
 
 
 class _TimelineTrack(QWidget):
@@ -127,7 +139,11 @@ class _TimelineTrack(QWidget):
         return self._PAD + (ms / self._dur) * w
 
     # --- мышь: клик/таскание по треку = перемотка ---
+    #     Гард `if not self.isEnabled()` — пока кэш кадров греется (спиннер), трек
+    #     ЗАБЛОКИРОВАН: клик/таскание не должны скрабить до готовности (иначе заикание).
     def mousePressEvent(self, ev):
+        if not self.isEnabled():
+            return super().mousePressEvent(ev)
         if ev.button() == Qt.MouseButton.LeftButton:
             self._down = True
             self._pos = self._x_to_ms(ev.position().x())
@@ -140,6 +156,8 @@ class _TimelineTrack(QWidget):
             super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev):
+        if not self.isEnabled():
+            return super().mouseMoveEvent(ev)
         if self._down:
             self._pos = self._x_to_ms(ev.position().x())
             self._reposition_plus()
@@ -150,6 +168,8 @@ class _TimelineTrack(QWidget):
             super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev):
+        if not self.isEnabled():
+            return super().mouseReleaseEvent(ev)
         if ev.button() == Qt.MouseButton.LeftButton and self._down:
             self._down = False
             self._pos = self._x_to_ms(ev.position().x())
@@ -158,6 +178,15 @@ class _TimelineTrack(QWidget):
             ev.accept()
         else:
             super().mouseReleaseEvent(ev)
+
+    def changeEvent(self, ev):
+        # EnabledChange: при блокировке (прогрев кэша) прячем плюсик-«взять кадр» и
+        # перерисовываем приглушённо; при разблокировке возвращаем.
+        super().changeEvent(ev)
+        if ev.type() == QEvent.Type.EnabledChange:
+            if self._plus_btn is not None:
+                self._plus_btn.setVisible(self.isEnabled())
+            self.update()
 
     # --- плюсик у playhead: позиционирование за полоской + сигнал «взять кадр» ---
     def _reposition_plus(self):
@@ -199,6 +228,8 @@ class _TimelineTrack(QWidget):
         head = self._HEAD
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if not self.isEnabled():
+            p.setOpacity(0.4)   # прогрев кэша: трек приглушён (скраб недоступен)
         # клип-трек: тёмный фон + рамка, скруглённые углы (ниже зоны плюсика+флажка _HEAD)
         rect = QRectF(0.5, head + 0.5, self.width() - 1, self.height() - head - 1)
         p.setPen(QPen(theme_qcolor(t["border_strong"]), 1))
@@ -253,12 +284,13 @@ class _VideoFrame(QWidget):
     поля оставались чёрными). Контейнер же — обычный QWidget, его фон рисуется реально.
     """
 
-    def __init__(self, video_widget, ratio_w, ratio_h, parent=None):
+    def __init__(self, video_widget, ratio_w, ratio_h, parent=None, on_fit=None):
         super().__init__(parent)
         self._vw = video_widget
         self._vw.setParent(self)
         self._rw = max(1, int(ratio_w))
         self._rh = max(1, int(ratio_h))
+        self._on_fit = on_fit     # коллбэк после раскладки vw: центрировать спиннер/overlay
         self.setObjectName("viewer-videoframe")
         self.setAutoFillBackground(True)
         pal = self.palette()
@@ -280,6 +312,57 @@ class _VideoFrame(QWidget):
             h = ch
             w = int(h * self._rw / self._rh)
         self._vw.setGeometry((cw - w) // 2, (ch - h) // 2, w, h)
+        if self._on_fit is not None:
+            try:
+                self._on_fit()
+            except Exception:
+                pass
+
+
+class _BusySpinner(QWidget):
+    """Круглый indeterminate-спиннер: вращающаяся accent-дуга (LUMZ_THEME['accent_red'])
+    поверх превью, пока греется кэш кадров. paintEvent+QPainter+QTimer — принятый в проекте
+    путь (QSS-анимаций на macOS-нативных виджетах нет). Прозрачный фон → виден кадр под ним."""
+
+    def __init__(self, parent=None, diameter: int = 48):
+        super().__init__(parent)
+        self._d = int(diameter)
+        self._angle = 0
+        self.setFixedSize(self._d, self._d)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._timer = QTimer(self)
+        self._timer.setInterval(28)   # ~36 кадров/сек вращения
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        self.show()
+        self.raise_()
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self):
+        if self._timer.isActive():
+            self._timer.stop()
+        self.hide()
+
+    def _tick(self):
+        self._angle = (self._angle + 12) % 360
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        m = 5
+        rect = QRectF(m, m, self._d - 2 * m, self._d - 2 * m)
+        # фоновое кольцо (приглушённое) + яркая дуга-«голова» (accent), крутится по _angle
+        p.setPen(QPen(theme_qcolor(LUMZ_THEME["bg_subtle"]), 4))
+        p.drawArc(rect, 0, 360 * 16)
+        pen = QPen(theme_qcolor(LUMZ_THEME["accent_red"]), 4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        # старт-угол в 1/16°, отсчёт против часовой; минус → крутим по часовой
+        p.drawArc(rect, -self._angle * 16, 100 * 16)
+        p.end()
 
 
 class GeneratorViewerDialog(QDialog):
@@ -306,9 +389,16 @@ class GeneratorViewerDialog(QDialog):
         self._icon_volx = None
         self._muted = False           # локальный mute плеера попапа
         self._was_playing = False     # скраб: играло ли видео до захвата ползунка
-        self._seek_timer = None       # троттл-таймер перемотки при таскании (добивка)
-        self._pending_seek = None     # последняя позиция, ждущая применения троттлом
-        self._last_seek_apply = 0.0   # monotonic-время последнего setPosition (троттл скраба)
+        self._seek_timer = None       # троттл-таймер перемотки (ТОЛЬКО фоллбэк, кэш провален)
+        self._pending_seek = None     # последняя позиция, ждущая применения троттлом (фоллбэк)
+        self._last_seek_apply = 0.0   # monotonic-время последнего setPosition (фоллбэк-троттл)
+        # ── живой скраб (A+C): pre-decode кэш кадров в RAM + overlay-превью ──
+        self._scrub_cache = None      # list[(ts_ms:int, jpeg_bytes)] | None (None=нет/греется)
+        self._scrub_ts = []           # параллельный список ts (для bisect-lookup по позиции)
+        self._preload = None          # ScrubPreloadThread (parent=None, ссылка тут — паттерн A)
+        self._scrub_overlay = None    # QLabel-превью кадра во время drag
+        self._spinner = None          # _BusySpinner поверх превью на время прогрева кэша
+        self._scrub_warming = False   # идёт ли прогрев (контролы disabled, спиннер крутится)
         self._is_video = (self._meta.get("type") == "video")
         aspect = self._meta.get("aspect", "16:9")
 
@@ -415,7 +505,19 @@ class GeneratorViewerDialog(QDialog):
         # центрирует → поля вокруг = bg_main, а не чёрный (палитра на самом QVideoWidget
         # pillarbox не красит — нативный видео-слой поверх; проверено эмпирически).
         rw, rh = (9, 16) if self._meta.get("aspect") == "9:16" else (16, 9)
-        self._video_frame = _VideoFrame(vw, rw, rh, self)
+        self._video_frame = _VideoFrame(vw, rw, rh, self, on_fit=self._sync_scrub_geometry)
+        # Скраб-overlay (кадр-превью при drag) + спиннер прогрева. Родитель overlay зависит
+        # от режима (_SCRUB_OVERLAY_MODE — точка проверки на .app): "child" → поверх нативного
+        # vw; "hide" → сиблинг в _video_frame (vw прячем на время drag). Спиннер всегда в
+        # _video_frame (по центру превью).
+        ov_parent = vw if _SCRUB_OVERLAY_MODE == "child" else self._video_frame
+        self._scrub_overlay = QLabel(ov_parent)
+        self._scrub_overlay.setObjectName("viewer-scrub-overlay")
+        self._scrub_overlay.setScaledContents(True)       # кэш 480px тянется по размеру vw
+        self._scrub_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._scrub_overlay.hide()
+        self._spinner = _BusySpinner(self._video_frame)
+        self._spinner.hide()
         # Порядок сверху вниз: видео (stretch=1) → РЯД КНОПОК (на фоне окна) → дорожка.
         # Кнопки в своей строке НИЖЕ видео — не перекрывают изображение.
         lay.addWidget(self._video_frame, 1)
@@ -597,6 +699,9 @@ class GeneratorViewerDialog(QDialog):
             except Exception:
                 pass
             self._update_play_icon()
+            # Прогрев кэша кадров для живого скраба (фоном). До готовности — спиннер и
+            # disabled-контролы (юзер не скрабит до готовности → нет заикания).
+            self._start_scrub_preload()
 
     # ── кнопка play/pause панели → пауза/плей (иконка обновится по сигналу) ──
     def _toggle_play_pause(self):
@@ -639,12 +744,14 @@ class GeneratorViewerDialog(QDialog):
             self._seek.setValue(int(pos))
 
     def _on_seek_moved(self, val: int):
-        """Таскание ползунка → перемотка ЖИВЬЁМ. setPosition применяем ПРЯМО здесь (в
-        обработчике mouseMove), троттля по реальному времени (monotonic). Раньше seek шёл
-        ТОЛЬКО через QTimer, который во время активного drag голодал (поток занят потоком
-        mouse-событий) → setPosition доходил лишь на остановке/релизе, кадр не обновлялся
-        по ходу. Таймер оставлен добивкой финальной позиции, когда движение замерло внутри
-        окна троттла (последний move мог не примениться)."""
+        """Таскание ползунка. ОСНОВНОЙ путь (кэш готов): рисуем кадр из RAM-кэша в overlay
+        МГНОВЕННО (bisect-lookup + QPixmap.loadFromData ~1-2мс) — кадр следует за playhead
+        без задержки, плеер НЕ дёргаем. ФОЛЛБЭК (кэш провален, self._scrub_cache=None):
+        старый троттл-setPosition (декодер коалесцирует — кадр догоняет, но попап рабочий)."""
+        if self._scrub_cache is not None:
+            self._update_scrub_overlay(int(val))
+            return
+        # ── фоллбэк: pre-decode провалился → старый QMediaPlayer-скраб ──
         self._pending_seek = int(val)
         import time
         now = time.monotonic()
@@ -658,9 +765,9 @@ class GeneratorViewerDialog(QDialog):
             self._seek_timer.start()
 
     def _on_seek_pressed(self):
-        """Захват ползунка: запомнить, играло ли, и поставить на паузу — чтобы скраб был
-        отзывчивым (на этой сборке Qt setPosition перерисовывает кадр и на паузе), а аудио
-        не частило при таскании. Запускаем троттл-таймер перемотки."""
+        """Захват ползунка: запомнить, играло ли, поставить на паузу (аудио не частит при
+        таскании). ОСНОВНОЙ путь: показать overlay с кадром текущей позиции (далее _moved
+        обновляет из кэша). ФОЛЛБЭК: запустить троттл-таймер перемотки."""
         if self._player is None:
             return
         try:
@@ -671,13 +778,17 @@ class GeneratorViewerDialog(QDialog):
                 self._player.pause()
         except Exception:
             self._was_playing = False
+        if self._scrub_cache is not None:
+            self._begin_scrub_overlay(int(self._seek.value()) if self._seek is not None else 0)
+            return
+        # ── фоллбэк ──
         self._pending_seek = None
         self._last_seek_apply = 0.0   # сброс → первое же движение применится сразу
         if self._seek_timer is not None and not self._seek_timer.isActive():
             self._seek_timer.start()
 
     def _flush_pending_seek(self):
-        """Тик троттл-таймера: ДОБИВКА — применить накопленную позицию, если последний
+        """Тик троттл-таймера (ТОЛЬКО фоллбэк): ДОБИВКА накопленной позиции, если последний
         mouseMove не успел её применить (движение замерло внутри окна троттла)."""
         if self._player is None or self._pending_seek is None:
             return
@@ -690,10 +801,12 @@ class GeneratorViewerDialog(QDialog):
         self._pending_seek = None
 
     def _on_seek_released(self):
-        """Отпустили ползунок: стоп троттла + зафиксировать кадр финальной позиции; если
-        до скраба играло — продолжить с этого места, иначе остаться на выбранном кадре."""
+        """Отпустили ползунок: скрыть overlay, синхронизировать плеер с playhead (ОДИН
+        setPosition — чтобы videoSink/grab были на верной позиции), продолжить play если
+        играло. Финальный setPosition общий для кэш-пути и фоллбэка."""
         if self._seek_timer is not None:
             self._seek_timer.stop()
+        self._end_scrub_overlay()
         if self._player is None:
             return
         try:
@@ -706,6 +819,127 @@ class GeneratorViewerDialog(QDialog):
         finally:
             self._pending_seek = None
             self._was_playing = False
+
+    # ── живой скраб: кэш кадров (pre-decode в RAM) + overlay-превью ──────────
+    def _start_scrub_preload(self):
+        """Запустить фоновый пред-декод кадров (ScrubPreloadThread, parent=None — паттерн A).
+        До готовности: спиннер + disabled-контролы. Провал импорта/cv2 → грейсфул:
+        контролы включаем, скраб идёт по старому QMediaPlayer-пути."""
+        if self._preload is not None:
+            return
+        try:
+            from generator.scrub_decoder import ScrubPreloadThread
+        except Exception:
+            # opencv/модуль недоступен → без кэша, фоллбэк-скраб (контролы активны).
+            self._scrub_cache = None
+            return
+        self._scrub_warming = True
+        self._set_controls_enabled(False)
+        self._sync_scrub_geometry()
+        if self._spinner is not None:
+            self._spinner.start()
+        th = ScrubPreloadThread(self._result_path, long_side=480, jpeg_q=85,
+                                mem_cap_mb=40, parent=None)
+        self._preload = th
+        th.ready.connect(self._on_preload_ready)
+        th.failed.connect(self._on_preload_failed)
+        th.start()
+
+    def _on_preload_ready(self, cache):
+        """Кэш готов: сохранить (+ параллельный список ts для bisect), убрать спиннер,
+        включить контролы. Скраб теперь мгновенный из RAM."""
+        try:
+            self._scrub_cache = list(cache) if cache else None
+            self._scrub_ts = [int(ts) for ts, _b in (self._scrub_cache or [])]
+        except Exception:
+            self._scrub_cache = None
+            self._scrub_ts = []
+        self._scrub_warming = False
+        if self._spinner is not None:
+            self._spinner.stop()
+        self._set_controls_enabled(True)
+
+    def _on_preload_failed(self):
+        """Pre-decode провалился (cv2 не открыл файл / 0 кадров): убрать спиннер, ВКЛЮЧИТЬ
+        контролы — скраб пойдёт по старому QMediaPlayer-пути (попап рабочий)."""
+        self._scrub_cache = None
+        self._scrub_ts = []
+        self._scrub_warming = False
+        if self._spinner is not None:
+            self._spinner.stop()
+        self._set_controls_enabled(True)
+        try:
+            import sys
+            sys.stderr.write("[scrub] pre-decode failed → fallback to QMediaPlayer scrub\n")
+        except Exception:
+            pass
+
+    def _set_controls_enabled(self, on: bool):
+        """Блокировка/разблокировка ползунка и play на время прогрева кэша."""
+        if self._seek is not None:
+            self._seek.setEnabled(bool(on))
+        if self._btn_play is not None:
+            self._btn_play.setEnabled(bool(on))
+
+    def _frame_at(self, pos_ms: int) -> QPixmap:
+        """Кадр из RAM-кэша по позиции: bisect ближайший слева → QPixmap.loadFromData.
+        Пустой QPixmap если кэша нет."""
+        if not self._scrub_cache or not self._scrub_ts:
+            return QPixmap()
+        idx = bisect_right(self._scrub_ts, int(pos_ms)) - 1
+        if idx < 0:
+            idx = 0
+        elif idx >= len(self._scrub_cache):
+            idx = len(self._scrub_cache) - 1
+        pm = QPixmap()
+        try:
+            pm.loadFromData(self._scrub_cache[idx][1], "JPEG")
+        except Exception:
+            return QPixmap()
+        return pm
+
+    def _begin_scrub_overlay(self, pos_ms: int):
+        """Показать overlay-превью на старте drag. Режим "hide" → спрятать нативный vw на
+        время drag (его слой иначе перекрывает overlay); "child" → overlay поверх vw."""
+        if self._scrub_overlay is None:
+            return
+        self._sync_scrub_geometry()
+        if _SCRUB_OVERLAY_MODE == "hide" and self._video_widget is not None:
+            self._video_widget.hide()
+        self._update_scrub_overlay(pos_ms)
+        self._scrub_overlay.show()
+        self._scrub_overlay.raise_()
+
+    def _update_scrub_overlay(self, pos_ms: int):
+        """Обновить кадр overlay из кэша (мгновенно). Без лишних setPixmap если кэша нет."""
+        if self._scrub_overlay is None:
+            return
+        pm = self._frame_at(pos_ms)
+        if not pm.isNull():
+            self._scrub_overlay.setPixmap(pm)
+
+    def _end_scrub_overlay(self):
+        """Скрыть overlay по окончании drag; вернуть нативный vw (режим "hide")."""
+        if self._scrub_overlay is not None:
+            self._scrub_overlay.hide()
+        if _SCRUB_OVERLAY_MODE == "hide" and self._video_widget is not None:
+            self._video_widget.show()
+
+    def _sync_scrub_geometry(self):
+        """Подогнать overlay под прямоугольник кадра vw и центрировать спиннер. Зовётся из
+        _VideoFrame._fit (ресайз окна) и перед показом overlay."""
+        vw = getattr(self, "_video_widget", None)
+        vf = getattr(self, "_video_frame", None)
+        if self._scrub_overlay is not None and vw is not None:
+            if _SCRUB_OVERLAY_MODE == "child":
+                # overlay — дочерний vw → заполняет его целиком (0,0,w,h).
+                self._scrub_overlay.setGeometry(0, 0, vw.width(), vw.height())
+            else:
+                # overlay — сиблинг в _video_frame → совпадает с geometry vw в нём.
+                self._scrub_overlay.setGeometry(vw.geometry())
+        if self._spinner is not None and vf is not None:
+            self._spinner.move((vf.width() - self._spinner.width()) // 2,
+                               (vf.height() - self._spinner.height()) // 2)
 
     # ── action-кнопки ряда ─────────────────────────────────────────────
     def _on_return_clicked(self):
@@ -728,30 +962,44 @@ class GeneratorViewerDialog(QDialog):
         vw = getattr(self, "_video_widget", None)
         if vw is None:
             return
-        # текущий кадр из QVideoSink → QImage (полное разрешение видео, не размер виджета)
-        try:
-            frame = vw.videoSink().videoFrame()
-            img = frame.toImage() if frame is not None else None
-        except Exception:
-            img = None
-        if img is None or img.isNull():
-            return
-        # сохранить кадр рядом с видео (та же папка холста shows/<slug>/generator/). JPEG —
-        # как остальные кадры-превью проекта (gen_*.jpg), универсально читается QPixmap.
-        # convertToFormat(RGB32) — на случай нестандартного формата кадра с Metal/RHI.
-        # Имя с таймстампом+позицией — не затирает файлы холста.
-        try:
-            from PyQt6.QtGui import QImage as _QImage
-            from datetime import datetime
-            if img.format() != _QImage.Format.Format_RGB32:
-                img = img.convertToFormat(_QImage.Format.Format_RGB32)
+        # Позиция playhead (где остановил юзер) — приоритет у трека; фоллбэк на плеер.
+        if self._seek is not None:
+            pos = int(self._seek.value())
+        else:
             pos = int(self._player.position()) if self._player is not None else 0
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out = Path(self._result_path).parent / f"frame_{stamp}_{pos}ms.jpg"
-            if not img.save(str(out), "JPEG", 92):
-                return
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = Path(self._result_path).parent / f"frame_{stamp}_{pos}ms.jpg"
+        # ПОЛНОЕ КАЧЕСТВО (требование): кадр в ПОЛНОМ разрешении видео, НЕ из уменьшенного
+        # скраб-кэша (480px). Первично — детерминированный cv2-seek по playhead (полный кадр,
+        # imencode→write_bytes, не-ASCII safe). Фоллбэк — videoSink().videoFrame() (Qt,
+        # полное разрешение, но зависит от async-тайминга позиции плеера).
+        saved = False
+        try:
+            from generator.scrub_decoder import grab_full_frame_jpeg
+            jpg = grab_full_frame_jpeg(self._result_path, float(pos), jpeg_q=92)
+            if jpg:
+                out.write_bytes(jpg)
+                saved = True
         except Exception:
-            return
+            saved = False
+        if not saved:
+            # ── фоллбэк: текущий кадр из QVideoSink → QImage → JPEG ──
+            try:
+                frame = vw.videoSink().videoFrame()
+                img = frame.toImage() if frame is not None else None
+            except Exception:
+                img = None
+            if img is None or img.isNull():
+                return
+            try:
+                from PyQt6.QtGui import QImage as _QImage
+                if img.format() != _QImage.Format.Format_RGB32:
+                    img = img.convertToFormat(_QImage.Format.Format_RGB32)
+                if not img.save(str(out), "JPEG", 92):
+                    return
+            except Exception:
+                return
         # КЛЮЧЕВОЕ от ▶-бага: добавляем реф ТОЛЬКО если сохранённый файл реально читается
         # QPixmap (тем же загрузчиком, что превью рефа). Так путь в add_ref ГАРАНТИРОВАННО
         # указывает на существующий читаемый кадр — нечитаемый/несуществующий не добавляем
@@ -797,8 +1045,44 @@ class GeneratorViewerDialog(QDialog):
         if ic is not None:
             self._btn_mute.setIcon(ic)
 
+    def _teardown_scrub(self):
+        """Остановить пред-декод-поток (stop+wait → cap.release в run-finally), спиннер,
+        overlay и ОЧИСТИТЬ кэш кадров из RAM. Идемпотентно — зовётся из всех путей закрытия
+        (closeEvent/reject). Паттерн A (поток parent=None): даже пропусти мы путь — нет
+        SIGABRT, но явный wait освобождает cv2-cap сразу и не оставляет кэш в памяти."""
+        th = self._preload
+        if th is not None:
+            try:
+                th.stop()
+                th.wait(1500)
+            except Exception:
+                pass
+            self._preload = None
+        if self._spinner is not None:
+            try:
+                self._spinner.stop()
+            except Exception:
+                pass
+        if self._scrub_overlay is not None:
+            try:
+                self._scrub_overlay.hide()
+            except Exception:
+                pass
+        # Очистка RAM: список JPEG-байтов и ts уходят из памяти.
+        self._scrub_cache = None
+        self._scrub_ts = []
+        self._scrub_warming = False
+
+    def reject(self):
+        # Escape у non-modal QDialog идёт через reject()→hide() (НЕ через closeEvent!) →
+        # teardown скраба обязателен и здесь, иначе поток/cap/кэш переживут закрытие.
+        self._teardown_scrub()
+        super().reject()
+
     def closeEvent(self, ev):
-        # Остановить троттл-таймер и воспроизведение/звук при закрытии (звук не висит).
+        # Остановить пред-декод-поток/спиннер/overlay + очистить кэш, затем троттл-таймер и
+        # воспроизведение/звук при закрытии (звук не висит, cv2-cap освобождён).
+        self._teardown_scrub()
         if self._seek_timer is not None:
             try:
                 self._seek_timer.stop()
