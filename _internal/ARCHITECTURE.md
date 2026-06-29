@@ -77,6 +77,63 @@ v1.0.45 — дренаж реестров stop()→wait()).
 отсутствовал. Перед добавлением нового диалога с тредом — СНАЧАЛА выбери
 паттерн A или B.
 
+## Живой скраб видео в попапе генератора — pre-decode JPEG-в-RAM + overlay (2026-06-29)
+
+Скраб playhead в `GeneratorViewerDialog` ([generator/viewer_dialog.py](generator/viewer_dialog.py))
+переведён с `QMediaPlayer.setPosition` (перематывал по keyframe, коалесцировал
+частые seek → кадр застывал/догонял с задержкой — полукостыль с троттлом) на
+**вариант A+C: пред-декод всех кадров в RAM + overlay-превью**.
+
+**Новый модуль [generator/scrub_decoder.py](generator/scrub_decoder.py)** (изоляция —
+рабочий `generator_video_thread` НЕ трогаем, backend-логику ДУБЛИРУЕМ):
+- `open_capture(path)` — `cv2.VideoCapture` с перебором системных backend'ов
+  (darwin=`CAP_AVFOUNDATION`, win32=`CAP_MSMF`, else default+фоллбэк 0). Та же
+  причина, что в `_extract_first_frame`: FFMPEG-бэкенд cv2 в PyInstaller не
+  собирается, системные фреймворки работают frozen. cv2 ленивый.
+- `ScrubPreloadThread(QThread)` — фоновый ПОСЛЕДОВАТЕЛЬНЫЙ декод (`grab()`+
+  `retrieve()`, не seek-per-frame) всех кадров: downscale ~480px (INTER_AREA) →
+  `cv2.imencode(".jpg", q85)` → **байты В ПАМЯТИ** (НИ ОДНОГО write на диск). Кэш =
+  `list[(ts_ms, jpeg_bytes)]`. Сигналы `ready(cache)` / `failed()`. Мягкий кап
+  памяти (`mem_cap_mb=40`) с прореживанием по `stride` — страховка для аномально
+  длинных/HFR видео (на 6-15с@24-30fps stride=1). Замер: 6с/144 кадра = **2.7МБ**,
+  500мс; 15с ≈ 7МБ, ~1.3с.
+- `grab_full_frame_jpeg(path, pos_ms, q92)` — одноразовый ПОЛНОКАДРОВЫЙ (полное
+  разрешение) захват по playhead для кнопки-плюсика «взять кадр в реф»: реф резкий
+  как видео, НЕ из 480px-кэша. Детерминированный seek POS_MSEC, не зависит от
+  async videoSink.
+
+**Цвет:** ручной BGR→RGB НЕ нужен — кэш и grab идут через JPEG (cv2.imencode пишет
+из BGR корректный стандартный JPEG, `QPixmap.loadFromData`/Qt декодит в RGB).
+
+**Поток-lifecycle — паттерн A** (`parent=None` + ссылка `self._preload`): исключает
+Qt-destructor SIGABRT. `_teardown_scrub()` (`stop()`+`wait(1500)` → `cap.release()`
+в run-finally; стоп спиннера; hide overlay; **очистка кэша из RAM**) зовётся из
+ВСЕХ путей закрытия non-modal Tool-диалога: `closeEvent` (крестик) И переопределённый
+`reject()` (Escape идёт через `reject()→hide()`, НЕ через `closeEvent`!).
+
+**Прогрев (доп. UX):** на `showEvent` стартует пред-декод; до `ready` — `_BusySpinner`
+(вращающаяся accent-дуга, `paintEvent`+`QPainter`+`QTimer`, accent_red из
+LUMZ_THEME) поверх превью + ползунок/play `setEnabled(False)` (юзер не скрабит до
+готовности → нет заикания). `_TimelineTrack` mouse-handlers получили гард
+`if not self.isEnabled(): return` + dim в paintEvent + `changeEvent` прячет плюсик.
+
+**Скраб по кэшу:** `_on_seek_moved` → `_frame_at(pos)` (`bisect_right` по `_scrub_ts`
+→ ближайший слева → `QPixmap.loadFromData`, ~1-2мс) → overlay.setPixmap. Плеер при
+скрабе НЕ дёргаем; на `release` ОДИН `setPosition(final)` синхронизирует плеер/
+videoSink с playhead. Если pre-decode `failed` → `_scrub_cache=None` → ГРЕЙСФУЛ-
+фоллбэк на старый троттл-`setPosition` (`_SEEK_THROTTLE_MS`, попап рабочий).
+
+**Overlay поверх НАТИВНОГО QVideoWidget — ТОЧКА ПРОВЕРКИ НА .app** (нативный слой
+капризен, как pillarbox): константа `_SCRUB_OVERLAY_MODE`:
+- `"child"` (default) — overlay дочерний vw, `raise_()` поверх; vw не прячем.
+- `"hide"` — overlay сиблинг в `_video_frame`; на drag `vw.hide()`, на release
+  `vw.show()` (если нативный слой перекрывает overlay). Меняется ОДНОЙ строкой
+  после проверки глазами на собранном .app.
+
+**Cross-platform:** macOS cyrillic-путь подтверждён замером (40/40; репо под
+«…/Работа/…»). Windows .exe (VideoCapture+не-ASCII+MSMF на random/sequential) —
+ПРОВЕРИТЬ при сборке под Win.
+
 ## Движение камеры Seedance — единый модуль camera_movement_rules.py (2026-06-19)
 
 Раньше дефолтный handheld был жёстко вшит в `agents/seedance_prompts.py`
