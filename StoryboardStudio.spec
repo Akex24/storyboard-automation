@@ -99,6 +99,11 @@ a = Analysis(
         'agents.validator_prefilter_b',
         'agents.validator_prefilter_c',
         'agents.validator_prefilter_d',
+        # 2026-06-29: нарезка Seedance-промпта по шотам. Импортится ленивым
+        # `from seedance_shot_slicer import ...` внутри _on_block_refs_btn
+        # (button-only — smoke-тест старта его не дёргает), поэтому явный хинт
+        # страхует бандл в frozen .app/.exe.
+        'seedance_shot_slicer',
     ] + _heif_hiddenimports,
     hookspath=[],
     hooksconfig={},

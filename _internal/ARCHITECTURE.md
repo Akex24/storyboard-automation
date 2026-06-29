@@ -198,6 +198,49 @@ geometry/reviewer (никогда не триггерятся, краша нет
 визуальное «Validator: 0» в `widgets/montage_summary_dialog.py` — отдельный
 косметический коммит.
 
+## Нарезка Seedance-промпта по шотам — seedance_shot_slicer.py (2026-06-29)
+
+Кнопка «Рефы» (`MainWindow._on_block_refs_btn`, [storyboard_app.py](storyboard_app.py))
+кроме сборки папки блока (`.cache/_block_view/<ep>_block<N>/`) теперь нарезает
+блочный Seedance-промпт на пошотовые папки `shots/shot_<k>/` — у каждого шота
+свой самодостаточный промпт + только его рефы.
+
+**Новый leaf-модуль [seedance_shot_slicer.py](seedance_shot_slicer.py)** (только
+stdlib re/shutil/pathlib, без Qt/subprocess → нет циклов, кросс-платформенно):
+- `_parse_prompt(text)` — режет .txt на `pre`(внешняя легенда `@imageN=name` +
+  `─────`/БЛОК), шапку `风格/表演风格/时长`, блок `参考说明` (распарсен на ref-блоки
+  `[XX参考: @imageN]`), `场景设置`, шоты (по `[HH:MM-HH:MM] 镜头N`; предшествующий
+  transition-маркер HARD CUT/MATCH CUT/CONTINUOUS приклеен к шоту), хвост
+  `技术参数/限制`, `post`. None если структура не распознана.
+- `_build_shot_text` — собирает промпт шота: легенда(фильтр)+шапка+`参考说明`(фильтр
+  по `used @imageN`)+`场景设置`(целиком, НЕ фильтруется)+СЕГМЕНТ ШОТА **дословным
+  срезом строк**+хвост. Номера `@image` НЕ перенумеровываются.
+- `slice_block_to_shots(...)` — главный вход.
+
+**Маппинг «рефы шота» (структурный, не парсинг китайского):**
+`shots[].scene_action [@]imgK` → `resolved[K-1]` (тот же порядок
+`[location, *objects, *characters]`, что строит `_on_block_refs_btn`; конвенция
+[@]img — [agents/montage_rules_d.py:166](agents/montage_rules_d.py:166),
+[agents/storyboard_writer_prompts.py:9](agents/storyboard_writer_prompts.py:9)).
+Для фильтрации китайской шапки: `slug → @imageN` через распарсенную легенду .txt
+и `name.lower().replace(' ','_')==slug`. Легенда даёт `@image(K+1)=name` (storyboard
+`@image1` впереди → сдвиг +1). `@image1` (Storyboard) — в каждом шоте всегда.
+
+**Условия/edge:** seedance-промпт `output/seedance/<ep>_block_<N>.txt` отсутствует →
+молча скип + лог `[block_refs]` (нарезка работает ПОСЛЕ генерации Seedance). Шот без
+`[@]img` → только сториборд (`used_imageN={1}`). tag out-of-range / slug-miss →
+лог+пропуск, не падает. Режется ОСНОВНОЙ `.txt` (вкладка 1), `_tab<K>.txt`/`_tabs.json`
+не трогаются. `shots/` — dir → текущий cleanup-rmtree-цикл в `_on_block_refs_btn`
+сносит её на следующем клике и пересоздаёт (без накопления стале).
+
+**PyInstaller:** импорт ленивый (`from seedance_shot_slicer import …` внутри
+button-only handler → пост-сборочный smoke-тест старта его не дёргает), поэтому
+`'seedance_shot_slicer'` добавлен в `hiddenimports` [StoryboardStudio.spec](StoryboardStudio.spec).
+
+**НЕ затронуто:** `seedance_prompts.py` (SYSTEM-правила), montage_card/episodes.json/
+seedance .txt — только ЧИТАЮТСЯ. Голосовая чистка (`_purge_phantom_voice`) — отдельный
+шаг, не связан.
+
 ## Движение камеры Seedance — единый модуль camera_movement_rules.py (2026-06-19)
 
 Раньше дефолтный handheld был жёстко вшит в `agents/seedance_prompts.py`

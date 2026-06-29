@@ -17021,6 +17021,40 @@ class MainWindow(QMainWindow):
                     _sys_log.stderr.flush()
                     # не валим — продолжаем к open
 
+            # 5d. (2026-06-29) Нарезка Seedance-промпта блока на пошотовые
+            # папки shots/shot_<k>/ (нарезанный .txt + только рефы шота +
+            # сториборд). Только если ОСНОВНОЙ seedance-промпт блока уже
+            # сгенерён (output/seedance/<ep>_block_<N>.txt); иначе молча
+            # пропускаем (нарезка работает ПОСЛЕ генерации Seedance). Папка
+            # shots/ — dir → текущий cleanup-цикл сносит её на следующем клике
+            # и пересоздаёт, без накопления стале. Источник рефов шота —
+            # montage_card shots[].scene_action [@]imgK → resolved[K-1].
+            try:
+                seedance_txt = (show_root / "output" / "seedance"
+                                / f"{ep_id}_block_{block_n}.txt")
+                if seedance_txt.exists() and seedance_txt.stat().st_size > 50:
+                    from seedance_shot_slicer import slice_block_to_shots
+                    sb_paths = [
+                        p for p in dest_dir.iterdir()
+                        if p.is_file() and storyboard_pattern.match(p.name)
+                    ]
+                    slice_block_to_shots(
+                        seedance_txt, block, resolved, sb_paths,
+                        dest_dir / "shots", ep_id, block_n,
+                        log=_sys_log.stderr.write,
+                    )
+                else:
+                    _sys_log.stderr.write(
+                        f"[block_refs] ep={ep_id} block={block_n}: seedance "
+                        f"prompt missing → skip shot-slicing\n")
+                    _sys_log.stderr.flush()
+            except Exception as e:
+                _sys_log.stderr.write(
+                    f"[block_refs] ep={ep_id} block={block_n}: shot-slicing "
+                    f"failed: {type(e).__name__}: {e}\n")
+                _sys_log.stderr.flush()
+                # не валим — продолжаем к open
+
             # 6. Открыть папку в файловом менеджере.
             if sys.platform == "darwin":
                 subprocess.run(["open", str(dest_dir)],
