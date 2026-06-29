@@ -195,11 +195,6 @@ class EpisodeChatView(QWidget):
         # `_launch_outfit_thread` (включая retry «Ещё 3 варианта»).
         # Чистится вместе с outfit picker'ом. Key = ep_id.
         self._outfit_descriptions: Dict[str, str] = {}
-        # Phase 2 hotfix #8: накопитель полного ответа AI для fallback-парсера.
-        # Сбрасывается в `_on_send` перед стартом потока. Используется в
-        # `_on_done` когда AI не вставил [[GEN:...]] маркеры — синтезируем
-        # их из строк «- ✗ name —» по секциям.
-        self._stream_full: str = ''
         self._build()
 
     def _build(self):
@@ -451,13 +446,12 @@ class EpisodeChatView(QWidget):
             self._render_message(m.get('text', ''), m.get('kind'))
         # На случай если последняя реплика не закончилась \n — допечатать
         self._flush_chunk_buffer()
-        # Phase 2 hotfix #15: ретроактивная синтеза GEN-кнопок из истории.
-        # Сценарий: юзер был на ЭП20 пока поток ЭП21 стримил ответ. В
-        # `on_external_append` chunks для ЭП21 отбрасывались (другой
-        # `_ep_id`), `_stream_full` пуст, fallback в `_on_thread_finished`
-        # не сработал. Текст всё равно сохранился в jsonl, и при заходе
-        # на ЭП21 видно полный ответ — но без кнопок. Восстанавливаем
-        # кнопки прогоняя assistant-историю через `synthesize_gen_markers`.
+        # Показ GEN-кнопок из сохранённой истории — единый детерминированный
+        # путь (тот же, что на финише треда через `rebuild_gen_buttons_for`).
+        # Текст манифеста всегда в jsonl (каждый чанк пишется
+        # `append_chat_message`); прогоняем assistant-историю через
+        # `synthesize_gen_markers` + фильтр `refs_decisions`. Гейтов по
+        # таймингу нет — потому заход в эпизод/рестарт чинит показ всегда.
         if prev_ep != ep_id:
             self._restore_gen_buttons_from_history(msgs)
         # 2026-05-06: всегда сверяем активную карточку и очередь с
@@ -811,9 +805,8 @@ class EpisodeChatView(QWidget):
             # Phase 2 hotfix #26: НЕ создаём GenButton на лету (markers
             # игнорим). Карточки появляются ТОЛЬКО после полного ответа
             # AI — в `_on_done`/`_on_thread_finished` через
-            # `try_synthesize_gen_markers`. Так юзер не видит резкого
-            # появления кнопок до того как монтажная карта готова.
-            self._stream_full += clean_text
+            # `rebuild_gen_buttons_for` (детерминированный разбор истории).
+            # Так юзер не видит резкого появления кнопок до готовности карты.
         else:
             self._render_message(text, kind)
 
@@ -1063,43 +1056,40 @@ class EpisodeChatView(QWidget):
         # Извлекаем GEN-маркеры до рендера: маркеры скрываем из лога.
         # Phase 2 hotfix #26: live-маркеры НЕ создают GenButton на лету —
         # карточки появятся только в `_on_done` через
-        # `try_synthesize_gen_markers`. Юзер не должен видеть кнопки
-        # до того как AI закончит писать монтажную карту.
+        # `rebuild_gen_buttons_for` (детерминированный разбор истории).
+        # Юзер не должен видеть кнопки до того как AI закончит карту.
         clean_text, _markers = parse_gen_markers(text)
         _sa.append_chat_message(self._ep_id, "assistant", clean_text, kind=None)
         self._render_message(clean_text, kind=None)
-        self._stream_full += clean_text
 
     # ── Sub-MVP: автономная генерация по кнопке в чате ──────────────
 
-    def try_synthesize_gen_markers(self, ep_id: str, full_text: str) -> int:
-        """Phase 2 hotfix #8: fallback на случай когда AI не вставил
-        `[[GEN:...]]` маркеры в свой ответ (а написал просто словами
-        «- ✗ name — рефа нет»). Сканируем полный текст, парсим строки
-        по секциям ЛОКАЦИИ/ОБЪЕКТЫ и создаём кнопки. Sub-MVP правило
-        «одна кнопка за раз» соблюдается через `_maybe_show_gen_button`.
+    def rebuild_gen_buttons_for(self, ep_id: str) -> None:
+        """Единый детерминированный показ GEN-кнопок рефов.
 
-        Вызывается из:
-          1) `_on_done` — после завершения followup'а в этом же view.
-          2) `NewEpisodeView._on_thread_finished` после hand-off — когда
-             первый запуск завершился, и юзер уже здесь.
+        Заменил хрупкий live-путь `try_synthesize_gen_markers` (гейтился
+        по таймингу: `_stream_full`/`is_current_form_thread`/`_gen_button`
+        → на финише треда нового сериала не сходился, кнопки появлялись
+        только после рестарта).
 
-        Возвращает количество созданных кнопок (0 если уже была
-        активная кнопка или AI всё-таки вставил маркеры/ничего не
-        нашлось)."""
-        if ep_id != self._ep_id:
-            return 0
-        if self._gen_button is not None:
-            return 0  # активная кнопка уже есть — sub-MVP не плодим
-        markers = synthesize_gen_markers(full_text)
-        if not markers:
-            return 0
-        before_count = 1 if self._gen_button is not None else 0
-        for m in markers:
-            self._maybe_show_gen_button(
-                m.type, m.name, m.description,
-                display=getattr(m, 'display', '') or '')
-        return 1 if (self._gen_button is not None and not before_count) else 0
+        Зовётся на финише треда manifest'а — из
+        `NewEpisodeView._on_thread_finished` и из in-chat followup
+        `_on_done`. Если эпизод сейчас НЕ на экране — no-op: кнопки
+        построит вход в эпизод через `set_episode` →
+        `_restore_gen_buttons_from_history`. Если на экране — читаем
+        ПОЛНУЮ историю из jsonl (каждый чанк уже записан
+        `append_chat_message`) и прогоняем тот же детерминированный
+        фильтр по `refs_decisions`, что и при заходе. Лог НЕ трогаем —
+        манифест уже отрендерен стримом, добавляются только кнопки."""
+        if not ep_id or ep_id != self._ep_id:
+            return
+        try:
+            msgs = _sa.load_chat_messages(ep_id)
+        except Exception:
+            return
+        if not msgs:
+            return
+        self._restore_gen_buttons_from_history(msgs)
 
     def _maybe_show_gen_button(self, gen_type: str, name: str,
                                 description: str, display: str = ""):
@@ -1312,9 +1302,6 @@ class EpisodeChatView(QWidget):
         self._clear_gen_button()
         self._gen_seen_names.clear()
         self._pending_markers.clear()
-        # Накопитель stream'а сбрасываем — fallback парсер пойдёт по
-        # свежему ответу.
-        self._stream_full = ''
         # Если в layout остались «осиротевшие» GenButton-карточки от
         # предыдущих маркеров (например done/skipped/linked) — удаляем.
         try:
@@ -2460,12 +2447,14 @@ class EpisodeChatView(QWidget):
             self._render_message(done, kind='ok')
         self.status_lbl.setStyleSheet("color:#6db86d; font-size:12px;")
         self.status_lbl.setText(tr('new_ep_log_done'))
-        # Phase 2 hotfix #8: если AI не вставил [[GEN:...]] маркеры в свой
-        # ответ (просто словами «- ✗ name — рефа нет»), мы сами их
-        # синтезируем по строкам секций ЛОКАЦИИ:/ОБЪЕКТЫ: и создаём кнопки.
-        if self._ep_id and self._gen_button is None and self._stream_full:
+        # GEN-кнопки рефов: единый детерминированный путь. Перестраиваем
+        # из сохранённой истории (тот же метод, что на финише треда нового
+        # сериала и при заходе в эпизод). Само-гейтится по видимости и по
+        # `_gen_button`. Followup крутится в открытом чате → эпизод на
+        # экране → кнопки появятся сразу.
+        if self._ep_id:
             try:
-                self.try_synthesize_gen_markers(self._ep_id, self._stream_full)
+                self.rebuild_gen_buttons_for(self._ep_id)
             except Exception:
                 pass
         # 2026-05-06: проверяем готов ли эпизод к multi-agent монтажу.
