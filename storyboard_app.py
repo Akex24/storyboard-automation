@@ -17023,15 +17023,21 @@ class MainWindow(QMainWindow):
 
             # 5d. (2026-06-29) Нарезка Seedance-промпта блока на пошотовые
             # папки shots/shot_<k>/ (нарезанный .txt + только рефы шота +
-            # сториборд). Только если ОСНОВНОЙ seedance-промпт блока уже
-            # сгенерён (output/seedance/<ep>_block_<N>.txt); иначе молча
-            # пропускаем (нарезка работает ПОСЛЕ генерации Seedance). Папка
+            # сториборд). Только если промпт блока СОХРАНЁН юзером (кнопка
+            # «💾 Save» попапа Seedance положила <show>_<ep>_block_<N>.txt в
+            # dest_dir); иначе молча пропускаем (нарезка появляется РОВНО
+            # когда и общий промпт в «Рефах»). Папка
             # shots/ — dir → текущий cleanup-цикл сносит её на следующем клике
             # и пересоздаёт, без накопления стале. Источник рефов шота —
             # montage_card shots[].scene_action [@]imgK → resolved[K-1].
             try:
-                seedance_txt = (show_root / "output" / "seedance"
-                                / f"{ep_id}_block_{block_n}.txt")
+                # SAVE-файл — тот же, что пишет _do_save попапа (текст активной
+                # вкладки = утверждённая версия). Формат имени байт-в-байт как в
+                # _do_save: <show>_<ep>_block_<N>.txt. Генерационный
+                # output/seedance/<ep>_block_<N>.txt (есть ДО Save) НЕ берём.
+                seedance_txt = (
+                    dest_dir
+                    / f"{self._current_show}_{ep_id}_block_{block_n}.txt")
                 if seedance_txt.exists() and seedance_txt.stat().st_size > 50:
                     from seedance_shot_slicer import slice_block_to_shots
                     # Главный склеенный лист (с face-сетками) в dest_dir —
@@ -17057,7 +17063,7 @@ class MainWindow(QMainWindow):
                 else:
                     _sys_log.stderr.write(
                         f"[block_refs] ep={ep_id} block={block_n}: seedance "
-                        f"prompt missing → skip shot-slicing\n")
+                        f"prompt not saved yet → skip shot-slicing\n")
                     _sys_log.stderr.flush()
             except Exception as e:
                 _sys_log.stderr.write(
