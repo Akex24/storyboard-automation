@@ -173,6 +173,9 @@ class SeedancePipelineThread(QThread):
             try:
                 txt = self._call_seedance_writer(b)
                 txt = self._sanitize(txt)
+                # Чистка фантомных голосовых профилей/отсылок в немых шотах
+                # (источник истины — b['shots'][j].dialog.speaker).
+                txt = self._purge_phantom_voice(txt, b)
                 out_path.write_text(txt, encoding='utf-8')
                 block_basename = out_path.stem
                 self.block_seedance_ready.emit(n, block_basename)
@@ -305,6 +308,88 @@ class SeedancePipelineThread(QThread):
                 text = inner
         return text
 
+    @staticmethod
+    def _purge_phantom_voice(text: str, block: dict) -> str:
+        """Удаляет ГАЛЛЮЦИНИРОВАННЫЕ голосовые профили/отсылки из НЕМЫХ
+        шотов (где персонаж в кадре, но не говорит).
+
+        Корень бага (2026-06-29): writer/compress иногда лепит
+        «<Имя> 声音档案：…» или «使用与镜头N相同的 <Имя> 声音档案» в шот,
+        где реплики НЕТ (см. ashes_west ep1_block_11 — Frank немой во всех
+        4 шотах, но стоят отсылки на 镜头1). Источник истины — структура
+        montage_card: `block['shots'][j].dialog.speaker` + `shot.n`, НЕ
+        парсинг китайского.
+
+        Логика:
+          • шот ГОВОРЯЩИЙ (speaker непустой) → не трогаем (профиль/отсылка
+            легитимны);
+          • шот НЕМОЙ (speaker пуст/None) → внутри его сегмента удаляем
+            строку-отсылку (使用与镜头…声音档案) и полный профиль
+            (от строки с «声音档案：» до конца сегмента — 声音/台词 —
+            последняя подсекция шота, после профиля легит-контента нет).
+        Реплика/эмбиент/«没有台词» (без токена 声音档案) не затрагиваются.
+        Шапка (до первого 镜头) и хвост (от 技术参数) — вне зоны. Идемпотентно
+        (повторный прогон = no-op, фантом уже удалён). Чистый Python, без
+        subprocess/IO.
+        """
+        if not text or not isinstance(block, dict):
+            return text
+        shots = block.get('shots') or []
+        speaks: dict = {}        # shot.n -> говорит ли (speaker непустой)
+        order: list = []         # порядок shot.n (позиционный фоллбэк)
+        for s in shots:
+            if not isinstance(s, dict):
+                continue
+            n = s.get('n')
+            dlg = s.get('dialog')
+            spk = (dlg or {}).get('speaker') if isinstance(dlg, dict) else None
+            speaks[n] = bool(str(spk or '').strip())
+            order.append(n)
+        if not speaks:
+            return text          # нет структуры шотов — ничего не трогаем
+
+        shot_re = re.compile(r'^\s*\[\d{2}:\d{2}-\d{2}:\d{2}\]\s*镜头\s*(\d+)')
+        tail_re = re.compile(r'^\s*技术参数')
+        ref_re = re.compile(r'使用与镜头\s*\d+\s*相同的.*声音档案')
+        prof_re = re.compile(r'声音档案[：:]')
+
+        out: list = []
+        in_body = False          # между первым 镜头 и 技术参数
+        cur_silent = False       # текущий шот немой?
+        dropping = False         # внутри удаляемого мультистрочного профиля
+        seg = -1                 # индекс сегмента (позиционный фоллбэк)
+        for ln in text.split('\n'):
+            m = shot_re.match(ln)
+            if m:
+                seg += 1
+                in_body = True
+                dropping = False
+                n = int(m.group(1))
+                if n in speaks:
+                    cur_silent = not speaks[n]
+                elif 0 <= seg < len(order):
+                    cur_silent = not speaks.get(order[seg], False)
+                else:
+                    cur_silent = False
+                out.append(ln)
+                continue
+            if tail_re.match(ln):
+                in_body = False
+                cur_silent = False
+                dropping = False
+                out.append(ln)
+                continue
+            if in_body and cur_silent:
+                if dropping:
+                    continue                 # ещё внутри профиля → до конца сегмента
+                if ref_re.search(ln):
+                    continue                 # строка-отсылка
+                if prof_re.search(ln):
+                    dropping = True           # старт полного профиля
+                    continue
+            out.append(ln)
+        return '\n'.join(out)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # REGEN: одиночная перегенерация Seedance промпта для ОДНОГО блока.
@@ -406,6 +491,9 @@ class SeedanceRegenThread(QThread):
 
             txt = self._run_claude_regen(SEEDANCE_WRITER_SYSTEM, user)
             txt = SeedancePipelineThread._sanitize(txt)
+            # Чистка фантомных голосовых профилей/отсылок в немых шотах
+            # (источник истины — target['shots'][j].dialog.speaker).
+            txt = SeedancePipelineThread._purge_phantom_voice(txt, target)
 
             # 2026-05-18 (UI tabs): regen больше НЕ перезаписывает
             # `<ep>_block_N.txt` — оригинал защищён как «Вкладка 1».
