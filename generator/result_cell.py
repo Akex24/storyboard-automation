@@ -36,6 +36,7 @@ from PyQt6.QtGui import (QPainter, QPainterPath, QLinearGradient, QColor, QPixma
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton, QWidget
 
 from views.theme import theme_qcolor, LUMZ_THEME
+from i18n import tr   # локализация UI (i18n — лист-модуль, без circular import)
 
 # Снять глобальный allocation-лимит QImageReader (по умолчанию 256МБ): большие/4K рефы и
 # результаты (3840×2144 ≈ 31МБ RGBA, 8K — больше) должны грузиться без отказа. 0 = без
@@ -210,7 +211,7 @@ class ShimmerCell(QFrame):
         # _info_lbl: loading → «{n}с», error → текст причины. БЕЗ alignment в addWidget —
         # иначе label сжимается до sizeHint и wordWrap не срабатывает (текст ошибки
         # обрезался). Заполняет ширину → перенос работает; setAlignment центрирует текст.
-        self._info_lbl = QLabel("0с")
+        self._info_lbl = QLabel('0' + tr('gen_sec'))
         self._info_lbl.setWordWrap(True)
         self._info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._info_lbl.setStyleSheet(
@@ -289,12 +290,12 @@ class ShimmerCell(QFrame):
         self.btn_2k    = _mk_btn("", obj_name="cell-act-2k")
         self.btn_2k.setText("2K")
         self.btn_2k.setIconSize(QSize(0, 0))
-        self.btn_2k.setToolTip("Улучшить качество ×2")
+        self.btn_2k.setToolTip(tr('gen_tt_upscale'))
         # 2026-06-28: кнопка mute звука видео. ГЛОБАЛЬНАЯ — клик переключает звук на
         # ВСЕХ видео приложения (page.toggle_video_muted). Видна только на видео-карточках
         # (_refresh_mute_visible). Иконка — по текущему глобальному состоянию страницы.
         self.btn_mute = _mk_btn("volume-x" if getattr(self._page, "_video_muted", False) else "volume-2")
-        self.btn_mute.setToolTip("Звук видео (вкл/выкл, глобально)")
+        self.btn_mute.setToolTip(tr('gen_tt_mute'))
         # Спутник для 9:16: РОДИТЕЛЬ — сама плитка, не _actions_overlay (его
         # позиция считается в углу). _aux_2k_overlay позиционируется отдельно.
         self._aux_2k_overlay = None
@@ -398,9 +399,9 @@ class ShimmerCell(QFrame):
             # на _t0, если _gen_t0 почему-то не выставлен.
             gstart = self._gen_t0 if self._gen_t0 is not None else self._t0
             gelapsed = max(0, int(time.time() - gstart))
-            self._info_lbl.setText(f"{base}\n{gelapsed}с")
+            self._info_lbl.setText(f"{base}\n{gelapsed}" + tr('gen_sec'))
         else:
-            self._info_lbl.setText(f"{elapsed}с")
+            self._info_lbl.setText(f"{elapsed}" + tr('gen_sec'))
 
     # ── общий shimmer-такт (зовёт страница) ─────────────────────────────
     def set_phase(self, angle_rad: float):
@@ -459,7 +460,7 @@ class ShimmerCell(QFrame):
             file_ok = False
         pix = self._load_pixmap_robust(path)
         if pix.isNull() and not file_ok:
-            self.set_error("Не удалось открыть результат")
+            self.set_error(tr('gen_err_open_result'))
             return
         self._state = "image"
         self._result_path = path     # абсолютный путь готового файла → reveal/клик/реф
@@ -1076,7 +1077,7 @@ class ShimmerCell(QFrame):
         if self._state != "loading":
             return
         try:
-            if msg == "Генерирую…":
+            if msg == tr('gen_prog_generating'):
                 # ticking: секунды дорисовывает _tick_seconds (плавно, от _gen_t0).
                 self._base_loading_text = msg
                 # Нулевая точка секунд — момент НАЧАЛА генерации. Ставится ОДИН раз
@@ -1105,7 +1106,7 @@ class ShimmerCell(QFrame):
         # и помещается ЦЕЛИКОМ в плитке, не торчит за край.
         self._info_lbl.setStyleSheet(
             "color:#ffb3b3; font-size:11px; background:transparent;")
-        self._info_lbl.setText(msg or "Ошибка")
+        self._info_lbl.setText(msg or tr('gen_err_label'))
         self._info_lbl.show()
         self._refresh_reveal_enabled()
         self._refresh_ref_enabled()
