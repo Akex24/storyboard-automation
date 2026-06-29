@@ -400,6 +400,11 @@ class GeneratorViewerDialog(QDialog):
         self._scrub_overlay = None    # QLabel-превью кадра во время drag
         self._spinner = None          # _BusySpinner поверх превью на время прогрева кэша
         self._scrub_warming = False   # идёт ли прогрев (контролы disabled, спиннер крутится)
+        # Гладкий стык overlay→видео на release (анти-мерцание «кадр назад»): держим overlay
+        # пока vw не декодирует кадр на финальной позиции (videoFrameChanged) или таймаут.
+        self._handoff_timer = None
+        self._handoff_sink = None
+        self._handoff_active = False
         self._is_video = (self._meta.get("type") == "video")
         aspect = self._meta.get("aspect", "16:9")
 
@@ -514,7 +519,11 @@ class GeneratorViewerDialog(QDialog):
         ov_parent = vw if _SCRUB_OVERLAY_MODE == "child" else self._video_frame
         self._scrub_overlay = QLabel(ov_parent)
         self._scrub_overlay.setObjectName("viewer-scrub-overlay")
-        self._scrub_overlay.setScaledContents(True)       # кэш 480px тянется по размеру vw
+        # БЕЗ setScaledContents: кадр полноразмерный (= качество видео), вписываем сами в
+        # _update_scrub_overlay через pm.scaled(..., SmoothTransformation) — гладко, без блюра
+        # (setScaledContents масштабирует грубо/без сглаживания). Центрируем по overlay.
+        self._scrub_overlay.setScaledContents(False)
+        self._scrub_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scrub_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._scrub_overlay.hide()
         self._spinner = _BusySpinner(self._video_frame)
@@ -822,24 +831,91 @@ class GeneratorViewerDialog(QDialog):
         self._pending_seek = None
 
     def _on_seek_released(self):
-        """Отпустили ползунок: скрыть overlay, синхронизировать плеер с playhead (ОДИН
-        setPosition — чтобы videoSink/grab были на верной позиции), продолжить play если
-        играло. Финальный setPosition общий для кэш-пути и фоллбэка."""
+        """Отпустили ползунок: синхронизировать плеер с playhead (ОДИН setPosition).
+        ОСНОВНОЙ путь (overlay активен): НЕ прячем overlay сразу — ждём, пока vw декодирует
+        кадр на финальной позиции (_begin_overlay_handoff), и только потом overlay→vw. Так
+        видео-кадр и overlay-кадр совпадают в момент стыка — нет мерцания «кадр назад».
+        ФОЛЛБЭК (overlay не использовался): сразу _end + play."""
         if self._seek_timer is not None:
             self._seek_timer.stop()
-        self._end_scrub_overlay()
         if self._player is None:
+            self._end_scrub_overlay()
             return
+        final = int(self._seek.value()) if self._seek is not None else 0
+        overlay_active = (self._scrub_cache is not None
+                          and self._scrub_overlay is not None
+                          and self._scrub_overlay.isVisible())
         try:
-            if self._seek is not None:
-                self._player.setPosition(int(self._seek.value()))
-            if self._was_playing:
-                self._player.play()
+            self._player.setPosition(final)
         except Exception:
             pass
-        finally:
-            self._pending_seek = None
-            self._was_playing = False
+        if overlay_active:
+            # overlay держим на финальном кадре; стык — после готовности видео-кадра.
+            self._update_scrub_overlay(final)
+            self._begin_overlay_handoff()
+            return
+        # ── фоллбэк (overlay не использовался: pre-decode провалился) ──
+        self._end_scrub_overlay()
+        if self._was_playing:
+            try:
+                self._player.play()
+            except Exception:
+                pass
+        self._pending_seek = None
+        self._was_playing = False
+
+    def _begin_overlay_handoff(self):
+        """Гладкий стык overlay→видео: ждём videoFrameChanged (vw декодировал кадр на новой
+        позиции) ИЛИ страховочный таймаут ~120мс, затем _finish. Так vw показывается уже с
+        правильным кадром — без вспышки предыдущего."""
+        self._handoff_active = True
+        sink = None
+        try:
+            if self._video_widget is not None:
+                sink = self._video_widget.videoSink()
+        except Exception:
+            sink = None
+        self._handoff_sink = sink
+        if sink is not None:
+            try:
+                sink.videoFrameChanged.connect(self._on_handoff_frame)
+            except Exception:
+                self._handoff_sink = None
+        if self._handoff_timer is None:
+            self._handoff_timer = QTimer(self)
+            self._handoff_timer.setSingleShot(True)
+            self._handoff_timer.timeout.connect(self._finish_overlay_handoff)
+        self._handoff_timer.start(120)
+
+    def _on_handoff_frame(self, *args):
+        # Первый же кадр после setPosition → видео готово, завершаем стык.
+        self._finish_overlay_handoff()
+
+    def _finish_overlay_handoff(self):
+        """Завершить стык: отписаться от videoFrameChanged, overlay→vw (кадр уже на месте),
+        продолжить play если играло. Идемпотентно (сигнал+таймаут не сделают дважды)."""
+        if not self._handoff_active:
+            return
+        self._handoff_active = False
+        if self._handoff_timer is not None:
+            try:
+                self._handoff_timer.stop()
+            except Exception:
+                pass
+        if self._handoff_sink is not None:
+            try:
+                self._handoff_sink.videoFrameChanged.disconnect(self._on_handoff_frame)
+            except Exception:
+                pass
+            self._handoff_sink = None
+        self._end_scrub_overlay()
+        if self._was_playing and self._player is not None:
+            try:
+                self._player.play()
+            except Exception:
+                pass
+        self._was_playing = False
+        self._pending_seek = None
 
     # ── живой скраб: кэш кадров (pre-decode в RAM) + overlay-превью ──────────
     def _start_scrub_preload(self):
@@ -859,8 +935,8 @@ class GeneratorViewerDialog(QDialog):
         self._sync_scrub_geometry()
         if self._spinner is not None:
             self._spinner.start()
-        th = ScrubPreloadThread(self._result_path, long_side=480, jpeg_q=85,
-                                mem_cap_mb=40, parent=None)
+        th = ScrubPreloadThread(self._result_path, jpeg_q=90,
+                                mem_cap_mb=128, parent=None)
         self._preload = th
         th.ready.connect(self._on_preload_ready)
         th.failed.connect(self._on_preload_failed)
@@ -932,19 +1008,27 @@ class GeneratorViewerDialog(QDialog):
         self._scrub_overlay.raise_()
 
     def _update_scrub_overlay(self, pos_ms: int):
-        """Обновить кадр overlay из кэша (мгновенно). Без лишних setPixmap если кэша нет."""
+        """Обновить кадр overlay из кэша (мгновенно). Кадр полноразмерный → вписываем в размер
+        overlay с Qt.SmoothTransformation (сглаженно, без блюра). Без setPixmap если кэша нет."""
         if self._scrub_overlay is None:
             return
         pm = self._frame_at(pos_ms)
-        if not pm.isNull():
-            self._scrub_overlay.setPixmap(pm)
+        if pm.isNull():
+            return
+        sz = self._scrub_overlay.size()
+        if sz.width() > 0 and sz.height() > 0:
+            pm = pm.scaled(sz, Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        self._scrub_overlay.setPixmap(pm)
 
     def _end_scrub_overlay(self):
-        """Скрыть overlay по окончании drag; вернуть нативный vw (режим "hide")."""
-        if self._scrub_overlay is not None:
-            self._scrub_overlay.hide()
+        """Завершить overlay. Порядок для гладкого стыка: СНАЧАЛА вернуть vw (он уже под
+        overlay'ем, видео-кадр на финальной позиции уже декодирован — см. handoff), ПОТОМ
+        скрыть overlay → нет вспышки неотрисованного/предыдущего кадра."""
         if _SCRUB_OVERLAY_MODE == "hide" and self._video_widget is not None:
             self._video_widget.show()
+        if self._scrub_overlay is not None:
+            self._scrub_overlay.hide()
 
     def _sync_scrub_geometry(self):
         """Подогнать overlay под прямоугольник кадра vw и центрировать спиннер. Зовётся из
@@ -1071,6 +1155,20 @@ class GeneratorViewerDialog(QDialog):
         overlay и ОЧИСТИТЬ кэш кадров из RAM. Идемпотентно — зовётся из всех путей закрытия
         (closeEvent/reject). Паттерн A (поток parent=None): даже пропусти мы путь — нет
         SIGABRT, но явный wait освобождает cv2-cap сразу и не оставляет кэш в памяти."""
+        # Отменить незавершённый handoff (release во время ожидания стыка) — иначе
+        # singleShot/videoFrameChanged выстрелит на уже закрытом диалоге.
+        self._handoff_active = False
+        if self._handoff_timer is not None:
+            try:
+                self._handoff_timer.stop()
+            except Exception:
+                pass
+        if self._handoff_sink is not None:
+            try:
+                self._handoff_sink.videoFrameChanged.disconnect(self._on_handoff_frame)
+            except Exception:
+                pass
+            self._handoff_sink = None
         th = self._preload
         if th is not None:
             try:
