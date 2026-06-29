@@ -969,7 +969,7 @@ class GeneratorPage(QWidget):
         prompt = self.prompt_input.toPlainText().strip()
         if not prompt:
             self.prompt_input.setFocus()
-            self._show_hint("Введи описание картинки")
+            self._show_hint("Введи описание")
             return
         import storyboard_app as _sa
         root = _sa.get_stored_root()
