@@ -159,6 +159,45 @@ QMediaPlayer уходит в Stopped, нативный слой чернеет (
 «…/Работа/…»). Windows .exe (VideoCapture+не-ASCII+MSMF на random/sequential) —
 ПРОВЕРИТЬ при сборке под Win.
 
+## Пайплайн монтажки (режим C) — линейный, один проход Opus 4.8 (Этап 2, 2026-06-29)
+
+`MontageOrchestratorThread` ([threads/montage_orchestrator.py](threads/montage_orchestrator.py))
+перестроен с многоагентной эскалации на ЛИНЕЙНЫЙ пайплайн. Цель — Opus 4.8
+пишет всю карту (геометрия+тайминги+всё), Python проверяет, при ошибках —
+ОДИН узкий проход Opus 4.8. Раньше: Scriptwriter→Validator(R1)→Geometry Editor→
+Editor→Validator R2→Editor R2→Validator R3→Context Reviewer→Editor-after-reviewer.
+
+**Новый run():**
+1. `_call_scriptwriter` (Opus 4.8, `MODEL_SCRIPTWRITER`/`MODEL_EDITOR` = claude-opus-4-8).
+2. `_apply_post_check_timings` — Python, поднимает `duration_sec` реплик до min.
+3. `prefilter_check` (Python, `validator_prefilter_c`) — механика: блок 4 шота/15 сек +
+   **наличие `geometry`** у шотов блока с `len(characters) >= 2` (новая функция
+   `_check_geometry_presence`, код ошибки `block_N_shot_M_missing_geometry` —
+   совместим с EDITOR_SYSTEM). БЕЗ AI.
+4. Если prefilter нашёл ошибки → ОДИН `_call_editor` (Opus 4.8) по списку →
+   повторный `_apply_post_check_timings` + перепроверка прейфильтром. Без эскалации.
+5. `_finalize`.
+
+**УБРАНО полностью:** AI-Validator (Haiku, все R1/R2/R3), Geometry Editor (Haiku),
+Context Reviewer (Sonnet), Editor-after-reviewer, методы `_call_validator`/
+`_call_geometry_editor`/`_call_context_reviewer`, константы `MODEL_VALIDATOR`/
+`MODEL_CONTEXT_REVIEWER`/`MODEL_GEOMETRY_EDITOR`, импорты их промптов. `STAGE_ORDER`
+ужат до `[scriptwriter, editor]` (resume-гейт только `editor_ran`).
+
+**Честный статус при падении Editor:** в except НЕ кладём `"error"` в `_agent_log`
+(иначе `_finalize` ушёл бы в `failed`/Resume) — ставим `checker_report =
+{ok:False, errors, report:["Editor-проход не выполнен…"]}` → `_finalize` отдаёт
+`finished_ok` с честным статусом, НЕ старый список как финал. НЕ ретраим.
+
+**Mode A protected НЕ затронут:** правился `validator_prefilter_c.py` (режим C),
+базовый `validator_prefilter.py` (md5-protected) — нет. Лимит total 60-80с в режиме
+C отсутствует и НЕ добавлялся. `prefilter_check` — чистый Python, модель не зовёт.
+
+**Долг (отложено):** `_build_agent_summary` ещё содержит inert-ветки validator/
+geometry/reviewer (никогда не триггерятся, краша нет — диалог читает через `.get`);
+визуальное «Validator: 0» в `widgets/montage_summary_dialog.py` — отдельный
+косметический коммит.
+
 ## Движение камеры Seedance — единый модуль camera_movement_rules.py (2026-06-19)
 
 Раньше дефолтный handheld был жёстко вшит в `agents/seedance_prompts.py`

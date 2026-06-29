@@ -32,17 +32,13 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from agents.montage_prompts import (
     SCRIPTWRITER_SYSTEM,
-    VALIDATOR_SYSTEM,
     EDITOR_SYSTEM,
-    CONTEXT_REVIEWER_SYSTEM,
     build_scriptwriter_user_prompt,
-    build_validator_user_prompt,
     build_editor_user_prompt,
-    build_context_reviewer_user_prompt,
-    get_validator_system,
-    get_geometry_editor_system,
-    build_geometry_editor_user_prompt,
 )
+# Этап 2 (2026-06-29): Validator(AI)/Geometry Editor/Context Reviewer убраны из
+# пайплайна → VALIDATOR_SYSTEM/CONTEXT_REVIEWER_SYSTEM/get_validator_system/
+# get_geometry_editor_system/build_* для них больше НЕ импортируются.
 # validator_prefilter теперь подгружается через mode_loader в
 # зависимости от выбранного режима монтажной карты (A/B/C/D).
 # prefilter_check — module-level переменная, остальной код в этом
@@ -136,14 +132,11 @@ class MontageOrchestratorThread(QThread):
     # количество ошибок (вместо лживой «поправил 5 ошибок»).
     # Откат при регрессии качества — git revert этого коммита.
     MODEL_SCRIPTWRITER     = "claude-opus-4-8"
-    MODEL_VALIDATOR        = "claude-haiku-4-5"
     MODEL_EDITOR           = "claude-opus-4-8"
-    MODEL_CONTEXT_REVIEWER = "claude-sonnet-4-6"
-    # v1.0.75: Geometry Editor — узкий сабагент для shot.geometry.
-    # Простая структурная правка → Haiku 4.5 хватает; разгружает
-    # главный Editor от missing_geometry-ошибок (на ep2 v1.0.74 их
-    # было 3 из 8 — половина reasoning-нагрузки на Sonnet).
-    MODEL_GEOMETRY_EDITOR  = "claude-haiku-4-5"
+    # Этап 2 (2026-06-29): MODEL_VALIDATOR / MODEL_CONTEXT_REVIEWER /
+    # MODEL_GEOMETRY_EDITOR удалены — соответствующие AI-агенты убраны из
+    # пайплайна (Validator-механику закрывает Python prefilter_c, геометрию —
+    # Python-проверка наличия там же).
 
     # v1.0.87 (этап 7C resume-фичи): порядок этапов pipeline для resume.
     # Используется в `_already_done(stage)` для сравнения с
@@ -152,16 +145,12 @@ class MontageOrchestratorThread(QThread):
     # / editor_r2 / validator_r3 / context_reviewer / editor_after_reviewer)
     # всё равно сохраняют внутренние условия — STAGE_ORDER только говорит
     # «можно ли пропустить эту попытку на resume».
+    # Этап 2 (2026-06-29): линейный пайплайн без эскалации. Только две стадии:
+    # scriptwriter (Opus 4.8 пишет всю карту) → editor (Opus 4.8, ОДИН узкий
+    # проход правки по prefilter-ошибкам). Resume-гейты ниже опираются на этот список.
     STAGE_ORDER = [
         "scriptwriter",
-        "validator",
-        "geometry_editor",
         "editor",
-        "validator_r2",
-        "editor_r2",
-        "validator_r3",
-        "context_reviewer",
-        "editor_after_reviewer",
     ]
 
     def __init__(self, claude_cli_path: str,
@@ -268,13 +257,7 @@ class MontageOrchestratorThread(QThread):
         last_completed: Optional[str] = None
         montage_card: Optional[dict] = None
         checker_report: Dict = {"ok": False, "errors": [], "report": []}
-        all_errors: list = []
-        geometry_errors: list = []
-        other_errors: list = []
-        editor_input_errors: list = []
         editor_ran = False
-        validator_r2_ok = False
-        editor_r2_ran = False
         skip_until_after: Optional[str] = None
 
         # v1.0.87 (этап 7C): если caller передал лог упавшего pipeline —
@@ -288,42 +271,15 @@ class MontageOrchestratorThread(QThread):
                 checker_report = state["checker_report"]
                 last_completed = state["last_completed_stage"]
                 skip_until_after = last_completed
-                # Восстанавливаем флаги-гейты по позиции в STAGE_ORDER.
-                _pos = self.STAGE_ORDER.index(last_completed)
-                if _pos >= self.STAGE_ORDER.index("editor"):
+                # Этап 2: единственный гейт — editor_ran (по позиции в STAGE_ORDER).
+                if (last_completed
+                        and self.STAGE_ORDER.index(last_completed)
+                        >= self.STAGE_ORDER.index("editor")):
                     editor_ran = True
-                if _pos >= self.STAGE_ORDER.index("validator_r2"):
-                    validator_r2_ok = True
-                if _pos >= self.STAGE_ORDER.index("editor_r2"):
-                    editor_r2_ran = True
-                # Пересчитываем партицию ошибок из restored checker_report
-                # (post-validator-блок будет skip-нут обёрткой, а вычисления
-                # нужны geometry/editor блокам).
-                all_errors = list(checker_report.get("errors", []) or [])
-                geometry_errors = [
-                    e for e in all_errors
-                    if (e.get("code") or "").endswith("_missing_geometry")
-                ]
-                other_errors = [
-                    e for e in all_errors
-                    if not (e.get("code") or "").endswith("_missing_geometry")
-                ]
-                # editor_input_errors: если geometry_editor УЖЕ отработал
-                # (last_completed == "geometry_editor") — editor должен
-                # получить только non-geometry. Иначе fallback default
-                # (geometry-блок если ещё впереди — сам перевычислит).
-                if last_completed == "geometry_editor":
-                    editor_input_errors = list(other_errors)
-                else:
-                    editor_input_errors = list(all_errors)
                 try:
                     sys.stderr.write(
-                        f"[montage] resume: will skip until after {last_completed}\n"
-                        f"[montage] resume: editor_ran={editor_ran}, "
-                        f"validator_r2_ok={validator_r2_ok}, "
-                        f"editor_r2_ran={editor_r2_ran}\n"
-                        f"[montage] resume: editor_input_errors "
-                        f"count={len(editor_input_errors)}\n")
+                        f"[montage] resume: will skip until after {last_completed}; "
+                        f"editor_ran={editor_ran}\n")
                     sys.stderr.flush()
                 except Exception:
                     pass
@@ -355,9 +311,8 @@ class MontageOrchestratorThread(QThread):
             if _idx + 1 < len(self.STAGE_ORDER):
                 _initial_next = self.STAGE_ORDER[_idx + 1]
             else:
-                # skip_until_after == "editor_after_reviewer" (последний
-                # в STAGE_ORDER) — known limitation из Stage 7C: resume
-                # сразу пойдёт в _finalize, ничего не запустит.
+                # skip_until_after == "editor" (последняя стадия STAGE_ORDER) —
+                # resume сразу идёт в _finalize, ничего не запускает.
                 _initial_next = "finalize"
         self._dump_running(last_completed, _initial_next)
 
@@ -379,337 +334,50 @@ class MontageOrchestratorThread(QThread):
 
                 # Scriptwriter завершён успешно — incremental dump.
                 last_completed = "scriptwriter"
-                self._dump_running(last_completed, "validator")
+                self._dump_running(last_completed, "editor")
 
-            # 2) Validator — один раз
-            if not _already_done("validator"):
-                self.progress.emit("validator_running", {})
+            # 2) Python timing post-check — авто-фикс длительностей реплик
+            #    (поднимает duration_sec шотов с репликой до min). Чистый Python.
+            montage_card = self._apply_post_check_timings(montage_card, round_num=1)
+
+            # 3) Python prefilter (режим C) — механика: блоки 4 шота / 15 сек +
+            #    наличие geometry у шотов блоков с 2+ персонажами. БЕЗ AI.
+            py_errors, _rules = prefilter_check(montage_card, self._refs)
+            checker_report = {"ok": not py_errors, "errors": py_errors, "report": []}
+
+            # 4) ОДИН узкий проход Editor (Opus 4.8) — ТОЛЬКО если prefilter нашёл
+            #    ошибки. Editor правит по списку (тайминги/блоки/missing_geometry —
+            #    EDITOR_SYSTEM умеет их все). Без эскалации, без повторов.
+            if not _already_done("editor") and py_errors:
+                self.progress.emit("editor_running", {"errors_count": len(py_errors)})
                 try:
-                    checker_report = self._call_validator(montage_card)
-                except Exception as e:
-                    self._agent_log.append({
-                        "stage": "validator",
-                        "error": str(e),
-                    })
-                    # v1.0.88 (Stage 9 — fix недоделанной карты в episodes.json):
-                    # Раньше тут был `_finalize` который эмиттил
-                    # `finished_ok` с сырой картой от Scriptwriter — она
-                    # уходила в episodes.json как «готовая», CTA показывал
-                    # «📂 Открыть» вместо «🔄 Продолжить», а красная точка
-                    # на пилюле горела навсегда. Теперь — pipeline неполный,
-                    # отдаём юзеру Resume. orchestrator при resume_from с
-                    # last_completed_stage="scriptwriter" пропустит
-                    # scriptwriter и запустит validator заново.
-                    self._dump_aborted(last_completed, "validator")
-                    self.failed.emit(f"validator_failed: {e}")
-                    return
-
-                if self._stop:
-                    self._dump_aborted(last_completed, "validator")
-                    self.failed.emit("cancelled")
-                    return
-
-                errors_count = len(checker_report.get("errors", []))
-                self.progress.emit("validator_done",
-                                    {"ok": checker_report.get("ok", False),
-                                     "errors_count": errors_count})
-
-                # v1.0.75: 2.5) Geometry Editor — Haiku-сабагент для
-                # `missing_geometry` ошибок. Отделяем их от остальных,
-                # обрабатываем структурной правкой (добавление shot.geometry).
-                # Основной Editor (Sonnet) дальше получает ТОЛЬКО оставшиеся
-                # ошибки — меньше reasoning-нагрузка.
-                # Если Geometry Editor упал (TimeoutExpired / exception) —
-                # missing_geometry-ошибки передаются обратно Editor'у как
-                # fallback (Q1=B по плану v1.0.75).
-                # Validator R1 завершён успешно — incremental dump.
-                last_completed = "validator"
-                # next: geometry_editor если есть geometry-ошибки;
-                # editor если есть other_errors; иначе finalize.
-                all_errors = list(checker_report.get("errors", []) or [])
-                geometry_errors = [
-                    e for e in all_errors
-                    if (e.get("code") or "").endswith("_missing_geometry")
-                ]
-                other_errors = [
-                    e for e in all_errors
-                    if not (e.get("code") or "").endswith("_missing_geometry")
-                ]
-                editor_input_errors = list(all_errors)  # fallback default
-                if geometry_errors:
-                    _next_after_v1 = "geometry_editor"
-                elif other_errors:
-                    _next_after_v1 = "editor"
-                else:
-                    _next_after_v1 = "finalize"
-                self._dump_running(last_completed, _next_after_v1)
-
-            # 2.5) Geometry Editor
-            if not _already_done("geometry_editor") and geometry_errors:
-                self.progress.emit("geometry_editor_running",
-                                    {"errors_count": len(geometry_errors)})
-                try:
-                    montage_card = self._call_geometry_editor(
-                        montage_card, geometry_errors)
-                    # Успех — Editor получит только other_errors
-                    editor_input_errors = list(other_errors)
-                    last_completed = "geometry_editor"
-                    self._dump_running(
-                        last_completed,
-                        "editor" if other_errors else "finalize")
-                except Exception as e:
-                    self._agent_log.append({
-                        "stage": "geometry_editor",
-                        "error": str(e),
-                    })
-                    # Fallback (Q1=B): Editor получит ВСЕ ошибки, попробует
-                    # сам исправить и missing_geometry. Карта остаётся
-                    # такой, какой её отдал Scriptwriter (Geometry Editor
-                    # не успел применить правки). UI покажет «⚠ Geometry
-                    # Editor УПАЛ» через _build_agent_summary.
-
-                if self._stop:
-                    self._dump_aborted(last_completed, "editor")
-                    self.failed.emit("cancelled")
-                    return
-
-            # 3) Editor — только если есть оставшиеся ошибки
-            if (not _already_done("editor")
-                    and not checker_report.get("ok")
-                    and len(editor_input_errors) > 0):
-                self.progress.emit("editor_running",
-                                    {"errors_count": len(editor_input_errors)})
-                try:
-                    montage_card = self._call_editor(
-                        montage_card, editor_input_errors)
+                    montage_card = self._call_editor(montage_card, py_errors, round_num=1)
                     editor_ran = True
-                    # v1.0.81: Python post-check таймингов — гарантирует
-                    # duration_sec >= min_duration для всех шотов с
-                    # репликой. Закрывает класс багов где Editor расширил
-                    # реплику без пересчёта duration.
-                    montage_card = self._apply_post_check_timings(
-                        montage_card, round_num=1)
+                    # добор таймингов после правок + честная перепроверка прейфильтром
+                    montage_card = self._apply_post_check_timings(montage_card, round_num=2)
+                    py_errors2, _r = prefilter_check(montage_card, self._refs)
+                    checker_report = {"ok": not py_errors2, "errors": py_errors2, "report": []}
                     last_completed = "editor"
-                    self._dump_running(last_completed, "validator_r2")
+                    self._dump_running(last_completed, "finalize")
                 except Exception as e:
-                    self._agent_log.append({
-                        "stage": "editor",
-                        "error": str(e),
-                    })
-                    # v1.0.88 (Stage 9): pipeline неполный — карта без
-                    # правок Editor'а уходить в episodes.json как готовая
-                    # не должна. Юзер получит Resume CTA → orchestrator
-                    # перезапустит Editor с тем же editor_input_errors.
-                    self._dump_aborted(last_completed, "editor")
-                    self.failed.emit(f"editor_failed: {e}")
-                    return
-
-                if self._stop:
-                    self._dump_aborted(last_completed, "validator_r2")
-                    self.failed.emit("cancelled")
-                    return
-
-            # v1.0.76: 3.5) Validator R2 — ТОЛЬКО если Editor реально
-            # отработал. Цель — оценить сколько ошибок Editor реально
-            # устранил (set-сравнение R1 vs R2 в UI), и не показывает
-            # ли он новые ошибки которых не было в R1.
-            # При exception в R2 — checker_report остаётся от R1, UI
-            # покажет «⚠ Не удалось проверить результат Editor» через
-            # honest-UI ветку summary['validator_r2'].failed.
-            if not _already_done("validator_r2") and editor_ran:
-                self.progress.emit("validator_r2_running", {})
-                try:
-                    r2_report = self._call_validator(montage_card, round_num=2)
-                    checker_report = r2_report
-                    validator_r2_ok = True
-                    last_completed = "validator_r2"
-                    _has_errs = bool(checker_report.get("errors") or [])
-                    self._dump_running(
-                        last_completed,
-                        "editor_r2" if _has_errs else
-                        ("context_reviewer" if self._use_context_reviewer
-                         else "finalize"))
-                except Exception as e:
-                    self._agent_log.append({
-                        "stage": "validator_r2",
-                        "error": str(e),
-                    })
-                    # Не fatal — checker_report остаётся от R1, UI пометит
-                    # validator_r2 как failed=True.
-
-                if self._stop:
-                    self._dump_aborted(last_completed, "editor_r2")
-                    self.failed.emit("cancelled")
-                    return
-
-            # v1.0.77: 3.6) Editor R2 — ТОЛЬКО если:
-            #   - Validator R2 отработал успешно (validator_r2_ok)
-            #   - И остались ошибки (checker_report.errors > 0)
-            # Тот же EDITOR_SYSTEM и MODEL_EDITOR (Opus 4.7). Без
-            # geometry-split — Opus справится со всеми остаточными.
-            # При exception в Editor R2 — honest UI «⚠ Редактор R2 УПАЛ»,
-            # pipeline идёт дальше (на Context Reviewer если включён),
-            # checker_report остаётся от Validator R2.
-            r2_errors_remaining = list(checker_report.get("errors", []) or [])
-            # v1.0.88 (Stage 15): порог 2+ ошибок — пропускаем editor если 0-1.
-            # Цель: остановить бесполезные циклы где editor правит 1 ошибку и
-            # создаёт 2 новых. Editor R1 НЕ под порогом — нужен для post_check_timings.
-            import sys as _sys_log
-            try:
-                _sys_log.stderr.write(
-                    f"[editor_r2_threshold] r2_errors_remaining={len(r2_errors_remaining)} "
-                    f"threshold=2 will_run={len(r2_errors_remaining) >= 2}\n")
-                _sys_log.stderr.flush()
-            except Exception:
-                pass
-            if (not _already_done("editor_r2")
-                    and validator_r2_ok
-                    and not checker_report.get("ok")
-                    and len(r2_errors_remaining) >= 2):
-                self.progress.emit("editor_r2_running",
-                                    {"errors_count": len(r2_errors_remaining)})
-                try:
-                    montage_card = self._call_editor(
-                        montage_card, r2_errors_remaining, round_num=2)
-                    editor_r2_ran = True
-                    # v1.0.81: Python post-check таймингов после Editor R2
-                    montage_card = self._apply_post_check_timings(
-                        montage_card, round_num=2)
-                    last_completed = "editor_r2"
-                    self._dump_running(last_completed, "validator_r3")
-                except Exception as e:
-                    self._agent_log.append({
-                        "stage": "editor_r2",
-                        "error": str(e),
-                    })
-                    # Не fatal — checker_report остаётся от R2.
-
-                if self._stop:
-                    self._dump_aborted(last_completed, "validator_r3")
-                    self.failed.emit("cancelled")
-                    return
-
-            # v1.0.77: 3.7) Validator R3 — ТОЛЬКО если Editor R2 реально
-            # отработал. Цель — финальная честная цифра остатка.
-            # Editor R3 НЕ запускаем (по плану — стоп после R3, юзер
-            # сам решает что делать с остатком).
-            # При exception в R3 — checker_report остаётся от R2, UI
-            # покажет «⚠ Не удалось проверить результат Editor R2».
-            if not _already_done("validator_r3") and editor_r2_ran:
-                self.progress.emit("validator_r3_running", {})
-                try:
-                    r3_report = self._call_validator(montage_card, round_num=3)
-                    checker_report = r3_report
-                    last_completed = "validator_r3"
-                    self._dump_running(
-                        last_completed,
-                        "context_reviewer" if self._use_context_reviewer
-                        else "finalize")
-                except Exception as e:
-                    self._agent_log.append({
-                        "stage": "validator_r3",
-                        "error": str(e),
-                    })
-                    # Не fatal — checker_report остаётся от R2.
-
-                if self._stop:
-                    self._dump_aborted(
-                        last_completed,
-                        "context_reviewer" if self._use_context_reviewer
-                        else "finalize")
-                    self.failed.emit("cancelled")
-                    return
-
-            # 4) Context Reviewer — опционально (toggle в Settings)
-            # v1.0.87 (этап 7C): если resume-точка == "context_reviewer",
-            # вложенный editor_after_reviewer мы НЕ запускаем (concerns в
-            # state не сохранены — лог хранит только сам reviewer-result,
-            # но reviewer_report переменной у нас в scope нет). Practical
-            # loss минимален — это редкая точка fail (Reviewer завершился
-            # успешно, упал только последний Editor → resume сразу
-            # финализирует с картой до editor_after_reviewer).
-            if self._use_context_reviewer:
-                if not _already_done("context_reviewer"):
-                    self.progress.emit("context_reviewer_running", {})
+                    # Editor упал — НЕ ретраим (один проход). НЕ роняем pipeline в
+                    # Resume: finalize отдаёт карту с ЧЕСТНЫМ статусом. В _agent_log
+                    # НЕ кладём ключ "error" (иначе _finalize ушёл бы в failed/Resume
+                    # вместо честного finished_ok). Статус честный: ok=False + report-строка.
                     try:
-                        reviewer_report = self._call_context_reviewer(montage_card)
-                        last_completed = "context_reviewer"
-                        # next зависит от concerns — посчитаем заранее
-                        _concerns_count = len(reviewer_report.get("concerns") or [])
-                        _has_concerns = (
-                            not reviewer_report.get("ok", True)
-                            and _concerns_count > 0)
-                        self._dump_running(
-                            last_completed,
-                            "editor_after_reviewer" if _has_concerns
-                            else "finalize")
-                    except Exception as e:
-                        self._agent_log.append({
-                            "stage": "context_reviewer",
-                            "error": str(e),
-                        })
-                        # v1.0.88 (Stage 9): pipeline неполный → Resume.
-                        self._dump_aborted(last_completed, "context_reviewer")
-                        self.failed.emit(f"context_reviewer_failed: {e}")
-                        return
-
-                    if self._stop:
-                        self._dump_aborted(last_completed,
-                                           "editor_after_reviewer")
-                        self.failed.emit("cancelled")
-                        return
-
-                    concerns = reviewer_report.get("concerns") or []
-                    self.progress.emit("context_reviewer_done",
-                                        {"ok": reviewer_report.get("ok", True),
-                                         "concerns_count": len(concerns)})
-
-                    # v1.0.88 (Stage 15): порог 2+ ошибок — пропускаем editor если 0-1.
-                    # Цель: остановить бесполезные циклы где editor правит 1 ошибку и
-                    # создаёт 2 новых. Editor R1 НЕ под порогом — нужен для post_check_timings.
-                    try:
-                        _sys_log.stderr.write(
-                            f"[editor_after_reviewer_threshold] concerns={len(concerns)} "
-                            f"threshold=2 will_run={len(concerns) >= 2}\n")
-                        _sys_log.stderr.flush()
+                        sys.stderr.write(f"[montage] editor pass failed: {e}\n")
+                        sys.stderr.flush()
                     except Exception:
                         pass
-                    if (not _already_done("editor_after_reviewer")
-                            and not reviewer_report.get("ok", True)
-                            and len(concerns) >= 2):
-                        converted_errors = [
-                            {
-                                "code": c.get("code", "context_concern"),
-                                "where": c.get("where", ""),
-                                "details": c.get("details", ""),
-                            }
-                            for c in concerns
-                        ]
-                        self.progress.emit("editor_running",
-                                            {"errors_count": len(converted_errors)})
-                        try:
-                            montage_card = self._call_editor(
-                                montage_card, converted_errors)
-                            last_completed = "editor_after_reviewer"
-                            self._dump_running(last_completed, "finalize")
-                        except Exception as e:
-                            self._agent_log.append({
-                                "stage": "editor_after_reviewer",
-                                "error": str(e),
-                            })
-                            # v1.0.88 (Stage 9): pipeline неполный → Resume.
-                            # Note: orchestrator при resume с last_completed=
-                            # "context_reviewer" НЕ запустит editor_after_reviewer
-                            # повторно (concerns в state не сохранены, см.
-                            # коммент в run() на context_reviewer ветке).
-                            # Resume сразу финализирует с картой до этого
-                            # Editor'а. Это known-limitation — но лучше
-                            # чем эмиттить готовую недоредактированную карту.
-                            self._dump_aborted(last_completed,
-                                                "editor_after_reviewer")
-                            self.failed.emit(
-                                f"editor_after_reviewer_failed: {e}")
-                            return
+                    checker_report = {
+                        "ok": False,
+                        "errors": list(py_errors),
+                        "report": ["Editor-проход не выполнен (ошибка), карта не доправлена."],
+                    }
+                if self._stop:
+                    self._dump_aborted(last_completed, "editor")
+                    self.failed.emit("cancelled")
+                    return
 
             # 5) Финал
             self._finalize(montage_card, checker_report,
@@ -818,64 +486,6 @@ class MontageOrchestratorThread(QThread):
         })
         return montage
 
-    def _call_validator(self, montage_card: dict,
-                         round_num: int = 1) -> dict:
-        # v1.0.69: Python pre-filter перед AI. 10 механических правил
-        # (#1-#5, #7, #8, #10, #11, #13) проверяются в Python без LLM —
-        # см. agents/validator_prefilter.py. AI получает урезанный
-        # system_prompt только с правилами #6, #7а, #9, #12, #14
-        # (семантика, требует reasoning).
-        # v1.0.76: round_num=1 (после Scriptwriter) пишется в _agent_log
-        # как stage='validator'; round_num=2 (после Editor) — как
-        # stage='validator_r2'. UI рендерит обе стадии раздельно для
-        # отчёта «Editor исправил X из Y / создал N новых».
-        py_errors, rules_done = prefilter_check(montage_card, self._refs)
-        validator_system = get_validator_system(skip_rules=rules_done)
-
-        card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
-        user = build_validator_user_prompt(
-            card_json, self._refs, show_context=self._show_context)
-        t0 = time.time()
-        # v1.0.86 (этап 2/4): Validator переключён на стриминг через
-        # _run_claude_stream (--output-format stream-json + JSONL чанки +
-        # chunk-timeout 60с). Сигнатура и финальная строка идентичны
-        # старому _run_claude (валидация на этапе 1 показала SHA-256
-        # match). Остальные 4 callsite (scriptwriter/editor/geometry/
-        # context_reviewer) пока на старом методе — этап 3.
-        # Покрывает все три раунда (R1, R2, R3) — это одна функция
-        # вызывается с разным round_num.
-        # v1.0.86 (этап 6): chunk_timeout из админ-UI (default 60с для
-        # Haiku — для Validator/Geometry/Reviewer этого хватает).
-        raw = self._run_claude_stream(validator_system, user,
-                                       model=self.MODEL_VALIDATOR,
-                                       chunk_timeout_sec=self._chunk_timeout_default)
-        duration_sec = round(time.time() - t0, 2)
-        ai_report = self._parse_json(raw)
-
-        # Объединяем ошибки: Python + AI. ok=False если есть хоть что-то.
-        ai_errors = list(ai_report.get("errors") or [])
-        merged_errors = list(py_errors) + ai_errors
-        report = {
-            "ok": (len(merged_errors) == 0),
-            "errors": merged_errors,
-            "report": ai_report.get("report") or [],
-        }
-        stage_name = "validator" if round_num == 1 else f"validator_r{round_num}"
-        self._agent_log.append({
-            "stage": stage_name,
-            "model_used": self.MODEL_VALIDATOR,
-            "started_at": t0,
-            "duration_sec": duration_sec,
-            "user_prompt_chars": len(user),
-            "raw_response_chars": len(raw),
-            "parsed_ok": True,
-            "prefilter_errors": len(py_errors),
-            "prefilter_rules_done": sorted(rules_done),
-            "validator_system_chars": len(validator_system),
-            "result": report,
-        })
-        return report
-
     def _call_editor(self, montage_card: dict, errors: list,
                       round_num: int = 1) -> dict:
         # v1.0.77: round_num=1 (после Validator R1, обычно с geometry-split) —
@@ -921,48 +531,6 @@ class MontageOrchestratorThread(QThread):
         })
         return new_card
 
-    def _call_geometry_editor(self, montage_card: dict,
-                                geometry_errors: list) -> dict:
-        """v1.0.75: Geometry Editor — Haiku-сабагент. Узкая задача:
-        добавить поле `geometry` к шотам, на которые Validator выдал
-        ошибку `block_N_shot_M_missing_geometry`.
-
-        Args:
-            montage_card:    текущая карта (после Scriptwriter, или
-                             уже после предыдущих стадий).
-            geometry_errors: подмножество errors[] Validator'а с кодами
-                             вида '*_missing_geometry'.
-        Returns:
-            Новая карта (тот же dict-формат) с добавленными geometry.
-        """
-        card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
-        user = build_geometry_editor_user_prompt(card_json, geometry_errors)
-        system = get_geometry_editor_system()
-        t0 = time.time()
-        # v1.0.86 (этап 3/4): Geometry Editor (Haiku) переключён на
-        # стриминг. Запускается только при `*_missing_geometry` ошибках.
-        # Не fatal: при exception падает в fallback (Editor получит ВСЕ
-        # ошибки включая missing_geometry).
-        # v1.0.86 (этап 6): chunk_timeout из админ-UI (Haiku default 60с).
-        raw = self._run_claude_stream(system, user,
-                                       model=self.MODEL_GEOMETRY_EDITOR,
-                                       chunk_timeout_sec=self._chunk_timeout_default)
-        duration_sec = round(time.time() - t0, 2)
-        new_card = self._parse_json(raw)
-        self._agent_log.append({
-            "stage": "geometry_editor",
-            "model_used": self.MODEL_GEOMETRY_EDITOR,
-            "started_at": t0,
-            "duration_sec": duration_sec,
-            "user_prompt_chars": len(user),
-            "raw_response_chars": len(raw),
-            "parsed_ok": True,
-            "errors_in": len(geometry_errors),
-            "geometry_editor_system_chars": len(system),
-            "result": new_card,
-        })
-        return new_card
-
     def _apply_post_check_timings(self, montage_card: dict,
                                     round_num: int) -> dict:
         """v1.0.81: гарантированный Python post-check таймингов после
@@ -996,45 +564,6 @@ class MontageOrchestratorThread(QThread):
             "delta_total_seconds": summary["delta_total_seconds"],
         })
         return montage_card
-
-    def _call_context_reviewer(self, montage_card: dict) -> dict:
-        """Финальный супер-редактор. Проверяет соответствие карты
-        Bible'и сериала и другим эпизодам. Возвращает dict с полями
-        `ok` и `concerns`.
-        """
-        card_json = json.dumps(montage_card, ensure_ascii=False, indent=2)
-        user = build_context_reviewer_user_prompt(
-            card_json, self._scenario, show_context=self._show_context)
-        t0 = time.time()
-        # v1.0.86 (этап 3/4): Context Reviewer переключён на стриминг.
-        # Опциональный (toggle в Settings), default OFF — для большинства
-        # пользователей этот код не запускается. Не fatal: при exception
-        # pipeline catch'ит и идёт к _finalize.
-        # v1.0.86 (этап 6): chunk_timeout из админ-UI (Sonnet default 60с).
-        raw = self._run_claude_stream(CONTEXT_REVIEWER_SYSTEM, user,
-                                       model=self.MODEL_CONTEXT_REVIEWER,
-                                       chunk_timeout_sec=self._chunk_timeout_default)
-        duration_sec = round(time.time() - t0, 2)
-        report = self._parse_json(raw)
-        # Нормализуем — на случай если AI вернул concerns под другим
-        # ключом или забыл ok.
-        if not isinstance(report, dict):
-            report = {"ok": True, "concerns": []}
-        report.setdefault("ok", True)
-        report.setdefault("concerns", [])
-        self._agent_log.append({
-            "stage": "context_reviewer",
-            "model_used": self.MODEL_CONTEXT_REVIEWER,
-            "started_at": t0,
-            "duration_sec": duration_sec,
-            "user_prompt_chars": len(user),
-            "raw_response_chars": len(raw),
-            "parsed_ok": True,
-            "result": report,
-        })
-        return report
-
-    # ──────────────────────────────────────────────────────────────────
 
     def _run_claude(self, system_prompt: str, user_prompt: str,
                     model: str) -> str:
@@ -1706,9 +1235,7 @@ class MontageOrchestratorThread(QThread):
                 "timestamp": time.time(),
                 "models": {
                     "scriptwriter": self.MODEL_SCRIPTWRITER,
-                    "validator": self.MODEL_VALIDATOR,
                     "editor": self.MODEL_EDITOR,
-                    "context_reviewer": self.MODEL_CONTEXT_REVIEWER,
                 },
                 "scenario_chars": len(self._scenario),
                 "refs_summary": self._refs,
