@@ -32,7 +32,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QPushButton, QComboBox, QTextEdit,
+    QWidget, QFrame, QLabel, QPushButton, QToolButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
     QGraphicsOpacityEffect, QMessageBox, QApplication, QCheckBox,
 )
@@ -195,10 +195,10 @@ class GeneratorPage(QWidget):
             "QComboBox#model-combo QAbstractItemView::item {"
             " padding:8px 10px; border-radius:8px; }"
             # Кнопка запуска (акцент — янтарь, как вкладка)
-            "QPushButton#run-btn { background:#d4a256; color:#15101e;"
+            "QToolButton#run-btn { background:#d4a256; color:#15101e;"
             " border:none; border-radius:14px;"
             " font-size:26px; font-weight:600; }"
-            "QPushButton#run-btn:hover { background:#e8b86a; }")
+            "QToolButton#run-btn:hover { background:#e8b86a; }")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
@@ -611,13 +611,16 @@ class GeneratorPage(QWidget):
 
         # Кнопка запуска — ПРЯМОУГОЛЬНАЯ со скруглением (не круг), КРУПНАЯ; стрелка ↑.
         # Прижата к НИЗУ колонки (AlignBottom): нижний край вровень с нижним рядом
-        # кнопок (ctl), а сама тянется вверх к строке промпта. Высота 60 < высоты левой
+        # кнопок (ctl), а сама тянется вверх к строке промпта. Высота 56 < высоты левой
         # колонки (мин 88) → бар не распирается, промпт/рефы не двигаются. Правая
         # колонка → не перекрывает промпт по горизонтали.
-        self.run_btn = QPushButton()
+        # QToolButton (НЕ QPushButton): на macOS высокий нативный QPushButton рисуется
+        # серым бевелом, а QSS-фон (#d4a256) применяется ТОЛЬКО на hover. QToolButton
+        # рисует QSS-фон надёжно сразу (как overlay-кнопки плиток). Квадрат 56×56.
+        self.run_btn = QToolButton()
         self.run_btn.setObjectName("run-btn")
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.run_btn.setFixedSize(56, 60)
+        self.run_btn.setFixedSize(56, 56)
         self.run_btn.setText("↑")   # только стрелка, без текста
         self.run_btn.clicked.connect(self._on_run)   # MVP: запуск генерации
         root_h.addWidget(self.run_btn, 0, Qt.AlignmentFlag.AlignBottom)
