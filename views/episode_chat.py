@@ -450,9 +450,17 @@ class EpisodeChatView(QWidget):
         # путь (тот же, что на финише треда через `rebuild_gen_buttons_for`).
         # Текст манифеста всегда в jsonl (каждый чанк пишется
         # `append_chat_message`); прогоняем assistant-историю через
-        # `synthesize_gen_markers` + фильтр `refs_decisions`. Гейтов по
-        # таймингу нет — потому заход в эпизод/рестарт чинит показ всегда.
-        if prev_ep != ep_id:
+        # `synthesize_gen_markers` + фильтр `refs_decisions`.
+        #
+        # ГЕЙТ «manifest дописан»: при входе в чат пока тред этого эпизода
+        # ещё стримит (`_has_live_thread_for`) — кнопки НЕ показываем, иначе
+        # реф-строка из ЧАСТИЧНОЙ истории даёт кнопку до конца ответа. Когда
+        # тред завершится, `NewEpisodeView._on_thread_finished` (или followup
+        # `_on_done`) сам позовёт `rebuild_gen_buttons_for` → кнопки появятся
+        # ровно на финише. Финиш-путь (`rebuild`) НЕ гейтим: он вызывается уже
+        # после завершения треда (манифест полон), а `isRunning()` на самой
+        # границе финиша может кратко быть True → гейт там дал бы регресс.
+        if prev_ep != ep_id and not self._has_live_thread_for(ep_id):
             self._restore_gen_buttons_from_history(msgs)
         # 2026-05-06: всегда сверяем активную карточку и очередь с
         # `refs_decisions`. Если за время отсутствия в чате (например
