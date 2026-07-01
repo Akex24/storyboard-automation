@@ -3129,8 +3129,8 @@ QLabel#nav-popup-title {
     font-weight: 700;
 }
 QPushButton#nav-popup-item {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: 7px;
     color: rgba(255, 255, 255, 0.72);
     padding: 7px 10px;
