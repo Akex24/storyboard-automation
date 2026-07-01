@@ -527,6 +527,10 @@ class MontageOrchestratorThread(QThread):
             "raw_response_chars": len(raw),
             "parsed_ok": True,
             "errors_in": len(errors),
+            # 2026-07-01: коды найденных prefilter'ом ошибок (для UI-типа
+            # в окне итогов). Рядом со счётчиком, счётчик не трогаем.
+            "errors_in_codes": [
+                e.get("code", "") for e in errors if e.get("code")],
             "result": new_card,
         })
         return new_card
@@ -1016,6 +1020,7 @@ class MontageOrchestratorThread(QThread):
                 else:
                     summary['editor']['rounds'].append({
                         'errors_in': s.get('errors_in', 0),
+                        'errors_in_codes': s.get('errors_in_codes', []) or [],
                     })
             elif stage == 'context_reviewer':
                 res = s.get('result', {}) or {}

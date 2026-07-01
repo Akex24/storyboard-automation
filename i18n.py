@@ -781,6 +781,23 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_col_seconds': 'Секунд',
         'montage_summary_total': 'ИТОГО',
         'montage_summary_show_details': '▶ Показать как чекер посчитал',
+        'montage_lin_scriptwriter': '🎬 Сценарист — написал карту: {blocks_count} {blocks_word}, {shots_count} {shots_word}, {seconds}с',
+        'montage_lin_timing_fixed': '🔧 Проверка таймингов — поднял длину {shots_count} {shots_word} под озвучку',
+        'montage_lin_timing_ok': '🔧 Проверка таймингов — тайминги в норме, правок нет',
+        'montage_lin_prefilter_found': '🐍 Проверка карты (Python) — нашла {errors_count} {errors_word}: {types}',
+        'montage_lin_prefilter_ok': '🐍 Проверка карты (Python) — ошибок нет ✓',
+        'montage_lin_editor_all_fixed': '✏ Редактор — исправил все {errors_count} {errors_word}, повторная проверка чиста ✓',
+        'montage_lin_editor_partial': '✏ Редактор — исправил {fixed_count} из {errors_count}, осталось {residual_count} {residual_word}: {types}',
+        'montage_lin_editor_failed': '⚠ Редактор упал — {reason}. Ошибки остались без правок.',
+        'err_type_missing_geometry': 'не заполнена геометрия кадра',
+        'err_type_too_many_shots': 'в блоке больше 4 шотов',
+        'err_type_over_15s': 'блок длиннее 15 секунд',
+        'err_type_speech_type': 'недопустимый тип речи',
+        'err_type_speaker': 'реплика не того персонажа',
+        'err_type_location': 'локация не из рефов',
+        'err_type_character': 'персонаж не из рефов',
+        'err_type_lang': 'неверный язык реплики',
+        'err_type_numbering': 'нумерация шотов не с 1',
         'montage_summary_hide_details': '▼ Скрыть детали',
         'montage_summary_btn_edit': '✎ Поправить вручную',
         'montage_summary_btn_storyboards': 'Делать сториборды',
@@ -1666,6 +1683,23 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_col_seconds': 'Секунд',
         'montage_summary_total': 'РАЗОМ',
         'montage_summary_show_details': '▶ Показати як чекер порахував',
+        'montage_lin_scriptwriter': '🎬 Сценарист — написав карту: {blocks_count} {blocks_word}, {shots_count} {shots_word}, {seconds}с',
+        'montage_lin_timing_fixed': '🔧 Перевірка таймінгів — підняв довжину {shots_count} {shots_word} під озвучку',
+        'montage_lin_timing_ok': '🔧 Перевірка таймінгів — таймінги в нормі, без правок',
+        'montage_lin_prefilter_found': '🐍 Перевірка карти (Python) — знайшла {errors_count} {errors_word}: {types}',
+        'montage_lin_prefilter_ok': '🐍 Перевірка карти (Python) — помилок немає ✓',
+        'montage_lin_editor_all_fixed': '✏ Редактор — виправив усі {errors_count} {errors_word}, повторна перевірка чиста ✓',
+        'montage_lin_editor_partial': '✏ Редактор — виправив {fixed_count} із {errors_count}, лишилось {residual_count} {residual_word}: {types}',
+        'montage_lin_editor_failed': '⚠ Редактор упав — {reason}. Помилки лишились без правок.',
+        'err_type_missing_geometry': 'не заповнена геометрія кадру',
+        'err_type_too_many_shots': 'у блоці більше 4 шотів',
+        'err_type_over_15s': 'блок довший за 15 секунд',
+        'err_type_speech_type': 'неприпустимий тип мовлення',
+        'err_type_speaker': 'репліка не того персонажа',
+        'err_type_location': 'локація не з рефів',
+        'err_type_character': 'персонаж не з рефів',
+        'err_type_lang': 'невірна мова репліки',
+        'err_type_numbering': 'нумерація шотів не з 1',
         'montage_summary_hide_details': '▼ Сховати деталі',
         'montage_summary_btn_edit': '✎ Виправити вручну',
         'montage_summary_btn_storyboards': 'Робити сториборди',
@@ -2545,6 +2579,23 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'montage_summary_col_seconds': 'Seconds',
         'montage_summary_total': 'TOTAL',
         'montage_summary_show_details': '▶ Show how checker calculated',
+        'montage_lin_scriptwriter': '🎬 Scriptwriter — wrote the map: {blocks_count} {blocks_word}, {shots_count} {shots_word}, {seconds}s',
+        'montage_lin_timing_fixed': '🔧 Timing check — extended {shots_count} {shots_word} for voice-over',
+        'montage_lin_timing_ok': '🔧 Timing check — timings are fine, no changes',
+        'montage_lin_prefilter_found': '🐍 Map check (Python) — found {errors_count} {errors_word}: {types}',
+        'montage_lin_prefilter_ok': '🐍 Map check (Python) — no errors ✓',
+        'montage_lin_editor_all_fixed': '✏ Editor — fixed all {errors_count} {errors_word}, recheck clean ✓',
+        'montage_lin_editor_partial': '✏ Editor — fixed {fixed_count} of {errors_count}, {residual_count} {residual_word} left: {types}',
+        'montage_lin_editor_failed': '⚠ Editor failed — {reason}. Errors left unfixed.',
+        'err_type_missing_geometry': 'shot geometry not filled',
+        'err_type_too_many_shots': 'more than 4 shots in a block',
+        'err_type_over_15s': 'block longer than 15 seconds',
+        'err_type_speech_type': 'invalid speech type',
+        'err_type_speaker': 'line from wrong character',
+        'err_type_location': 'location not in refs',
+        'err_type_character': 'character not in refs',
+        'err_type_lang': 'wrong dialogue language',
+        'err_type_numbering': 'shot numbering not from 1',
         'montage_summary_hide_details': '▼ Hide details',
         'montage_summary_btn_edit': '✎ Edit manually',
         'montage_summary_btn_storyboards': 'Make storyboards',
@@ -2769,6 +2820,28 @@ def plural_errors(n: int, lang: str = None) -> str:
     return 'error' if abs(int(n)) == 1 else 'errors'
 
 
+def plural_shots(n: int, lang: str = None) -> str:
+    """Форма слова «шот» для языка UI (ru/uk 3 формы, en 2)."""
+    if lang is None:
+        lang = get_lang()
+    if lang == 'ru':
+        return _plural_slavic(n, 'шот', 'шота', 'шотов')
+    if lang == 'uk':
+        return _plural_slavic(n, 'шот', 'шоти', 'шотів')
+    return 'shot' if abs(int(n)) == 1 else 'shots'
+
+
+def plural_blocks(n: int, lang: str = None) -> str:
+    """Форма слова «блок» для языка UI (ru/uk 3 формы, en 2)."""
+    if lang is None:
+        lang = get_lang()
+    if lang == 'ru':
+        return _plural_slavic(n, 'блок', 'блока', 'блоков')
+    if lang == 'uk':
+        return _plural_slavic(n, 'блок', 'блоки', 'блоків')
+    return 'block' if abs(int(n)) == 1 else 'blocks'
+
+
 def tr(key: str, **kwargs) -> str:
     """Перевод по ключу. Fallback на русский, потом на сам ключ.
 
@@ -2785,6 +2858,10 @@ def tr(key: str, **kwargs) -> str:
     # Auto-inject errors_word если в kwargs есть errors_count.
     if 'errors_count' in kwargs and 'errors_word' not in kwargs:
         kwargs['errors_word'] = plural_errors(kwargs['errors_count'], lang)
+    if 'shots_count' in kwargs and 'shots_word' not in kwargs:
+        kwargs['shots_word'] = plural_shots(kwargs['shots_count'], lang)
+    if 'blocks_count' in kwargs and 'blocks_word' not in kwargs:
+        kwargs['blocks_word'] = plural_blocks(kwargs['blocks_count'], lang)
     if kwargs:
         try:
             text = text.format(**kwargs)

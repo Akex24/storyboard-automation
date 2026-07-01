@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QMessageBox
 )
 
-from i18n import tr
+from i18n import tr, plural_errors
 
 
 class MontageSummaryDialog(QDialog):
@@ -225,6 +225,21 @@ class MontageSummaryDialog(QDialog):
         """
         s = self._agent_summary or {}
         lines: List[str] = []
+        # 2026-07-01: линейный пайплайн (Scriptwriter → Python timing +
+        # prefilter → опц. Editor). AI-Validator / Validator R2/R3 /
+        # Geometry Editor / Context Reviewer в нём отсутствуют. Для таких
+        # карт — честные подписи (см. _build_agent_lines_linear), а не
+        # legacy-ветки «результат не проверен»/«Финальный редактор не
+        # запускался». Старые ЛОГИ с AI-стадиями идут прежним путём ниже.
+        _is_linear = (
+            (s.get('validator', {}) or {}).get('runs', 0) == 0
+            and not (s.get('validator_r2', {}) or {}).get('ran')
+            and not (s.get('validator_r3', {}) or {}).get('ran')
+            and not (s.get('geometry_editor', {}) or {}).get('ran')
+            and not (s.get('context_reviewer', {}) or {}).get('ran')
+        )
+        if _is_linear and (s.get('scriptwriter', {}) or {}).get('ran'):
+            return self._build_agent_lines_linear(s)
         # Сценарист
         sw = s.get('scriptwriter', {}) or {}
         if sw.get('ran'):
@@ -479,6 +494,99 @@ class MontageSummaryDialog(QDialog):
                     )
         else:
             lines.append("🎯 Финальный редактор — не запускался")
+        return lines
+
+    @staticmethod
+    def _humanize_error_codes(codes) -> str:
+        """Человекочитаемые ТИПЫ ошибок prefilter'а по code → tr-ключи
+        (ru/uk/en). Дедуп, порядок первого появления. codes — список
+        строк-кодов (из errors_in_codes / остатка)."""
+        labels: List[str] = []
+        for code in codes:
+            c = code or ''
+            if 'missing_geometry' in c:
+                key = 'err_type_missing_geometry'
+            elif 'too_many_shots' in c:
+                key = 'err_type_too_many_shots'
+            elif 'over_15s' in c:
+                key = 'err_type_over_15s'
+            elif 'speech_type' in c:
+                key = 'err_type_speech_type'
+            elif 'speaker' in c:
+                key = 'err_type_speaker'
+            elif 'location' in c:
+                key = 'err_type_location'
+            elif 'character' in c:
+                key = 'err_type_character'
+            elif 'lang' in c:
+                key = 'err_type_lang'
+            elif 'numbering' in c:
+                key = 'err_type_numbering'
+            else:
+                key = None
+            lbl = tr(key) if key else c
+            if lbl and lbl not in labels:
+                labels.append(lbl)
+        return ', '.join(labels)
+
+    def _build_agent_lines_linear(self, s: dict) -> List[str]:
+        """2026-07-01: подписи линейного пайплайна. Все числа/типы —
+        живьём из agent_summary / checker_report (self._report), через
+        i18n (tr) с падежами (plural_*). Никаких AI-Validator/Context
+        Reviewer — их в этом пайплайне нет."""
+        lines: List[str] = []
+        sw = s.get('scriptwriter', {}) or {}
+        if sw.get('ran'):
+            lines.append(tr(
+                'montage_lin_scriptwriter',
+                blocks_count=sw.get('blocks_written', 0),
+                shots_count=sw.get('shots_total', 0),
+                seconds=sw.get('total_seconds', 0)))
+        # Проверка таймингов (Python, до Editor).
+        pc = s.get('post_check_timings') or []
+        pc1 = next((p for p in pc if p.get('round') == 1), None)
+        if pc1 is not None:
+            fixed = pc1.get('shots_fixed', 0)
+            if fixed > 0:
+                lines.append(tr('montage_lin_timing_fixed',
+                                shots_count=fixed))
+            else:
+                lines.append(tr('montage_lin_timing_ok'))
+        # Проверка карты (Python prefilter) + опц. Editor.
+        ed = s.get('editor', {}) or {}
+        ed_rounds = ed.get('rounds') or []
+        ed_failed = next((r for r in ed_rounds if r.get('failed')), None)
+        errors_in = sum(r.get('errors_in', 0) for r in ed_rounds)
+        codes: List[str] = []
+        for r in ed_rounds:
+            codes.extend(r.get('errors_in_codes') or [])
+        residual = list((self._report or {}).get('errors') or [])
+        if ed_failed:
+            reason = (ed_failed.get('error') or 'unknown').split('\n', 1)[0][:120]
+            if errors_in > 0:
+                lines.append(tr('montage_lin_prefilter_found',
+                                errors_count=errors_in,
+                                types=self._humanize_error_codes(codes)))
+            lines.append(tr('montage_lin_editor_failed', reason=reason))
+        elif ed.get('runs', 0) > 0 and errors_in > 0:
+            lines.append(tr('montage_lin_prefilter_found',
+                            errors_count=errors_in,
+                            types=self._humanize_error_codes(codes)))
+            f_count = len(residual)
+            if f_count == 0:
+                lines.append(tr('montage_lin_editor_all_fixed',
+                                errors_count=errors_in))
+            else:
+                residual_codes = [e.get('code', '') for e in residual]
+                lines.append(tr(
+                    'montage_lin_editor_partial',
+                    fixed_count=errors_in - f_count,
+                    errors_count=errors_in,
+                    residual_count=f_count,
+                    residual_word=plural_errors(f_count),
+                    types=self._humanize_error_codes(residual_codes)))
+        else:
+            lines.append(tr('montage_lin_prefilter_ok'))
         return lines
 
     # ──────────────────────────────────────────────────────────────────
