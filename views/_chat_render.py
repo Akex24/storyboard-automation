@@ -98,35 +98,54 @@ _SECTION_CHARACTER_RE = re.compile(
 # `name` — slug ИЛИ русское/украинское слово. Если не-ASCII —
 # транслитерируем в slug ниже через storyboard_app.transliterate_for_filename.
 # `\w` с re.UNICODE матчит латиницу, кириллицу, цифры, подчёркивание.
-_FALLBACK_LINE_RE = re.compile(
-    r'^\s*[-•*]\s*✗\s*(?P<name>[\w-]+)'
-    # 2026-05-11 (БАГ 12 fix): `(?P<orig>.+)` (greedy с backtracking)
-    # вместо старого `[^)]+`. Старый паттерн останавливался на ПЕРВОЙ
-    # внутренней `)` если в description есть nested скобки
-    # «(надевает выскакивая из кровати)» — match падал, marker не
-    # создавался, character выпадал из synthesize_gen_markers → CTA
-    # «Make storyboards» думала что всё resolved. Greedy `.+` находит
-    # ПРАВУЮ `)` через backtrack + проверку что после неё идёт
-    # separator ` — `.
-    r'(?:\s*\((?P<orig>.+)\))?'
-    r'\s*[—:\-–]\s*(?P<desc>.+?)\s*$',
-    re.UNICODE
-)
+_FALLBACK_NAME_RE = re.compile(
+    r'^\s*[-•*]\s*✗\s*(?P<name>[\w-]+)\s*(?P<rest>.*)$', re.UNICODE)
+_FALLBACK_SEP_LEAD_RE = re.compile(r'^[—:\-–]\s*', re.UNICODE)
 
-# 2026-05-11 (v1.0.50): второй regex для НОВОГО формата без `— ` хвоста.
-# Analyst-агент после v1.0.50 пишет «- ✗ name (описание) [[GEN:...]]»
-# без хвоста. После предочистки от [[GEN:...]] строка выглядит как
-# «- ✗ name (описание)» — старый _FALLBACK_LINE_RE её не матчит
-# (требует `— ` separator). Этот regex покрывает кейс без хвоста.
-# Применяется ТОЛЬКО если первый regex не сработал — порядок важен,
-# чтобы старый формат с nested parens («(описание) — хвост (сцены)»)
-# корректно матчился через greedy backtrack первого regex'а.
-_FALLBACK_LINE_RE_NO_TAIL = re.compile(
-    r'^\s*[-•*]\s*✗\s*(?P<name>[\w-]+)'
-    r'(?:\s*\((?P<orig>.+)\))?'
-    r'\s*$',
-    re.UNICODE
-)
+
+def _split_fallback_line(text: str):
+    """(name, orig, desc) из строки «- ✗ name (описание) — хвост» ИЛИ None.
+
+    2026-07-01 (Mara-fix): orig = содержимое ПЕРВОЙ СБАЛАНСИРОВАННОЙ (...):
+    внешняя ')' закрывает orig по глубине скобок. Раньше пара regex'ов
+    (_FALLBACK_LINE_RE с обяз. «— хвостом» + _FALLBACK_LINE_RE_NO_TAIL) на
+    строке со ВЛОЖЕННОЙ скобкой И БЕЗ хвоста давала ложный match на
+    ВНУТРЕННЕЙ ')' → orig обрезался (Mara: «…сцена 4 (первая по хронологии
+    в эпизоде»); NO_TAIL, взявший бы внешнюю ')', не пробовался (первый
+    regex уже «успешно» сматчил). Баланс-скан это чинит и сохраняет кейсы
+    «(x) — хвост (сцены 1,2)» и «(a (b) c) — хвост».
+
+    None — для строк, которые старые regex'ы тоже НЕ матчили (после имени
+    нет ни '(', ни separator), чтобы downstream-парс ✓-строк не менялся.
+    """
+    m = _FALLBACK_NAME_RE.match(text)
+    if not m:
+        return None
+    name = m.group('name')
+    rest = (m.group('rest') or '').strip()
+    if not rest:
+        return (name, '', '')
+    if rest.startswith('('):
+        depth = 0
+        close = -1
+        for i, ch in enumerate(rest):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    close = i
+                    break
+        if close != -1:
+            orig = rest[1:close].strip()
+            tail = rest[close + 1:].strip()
+            return (name, orig, _FALLBACK_SEP_LEAD_RE.sub('', tail).strip())
+        # Несбалансированная '(' — деградируем без orig (старые regex'ы
+        # такую строку как (orig) тоже не разбирали).
+        return (name, '', _FALLBACK_SEP_LEAD_RE.sub('', rest).strip())
+    if _FALLBACK_SEP_LEAD_RE.match(rest):
+        return (name, '', _FALLBACK_SEP_LEAD_RE.sub('', rest).strip())
+    return None
 
 # 2026-05-10: ИНЛАЙН-формат когда AI пишет «summary»-шаг вместо секций.
 # Пример (Opus 4.7 на ep8 в реальном чате):
@@ -271,19 +290,13 @@ def synthesize_gen_markers(full_text: str) -> List[GenMarker]:
         # извлекает маркер отдельно (через GEN_MARKER_RE), здесь он не
         # нужен — это fallback для случая когда AI забыл маркер.
         line_for_match = GEN_MARKER_RE.sub('', line).rstrip()
-        # 2026-05-11 (v1.0.50): сначала пробуем regex со ВКЛЮЧЁННЫМ `— `
-        # хвостом (старый формат + nested parens). Если не матчится —
-        # fallback на regex БЕЗ хвоста (новый формат после v1.0.50).
-        # Порядок важен: для строки «- ✗ X (описание) — нужен реф (сцены 1,2)»
-        # greedy `.+` в первом regex'е через backtrack находит правильную
-        # правую `)`. Если бы second regex шёл первым — orig жадно съел бы
-        # всю строку до последней `)`.
-        m = _FALLBACK_LINE_RE.match(line_for_match)
-        if not m:
-            m = _FALLBACK_LINE_RE_NO_TAIL.match(line_for_match)
-        if m:
-            raw_name = m.group('name').strip()
-            orig = (m.group('orig') or '').strip()
+        # 2026-07-01 (Mara-fix): единый balanced-scan разбор строки
+        # «- ✗ name (описание) — хвост». orig = первая СБАЛАНСИРОВАННАЯ
+        # (...); внешняя ')' — граница (чинит обрезку на вложенной скобке).
+        parsed = _split_fallback_line(line_for_match)
+        if parsed:
+            raw_name = parsed[0].strip()
+            orig = (parsed[1] or '').strip()
             # 2026-05-05: имя может быть кириллицей («- ✗ Муж») или
             # ASCII-slug с оригиналом в скобках («- ✗ muzh (Муж)»).
             # Slug — то что используется в filesystem (папка
@@ -322,9 +335,9 @@ def synthesize_gen_markers(full_text: str) -> List[GenMarker]:
             # character (идёт в outfit picker chat_description). Display
             # вычисляется выше (имя из «Имя — роль»). Безопасно: для
             # character description не пайплайнится в Gemini, идёт в
-            # claude CLI outfit picker как rich контекст. m.groupdict()
-            # вместо m.group('desc') — второй regex без группы desc.
-            raw_desc = (m.groupdict().get('desc') or '').strip()
+            # claude CLI outfit picker как rich контекст. desc = хвост после
+            # внешней ')' (parsed[2]); для character ниже перекрывается orig.
+            raw_desc = (parsed[2] or '').strip()
             if current_type in ('location', 'object', 'character') and orig:
                 desc = orig
             else:
