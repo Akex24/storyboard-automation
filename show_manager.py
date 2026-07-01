@@ -17,16 +17,18 @@ show_manager.py — управление сериалами Storyboard Studio.
 а папка должна быть всегда на латинице. См. Долг 1 в _session_log.md.
 
 История: создан 2026-05-05.
-Долг 4 в _session_log.md — функция delete_show будет добавлена позже.
+Долг 4 (delete_show) закрыт 2026-07-01 — чистое удаление папки сериала
+(без UI, без current_show.json — это на caller'е).
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Tuple
 
 
 # ─── Транслитерация ──────────────────────────────────────────────────────
@@ -172,6 +174,53 @@ def create_show(project_root: Path, display_name: str) -> str:
     })
 
     return slug
+
+
+def delete_show(project_root: Path, slug: str) -> Tuple[bool, str]:
+    """Удаляет папку сериала `shows/<slug>/` целиком (rmtree).
+
+    ЧИСТАЯ операция: только удаление папки с диска. НЕ трогает
+    `current_show.json` и НЕ решает какой сериал сделать активным —
+    это делает caller (после успешного удаления). Симметрична
+    `create_show`.
+
+    Возврат `(ok, reason)`:
+      • `(True, "")`            — папка удалена.
+      • `(False, "<причина>")`  — не удалено: пустой/небезопасный slug,
+        путь вне `shows/`, папки нет, или ошибка ФС (напр. Windows-lock
+        открытого файла). Функция НЕ кидает — любую ошибку возвращает
+        как `(False, reason)`.
+
+    Cross-platform: `shutil.rmtree` + `pathlib`, без subprocess/shell.
+    """
+    s = (slug or "").strip()
+    if not s:
+        return (False, "empty slug")
+    # Защита от выхода за shows/: никаких разделителей и относительных
+    # сегментов (валидный slug из make_slug — только [a-z0-9_]).
+    if "/" in s or "\\" in s or ".." in s or s.startswith("."):
+        return (False, f"unsafe slug: {slug!r}")
+
+    shows_dir = _shows_dir(project_root)
+    try:
+        target = (shows_dir / s).resolve()
+        shows_resolved = shows_dir.resolve()
+    except Exception as e:  # noqa: BLE001 — resolve на битом пути не должен ронять
+        return (False, f"resolve failed: {type(e).__name__}: {e}")
+
+    # Жёсткий гард: цель ДОЛЖНА лежать НЕПОСРЕДСТВЕННО в shows/.
+    if target.parent != shows_resolved:
+        return (False, f"path escapes shows/: {target}")
+    if not target.is_dir():
+        return (False, f"show folder not found: {s}")
+
+    try:
+        shutil.rmtree(target)
+    except OSError as e:
+        # Windows: PermissionError (файл открыт/залочен) — подкласс OSError.
+        # НЕ глотаем — возвращаем причину, caller покажет юзеру.
+        return (False, f"delete failed: {type(e).__name__}: {e}")
+    return (True, "")
 
 
 def save_show_meta(project_root: Path, slug: str, meta: Dict) -> None:
