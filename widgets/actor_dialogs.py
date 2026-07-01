@@ -1612,7 +1612,20 @@ class RefResultDialog(QDialog):
             "QPushButton#rr-regen:pressed, QPushButton#rr-done:pressed {"
             " background:#242729; }"
             "QPushButton#rr-regen:disabled, QPushButton#rr-done:disabled {"
-            " background:#2c2f31; color:rgba(247,248,244,0.42); }")
+            " background:#2c2f31; color:rgba(247,248,244,0.42); }"
+            # 2026-07-01: delete_all красится ТЕМ ЖЕ механизмом (objectName в
+            # QSS диалога), что regen/done — macOS рисует все три одинаково,
+            # уходит сдвиг 1-2px. Цвета ДОСЛОВНО прежние (#2c2f31/#ff7676),
+            # метрики как у #rr-regen.
+            "QPushButton#rr-delete {"
+            " background:#2c2f31; color:#ff7676; border:none;"
+            " border-radius:8px; padding:0 18px;"
+            " font-size:13px; font-weight:700; min-height:42px;"
+            " max-height:42px; }"
+            "QPushButton#rr-delete:hover {"
+            " background:#36393b; color:#ff8a8a; }"
+            "QPushButton#rr-delete:pressed {"
+            " background:#242729; }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
@@ -1677,17 +1690,12 @@ class RefResultDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
         self.delete_all_btn = QPushButton(tr('ref_result_delete_all'))
-        self.delete_all_btn.setStyleSheet(
-            "QPushButton { background:#2c2f31; color:#ff7676;"
-            " border:none; border-radius:8px; padding:0 18px;"
-            " font-size:13px; font-weight:700; min-height:42px;"
-            " max-height:42px; }"
-            "QPushButton:hover { background:#36393b; color:#ff8a8a; }"
-            "QPushButton:pressed { background:#242729; }")
+        self.delete_all_btn.setObjectName("rr-delete")
         self.delete_all_btn.setFixedSize(230, 42)
         self.delete_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_all_btn.clicked.connect(self._on_delete_all)
-        btn_row.addWidget(self.delete_all_btn)
+        btn_row.addWidget(self.delete_all_btn,
+                          alignment=Qt.AlignmentFlag.AlignVCenter)
         btn_row.addStretch()
 
         self.regen_btn = QPushButton(tr('ref_result_regen'))
@@ -1695,14 +1703,19 @@ class RefResultDialog(QDialog):
         self.regen_btn.setFixedSize(270, 42)
         self.regen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.regen_btn.clicked.connect(self._on_regen)
-        btn_row.addWidget(self.regen_btn)
+        btn_row.addWidget(self.regen_btn,
+                          alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.done_btn = QPushButton(tr('ref_result_done_keep'))
         self.done_btn.setObjectName("rr-done")
-        self.done_btn.setFixedSize(270, 42)
+        # 2026-07-01: 270→300 — «✓ Оставить этот, остальные удалить» (самая
+        # длинная подпись) не влезала в 270 (тексту ~292px). Ряд: 230+270+300
+        # + 3×spacing10 = 830 ≤ 860 (диалог 900 − поля 40) → влезает.
+        self.done_btn.setFixedSize(300, 42)
         self.done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.done_btn.clicked.connect(self._on_done)
-        btn_row.addWidget(self.done_btn)
+        btn_row.addWidget(self.done_btn,
+                          alignment=Qt.AlignmentFlag.AlignVCenter)
         outer.addLayout(btn_row)
 
         self._refresh_preview()
