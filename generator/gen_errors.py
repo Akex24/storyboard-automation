@@ -98,6 +98,9 @@ def human_message(code, text) -> str:
         return f"{msg} [{code_s}]" if code_s else msg
     if cat == "invalid_request":
         msg = tr("gen_err_invalid_request")
+        detail = str(text or "").strip()
+        if detail and detail != code_s:
+            return f"{msg}: {detail[:120]} [{code_s}]" if code_s else f"{msg}: {detail[:120]}"
         return f"{msg} [{code_s}]" if code_s else msg
     # generic — сохраняем сырой текст сервера (полезен для диагностики)
     t = str(text or "").strip()

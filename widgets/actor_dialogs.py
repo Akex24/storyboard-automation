@@ -1602,16 +1602,17 @@ class RefResultDialog(QDialog):
             " color:#fff; padding:7px 10px; font-size:13px;"
             " font-family: 'Menlo','Courier New',monospace; }"
             "QLineEdit#rr-filename:focus { border:1px solid rgba(207,255,36,0.45); }"
-            "QPushButton#rr-regen { background:#6e4cc4; color:#fdfdfd;"
-            " border:none; border-radius:8px; padding:10px 20px;"
-            " font-size:13px; font-weight:600; }"
-            "QPushButton#rr-regen:hover { background:#7d5bd4; }"
-            "QPushButton#rr-regen:disabled { background:#3a2c52; color:#888; }"
-            "QPushButton#rr-done { background:#3a8c52; color:#fdfdfd;"
-            " border:none; border-radius:6px; padding:8px 18px;"
-            " font-size:13px; font-weight:600; }"
-            "QPushButton#rr-done:hover { background:#4d9e6b; }"
-            "QPushButton#rr-done:disabled { background:#3a2c52; color:#888; }")
+            "QPushButton#rr-regen, QPushButton#rr-done {"
+            " background:#2c2f31; color:#f7f8f4; border:none;"
+            " border-radius:8px; padding:0 18px;"
+            " font-size:13px; font-weight:700; min-height:42px;"
+            " max-height:42px; }"
+            "QPushButton#rr-regen:hover, QPushButton#rr-done:hover {"
+            " background:#36393b; color:#ffffff; }"
+            "QPushButton#rr-regen:pressed, QPushButton#rr-done:pressed {"
+            " background:#242729; }"
+            "QPushButton#rr-regen:disabled, QPushButton#rr-done:disabled {"
+            " background:#2c2f31; color:rgba(247,248,244,0.42); }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
@@ -1674,12 +1675,16 @@ class RefResultDialog(QDialog):
         outer.addLayout(fn_row)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
         self.delete_all_btn = QPushButton(tr('ref_result_delete_all'))
         self.delete_all_btn.setStyleSheet(
-            "QPushButton { background:transparent; color:#c4304c;"
-            " border:1px solid #c4304c; border-radius:6px;"
-            " padding:8px 14px; font-size:12px; font-weight:600; }"
-            "QPushButton:hover { background:#c4304c; color:#fafafa; }")
+            "QPushButton { background:#2c2f31; color:#ff7676;"
+            " border:none; border-radius:8px; padding:0 18px;"
+            " font-size:13px; font-weight:700; min-height:42px;"
+            " max-height:42px; }"
+            "QPushButton:hover { background:#36393b; color:#ff8a8a; }"
+            "QPushButton:pressed { background:#242729; }")
+        self.delete_all_btn.setFixedSize(230, 42)
         self.delete_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_all_btn.clicked.connect(self._on_delete_all)
         btn_row.addWidget(self.delete_all_btn)
@@ -1687,12 +1692,14 @@ class RefResultDialog(QDialog):
 
         self.regen_btn = QPushButton(tr('ref_result_regen'))
         self.regen_btn.setObjectName("rr-regen")
+        self.regen_btn.setFixedSize(270, 42)
         self.regen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.regen_btn.clicked.connect(self._on_regen)
         btn_row.addWidget(self.regen_btn)
 
         self.done_btn = QPushButton(tr('ref_result_done_keep'))
         self.done_btn.setObjectName("rr-done")
+        self.done_btn.setFixedSize(270, 42)
         self.done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.done_btn.clicked.connect(self._on_done)
         btn_row.addWidget(self.done_btn)

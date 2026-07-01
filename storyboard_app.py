@@ -73,6 +73,7 @@ from threads import (
 #   Шаг 5C (2026-05-04): NewEpisodeView (views/new_episode.py).
 from views import (
     ActorsView, ActorCard,
+    CameraLabView,
     EpisodeChatView, ChatInputEdit,
     NewEpisodeView,
 )
@@ -3091,8 +3092,8 @@ QPushButton#nav-arrow {
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
     color: rgba(255, 255, 255, 0.62);
-    font-size: 14px;
-    font-weight: 800;
+    font-size: 19px;
+    font-weight: 900;
     min-width: 24px;
     max-width: 24px;
     min-height: 26px;
@@ -3266,8 +3267,8 @@ QPushButton#block-carousel-arrow {
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
     color: rgba(255, 255, 255, 0.62);
-    font-size: 14px;
-    font-weight: 800;
+    font-size: 19px;
+    font-weight: 900;
     min-width: 24px;
     max-width: 24px;
     min-height: 26px;
@@ -3816,7 +3817,7 @@ QFrame#lang-wrapper {
 QPushButton#tab-pill {
     background: transparent; color: rgba(255, 255, 255, 0.55);
     border: none; border-radius: 6px;
-    padding: 0 14px; font-size: 12px;
+    padding: 0 14px; font-size: 12px; font-weight: 600;
     min-height: 28px;
     max-height: 28px;
 }
@@ -3909,10 +3910,10 @@ QPushButton#episode-title-btn:pressed {
 QLabel#episode-duration { font-size: 13px; color: #888; }
 /* 2026-05-08 редизайн Этап 5: заголовок над сторибордами в LUMZ-стиле —
    text_primary (#fff), font 14, обычный вес 500, без letter-spacing. */
-QLabel#block-title      { font-size: 14px; color: #ffffff; font-weight: 500; letter-spacing: 0; }
+QLabel#block-title      { font-size: 14px; color: #b8b8b8; font-weight: 500; letter-spacing: 0; }
 
 /* Карточка шота — внутренние подписи */
-QLabel#shot-num         { font-size: 13px; font-weight: 600; color: #fdfdff; }
+QLabel#shot-num         { font-size: 13px; font-weight: 600; color: #878788; }
 QLabel#shot-dur         { font-size: 11px; color: #666667; }
 QLabel#shot-desc        { font-size: 11px; color: #878788; }
 QLabel#shot-dialog      { font-size: 11px; color: #b9a7e5; font-style: italic; }
@@ -6417,6 +6418,7 @@ class MainWindow(QMainWindow):
                 pass  # никогда не валим pipeline из-за логирования
         self._project_root = project_root
         self._is_admin     = is_admin_mode(project_root)
+        self._camera_lab_tab_idx: Optional[int] = 4 if self._is_admin else None
         # 2026-05-10 (БАГ 10 fix): Python-side lock для атомарного
         # read-modify-write episodes.json. Защищает от параллельных
         # `_save_active_gen_decision` вызовов когда несколько
@@ -7566,6 +7568,17 @@ class MainWindow(QMainWindow):
         # шапки pill «Генератор» рисуется ПЕРВЫМ (см. _build_header, явный _tab_idx).
         self.generator_view = GeneratorPage(self)
         self.tabs.addTab(self.generator_view, tr('tab_generator'))
+        if self._is_admin:
+            self.camera_lab_view = CameraLabView(
+                self._project_root,
+                self,
+                default_provider=image_provider_admin(),
+                provider_changed=set_image_provider_admin,
+                get_shot_clipboard=lambda: self._shot_clipboard,
+                set_shot_clipboard=self._set_shot_clipboard_bytes,
+            )
+            self.tabs.addTab(self.camera_lab_view, tr('tab_camera_lab'))
+            self._camera_lab_tab_idx = self.tabs.count() - 1
         # Скрываем нативный QTabBar — переключение через pill в шапке.
         try:
             self.tabs.tabBar().hide()
@@ -8069,7 +8082,7 @@ class MainWindow(QMainWindow):
 
         lay.addStretch()
 
-        # Pill-группа табов «Редактор / Актёры / Настройки».
+        # Pill-группа табов верхней навигации.
         # Кнопки переключают `self.tabs.setCurrentIndex(idx)`.
         # Сам QTabBar QTabWidget'а скрыт (см. _build_ui ниже).
         # БЕЗ ИКОНОК — юзер: «иконки на табах не нужны».
@@ -8081,13 +8094,16 @@ class MainWindow(QMainWindow):
         tg_lay.setContentsMargins(3, 3, 3, 3)
         tg_lay.setSpacing(0)
         # 2026-06-20: ЯВНЫЙ маппинг pill→страница по _tab_idx (НЕ позиционный).
-        # Визуальный порядок ряда ≠ порядок страниц: «Генератор» рисуется ПЕРВЫМ
-        # слева, но его страница — idx 3 (append в addTab, чтобы не двигать
-        # хардкоды Editor==0/Settings==2). page_idx → _tab_idx; по нему же
-        # _sync_header_tab_active подсвечивает активную. На старте активен
-        # Редактор (active = page_idx == 0), не Генератор.
-        for page_idx, key in ((3, 'tab_generator'), (0, 'tab_editor'),
-                              (1, 'tab_actors'), (2, 'tab_settings')):
+        # Визуальный порядок ряда ≠ порядок страниц: «Генератор» рисуется слева,
+        # но его страница — idx 3 (append в addTab, чтобы не двигать хардкоды
+        # Editor==0/Settings==2). page_idx → _tab_idx; по нему же
+        # _sync_header_tab_active подсвечивает активную.
+        tab_items = [(3, 'tab_generator'), (0, 'tab_editor'),
+                     (1, 'tab_actors'), (2, 'tab_settings')]
+        camera_idx = getattr(self, '_camera_lab_tab_idx', None)
+        if getattr(self, '_is_admin', False) and camera_idx is not None:
+            tab_items.insert(0, (camera_idx, 'tab_camera_lab'))
+        for page_idx, key in tab_items:
             btn = QPushButton(tr(key))
             btn.setObjectName("tab-pill")
             btn.setFixedHeight(28)
@@ -8324,6 +8340,11 @@ class MainWindow(QMainWindow):
             self.tabs.setTabText(0, tr('tab_editor'))
             self.tabs.setTabText(1, tr('tab_actors'))
             self.tabs.setTabText(2, tr('tab_settings'))
+            if self.tabs.count() > 3:
+                self.tabs.setTabText(3, tr('tab_generator'))
+            camera_idx = getattr(self, '_camera_lab_tab_idx', None)
+            if camera_idx is not None and 0 <= camera_idx < self.tabs.count():
+                self.tabs.setTabText(camera_idx, tr('tab_camera_lab'))
             # 2026-05-08: pill-кнопки табов в шапке тоже переводим. Они
             # хранят i18n-ключ в property `_i18n_key` (см. _build_header).
             for btn in getattr(self, '_header_tab_buttons', []):
@@ -8331,6 +8352,8 @@ class MainWindow(QMainWindow):
                 if key:
                     btn.setText(tr(key))
             self.actors_view.apply_lang()
+            if hasattr(self, 'camera_lab_view'):
+                self.camera_lab_view.apply_lang()
             if hasattr(self, 'new_episode_view'):
                 self.new_episode_view.apply_lang()
         # 2026-05-06: AuthBanner — обновить тексты кнопок и баннера.
@@ -14368,13 +14391,28 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(tr('status_no_shots'))
             return
         try:
-            self._shot_clipboard = src.read_bytes()
+            self._set_shot_clipboard_bytes(src.read_bytes())
         except Exception:
             traceback.print_exc()
             return
-        for c in self.shot_cards:
-            c.set_paste_available(True)
         self.status_bar.showMessage(tr('status_shot_copied', n=panel_idx + 1))
+
+    def _set_shot_clipboard_bytes(self, data: bytes):
+        """Единый буфер картинки шота для Editor ↔ Camera Lab."""
+        if not data:
+            return
+        self._shot_clipboard = bytes(data)
+        try:
+            for c in getattr(self, 'shot_cards', []):
+                c.set_paste_available(True)
+        except Exception:
+            traceback.print_exc()
+        try:
+            camera_view = getattr(self, 'camera_lab_view', None)
+            if camera_view is not None:
+                camera_view.set_shot_clipboard_available(True)
+        except Exception:
+            traceback.print_exc()
 
     def _on_paste_shot(self, panel_idx: int):
         """2026-06-02: «Вставить» в углу карточки. Картинка из буфера

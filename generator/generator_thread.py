@@ -54,7 +54,7 @@ class GeneratorImageThread(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, prompt: str, aspect_ratio: str, model_id: str,
-                 out_dir: Path, refs=None, parent=None):
+                 out_dir: Path, refs=None, parent=None, ref_names=None):
         super().__init__(parent)
         self.prompt = (prompt or "").strip()
         self.aspect_ratio = aspect_ratio or "16:9"
@@ -63,6 +63,7 @@ class GeneratorImageThread(QThread):
         # Прикреплённые рефы (per-генерация). Default None → конвертим в list тут
         # (избегаем mutable-default). Пусто → обычная генерация без inputs.
         self.refs: list = [str(p) for p in (refs or [])]
+        self.ref_names: list = [str(n) for n in (ref_names or [])]
         self._stop = False
 
     def stop(self):
@@ -104,10 +105,11 @@ class GeneratorImageThread(QThread):
             # зависит) — submit ниже шлёт его на КАЖДЫЙ пробуемый ключ.
             ref_inputs = []
             if self.refs:
-                for _p in self.refs:
+                for i, _p in enumerate(self.refs):
                     try:
                         pp = Path(_p)
-                        ref_inputs.append({"filename": pp.name,
+                        filename = self.ref_names[i] if i < len(self.ref_names) else pp.name
+                        ref_inputs.append({"filename": filename,
                                            "input": self._file_to_data_uri(pp)})
                     except Exception as e:
                         self.progress.emit(tr('gen_prog_ref_failed', name=Path(_p).name))
@@ -227,6 +229,11 @@ class GeneratorImageThread(QThread):
                                 b_err = str(jb.get('error') or '')
                         except Exception:
                             pass
+                        print(
+                            "[FASTGEN] submit non_ok "
+                            f"http={code} code={b_code} error={b_err[:300]} "
+                            f"body={r.text[:500]}"
+                        )
                         # validation.invalid_request одинаков на всех ключах → человеческая
                         # причина; прочее (5xx) — с HTTP-кодом.
                         if classify_error(b_code, b_err) == 'invalid_request':
@@ -323,7 +330,7 @@ class GeneratorImageThread(QThread):
                 return
             # Сохранение: shows/<slug>/generator/gen_YYYYmmdd_HHMMSS.jpg (уникально)
             self.out_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             target = self.out_dir / f"gen_{ts}.jpg"
             i = 2
             while target.exists():
