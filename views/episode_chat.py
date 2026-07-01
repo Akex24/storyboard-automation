@@ -1286,7 +1286,7 @@ class EpisodeChatView(QWidget):
                 t.stop()
         except Exception:
             pass
-        self._outfit_threads.pop(ep_id, None)
+        self._retire_outfit_thread(self._outfit_threads.pop(ep_id, None))
         try:
             picker = self._outfit_pickers.pop(ep_id, None)
             if picker is not None:
@@ -1702,6 +1702,25 @@ class EpisodeChatView(QWidget):
         self._outfit_threads[ep_id] = thread
         thread.start()
 
+    def _retire_outfit_thread(self, t):
+        """2026-07-01: снятие SuggestOutfitsThread через keep-alive
+        главного окна (MainWindow._retire_thread + reaper), а не голый
+        drop ссылки. results/error эмитятся ИЗНУТРИ run() (см.
+        threads/suggest_outfits.py), поэтому немедленный .pop роняет
+        последнюю ссылку пока QThread ещё не isFinished() → Python GC
+        уничтожает живой поток → 'QThread: Destroyed while thread is
+        still running' → SIGABRT. Единообразно с montage/external
+        тредами. `_threads_pending_delete` — set, повторный retire
+        того же объекта дедупится (двойного deleteLater нет)."""
+        if t is None:
+            return
+        mw = self._mw
+        if mw is not None and hasattr(mw, '_retire_thread'):
+            try:
+                mw._retire_thread(t)
+            except Exception:
+                traceback.print_exc()
+
     def _refresh_outfit_pickers_visibility(self):
         """2026-05-07: при смене эпизода скрываем все outfit picker'ы
         чьё `_associated_ep_id` не совпадает с текущим, и показываем
@@ -1754,7 +1773,7 @@ class EpisodeChatView(QWidget):
             return
         picker = self._outfit_pickers.get(ep_id)
         if picker is None:
-            self._outfit_threads.pop(ep_id, None)
+            self._retire_outfit_thread(self._outfit_threads.pop(ep_id, None))
             return
         # 2026-06-20: первым вариантом — ДОСЛОВНЫЙ канон-текст персонажа из
         # манифеста (тот что под кнопкой «Сгенерировать»), без парсинга/чистки/
@@ -1785,7 +1804,7 @@ class EpisodeChatView(QWidget):
                     seen.append(v)
         except Exception:
             traceback.print_exc()
-        self._outfit_threads.pop(ep_id, None)
+        self._retire_outfit_thread(self._outfit_threads.pop(ep_id, None))
 
     def _on_outfit_error(self, msg: str):
         ep_id = self._outfit_ep_for_sender()
@@ -1793,13 +1812,13 @@ class EpisodeChatView(QWidget):
             return
         picker = self._outfit_pickers.get(ep_id)
         if picker is None:
-            self._outfit_threads.pop(ep_id, None)
+            self._retire_outfit_thread(self._outfit_threads.pop(ep_id, None))
             return
         try:
             picker.set_error(msg)
         except Exception:
             traceback.print_exc()
-        self._outfit_threads.pop(ep_id, None)
+        self._retire_outfit_thread(self._outfit_threads.pop(ep_id, None))
 
     def _on_outfit_retry(self):
         # Retry-клик идёт от picker'а текущего эпизода.
@@ -1866,7 +1885,7 @@ class EpisodeChatView(QWidget):
                     outfit_thread.stop()
                 except Exception:
                     pass
-            self._outfit_threads.pop(ep_id, None)
+            self._retire_outfit_thread(self._outfit_threads.pop(ep_id, None))
             # Delete picker.
             outfit_picker = self._outfit_pickers.pop(ep_id, None)
             if outfit_picker is not None:
@@ -2009,6 +2028,7 @@ class EpisodeChatView(QWidget):
                     thread.stop()
             except Exception:
                 pass
+            self._retire_outfit_thread(thread)
         # Если юзер прямо сейчас на этом эпизоде — advance queue (показать
         # следующий character/object/location marker).
         if self._ep_id == ep_id:
