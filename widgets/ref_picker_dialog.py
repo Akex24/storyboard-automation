@@ -65,11 +65,6 @@ class _RefThumbCard(QFrame):
             " border-color:rgba(228,52,74,0.40); }"
             "QLabel#thumb-name { color:rgba(255,255,255,0.70);"
             " font-size:11px; }"
-            "QPushButton#thumb-pick { background:#e4344a; color:#fff;"
-            " border:none; border-radius:8px; padding:6px 14px;"
-            " font-size:12px; font-weight:500; }"
-            "QPushButton#thumb-pick:hover { background:#d92d44; }"
-            "QPushButton#thumb-pick:pressed { background:#c4283c; }"
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -107,7 +102,12 @@ class _RefThumbCard(QFrame):
 
         # Кнопка «Выбрать»
         pick_btn = QPushButton(tr('ref_picker_btn_select'))
-        pick_btn.setObjectName("thumb-pick")
+        # 2026-07-01: objectName settings-light-btn → подхватывает глобальный
+        # QSS настроечных кнопок (storyboard_app.py DARK #settings-light-btn):
+        # серый фон/ховер/текст, единообразно на всех темах. Раньше сырой
+        # #e4344a темой перекрашивался в лайм (#c7f04a). Локальную покраску
+        # thumb-pick удалили выше.
+        pick_btn.setObjectName("settings-light-btn")
         pick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         pick_btn.clicked.connect(self._on_pick_click)
         lay.addWidget(pick_btn)
