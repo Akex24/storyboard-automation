@@ -3116,7 +3116,7 @@ QLabel#nav-label {
     font-weight: 500;
 }
 QFrame#nav-popup {
-    background: #171220;
+    background: #151519;
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 10px;
 }
@@ -3139,8 +3139,21 @@ QPushButton#nav-popup-item {
     min-height: 26px;
 }
 QPushButton#nav-popup-item:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: #05070c;
     color: #ffffff;
+}
+QPushButton#nav-popup-del {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.28);
+    font-size: 14px;
+    font-weight: 700;
+    padding: 0;
+    border-radius: 7px;
+}
+QPushButton#nav-popup-del:hover {
+    color: #e4344a;
+    background: rgba(228, 52, 74, 0.12);
 }
 QPushButton#nav-popup-item[active="true"] {
     background: rgba(228, 52, 74, 0.18);
@@ -10570,15 +10583,39 @@ class MainWindow(QMainWindow):
         shows = list_shows(self._project_root)
 
         def build(v, menu):
+            # Плотный список сериалов: почти вплотную (было spacing=12 из
+            # _show_nav_menu — для show-пикера ужимаем).
+            v.setSpacing(4)
             for slug in shows:
                 display = show_manager.display_name_for(self._project_root, slug)
+                is_active = (slug == self._current_show)
+                # Элемент = строка [кнопка-сериал (растянута)][✕ у НЕактивного].
+                # Две отдельные кнопки → клики не конфликтуют (X не открывает сериал).
+                row = QWidget()
+                row.setObjectName("nav-popup-item-wrap")
+                hb = QHBoxLayout(row)
+                hb.setContentsMargins(0, 0, 0, 0)
+                hb.setSpacing(6)
                 btn = QPushButton(display)
                 btn.setObjectName("nav-popup-item")
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setMinimumHeight(38)
-                btn.setProperty("active", slug == self._current_show)
-                btn.clicked.connect(lambda _, s=slug: (menu.close(), self._on_show_changed(s)))
-                v.addWidget(self._nav_item_wrap(btn, v_margin=3))
+                btn.setProperty("active", is_active)
+                btn.clicked.connect(
+                    lambda _, s=slug: (menu.close(), self._on_show_changed(s)))
+                hb.addWidget(btn, 1)
+                if not is_active:
+                    # Крестик удаления — только у НЕактивного сериала.
+                    del_btn = QPushButton("✕")
+                    del_btn.setObjectName("nav-popup-del")
+                    del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                    del_btn.setFixedSize(30, 38)
+                    del_btn.setToolTip(tr('delete_show_tooltip'))
+                    del_btn.clicked.connect(
+                        lambda _, s=slug, d=display:
+                        (menu.close(), self._on_delete_show(s, d)))
+                    hb.addWidget(del_btn, 0)
+                v.addWidget(row)
             add_btn = QPushButton("+ " + tr('new_show_btn_tooltip'))
             add_btn.setObjectName("nav-popup-add")
             add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -10588,6 +10625,38 @@ class MainWindow(QMainWindow):
 
         self._show_nav_menu(
             self.show_select_btn, 280, tr('series').rstrip(':'), build)
+
+    def _on_delete_show(self, slug: str, display: str):
+        """Клик по крестику удаления сериала. Confirm → show_manager.delete_show
+        (бэкенд: rmtree папки shows/<slug>/). НЕ трогает current_show.json сам —
+        активный сериал удалить нельзя (крестика у него нет + страховка тут)."""
+        # Страховка: активный не удаляем (крестика у него и так нет).
+        if slug == self._current_show:
+            QMessageBox.warning(
+                self, tr('delete_show_confirm_title'),
+                tr('delete_show_active_guard'))
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr('delete_show_confirm_title'))
+        box.setText(tr('delete_show_confirm_text', name=display))
+        yes_btn = box.addButton(
+            tr('delete_show_yes'), QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = box.addButton(
+            tr('delete_show_cancel'), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        if box.clickedButton() is not yes_btn:
+            return
+        ok, reason = show_manager.delete_show(self._project_root, slug)
+        if ok:
+            # Список строится сканом shows/ → просто переоткрываем picker,
+            # удалённого сериала там уже нет.
+            self._show_show_picker()
+        else:
+            QMessageBox.critical(
+                self, tr('delete_show_confirm_title'),
+                tr('delete_show_error', reason=reason))
 
     def _show_episode_picker(self):
         eps = list_episodes() if self._current_show else []
