@@ -828,7 +828,7 @@ class CameraLabView(QWidget):
         self.current_slot.filesDropped.connect(self._add_references)
         self.current_slot.imageClicked.connect(self._open_image_popup)
         self.current_slot.pasteRequested.connect(self._paste_current_from_shot_clipboard)
-        left_lay.addWidget(self.current_slot, stretch=1)
+        left_lay.addWidget(self.current_slot)
 
         # 2026-07-02 (лейаут v2): под исходником — БОЛЬШОЕ окно результата
         # (последняя генерация, клик = попап-просмотрщик), под ним —
@@ -837,15 +837,18 @@ class CameraLabView(QWidget):
         self.result_title_lbl.setObjectName("camera-section-title")
         left_lay.addWidget(self.result_title_lbl)
 
+        # 2026-07-02 (лейаут v3): большое окно РОВНО размера исходника —
+        # ширина общая (вся панель), высота жёстко синкается с
+        # current_slot.height() в _update_big_result (у исходника высота
+        # детерминирована heightForWidth). Лента ниже забирает остаток.
         self.big_result = ResultPreviewLabel()
         self.big_result.setObjectName("camera-result-big")
         self.big_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.big_result.setMinimumHeight(220)
         self.big_result.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                      QSizePolicy.Policy.Expanding)
+                                      QSizePolicy.Policy.Fixed)
         self.big_result.setCursor(Qt.CursorShape.PointingHandCursor)
         self.big_result.clicked.connect(lambda: self._open_result_viewer(None))
-        left_lay.addWidget(self.big_result, stretch=1)
+        left_lay.addWidget(self.big_result)
 
         self.results_scroll = QScrollArea()
         self.results_scroll.setObjectName("camera-results-panel")
@@ -853,7 +856,9 @@ class CameraLabView(QWidget):
         self.results_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.results_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.results_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.results_scroll.setFixedHeight(150)
+        self.results_scroll.setMinimumHeight(120)
+        self.results_scroll.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                          QSizePolicy.Policy.Expanding)
         self.results_strip = QWidget()
         self.results_strip.setObjectName("camera-results-strip")
         self.results_strip_lay = QHBoxLayout(self.results_strip)
@@ -862,7 +867,7 @@ class CameraLabView(QWidget):
         self.results_strip_lay.addStretch()
         self.results_scroll.setWidget(self.results_strip)
         self.results_scroll.setVisible(False)
-        left_lay.addWidget(self.results_scroll)
+        left_lay.addWidget(self.results_scroll, stretch=1)   # остаток панели
 
         body.addWidget(left, stretch=3)
 
@@ -998,6 +1003,7 @@ class CameraLabView(QWidget):
             self.current_slot.set_image(current_path)
             self.orbit.set_frame_image(current_path)
             self._reset_camera_controls()
+            QTimer.singleShot(0, self._update_big_result)   # аспект слота сменился
         self._save_state()
 
     def _copy_current_shot_to_camera_folder(self, path: Path) -> Path:
@@ -1175,6 +1181,7 @@ class CameraLabView(QWidget):
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)
         self._refresh_fal_balance()
+        QTimer.singleShot(0, self._update_big_result)   # size-sync после layout
 
     def _set_generation_status(self, text: str = "", is_error: bool = False) -> None:
         if not hasattr(self, "generation_status_lbl"):
@@ -1483,6 +1490,11 @@ class CameraLabView(QWidget):
         big = getattr(self, "big_result", None)
         if big is None:
             return
+        # один в один с окном исходника: ширина у обоих = ширина панели,
+        # высоту жёстко копируем (у слота она из heightForWidth по аспекту)
+        slot_h = self.current_slot.height() if hasattr(self, "current_slot") else 0
+        if slot_h > 50 and big.height() != slot_h:
+            big.setFixedHeight(slot_h)
         path = self._last_result_path
         if path is None or not Path(path).exists():
             big.setPixmap(QPixmap())
