@@ -155,7 +155,11 @@ class CameraPerspectiveControl(QWidget):
         # совместимости вызовов (no-op).
         self.update()
 
-    def set_frame_image(self, path: Path) -> None:
+    def set_frame_image(self, path: Optional[Path]) -> None:
+        if path is None:
+            self._frame_pixmap = None
+            self.update()
+            return
         pixmap = QPixmap(str(path))
         self._frame_pixmap = pixmap if not pixmap.isNull() else None
         self.update()
@@ -420,6 +424,7 @@ class ImageDropSlot(QFrame):
     filesDropped = pyqtSignal(str, list)
     imageClicked = pyqtSignal(Path)
     pasteRequested = pyqtSignal()
+    clearRequested = pyqtSignal()   # 2026-07-02: крестик очистки исходника
 
     def __init__(
         self,
@@ -482,8 +487,20 @@ class ImageDropSlot(QFrame):
             self.paste_btn.setToolTip(tr("shot_paste"))
             self.paste_btn.clicked.connect(self.pasteRequested.emit)
             self.paste_btn.setVisible(False)
+            # 2026-07-02: крестик очистки — по образцу paste_btn (overlay,
+            # виден на hover и только когда картинка загружена).
+            self.clear_btn = QToolButton(self)
+            self.clear_btn.setObjectName("camera-slot-paste-btn")
+            self.clear_btn.setIcon(_camera_icon("x"))
+            self.clear_btn.setIconSize(QSize(16, 16))
+            self.clear_btn.setFixedSize(28, 28)
+            self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.clear_btn.setToolTip(tr("camera_clear_source"))
+            self.clear_btn.clicked.connect(self.clearRequested.emit)
+            self.clear_btn.setVisible(False)
         else:
             self.paste_btn = None
+            self.clear_btn = None
         self.retranslate()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt override
@@ -552,20 +569,40 @@ class ImageDropSlot(QFrame):
         self.title.setText(tr(self._title_key))
         self.hint.setText(tr(self._hint_key))
 
+    def clear_image(self) -> None:
+        """Сброс слота в исходное состояние «перетащи кадр»."""
+        self._pixmap = None
+        self._image_path = None
+        self._image_name = None
+        self._aspect_ratio = 16 / 9
+        self.image.setPixmap(QPixmap())
+        self.retranslate()
+        if self._large:
+            self.updateGeometry()
+        self.update()
+
     def resizeEvent(self, event):  # noqa: N802 - Qt override
         super().resizeEvent(event)
         if self.paste_btn is not None:
             self.paste_btn.move(max(8, self.width() - self.paste_btn.width() - 12), 12)
+        if getattr(self, "clear_btn", None) is not None:
+            # левее кнопки вставки, тот же верхний отступ
+            self.clear_btn.move(
+                max(8, self.width() - self.paste_btn.width() * 2 - 12 - 8), 12)
         self._refresh_pixmap()
 
     def enterEvent(self, event):  # noqa: N802 - Qt override
         if self.paste_btn is not None:
             self.paste_btn.setVisible(self._paste_available)
+        if getattr(self, "clear_btn", None) is not None:
+            self.clear_btn.setVisible(self._image_path is not None)
         super().enterEvent(event)
 
     def leaveEvent(self, event):  # noqa: N802 - Qt override
         if self.paste_btn is not None:
             self.paste_btn.setVisible(False)
+        if getattr(self, "clear_btn", None) is not None:
+            self.clear_btn.setVisible(False)
         super().leaveEvent(event)
 
     def _refresh_pixmap(self) -> None:
@@ -828,6 +865,7 @@ class CameraLabView(QWidget):
         self.current_slot.filesDropped.connect(self._add_references)
         self.current_slot.imageClicked.connect(self._open_image_popup)
         self.current_slot.pasteRequested.connect(self._paste_current_from_shot_clipboard)
+        self.current_slot.clearRequested.connect(self._clear_current_source)
         left_lay.addWidget(self.current_slot)
 
         # 2026-07-02 (лейаут v2): под исходником — БОЛЬШОЕ окно результата
@@ -904,6 +942,14 @@ class CameraLabView(QWidget):
         self.fal_key_edit = QLineEdit()
         self.fal_key_edit.setObjectName("camera-fal-key")
         self.fal_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        # 2026-07-02 (фикс «ключ пропадает»): поле ПРЕДЗАПОЛНЯЕТСЯ
+        # сохранённым ключом (точками) — раньше после перезапуска было
+        # пустым, хотя ключ жил в QSettings и баланс тянулся.
+        try:
+            from storyboard_app import load_fal_key
+            self.fal_key_edit.setText(load_fal_key())
+        except Exception:
+            pass
         # 2026-07-02: глазик (Lucide eye/eye-off) справа ВНУТРИ поля —
         # клик переключает показ ключа (echoMode Password ↔ Normal).
         self._fal_key_eye = self.fal_key_edit.addAction(
@@ -997,6 +1043,15 @@ class CameraLabView(QWidget):
             float(self.vertical_slider.value()),        # -30..90°
             self.zoom_slider.value() / 10.0,            # 0.0..10.0
         )
+
+    def _clear_current_source(self) -> None:
+        """Крестик на исходнике: слот → «перетащи кадр», сфера без кадра.
+        Результаты не трогаем."""
+        self._current_ref = None
+        self.current_slot.clear_image()
+        self.orbit.set_frame_image(None)
+        QTimer.singleShot(0, self._update_big_result)   # высота слота изменилась
+        self._save_state()
 
     def _add_references(self, slot_type: str, paths: List[Path]) -> None:
         """Оставлен только основной кадр (Current shot); референсы убраны
@@ -1307,8 +1362,6 @@ class CameraLabView(QWidget):
     def _save_state(self) -> None:
         if getattr(self, "_loading_state", False):
             return
-        if self._current_ref is None:
-            return
         state_path = self._state_path()
         if state_path is None:
             return
@@ -1514,11 +1567,11 @@ class CameraLabView(QWidget):
         path = self._last_result_path
         if path is None or not Path(path).exists():
             big.setPixmap(QPixmap())
-            big.setText(tr("camera_result_placeholder"))
+            big.setText("")   # 2026-07-02: без центр-подписи — заголовок слева
             return
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
-            big.setText(tr("camera_result_placeholder"))
+            big.setText("")
             return
         big.setText("")
         size = big.size()
@@ -1708,11 +1761,6 @@ class CameraLabView(QWidget):
             border: 1px solid #1d1e20;
             border-radius: 8px;
         }
-        QFrame#camera-result-area {
-            background: #131516;
-            border: 1px solid #1d1e20;
-            border-radius: 8px;
-        }
         QFrame#camera-ref-drop-area:hover {
             border: 1px solid #1d1e20;
         }
@@ -1801,11 +1849,17 @@ class CameraLabView(QWidget):
             border-radius: 8px;
         }
         QLabel#camera-result-big {
-            background: #0d0e0e;
-            color: #666;
+            /* палитра 1-в-1 с окном исходника (#camera-main-slot) */
+            background: #131516;
+            color: rgba(255,255,255,0.35);
             border: 1px solid #1d1e20;
-            border-radius: 10px;
+            border-radius: 8px;
             font-size: 12px;
+        }
+        QScrollArea#camera-results-panel, QWidget#camera-results-strip {
+            /* лента миниатюр — на общем фоне панели, без своих плашек */
+            background: transparent;
+            border: none;
         }
         QLineEdit#camera-fal-key {
             background: #131516;
