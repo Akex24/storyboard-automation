@@ -11293,6 +11293,14 @@ class MainWindow(QMainWindow):
         ep_meta = meta.get(ep_id) or {}
         card = ep_meta.get('montage_card') or {}
         if card.get('blocks'):
+            # 2026-07-02: неполная карта — Editor не дозаполнил геометрию
+            # (checker_report.ok=False). Лог может быть status="completed"
+            # (Editor-краш не пишет "error"), но карта дефектна → красная
+            # мигающая, НЕ зелёная. Только явный ok is False (legacy без
+            # поля → None → не триггерит, поведение прежнее).
+            cr = ep_meta.get('montage_checker_report') or {}
+            if cr.get('ok') is False:
+                return ("failed", "__incomplete__")
             seen = bool(ep_meta.get('montage_card_seen'))
             if not seen:
                 return ("completed_unseen", None)
@@ -11335,7 +11343,15 @@ class MainWindow(QMainWindow):
             try:
                 state, stage_id = self._episode_pipeline_state(ep_id)
                 state_summary[ep_id] = state
-                if state == "failed" and stage_id:
+                if state == "failed" and stage_id == "__incomplete__":
+                    # 2026-07-02: карта собрана, но неполная (ok=False) —
+                    # красная точка + tooltip «переделай».
+                    tooltip_template = tr('montage_pill_incomplete_tooltip')
+                    if tooltip_template == 'montage_pill_incomplete_tooltip':
+                        tooltip_template = 'Карта неполная — переделай'
+                    btn.set_state("failed",
+                                   tooltip_template=tooltip_template)
+                elif state == "failed" and stage_id:
                     stage_human = tr(f'montage_stage_name_{stage_id}')
                     if stage_human.startswith('montage_stage_name_'):
                         stage_human = stage_id

@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QMessageBox
 )
 
-from i18n import tr, plural_errors
+from i18n import tr
 
 
 class MontageSummaryDialog(QDialog):
@@ -66,6 +66,15 @@ class MontageSummaryDialog(QDialog):
         # 2026-05-06: Заголовок переписан — теперь это отчёт по 4 агентам
         # (а не одна строка про Чекер). Юзер видит что сделал каждый.
         ok = checker_report.get('ok', False)
+        # 2026-07-02: неполная карта (Editor не дозаполнил / упал) — красная
+        # плашка-баннер вверху. ok=False ИЛИ непустой errors.
+        if (not ok) or bool(checker_report.get('errors')):
+            banner = QLabel(tr('montage_incomplete_banner'))
+            banner.setWordWrap(True)
+            banner.setStyleSheet(
+                "background: #e4344a; color: #ffffff; font-weight: 700; "
+                "font-size: 13px; border-radius: 8px; padding: 10px 14px;")
+            outer.addWidget(banner)
         # 2026-05-08: LUMZ-палитра. ok → gold (выполнено), not-ok → red.
         head_color = "#d4a256" if ok else "#e4344a"
         head_lines = self._build_agent_lines()
@@ -496,44 +505,10 @@ class MontageSummaryDialog(QDialog):
             lines.append("🎯 Финальный редактор — не запускался")
         return lines
 
-    @staticmethod
-    def _humanize_error_codes(codes) -> str:
-        """Человекочитаемые ТИПЫ ошибок prefilter'а по code → tr-ключи
-        (ru/uk/en). Дедуп, порядок первого появления. codes — список
-        строк-кодов (из errors_in_codes / остатка)."""
-        labels: List[str] = []
-        for code in codes:
-            c = code or ''
-            if 'missing_geometry' in c:
-                key = 'err_type_missing_geometry'
-            elif 'too_many_shots' in c:
-                key = 'err_type_too_many_shots'
-            elif 'over_15s' in c:
-                key = 'err_type_over_15s'
-            elif 'speech_type' in c:
-                key = 'err_type_speech_type'
-            elif 'speaker' in c:
-                key = 'err_type_speaker'
-            elif 'location' in c:
-                key = 'err_type_location'
-            elif 'character' in c:
-                key = 'err_type_character'
-            elif 'lang' in c:
-                key = 'err_type_lang'
-            elif 'numbering' in c:
-                key = 'err_type_numbering'
-            else:
-                key = None
-            lbl = tr(key) if key else c
-            if lbl and lbl not in labels:
-                labels.append(lbl)
-        return ', '.join(labels)
-
     def _build_agent_lines_linear(self, s: dict) -> List[str]:
-        """2026-07-01: подписи линейного пайплайна. Все числа/типы —
-        живьём из agent_summary / checker_report (self._report), через
-        i18n (tr) с падежами (plural_*). Никаких AI-Validator/Context
-        Reviewer — их в этом пайплайне нет."""
+        """2026-07-02: подписи линейного пайплайна режима C — ровные ✓/✗
+        (U+2713/U+2717, не эмодзи), «Опус/Тайминги/Геометрия». Работа Editor
+        встроена в строку Геометрии. Числа/падежи — tr + plural_*."""
         lines: List[str] = []
         sw = s.get('scriptwriter', {}) or {}
         if sw.get('ran'):
@@ -542,7 +517,7 @@ class MontageSummaryDialog(QDialog):
                 blocks_count=sw.get('blocks_written', 0),
                 shots_count=sw.get('shots_total', 0),
                 seconds=sw.get('total_seconds', 0)))
-        # Проверка таймингов (Python, до Editor).
+        # Тайминги (Python timing_post_check, до Editor).
         pc = s.get('post_check_timings') or []
         pc1 = next((p for p in pc if p.get('round') == 1), None)
         if pc1 is not None:
@@ -552,84 +527,21 @@ class MontageSummaryDialog(QDialog):
                                 shots_count=fixed))
             else:
                 lines.append(tr('montage_lin_timing_ok'))
-        # Проверка карты (Python prefilter) + опц. Editor.
+        # Геометрия (prefilter даёт только *_missing_geometry; Editor
+        # дописывает). Остаток берём из checker_report (self._report).
         ed = s.get('editor', {}) or {}
         ed_rounds = ed.get('rounds') or []
         ed_failed = next((r for r in ed_rounds if r.get('failed')), None)
         errors_in = sum(r.get('errors_in', 0) for r in ed_rounds)
-        codes: List[str] = []
-        for r in ed_rounds:
-            codes.extend(r.get('errors_in_codes') or [])
-        residual = list((self._report or {}).get('errors') or [])
-        if ed_failed:
-            reason = (ed_failed.get('error') or 'unknown').split('\n', 1)[0][:120]
-            if errors_in > 0:
-                lines.append(tr('montage_lin_prefilter_found',
-                                errors_count=errors_in,
-                                types=self._humanize_error_codes(codes)))
-            lines.append(tr('montage_lin_editor_failed', reason=reason))
+        residual = len((self._report or {}).get('errors') or [])
+        if ed_failed or residual > 0:
+            lines.append(tr('montage_lin_geom_unfixed',
+                            shots_loc_count=(residual or errors_in)))
         elif ed.get('runs', 0) > 0 and errors_in > 0:
-            lines.append(tr('montage_lin_prefilter_found',
-                            errors_count=errors_in,
-                            types=self._humanize_error_codes(codes)))
-            f_count = len(residual)
-            if f_count == 0:
-                lines.append(tr('montage_lin_editor_all_fixed',
-                                errors_count=errors_in))
-            else:
-                residual_codes = [e.get('code', '') for e in residual]
-                lines.append(tr(
-                    'montage_lin_editor_partial',
-                    fixed_count=errors_in - f_count,
-                    errors_count=errors_in,
-                    residual_count=f_count,
-                    residual_word=plural_errors(f_count),
-                    types=self._humanize_error_codes(residual_codes)))
+            lines.append(tr('montage_lin_geom_fixed', shots_loc_count=errors_in))
         else:
-            lines.append(tr('montage_lin_prefilter_ok'))
+            lines.append(tr('montage_lin_geom_ok'))
         return lines
-
-    # ──────────────────────────────────────────────────────────────────
-    # v1.0.63: per-stage timing table
-    # ──────────────────────────────────────────────────────────────────
-    # Display-имена стадий (юзер просил не переводить — это технические
-    # имена агентов).
-    # v1.0.78 (Bug 3): расширено до 8 стадий — Geometry Editor (v1.0.75),
-    # Validator R2 (v1.0.76), Editor R2 + Validator R3 (v1.0.77). Раньше
-    # эти stages писались в timing.per_stage но цикл их пропускал — сумма
-    # ИТОГО (по total_sec) расходилась с видимыми строками.
-    _STAGE_DISPLAY = {
-        'scriptwriter':            'Scriptwriter',
-        'validator':               'Validator R1',
-        'geometry_editor':         'Geometry Editor',
-        'editor':                  'Editor R1',
-        'post_check_timings_r1':   'Post-check timings R1',
-        'validator_r2':            'Validator R2',
-        'editor_r2':               'Editor R2',
-        'post_check_timings_r2':   'Post-check timings R2',
-        'validator_r3':            'Validator R3',
-        'context_reviewer':        'Context Reviewer',
-    }
-    # Порядок отрисовки — в каком пайплайн запускает стадии.
-    _STAGE_ORDER = (
-        'scriptwriter', 'validator', 'geometry_editor', 'editor',
-        'post_check_timings_r1',
-        'validator_r2', 'editor_r2',
-        'post_check_timings_r2',
-        'validator_r3', 'context_reviewer',
-    )
-
-    @staticmethod
-    def _pretty_model(model_id: str) -> str:
-        """claude-opus-4-7 → Opus 4.7, claude-sonnet-4-6 → Sonnet 4.6 и т.п."""
-        if not model_id:
-            return ''
-        mapping = {
-            'claude-opus-4-7':            'Opus 4.7',
-            'claude-sonnet-4-6':          'Sonnet 4.6',
-            'claude-haiku-4-5-20251001':  'Haiku 4.5',
-        }
-        return mapping.get(model_id, model_id)
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -641,53 +553,30 @@ class MontageSummaryDialog(QDialog):
         return tr('timing_unit_minsec').format(min=m, sec=sec)
 
     def _build_timing_label(self) -> Optional[QLabel]:
-        """Возвращает QLabel с моноширинной таблицей таймингов стадий, либо
-        None если timing-данных нет (старая сборка / пустой лог).
-        """
+        """2026-07-02: человекочитаемый тайминг (2-3 строки): «Опус написал
+        карту — T», «Опус дописал геометрию — T» (только если Editor
+        запускался), «Итого — T». R1/R2 и имена моделей убраны. Итого =
+        total_sec (на линейном пайплайне sum ≈ wall-clock)."""
         timing = (self._agent_summary or {}).get('timing') or {}
         per_stage = timing.get('per_stage') or []
         if not per_stage:
             return None
-        # Сворачиваем в dict {stage: duration_sec_summed} — на случай
-        # если в будущем стадия повторится (сейчас editor может запуститься
-        # дважды если включён Context Reviewer и нашёл concerns).
         durations: Dict[str, float] = {}
-        models: Dict[str, str] = {}
         for entry in per_stage:
             st = entry.get('stage') or ''
-            d = entry.get('duration_sec') or 0
             if st:
-                durations[st] = durations.get(st, 0.0) + float(d)
-                # Модель берём из первого упоминания (для editor она одна).
-                models.setdefault(st, entry.get('model') or '')
-        # Собираем display-строки по фикс. порядку, только для стадий
-        # которые реально запускались (юзер: не показывать «0 сек»).
-        rows: List[tuple] = []  # (left_part, right_part)
-        for stage_key in self._STAGE_ORDER:
-            if stage_key not in durations:
-                continue
-            display_name = self._STAGE_DISPLAY.get(stage_key, stage_key)
-            model_pretty = self._pretty_model(models.get(stage_key, ''))
-            left = (f"{display_name} ({model_pretty}):" if model_pretty
-                    else f"{display_name}:")
-            right = self._format_duration(durations[stage_key])
-            rows.append((left, right))
-        if not rows:
-            return None
-        # ИТОГО
-        total = float(timing.get('total_sec') or 0)
-        total_right = self._format_duration(total)
-        total_left = f"{tr('timing_total')}:"
-        # Выравнивание колонок: подбираем ширину левой колонки по самой
-        # длинной строке (включая ИТОГО). +2 для воздуха перед правой.
-        max_left = max(len(r[0]) for r in rows + [(total_left, total_right)])
-        pad = max_left + 2
+                durations[st] = durations.get(st, 0.0) + float(
+                    entry.get('duration_sec') or 0)
         lines: List[str] = [tr('timing_section_title'), '']
-        for left, right in rows:
-            lines.append(f"  {left.ljust(pad)}{right}")
-        # Разделитель перед ИТОГО — длина под ширину колонок.
-        lines.append('  ' + '─' * (pad + max(len(r[1]) for r in rows + [(total_left, total_right)])))
-        lines.append(f"  {total_left.ljust(pad)}{total_right}")
+        if 'scriptwriter' in durations:
+            lines.append(f"  {tr('timing_lin_scriptwriter')} — "
+                         f"{self._format_duration(durations['scriptwriter'])}")
+        # Editor — ТОЛЬКО если запускался (была работа по геометрии).
+        if durations.get('editor'):
+            lines.append(f"  {tr('timing_lin_geometry')} — "
+                         f"{self._format_duration(durations['editor'])}")
+        lines.append(f"  {tr('timing_total')} — "
+                     f"{self._format_duration(float(timing.get('total_sec') or 0))}")
         label = QLabel("\n".join(lines))
         # Тот же моноширинный шрифт что у head, но цвет приглушённый —
         # таблица должна читаться, но не отвлекать от контента карты.
