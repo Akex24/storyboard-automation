@@ -904,6 +904,12 @@ class CameraLabView(QWidget):
         self.fal_key_edit = QLineEdit()
         self.fal_key_edit.setObjectName("camera-fal-key")
         self.fal_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        # 2026-07-02: глазик (Lucide eye/eye-off) справа ВНУТРИ поля —
+        # клик переключает показ ключа (echoMode Password ↔ Normal).
+        self._fal_key_eye = self.fal_key_edit.addAction(
+            _camera_icon("eye"), QLineEdit.ActionPosition.TrailingPosition)
+        self._fal_key_eye.setToolTip(tr("camera_fal_key_show"))
+        self._fal_key_eye.triggered.connect(self._toggle_fal_key_visible)
         key_row.addWidget(self.fal_key_edit, stretch=1)
         self.fal_key_btn = QPushButton()
         self.fal_key_btn.setObjectName("camera-fal-key-btn")
@@ -1147,6 +1153,16 @@ class CameraLabView(QWidget):
         self._refresh_slider_value_labels()
 
     # ── Ключ fal + баланс (2026-07-02) ─────────────────────────────────
+    def _toggle_fal_key_visible(self) -> None:
+        """Глазик в поле ключа: показать открытым текстом / скрыть точками."""
+        hidden = self.fal_key_edit.echoMode() == QLineEdit.EchoMode.Password
+        self.fal_key_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if hidden else QLineEdit.EchoMode.Password)
+        self._fal_key_eye.setIcon(
+            _camera_icon("eye-off" if hidden else "eye"))
+        self._fal_key_eye.setToolTip(
+            tr("camera_fal_key_hide" if hidden else "camera_fal_key_show"))
+
     def _on_fal_key_confirm(self) -> None:
         """«Подтвердить»: сохранить ключ (QSettings + fal_key.txt, без
         перезапуска) и проверить его запросом баланса."""
