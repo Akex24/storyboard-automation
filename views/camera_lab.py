@@ -31,7 +31,6 @@ from PyQt6.QtWidgets import (
     QLayout,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -518,87 +517,6 @@ class ImageDropSlot(QFrame):
 
 
 
-class CameraResultArea(QFrame):
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setObjectName("camera-result-area")
-        self.setMinimumHeight(260)
-
-
-class FlowLayout(QLayout):
-    def __init__(self, parent: Optional[QWidget] = None, margin: int = 0, spacing: int = 10):
-        super().__init__(parent)
-        self._items = []
-        self.setContentsMargins(margin, margin, margin, margin)
-        self.setSpacing(spacing)
-
-    def addItem(self, item):  # noqa: N802 - Qt override
-        self._items.append(item)
-
-    def count(self) -> int:
-        return len(self._items)
-
-    def itemAt(self, index: int):  # noqa: N802 - Qt override
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return None
-
-    def takeAt(self, index: int):  # noqa: N802 - Qt override
-        if 0 <= index < len(self._items):
-            return self._items.pop(index)
-        return None
-
-    def expandingDirections(self):  # noqa: N802 - Qt override
-        return Qt.Orientation(0)
-
-    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt override
-        return True
-
-    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt override
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
-
-    def setGeometry(self, rect):  # noqa: N802 - Qt override
-        super().setGeometry(rect)
-        self._do_layout(rect, test_only=False)
-
-    def sizeHint(self):  # noqa: N802 - Qt override
-        return self.minimumSize()
-
-    def minimumSize(self):  # noqa: N802 - Qt override
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        margins = self.contentsMargins()
-        size += QSize(
-            margins.left() + margins.right(),
-            margins.top() + margins.bottom(),
-        )
-        return size
-
-    def _do_layout(self, rect: QRect, test_only: bool) -> int:
-        margins = self.contentsMargins()
-        effective = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
-        x = effective.x()
-        y = effective.y()
-        line_height = 0
-        spacing = self.spacing()
-
-        for item in self._items:
-            hint = item.sizeHint()
-            next_x = x + hint.width() + spacing
-            if line_height > 0 and next_x - spacing > effective.right() + 1:
-                x = effective.x()
-                y += line_height + spacing
-                next_x = x + hint.width() + spacing
-                line_height = 0
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), hint))
-            x = next_x
-            line_height = max(line_height, hint.height())
-
-        return y + line_height - rect.y() + margins.bottom()
-
-
 def _camera_icon(name: str) -> QIcon:
     try:
         from storyboard_app import get_icon
@@ -822,48 +740,40 @@ class CameraLabView(QWidget):
         self.current_slot.pasteRequested.connect(self._paste_current_from_shot_clipboard)
         left_lay.addWidget(self.current_slot, stretch=1)
 
-        refs_results_split = QFrame()
-        refs_results_split.setObjectName("camera-refs-results-split")
-        refs_results_lay = QVBoxLayout(refs_results_split)
-        refs_results_lay.setContentsMargins(0, 0, 0, 0)
-        refs_results_lay.setSpacing(12)
-
+        # 2026-07-02 (лейаут v2): под исходником — БОЛЬШОЕ окно результата
+        # (последняя генерация, клик = попап-просмотрщик), под ним —
+        # горизонтальная лента миниатюр всех результатов.
         self.result_title_lbl = QLabel()
         self.result_title_lbl.setObjectName("camera-section-title")
-        refs_results_lay.addWidget(self.result_title_lbl)
+        left_lay.addWidget(self.result_title_lbl)
 
-        self.result_area = CameraResultArea()
-        self.result_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.result_area.setFixedHeight(258)
-        result_area_lay = QVBoxLayout(self.result_area)
-        result_area_lay.setContentsMargins(16, 16, 16, 16)
-        result_area_lay.setSpacing(10)
-
-        self.result_box = QPlainTextEdit()
-        self.result_box.setObjectName("camera-result")
-        self.result_box.setReadOnly(True)
-        self.result_box.setMinimumHeight(62)
-        self.result_box.setVisible(False)
-        result_area_lay.addWidget(self.result_box, stretch=1)
+        self.big_result = ResultPreviewLabel()
+        self.big_result.setObjectName("camera-result-big")
+        self.big_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.big_result.setMinimumHeight(220)
+        self.big_result.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                      QSizePolicy.Policy.Expanding)
+        self.big_result.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.big_result.clicked.connect(lambda: self._open_result_viewer(None))
+        left_lay.addWidget(self.big_result, stretch=1)
 
         self.results_scroll = QScrollArea()
         self.results_scroll.setObjectName("camera-results-panel")
-        self.results_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.results_scroll.setWidgetResizable(True)
         self.results_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.results_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.results_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.results_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.results_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.results_scroll.setFixedHeight(150)
         self.results_strip = QWidget()
         self.results_strip.setObjectName("camera-results-strip")
-        self.results_strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.results_strip_lay = FlowLayout(self.results_strip, margin=0, spacing=10)
+        self.results_strip_lay = QHBoxLayout(self.results_strip)
         self.results_strip_lay.setContentsMargins(0, 0, 0, 0)
+        self.results_strip_lay.setSpacing(10)
+        self.results_strip_lay.addStretch()
         self.results_scroll.setWidget(self.results_strip)
         self.results_scroll.setVisible(False)
-        result_area_lay.addWidget(self.results_scroll, stretch=1)
+        left_lay.addWidget(self.results_scroll)
 
-        refs_results_lay.addWidget(self.result_area, stretch=1)
-        left_lay.addWidget(refs_results_split, stretch=1)
         body.addWidget(left, stretch=3)
 
         controls = QFrame()
@@ -1132,7 +1042,7 @@ class CameraLabView(QWidget):
         self._set_balance_text(None)
         self.generate_btn.setText(tr("camera_generate"))
         self.result_title_lbl.setText(tr("camera_result"))
-        self.result_box.setPlaceholderText(tr("camera_result_placeholder"))
+        self._update_big_result()   # placeholder большого окна при пустых результатах
         for label in self._slider_labels:
             key = label.property("_i18n_key")
             if key:
@@ -1373,6 +1283,7 @@ class CameraLabView(QWidget):
 
             self.generate_btn.setEnabled(not bool(self._generation_jobs))
             self._set_generation_status("")
+            self._update_big_result()
             self._sync_control_state()
         except Exception:
             pass
@@ -1471,9 +1382,37 @@ class CameraLabView(QWidget):
         thumb.revealRequested.connect(self._reveal_result)
         thumb.copyRequested.connect(self._copy_result_to_shot_clipboard)
         thumb.deleteRequested.connect(lambda path, widget=thumb: self._delete_result(path, widget))
-        self.results_strip_lay.addWidget(thumb)
+        self.results_strip_lay.insertWidget(self.results_strip_lay.count() - 1, thumb)
         self.results_scroll.setVisible(True)
+        self._update_big_result()
         self._save_state()
+
+    def _update_big_result(self) -> None:
+        """Большое окно результата: последняя генерация, scaled под размер;
+        нет результатов → текстовый placeholder."""
+        big = getattr(self, "big_result", None)
+        if big is None:
+            return
+        path = self._last_result_path
+        if path is None or not Path(path).exists():
+            big.setPixmap(QPixmap())
+            big.setText(tr("camera_result_placeholder"))
+            return
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            big.setText(tr("camera_result_placeholder"))
+            return
+        big.setText("")
+        size = big.size()
+        big.setPixmap(pixmap.scaled(
+            max(64, size.width()), max(64, size.height()),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._update_big_result()   # пере-scale большого превью под новый размер
 
     def _copy_result_to_shot_clipboard(self, path: Path) -> None:
         if self._set_shot_clipboard is None:
@@ -1533,6 +1472,7 @@ class CameraLabView(QWidget):
             widget.deleteLater()
         has_results = self._result_thumb_count() > 0
         self.results_scroll.setVisible(has_results)
+        self._update_big_result()
         self._set_generation_status("" if has_results else tr("camera_result_deleted"))
         self._save_state()
 
@@ -1742,13 +1682,12 @@ class CameraLabView(QWidget):
             background: transparent;
             border-radius: 8px;
         }
-        QPlainTextEdit#camera-result {
-            background: transparent;
-            color: #e4e5df;
-            border: none;
-            border-radius: 0px;
-            padding: 8px;
-            selection-background-color: #2c2f31;
+        QLabel#camera-result-big {
+            background: #0d0e0e;
+            color: #666;
+            border: 1px solid #1d1e20;
+            border-radius: 10px;
+            font-size: 12px;
         }
         QLineEdit#camera-fal-key {
             background: #131516;
