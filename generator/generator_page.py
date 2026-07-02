@@ -30,7 +30,7 @@ from PyQt6.QtCore import (
     Qt, QSize, QTimer, QSettings, QEvent, QPoint, QRect,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve,
 )
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader, QColor, QFont, QPen
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QImageReader, QColor, QFont, QFontMetrics, QPen
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QComboBox, QTextEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy,
@@ -617,10 +617,22 @@ class GeneratorPage(QWidget):
         # на кнопке-триггере ВНУТРИ виджета; высоту ряда (34) держим снаружи.
         self.model_combo = ModelSelect()
         self.model_combo.setFixedHeight(34)
-        # Фикс ширины ВПРИТЫК к самому длинному лейблу «Veo 3.1 Fast (8s)» (~142px):
-        # 146 = текст + стрелка + поля, без большого зазора. (min-width триггера в
-        # model_select.py снижен до 120, иначе пол 150 не дал бы сжаться.)
-        self.model_combo.setFixedWidth(146)
+        # 2026-07-02: ширина НЕ хардкодится (146 обрезал «Nano Banana 2 Lite» →
+        # «Nano Banana 2 Li…»). Считаем по САМОМУ ДЛИННОМУ названию модели из
+        # ВСЕХ режимов MODELS_BY_MODE (fontMetrics, pixelSize 13 — как QSS
+        # font-size:13px у #model-combo-label): единая ширина для image и
+        # video → кнопка НЕ прыгает при переключении режима, будущие модели
+        # влезают автоматом. Слагаемые: 12+12 контент-мэржины триггера,
+        # 8 spacing, ~12 стрелка ▾, +6 запас (галочка ✓ строк попапа уже
+        # покрыта: попап = ширине кнопки, его строка text+8+✓ уже этой суммы).
+        _mf = QFont(self.model_combo.font())
+        _mf.setPixelSize(13)
+        _mfm = QFontMetrics(_mf)
+        _max_lbl = max(
+            (_mfm.horizontalAdvance(lbl)
+             for items in MODELS_BY_MODE.values() for (lbl, _mid) in items),
+            default=120)
+        self.model_combo.setFixedWidth(_max_lbl + 12 + 12 + 8 + 12 + 6)
         self._populate_models(self._mode)
         # Смена модели в выпадашке → пересчёт видимости сегмента длительности.
         self.model_combo.changed.connect(self._update_duration_visibility)
