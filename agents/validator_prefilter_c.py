@@ -272,7 +272,14 @@ def _check_geometry_presence(card: Dict[str, Any]) -> List[Dict[str, str]]:
 
 def prefilter_check(card: Dict[str, Any],
                      refs: Dict[str, Any]) -> Tuple[List[Dict[str, str]], Set[str]]:
-    """Прогоняет 10 механических правил Validator'а на карте.
+    """Прогоняет механические проверки карты (режим C).
+
+    2026-07-02: режим C урезан до целевой схемы Alex — Opus-писатель +
+    timing_post_check (Python, длина под озвучку) + ТОЛЬКО geometry.
+    Остальные 8 структурных проверок ОТКЛЮЧЕНЫ (вызовы закомментированы
+    ниже; сами функции _check_* сохранены — вернуть = раскомментировать
+    нужную строку). Editor гейтится по непустому prefilter → теперь
+    запускается только когда не заполнена geometry.
 
     Args:
         card: монтажная карта (dict) от Scriptwriter'а — формат
@@ -282,24 +289,26 @@ def prefilter_check(card: Dict[str, Any],
 
     Returns:
         (errors, rules_done):
-            errors      — list[{code, where, details}] в формате AI
-                          Validator'а (Editor читает без отличий).
-            rules_done  — set названий правил которые Python уже
-                          проверил. Передаётся в сборщик system_prompt
-                          AI Validator'а чтобы выкинуть проверенные
-                          пункты из инструкции (PREFILTER_RULES).
+            errors      — list[{code, where, details}] (Editor читает без
+                          отличий). Сейчас — только *_missing_geometry.
+            rules_done  — set(PREFILTER_RULES). Вестигиально: AI-Validator
+                          убран из пайплайна (Этап 2, 440a1e5), значение
+                          больше не используется (caller его отбрасывает),
+                          оставлено чтобы не менять сигнатуру.
     """
-    locations = {l.get("slug") for l in (refs.get("locations") or []) if l.get("slug")}
-    characters = {c.get("slug") for c in (refs.get("characters") or []) if c.get("slug")}
-
     errors: List[Dict[str, str]] = []
-    errors += _check_block_shot_count(card)
-    errors += _check_block_duration(card)
-    errors += _check_shot_numbering(card)
-    errors += _check_dialog_languages(card)
-    errors += _check_speech_type_enum(card)
-    errors += _check_speaker_in_characters(card)
-    errors += _check_location_whitelist(card, locations)
-    errors += _check_characters_whitelist(card, characters)
+    # 2026-07-02: ОТКЛЮЧЕНО (режим C = только geometry). Вернуть проверку
+    # = раскомментировать её строку. Для whitelist-проверок также вернуть
+    # вычисление locations/characters ниже.
+    # locations = {l.get("slug") for l in (refs.get("locations") or []) if l.get("slug")}
+    # characters = {c.get("slug") for c in (refs.get("characters") or []) if c.get("slug")}
+    # errors += _check_block_shot_count(card)       # блок ≤4 шота
+    # errors += _check_block_duration(card)         # блок ≤15 сек
+    # errors += _check_shot_numbering(card)         # нумерация с 1
+    # errors += _check_dialog_languages(card)       # реплика имеет ru+en
+    # errors += _check_speech_type_enum(card)       # speech_type валиден
+    # errors += _check_speaker_in_characters(card)  # speaker из персонажей блока
+    # errors += _check_location_whitelist(card, locations)    # локация из рефов
+    # errors += _check_characters_whitelist(card, characters) # персонажи из рефов
     errors += _check_geometry_presence(card)
     return errors, set(PREFILTER_RULES)
