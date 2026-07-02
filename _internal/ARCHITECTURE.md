@@ -2367,14 +2367,29 @@ datas=[
 Studio при старте копирует его в `project_root` через
 `sync_pipeline_py_to_project` ([storyboard_app.py](storyboard_app.py)).
 
+### Провайдеры картинок — три (2026-07-02: + Nano Banana 2 Lite)
+
+Константы в `storyboard_app.py` (~:4280): `IMAGE_PROVIDER_NARWHAL`
+("narwhal"), `IMAGE_PROVIDER_NARWHAL_LITE` ("narwhal_lite"),
+`IMAGE_PROVIDER_OPENAI` ("openai"); кортеж валидных `IMAGE_PROVIDERS_ALL`;
+мапа `IMAGE_PROVIDER_MODEL` (provider → model-строка payload). Обрезка
+рефов до `OPENAI_MAX_REFS`=10 — по кортежу `IMAGE_PROVIDERS_REF_CAPPED`
+(openai + narwhal_lite; narwhal исторически без обрезки). UI Настроек:
+обе карточки провайдеров на `ModeSegment` (N сегментов; ProviderToggle
+был жёстко 2-позиционным, в карточках больше не используется). Вкладка
+Генератора: `MODELS_BY_MODE["image"]` в generator/generator_page.py.
+server_check живость меряет по nano-banana-2 (Lite не тестирует).
+
 ### Bridge `image_provider.txt` (2026-05-15)
 
 `pipeline.py` запускается AI-агентом в subprocess'е `claude -p` через
 Bash tool — у него нет доступа к QSettings. Чтобы GUI-переключатель
-«Nano Banana 2 / OpenAI» в Настройках влиял и на рефы локаций/объектов
-(а не только на шоты `GenerateThread`), Studio пишет выбранного
-провайдера в `<project_root>/image_provider.txt` (содержимое — одна
-строка `narwhal` или `openai`).
+«Nano Banana 2 / Nano Banana 2 Lite / OpenAI» в Настройках влиял и на
+рефы локаций/объектов (а не только на шоты `GenerateThread`), Studio
+пишет выбранного провайдера в `<project_root>/image_provider.txt`
+(содержимое — одна строка `narwhal`, `narwhal_lite` или `openai`).
+Старые CLI-сборки при незнакомом `narwhal_lite` падают на default
+`openai` (безопасная деградация до Send Update).
 
 Пишут оба места в `storyboard_app.py`:
 1. `set_image_provider(value)` — при изменении в Настройках.
@@ -2396,7 +2411,9 @@ v4-эндпоинтов ВЫШЕ — ИСТОРИЧЕСКОЕ (прежняя с
 
 КОНТРАКТ v5 (единый по всем путям): submit
 `POST /api/v5/generations?result_format=ref` — провайдер НЕ в пути, задаётся полем
-`payload["model"]` (`nano-banana-2`=NARWHAL/flow, `openai-image`=OpenAI); рефы —
+`payload["model"]` (`nano-banana-2`=NARWHAL/flow, `nano-banana-2-lite`=NB2 Lite
+(2026-07-02, 4 кред., до 10 рефов — обрезка как у OpenAI), `openai-image`=OpenAI;
+мапа — `IMAGE_PROVIDER_MODEL` в storyboard_app.py, у CLI своя копия); рефы —
 `payload["inputs"]=[{"name":f"img{i+1}","input":h}]` (биндинг ПОЗИЦИОННЫЙ, name
 произвольный; старое `reference_images` убрано); хэш рефа — ГОЛЫЙ 32-hex (префикс
 `file:` срезается в 5 upload-методах — v5 даёт `422 string_pattern_mismatch` на

@@ -831,17 +831,19 @@ class GenerateThread(QThread):
             payload: Dict = {
                 "prompt":       clean,
                 "aspect_ratio": frame_format.payload_aspect_ratio(self.aspect),  # формат шота
-                "model":        ("openai-image"
-                                 if provider == _sa.IMAGE_PROVIDER_OPENAI
-                                 else "nano-banana-2"),
+                # 2026-07-02: мапа вместо бинарного тернарника (3-й провайдер
+                # NB2 Lite). Fallback nano-banana-2 = прежний else-путь.
+                "model":        _sa.IMAGE_PROVIDER_MODEL.get(
+                                    provider, "nano-banana-2"),
             }
             if ref_hashes:
-                if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > _sa.OPENAI_MAX_REFS:
-                    # OpenAI v4 принимает до OPENAI_MAX_REFS рефов (10 — проверено живым тестом). Режем по лимиту
+                if (provider in _sa.IMAGE_PROVIDERS_REF_CAPPED
+                        and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
+                    # OpenAI/NB2-Lite принимают до OPENAI_MAX_REFS рефов (10). Режем по лимиту
                     # (по порядку обработки они уже упорядочены: img1=локация,
                     # img2=объект или первый персонаж — самые важные).
                     self.progress.emit(
-                        f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
+                        f"{provider}: режу рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 # v5 schema: ключ "filename" (не "name"), биндинг позиционный.
                 # OpenAI требует filename — иначе реф не привязывается к промпту.
@@ -952,7 +954,7 @@ class GenerateThread(QThread):
                             pass
                         ref_hashes = self._reupload_shot_refs(
                             session, filtered_refs, sorted_tags, existing_path)
-                        if (provider == _sa.IMAGE_PROVIDER_OPENAI
+                        if (provider in _sa.IMAGE_PROVIDERS_REF_CAPPED
                                 and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                             ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                         # v5 schema: filename (см. main payload выше).
@@ -1338,14 +1340,13 @@ class RefGenerateThread(QThread):
             payload: Dict = {
                 "prompt":       prompt_text,
                 "aspect_ratio": "16:9",
-                "model":        ("openai-image"
-                                 if provider == _sa.IMAGE_PROVIDER_OPENAI
-                                 else "nano-banana-2"),
+                "model":        _sa.IMAGE_PROVIDER_MODEL.get(
+                                    provider, "nano-banana-2"),
             }
             if ref_hashes:
-                if (provider == _sa.IMAGE_PROVIDER_OPENAI
+                if (provider in _sa.IMAGE_PROVIDERS_REF_CAPPED
                         and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
-                    # OpenAI-обрезка: мёртвая ветка здесь (refs<=1), оставлена как есть.
+                    # Обрезка: мёртвая ветка здесь (refs<=1), оставлена как есть.
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 # v5 schema: ключ "filename" (не "name"). У RefGenerateThread всегда
                 # один реф = send_path → используем его basename как filename.
@@ -1992,14 +1993,13 @@ class GenerateActorRefThread(QThread):
             payload = {
                 "prompt": self.prompt_text,
                 "aspect_ratio": "16:9",
-                "model": ("openai-image"
-                          if provider == _sa.IMAGE_PROVIDER_OPENAI
-                          else "nano-banana-2"),
+                "model": _sa.IMAGE_PROVIDER_MODEL.get(provider, "nano-banana-2"),
             }
             if ref_hashes:
-                if provider == _sa.IMAGE_PROVIDER_OPENAI and len(ref_hashes) > _sa.OPENAI_MAX_REFS:
+                if (provider in _sa.IMAGE_PROVIDERS_REF_CAPPED
+                        and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                     self.progress.emit(
-                        f"OpenAI режет рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
+                        f"{provider}: режу рефы до {_sa.OPENAI_MAX_REFS} (было {len(ref_hashes)})")
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 # v5 schema: ключ "filename" (не "name"); filename = реальный
                 # basename фото актёра (по zip с photo_paths[:10]).
@@ -2369,12 +2369,10 @@ class EditActorRefThread(QThread):
             payload = {
                 "prompt": prompt_text,
                 "aspect_ratio": "16:9",
-                "model": ("openai-image"
-                          if provider == _sa.IMAGE_PROVIDER_OPENAI
-                          else "nano-banana-2"),
+                "model": _sa.IMAGE_PROVIDER_MODEL.get(provider, "nano-banana-2"),
             }
             if ref_hashes:
-                if (provider == _sa.IMAGE_PROVIDER_OPENAI
+                if (provider in _sa.IMAGE_PROVIDERS_REF_CAPPED
                         and len(ref_hashes) > _sa.OPENAI_MAX_REFS):
                     ref_hashes = ref_hashes[:_sa.OPENAI_MAX_REFS]
                 # v5 schema: ключ "filename" (не "name"). EditActorRefThread

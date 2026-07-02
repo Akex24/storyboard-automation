@@ -4267,7 +4267,7 @@ def sync_api_key_to_env(project_root: Path, key: str) -> None:
         traceback.print_exc()
 
 
-# ─── Провайдер картинок (NARWHAL Nano Banana 2 / OpenAI) ─────────────────
+# ─── Провайдер картинок (NARWHAL Nano Banana 2 / NB2 Lite / OpenAI) ──────
 # Админский переключатель в Settings. Влияет ТОЛЬКО на массовую генерацию
 # шотов (`GenerateThread`). Локации/объекты (`RefGenerateThread`) и regen
 # рефов персонажей идут на OpenAI всегда (так было исторически).
@@ -4278,10 +4278,31 @@ def sync_api_key_to_env(project_root: Path, key: str) -> None:
 # pydantic-ошибкой). Content-policy OpenAI блокирует огнестрел/узнаваемых
 # людей — для криминальных сцен не сработает, нужно знать.
 IMAGE_PROVIDER_NARWHAL = "narwhal"
+# 2026-07-02: Nano Banana 2 Lite — третий провайдер FastGen (model
+# "nano-banana-2-lite", подтверждено официальной OpenAPI-схемой: провайдер
+# flow, операция nano_banana_2_lite_image_generate, 4 кред. base, до 10 рефов).
+IMAGE_PROVIDER_NARWHAL_LITE = "narwhal_lite"
 IMAGE_PROVIDER_OPENAI  = "openai"
+# Все валидные значения ключей image_provider_actors / image_provider_admin.
+IMAGE_PROVIDERS_ALL = (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_NARWHAL_LITE,
+                       IMAGE_PROVIDER_OPENAI)
+# Мапа провайдер → model-строка payload'а FastGen (v6 generations).
+# Единственный источник истины для тредов (threads/generate.py); CLI
+# (pipeline.py / generate_storyboards.py) держат свою копию — им нельзя
+# импортировать storyboard_app (subprocess без Qt).
+IMAGE_PROVIDER_MODEL = {
+    IMAGE_PROVIDER_NARWHAL:      "nano-banana-2",
+    IMAGE_PROVIDER_NARWHAL_LITE: "nano-banana-2-lite",
+    IMAGE_PROVIDER_OPENAI:       "openai-image",
+}
 # Потолок reference_images для OpenAI v4 (/api/v4/openai/image/generate):
 # сервер принимает 0-10 (maxItems:10) — проверено живым тестом (10 OK, 11 отбой).
 OPENAI_MAX_REFS = 10
+# Провайдеры с явной обрезкой рефов до OPENAI_MAX_REFS: OpenAI (как было)
+# + NB2 Lite (схема заявляет до 10 рефов — режем, не полагаясь на сервер).
+# NARWHAL (nano-banana-2) без обрезки — историческое поведение.
+IMAGE_PROVIDERS_REF_CAPPED = (IMAGE_PROVIDER_OPENAI,
+                              IMAGE_PROVIDER_NARWHAL_LITE)
 
 
 def image_provider() -> str:
@@ -4349,7 +4370,7 @@ def sync_image_provider_to_project(project_root: Path, value: str) -> None:
     проблем с этой синхронизацией.
     """
     try:
-        if value not in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI):
+        if value not in IMAGE_PROVIDERS_ALL:
             value = IMAGE_PROVIDER_NARWHAL
         dst = Path(project_root) / "image_provider.txt"
         try:
@@ -4391,11 +4412,9 @@ def image_provider_actors() -> str:
         if not v:
             # Миграция со старого общего ключа при первом чтении.
             old = s.value("image_provider", IMAGE_PROVIDER_NARWHAL, type=str)
-            v = old if old in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
-                else IMAGE_PROVIDER_NARWHAL
+            v = old if old in IMAGE_PROVIDERS_ALL else IMAGE_PROVIDER_NARWHAL
             s.setValue("image_provider_actors", v)
-        return v if v in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
-            else IMAGE_PROVIDER_NARWHAL
+        return v if v in IMAGE_PROVIDERS_ALL else IMAGE_PROVIDER_NARWHAL
     except Exception:
         return IMAGE_PROVIDER_NARWHAL
 
@@ -4407,7 +4426,7 @@ def set_image_provider_actors(value: str) -> None:
     (GenerateActorRefThread / EditActorRefThread).
     """
     try:
-        if value not in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI):
+        if value not in IMAGE_PROVIDERS_ALL:
             value = IMAGE_PROVIDER_NARWHAL
         QSettings(APP_ORG, APP_NAME).setValue("image_provider_actors", value)
     except Exception:
@@ -4424,11 +4443,9 @@ def image_provider_admin() -> str:
         v = s.value("image_provider_admin", None, type=str)
         if not v:
             old = s.value("image_provider", IMAGE_PROVIDER_NARWHAL, type=str)
-            v = old if old in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
-                else IMAGE_PROVIDER_NARWHAL
+            v = old if old in IMAGE_PROVIDERS_ALL else IMAGE_PROVIDER_NARWHAL
             s.setValue("image_provider_admin", v)
-        return v if v in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI) \
-            else IMAGE_PROVIDER_NARWHAL
+        return v if v in IMAGE_PROVIDERS_ALL else IMAGE_PROVIDER_NARWHAL
     except Exception:
         return IMAGE_PROVIDER_NARWHAL
 
@@ -4440,7 +4457,7 @@ def set_image_provider_admin(value: str) -> None:
     т.е. админский контекст).
     """
     try:
-        if value not in (IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI):
+        if value not in IMAGE_PROVIDERS_ALL:
             value = IMAGE_PROVIDER_NARWHAL
         QSettings(APP_ORG, APP_NAME).setValue("image_provider_admin", value)
         try:
@@ -8515,13 +8532,15 @@ class MainWindow(QMainWindow):
                 self.image_provider_actors_hint_lbl.setText(
                     tr('image_provider_actors_hint'))
                 self.image_provider_actors_toggle.set_labels(
-                    tr('image_provider_narwhal'), tr('image_provider_openai'))
+                    [tr('image_provider_narwhal'), tr('image_provider_nb2_lite'),
+                     tr('image_provider_openai')])
                 self.image_provider_admin_card_title_lbl.setText(
                     tr('image_provider_admin_card_title'))
                 self.image_provider_admin_hint_lbl.setText(
                     tr('image_provider_admin_hint'))
                 self.image_provider_admin_toggle.set_labels(
-                    tr('image_provider_narwhal'), tr('image_provider_openai'))
+                    [tr('image_provider_narwhal'), tr('image_provider_nb2_lite'),
+                     tr('image_provider_openai')])
             except Exception:
                 traceback.print_exc()
         # Секция «Режим монтажной карты» (2026-06-16, Коммит 4: чиним retranslate
@@ -9859,11 +9878,16 @@ class MainWindow(QMainWindow):
             "color:#aaa; font-size:12px; padding-bottom:10px;")
         paf.addWidget(self.image_provider_actors_hint_lbl)
 
-        self.image_provider_actors_toggle = ProviderToggle(self)
+        # 2026-07-02: ProviderToggle (жёстко 2 позиции) → ModeSegment
+        # (N сегментов, палитра 1:1 — см. коммент в mode_segment.py).
+        # API set_value/value/valueChanged идентичен — слоты не тронуты.
+        self.image_provider_actors_toggle = ModeSegment(self)
         self.image_provider_actors_toggle.set_options(
-            IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI)
+            [IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_NARWHAL_LITE,
+             IMAGE_PROVIDER_OPENAI])
         self.image_provider_actors_toggle.set_labels(
-            tr('image_provider_narwhal'), tr('image_provider_openai'))
+            [tr('image_provider_narwhal'), tr('image_provider_nb2_lite'),
+             tr('image_provider_openai')])
         self.image_provider_actors_toggle.set_value(image_provider_actors())
         self.image_provider_actors_toggle.valueChanged.connect(
             self._on_image_provider_actors_changed)
@@ -9890,11 +9914,13 @@ class MainWindow(QMainWindow):
             "color:#aaa; font-size:12px; padding-bottom:10px;")
         pf.addWidget(self.image_provider_admin_hint_lbl)
 
-        self.image_provider_admin_toggle = ProviderToggle(self)
+        self.image_provider_admin_toggle = ModeSegment(self)
         self.image_provider_admin_toggle.set_options(
-            IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_OPENAI)
+            [IMAGE_PROVIDER_NARWHAL, IMAGE_PROVIDER_NARWHAL_LITE,
+             IMAGE_PROVIDER_OPENAI])
         self.image_provider_admin_toggle.set_labels(
-            tr('image_provider_narwhal'), tr('image_provider_openai'))
+            [tr('image_provider_narwhal'), tr('image_provider_nb2_lite'),
+             tr('image_provider_openai')])
         self.image_provider_admin_toggle.set_value(image_provider_admin())
         self.image_provider_admin_toggle.valueChanged.connect(
             self._on_image_provider_admin_changed)

@@ -63,7 +63,7 @@ def load_key() -> str:
 
 
 def load_provider() -> str:
-    """Возвращает 'narwhal' или 'openai'. Default — 'openai'.
+    """Возвращает 'narwhal' / 'narwhal_lite' / 'openai'. Default — 'openai'.
 
     Studio пишет это значение в `image_provider.txt` рядом с .env при
     каждом изменении настройки и при старте. Если файла нет (старая
@@ -74,7 +74,7 @@ def load_provider() -> str:
         if not PROVIDER_FILE.exists():
             return "openai"
         v = PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
-        return v if v in ("narwhal", "openai") else "openai"
+        return v if v in ("narwhal", "narwhal_lite", "openai") else "openai"
     except Exception:
         return "openai"
 
@@ -133,9 +133,13 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     #   • cost_charged=1. Без полей `model`/`resolution`.
     #   • Content-policy блокирует огнестрел/узнаваемых людей.
     provider = load_provider()
-    # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Строковый
-    # провайдер из image_provider.txt: "narwhal" → nano-banana-2, иначе openai-image.
-    model = "nano-banana-2" if provider == "narwhal" else "openai-image"
+    # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Мапа
+    # provider→model — копия IMAGE_PROVIDER_MODEL из storyboard_app.py
+    # (CLI не может импортировать Studio). Default openai-image — прежний
+    # else-путь (исторический дефолт CLI).
+    model = {"narwhal": "nano-banana-2",
+             "narwhal_lite": "nano-banana-2-lite",
+             "openai": "openai-image"}.get(provider, "openai-image")
     # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (ниже).
     endpoint = "/api/v6/generations"
     print(f"  provider: {provider} (model={model}, {endpoint})")

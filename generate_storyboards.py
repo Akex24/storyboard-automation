@@ -29,13 +29,13 @@ PROVIDER_FILE = ROOT / "image_provider.txt"
 
 
 def load_provider() -> str:
-    """Возвращает 'narwhal' или 'openai'. Default — 'openai'.
+    """Возвращает 'narwhal' / 'narwhal_lite' / 'openai'. Default — 'openai'.
     См. pipeline.load_provider — поведение симметрично."""
     try:
         if not PROVIDER_FILE.exists():
             return "openai"
         v = PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
-        return v if v in ("narwhal", "openai") else "openai"
+        return v if v in ("narwhal", "narwhal_lite", "openai") else "openai"
     except Exception:
         return "openai"
 
@@ -234,9 +234,11 @@ def main():
         # flow без него работает как Nano Banana 2; с ним маршрутизирует
         # обратно в OpenAI с pydantic-ошибкой).
         provider = load_provider()
-        # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Строковый
-        # провайдер из image_provider.txt: "narwhal" → nano-banana-2, иначе openai-image.
-        model = "nano-banana-2" if provider == "narwhal" else "openai-image"
+        # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Мапа
+        # provider→model — копия IMAGE_PROVIDER_MODEL из storyboard_app.py.
+        model = {"narwhal": "nano-banana-2",
+                 "narwhal_lite": "nano-banana-2-lite",
+                 "openai": "openai-image"}.get(provider, "openai-image")
         payload = {
             "prompt": clean_prompt,
             "aspect_ratio": "16:9",

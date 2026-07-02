@@ -46,7 +46,9 @@ from i18n import tr   # локализация UI (i18n — лист-модул�
 # id реальные из /api/v5/models. ВНИМАНИЕ: генерация видео пока НЕ подключена —
 # в _on_run режим "video" возвращает «Видео скоро будет» ДО использования id.
 MODELS_BY_MODE = {
-    "image": [("Nano Banana 2", "nano-banana-2"), ("OpenAI", "openai-image")],
+    "image": [("Nano Banana 2", "nano-banana-2"),
+              ("Nano Banana 2 Lite", "nano-banana-2-lite"),
+              ("OpenAI", "openai-image")],
     "video": [("Veo 3.1 Fast (8s)", "flow-video-fast"),
               ("Veo 3.1 Light (8s)", "flow-video-light"),
               ("Omni Flash", "flow-video-omni-flash")],

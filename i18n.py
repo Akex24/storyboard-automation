@@ -444,12 +444,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'image_provider_hint': 'Чем рисовать шоты сторибордов. Nano Banana 2 — основной (до 10 рефов, мягче content-фильтр, дороже). OpenAI — fallback (до 10 рефов, content-фильтр блокирует огнестрел и узнаваемых людей, дешевле). Применяется со следующего шота, перезапуск не нужен.',
         'image_provider_label': 'Провайдер:',
         'image_provider_narwhal': 'Nano Banana 2',
+        'image_provider_nb2_lite': 'Nano Banana 2 Lite',
         'image_provider_openai': 'OpenAI',
         # 2026-05-23: разделение провайдера на actors (видим всем) и admin (только админ).
         'sec_image_provider_actors': 'ПРОВАЙДЕР ДЛЯ РЕФЕРЕНСОВ ПЕРСОНАЖЕЙ',
-        'image_provider_actors_hint': 'Nano Banana 2 — до 10 рефов. OpenAI — до 10 рефов.',
+        'image_provider_actors_hint': 'Nano Banana 2 / Lite / OpenAI — до 10 рефов. Lite дешевле (4 кред.).',
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДОВ, ЛОКАЦИЙ И ОБЪЕКТОВ',
-        'image_provider_admin_hint': 'Nano Banana 2 — до 10 рефов. OpenAI — до 10 рефов.',
+        'image_provider_admin_hint': 'Nano Banana 2 / Lite / OpenAI — до 10 рефов. Lite дешевле (4 кред.).',
         # 2026-06-16 (Коммит 3): один общий заголовок секции + короткие титулы карточек.
         'sec_image_providers': 'ПРОВАЙДЕРЫ ГЕНЕРАЦИИ',
         'image_provider_actors_card_title': 'Референсы актёров',
@@ -1357,12 +1358,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'image_provider_hint': 'Чим малювати шоти сторибордів. Nano Banana 2 — основний (до 10 рефів, м\'якший content-фільтр, дорожчий). OpenAI — fallback (до 10 рефів, content-фільтр блокує вогнепальну зброю та впізнаваних людей, дешевший). Застосовується з наступного шота, перезапуск не потрібен.',
         'image_provider_label': 'Провайдер:',
         'image_provider_narwhal': 'Nano Banana 2',
+        'image_provider_nb2_lite': 'Nano Banana 2 Lite',
         'image_provider_openai': 'OpenAI',
         # 2026-05-23: розділення провайдера на actors (видно всім) і admin (тільки адмін).
         'sec_image_provider_actors': 'ПРОВАЙДЕР ДЛЯ РЕФЕРЕНСІВ ПЕРСОНАЖІВ',
-        'image_provider_actors_hint': 'Nano Banana 2 — до 10 рефів. OpenAI — до 10 рефів.',
+        'image_provider_actors_hint': 'Nano Banana 2 / Lite / OpenAI — до 10 рефів. Lite дешевший (4 кред.).',
         'sec_image_provider_admin': 'ПРОВАЙДЕР ДЛЯ СТОРИБОРДІВ, ЛОКАЦІЙ ТА ОБ\'ЄКТІВ',
-        'image_provider_admin_hint': 'Nano Banana 2 — до 10 рефів. OpenAI — до 10 рефів.',
+        'image_provider_admin_hint': 'Nano Banana 2 / Lite / OpenAI — до 10 рефів. Lite дешевший (4 кред.).',
         # 2026-06-16 (Коміт 3): один спільний заголовок секції + короткі титули карток.
         'sec_image_providers': 'ПРОВАЙДЕРИ ГЕНЕРАЦІЇ',
         'image_provider_actors_card_title': 'Референси акторів',
@@ -2249,12 +2251,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'image_provider_hint': 'Which engine renders storyboard shots. Nano Banana 2 — primary (up to 10 refs, softer content filter, costs more). OpenAI — fallback (up to 10 refs, content filter blocks firearms and recognizable people, cheaper). Applied to next shot, no restart needed.',
         'image_provider_label': 'Provider:',
         'image_provider_narwhal': 'Nano Banana 2',
+        'image_provider_nb2_lite': 'Nano Banana 2 Lite',
         'image_provider_openai': 'OpenAI',
         # 2026-05-23: split image_provider into actors (visible to all) and admin (admin only).
         'sec_image_provider_actors': 'IMAGE PROVIDER FOR CHARACTER REFS',
-        'image_provider_actors_hint': 'Nano Banana 2 — up to 10 refs. OpenAI — up to 10 refs.',
+        'image_provider_actors_hint': 'Nano Banana 2 / Lite / OpenAI — up to 10 refs. Lite is cheaper (4 cr.).',
         'sec_image_provider_admin': 'IMAGE PROVIDER FOR STORYBOARDS, LOCATIONS & OBJECTS',
-        'image_provider_admin_hint': 'Nano Banana 2 — up to 10 refs. OpenAI — up to 10 refs.',
+        'image_provider_admin_hint': 'Nano Banana 2 / Lite / OpenAI — up to 10 refs. Lite is cheaper (4 cr.).',
         # 2026-06-16 (Commit 3): one shared section heading + short card titles.
         'sec_image_providers': 'IMAGE PROVIDERS',
         'image_provider_actors_card_title': 'Character refs',
