@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-camera_lab — isolated admin-only prototype for changing camera angle.
+camera_lab — вкладка «Камера»: смена ракурса кадра через fal.ai.
 
-This view deliberately does not touch the editor, shot viewer, or existing
-storyboard generation flow. The first version builds the UI, reference intake,
-camera controls, and prompt mapping; the generation hook is kept as a stub.
+2026-07-02: переведена с FastGen-промптов на fal-ai/qwen-image-edit-2511-
+multiple-angles (generator/fal_angles_thread.py). Числовые углы уходят в
+API как есть (квантование в пресеты LoRA — на сервере). Убраны референсы,
+промт-превью и выбор моделей; добавлены ключ fal + живой баланс и
+орбитальная миникарта вместо перекоса картинки. Не трогает editor/shot
+viewer/сториборд-пайплайн.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform
+from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -26,6 +29,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -38,26 +42,15 @@ from PyQt6.QtWidgets import (
 )
 
 from i18n import tr
-from generator.generator_thread import GeneratorImageThread
-
-
-REF_TYPES = ("Current shot", "Character", "Location", "Object")
-PROVIDER_NARWHAL = "narwhal"
-PROVIDER_OPENAI = "openai"
-MODEL_NANO_BANANA_2 = "nano-banana-2"
-MODEL_NANO_BANANA_2_FLOWER = "flower-image"
-MODEL_OPENAI_IMAGE = "openai-image"
-CAMERA_GENERATION_BATCH_SIZE = 2
-CAMERA_MODEL_OPTIONS = (
-    (MODEL_NANO_BANANA_2, "Nano Banana 2"),
-    (MODEL_NANO_BANANA_2_FLOWER, "Nano Banana 2 Flower"),
-    (MODEL_OPENAI_IMAGE, "OpenAI"),
+from generator.fal_angles_thread import (
+    FAL_MODEL, FalAnglesThread, FalBalanceThread,
 )
+
+
+# 2026-07-02 (fal): остался только основной кадр — референсы вырезаны.
+REF_TYPES = ("Current shot",)
 REF_TYPE_LABEL_KEYS = {
     "Current shot": "camera_ref_current",
-    "Character": "camera_ref_character",
-    "Location": "camera_ref_location",
-    "Object": "camera_ref_object",
 }
 
 
@@ -69,13 +62,10 @@ class CameraReference:
 
 @dataclass
 class CameraGenerationJob:
-    thread: GeneratorImageThread
-    prompt: str
-    refs: List[Path]
-    ref_types: List[str]
-    provider: str
-    model_id: str
-    model_name: str
+    thread: FalAnglesThread
+    horizontal: float
+    vertical: float
+    zoom: float
     elapsed: int = 0
     elapsed_started: bool = False
     status: str = ""
@@ -91,87 +81,6 @@ class ResultPreviewLabel(QLabel):
             return
         super().mouseReleaseEvent(event)
 
-
-class CameraModelToggle(QWidget):
-    valueChanged = pyqtSignal(str)
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._options = list(CAMERA_MODEL_OPTIONS)
-        self._value = MODEL_NANO_BANANA_2
-        self.setMinimumHeight(40)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def value(self) -> str:
-        return self._value
-
-    def set_value(self, value: str) -> None:
-        if value not in {item[0] for item in self._options}:
-            value = MODEL_NANO_BANANA_2
-        if self._value == value:
-            self.update()
-            return
-        self._value = value
-        self.update()
-        self.valueChanged.emit(value)
-
-    def set_labels(self, labels: List[str]) -> None:
-        if len(labels) != len(self._options):
-            return
-        self._options = [(value, labels[i]) for i, (value, _label) in enumerate(self._options)]
-        self.update()
-
-    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
-        if event.button() != Qt.MouseButton.LeftButton or not self._options:
-            super().mouseReleaseEvent(event)
-            return
-        rect = self.rect().adjusted(1, 1, -1, -1)
-        index = int((event.position().x() - rect.left()) / max(1, rect.width()) * len(self._options))
-        index = max(0, min(len(self._options) - 1, index))
-        self.set_value(self._options[index][0])
-        event.accept()
-
-    def paintEvent(self, event):  # noqa: N802 - Qt override
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = 8
-
-        painter.setPen(QPen(QColor("#1d1e20"), 1))
-        painter.setBrush(QColor("#131516"))
-        painter.drawRoundedRect(rect, radius, radius)
-
-        count = max(1, len(self._options))
-        segment_w = rect.width() / count
-        selected_index = next(
-            (i for i, (value, _label) in enumerate(self._options) if value == self._value),
-            0,
-        )
-        active_rect = QRectF(
-            rect.left() + selected_index * segment_w + 4,
-            rect.top() + 4,
-            segment_w - 8,
-            rect.height() - 8,
-        )
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#303335"))
-        painter.drawRoundedRect(active_rect, 6, 6)
-
-        font = QFont()
-        font.setPointSize(10)
-        font.setWeight(QFont.Weight.DemiBold)
-        painter.setFont(font)
-        for i, (_value, label) in enumerate(self._options):
-            text_rect = QRectF(
-                rect.left() + i * segment_w + 6,
-                rect.top(),
-                segment_w - 12,
-                rect.height(),
-            )
-            painter.setPen(QColor("#f1e0ac") if i == selected_index else QColor("#b8b8b8"))
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, label)
 
 
 class CameraResultDialog(QDialog):
@@ -207,50 +116,56 @@ class CameraResultDialog(QDialog):
 
 
 class CameraPerspectiveControl(QWidget):
-    """Interactive perspective preview: drag the frame to set camera angles."""
+    """Орбитальная миникарта камеры (2026-07-02, замена перекоса кадра).
 
-    valuesChanged = pyqtSignal(int, int, int)
+    Миниатюра кадра — РОВНАЯ в центре (без искажений). Значок камеры ходит
+    по эллиптической орбите вокруг неё:
+      • горизонталь (0..360°) — позиция по кругу (0° = перед кадром, низ);
+      • вертикаль (-30..90°) — «высота» точки зрения: эллипс раскрывается
+        от плоского (взгляд в упор) к почти кругу (вид сверху);
+      • зум (0..100 = 0.0..10.0) — дистанция камеры от кадра (радиус).
+    Значения = РЕАЛЬНЫЕ API-значения (h в градусах, v в градусах,
+    зум ×10 int) — без защёлкивания в пресеты. Drag мышью крутит h/v,
+    колесо — зум (тот же контракт valuesChanged, что и раньше).
+    Чистый QPainter — кроссплатформенно (Mac/Win)."""
+
+    valuesChanged = pyqtSignal(int, int, int)   # h_deg, v_deg, zoom_x10
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._rotate = 0
-        self._vertical = 0
-        self._zoom = 100
-        self._frame_aspect = 16 / 9
+        self._h = 0        # 0..360
+        self._v = 0        # -30..90
+        self._z = 50       # 0..100 (= zoom 5.0)
         self._frame_pixmap: Optional[QPixmap] = None
         self._drag_start: Optional[QPointF] = None
-        self._drag_rotate = 0
-        self._drag_vertical = 0
+        self._drag_h = 0
+        self._drag_v = 0
         self.setMinimumSize(260, 300)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def set_values(self, rotate: int, vertical: int, zoom_percent: int) -> None:
-        self._rotate = max(-90, min(90, int(rotate)))
-        self._vertical = max(-90, min(90, int(vertical)))
-        self._zoom = max(50, min(200, int(zoom_percent)))
+    # контракт под CameraLabView (имена прежние)
+    def set_values(self, h_deg: int, v_deg: int, zoom_x10: int) -> None:
+        self._h = int(h_deg) % 360
+        self._v = max(-30, min(90, int(v_deg)))
+        self._z = max(0, min(100, int(zoom_x10)))
         self.update()
 
     def set_frame_aspect(self, aspect: float) -> None:
-        if aspect > 0:
-            self._frame_aspect = aspect
-            self.update()
+        # ровной миниатюре аспект задаёт сам pixmap; метод оставлен для
+        # совместимости вызовов (no-op).
+        self.update()
 
     def set_frame_image(self, path: Path) -> None:
         pixmap = QPixmap(str(path))
         self._frame_pixmap = pixmap if not pixmap.isNull() else None
-        if self._frame_pixmap is not None:
-            self._frame_aspect = max(
-                0.1,
-                self._frame_pixmap.width() / max(1, self._frame_pixmap.height()),
-            )
         self.update()
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.position()
-            self._drag_rotate = self._rotate
-            self._drag_vertical = self._vertical
+            self._drag_h = self._h
+            self._drag_v = self._v
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
@@ -261,10 +176,10 @@ class CameraPerspectiveControl(QWidget):
             super().mouseMoveEvent(event)
             return
         delta = event.position() - self._drag_start
-        self._rotate = max(-90, min(90, int(round(self._drag_rotate + delta.x() * 0.55))))
-        self._vertical = max(-90, min(90, int(round(self._drag_vertical - delta.y() * 0.48))))
+        self._h = int(round(self._drag_h + delta.x() * 0.9)) % 360
+        self._v = max(-30, min(90, int(round(self._drag_v - delta.y() * 0.5))))
         self.update()
-        self.valuesChanged.emit(self._rotate, self._vertical, self._zoom)
+        self.valuesChanged.emit(self._h, self._v, self._z)
         event.accept()
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
@@ -276,55 +191,11 @@ class CameraPerspectiveControl(QWidget):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):  # noqa: N802 - Qt override
-        step = 5 if event.angleDelta().y() > 0 else -5
-        self._zoom = max(50, min(200, self._zoom + step))
+        step = 5 if event.angleDelta().y() > 0 else -5   # 0.5 зума за щелчок
+        self._z = max(0, min(100, self._z + step))
         self.update()
-        self.valuesChanged.emit(self._rotate, self._vertical, self._zoom)
+        self.valuesChanged.emit(self._h, self._v, self._z)
         event.accept()
-
-    @staticmethod
-    def _project_card(
-        rect: QRectF,
-        rotate: int,
-        vertical: int,
-        zoom_percent: int,
-        aspect: float,
-    ) -> QPolygonF:
-        max_w = min(rect.width() * 0.72, 260.0)
-        max_h = min(rect.height() * 0.58, 168.0)
-        aspect = max(0.1, min(6.0, aspect))
-        if max_w / max(1.0, max_h) > aspect:
-            card_h = max_h
-            card_w = card_h * aspect
-        else:
-            card_w = max_w
-            card_h = card_w / aspect
-
-        zoom_scale = 0.55 + (max(50, min(200, zoom_percent)) - 50) / 150 * 0.90
-        card_w *= zoom_scale
-        card_h *= zoom_scale
-
-        yaw = math.radians(max(-90, min(90, rotate)) / 90 * 88)
-        pitch = math.radians(max(-90, min(90, vertical)) / 90 * 82)
-        cy, sy = math.cos(yaw), math.sin(yaw)
-        cp, sp = math.cos(pitch), math.sin(pitch)
-        distance = 620.0
-        center = QPointF(rect.center().x(), rect.center().y() + 8)
-
-        points = []
-        for x, y in (
-            (-card_w / 2, -card_h / 2),
-            (card_w / 2, -card_h / 2),
-            (card_w / 2, card_h / 2),
-            (-card_w / 2, card_h / 2),
-        ):
-            x1 = x * cy
-            z1 = -x * sy
-            y2 = y * cp - z1 * sp
-            z2 = y * sp + z1 * cp
-            factor = distance / max(120.0, distance - z2)
-            points.append(QPointF(center.x() + x1 * factor, center.y() + y2 * factor))
-        return QPolygonF(points)
 
     def paintEvent(self, event):  # noqa: N802 - Qt override
         super().paintEvent(event)
@@ -332,53 +203,83 @@ class CameraPerspectiveControl(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         rect = QRectF(self.rect()).adjusted(12, 10, -12, -10)
-
         painter.setPen(QPen(QColor("#1d1e20"), 1))
         painter.setBrush(QColor("#090a0a"))
         painter.drawRoundedRect(rect, 8, 8)
 
-        painter.save()
-        scene_clip = QPainterPath()
-        scene_clip.addRoundedRect(QRectF(rect.adjusted(1, 1, -1, -1)), 7, 7)
-        painter.setClipPath(scene_clip)
+        cx, cy = rect.center().x(), rect.center().y() + 6
 
-        card_poly = self._project_card(
-            rect,
-            self._rotate,
-            self._vertical,
-            self._zoom,
-            self._frame_aspect,
-        )
-        shadow = QPolygonF([QPointF(point.x(), point.y() + 8) for point in card_poly])
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 96))
-        painter.drawPolygon(shadow)
+        # ── орбита: rx от зума (близко=малый радиус), ry от вертикали ──
+        max_rx = min(rect.width(), rect.height() * 1.6) * 0.42
+        min_rx = max_rx * 0.45
+        t_z = self._z / 100.0                      # 0 wide … 1 close-up
+        rx = max_rx - t_z * (max_rx - min_rx)
+        t_v = (self._v + 30) / 120.0               # -30..90 → 0..1
+        ry = rx * (0.22 + 0.68 * t_v)
 
+        # ── миниатюра кадра: РОВНАЯ, в центре, поверх дальней дуги ──
+        thumb_w = max_rx * 0.98
+        thumb_h = thumb_w * 9 / 16
         if self._frame_pixmap is not None:
-            source_rect = QRectF(0, 0, self._frame_pixmap.width(), self._frame_pixmap.height())
-            source_poly = QPolygonF([
-                source_rect.topLeft(),
-                source_rect.topRight(),
-                source_rect.bottomRight(),
-                source_rect.bottomLeft(),
-            ])
-            transform = QTransform()
-            if QTransform.quadToQuad(source_poly, card_poly, transform):
-                painter.save()
-                card_clip = QPainterPath()
-                card_clip.addPolygon(card_poly)
-                painter.setClipPath(card_clip)
-                painter.setTransform(transform, True)
-                painter.drawPixmap(0, 0, self._frame_pixmap)
-                painter.restore()
+            pw, ph = self._frame_pixmap.width(), max(1, self._frame_pixmap.height())
+            aspect = pw / ph
+            if aspect < 1.0:                       # вертикальный кадр 9:16
+                thumb_h = thumb_w
+                thumb_w = thumb_h * aspect
+            else:
+                thumb_h = thumb_w / aspect
+        thumb_rect = QRectF(cx - thumb_w / 2, cy - thumb_h / 2, thumb_w, thumb_h)
+
+        import math as _m
+        phi = _m.radians(self._h)
+        cam_x = cx + rx * _m.sin(phi)
+        cam_y = cy + ry * _m.cos(phi)
+        behind = _m.cos(phi) < 0                   # 90..270 → камера за кадром
+
+        def _draw_orbit(front: bool) -> None:
+            """Дуга орбиты: задняя половина рисуется ДО миниатюры, передняя —
+            ПОСЛЕ (эффект прохода за кадром)."""
+            pen = QPen(QColor(255, 255, 255, 60 if not front else 110), 1.4)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            span = 180 * 16
+            start = 0 if front else 180 * 16
+            painter.drawArc(QRectF(cx - rx, cy - ry, rx * 2, ry * 2),
+                            start, span)
+
+        _draw_orbit(front=False)
+
+        if behind:
+            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=True)
+
+        painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        if self._frame_pixmap is not None:
+            scaled = self._frame_pixmap.scaled(
+                QSize(int(thumb_rect.width()), int(thumb_rect.height())),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            clip = QPainterPath()
+            clip.addRoundedRect(thumb_rect, 6, 6)
+            painter.save()
+            painter.setClipPath(clip)
+            painter.drawPixmap(
+                int(thumb_rect.center().x() - scaled.width() / 2),
+                int(thumb_rect.center().y() - scaled.height() / 2),
+                scaled,
+            )
+            painter.restore()
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(thumb_rect, 6, 6)
         else:
             painter.setBrush(QColor(26, 29, 31))
-            painter.drawPolygon(card_poly)
+            painter.drawRoundedRect(thumb_rect, 6, 6)
 
-        painter.setPen(QPen(QColor(255, 255, 255, 86), 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(card_poly)
-        painter.restore()
+        _draw_orbit(front=True)
+
+        if not behind:
+            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=False)
 
         painter.setPen(QColor(184, 184, 184))
         font = QFont()
@@ -387,10 +288,43 @@ class CameraPerspectiveControl(QWidget):
         painter.drawText(
             rect.adjusted(12, 10, -12, -8),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-            f"{tr('camera_horizontal')}: {self._rotate:+d}   "
-            f"{tr('camera_vertical')}: {self._vertical:+d}   "
-            f"{tr('camera_zoom')}: {self._zoom / 100:.2f}",
+            f"{tr('camera_horizontal')}: {self._h}°   "
+            f"{tr('camera_vertical')}: {self._v:+d}°   "
+            f"{tr('camera_zoom')}: {self._z / 10:.1f}",
         )
+
+    @staticmethod
+    def _draw_camera(painter: QPainter, x: float, y: float,
+                     cx: float, cy: float, dim: bool) -> None:
+        """Значок камеры на орбите + пунктирная линия взгляда на кадр.
+        Lucide 'video' через get_icon (правило иконок); fallback — кружок."""
+        alpha = 90 if dim else 235
+        line_pen = QPen(QColor(232, 184, 106, 50 if dim else 140), 1.2)
+        line_pen.setStyle(Qt.PenStyle.DotLine)
+        painter.setPen(line_pen)
+        painter.drawLine(QPointF(x, y), QPointF(cx, cy))
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(19, 21, 22, alpha))
+        painter.drawEllipse(QPointF(x, y), 13, 13)
+        painter.setPen(QPen(QColor(232, 184, 106, alpha), 1.4))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(x, y), 13, 13)
+        try:
+            from storyboard_app import get_icon
+            icon = get_icon('video')
+            if icon is not None and not icon.isNull():
+                painter.save()
+                if dim:
+                    painter.setOpacity(0.45)
+                icon.paint(painter, QRect(int(x) - 8, int(y) - 8, 16, 16))
+                painter.restore()
+                return
+        except Exception:
+            pass
+        painter.setBrush(QColor(232, 184, 106, alpha))
+        painter.drawEllipse(QPointF(x, y), 4, 4)
+
 
 
 class ImageDropSlot(QFrame):
@@ -582,59 +516,6 @@ class ImageDropSlot(QFrame):
     def _is_image_path(path: Path) -> bool:
         return path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
 
-
-class ReferenceDropArea(QFrame):
-    filesDropped = pyqtSignal(str, list)
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setObjectName("camera-ref-drop-area")
-        self.setMinimumHeight(300)
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(6)
-
-        self.title = QLabel()
-        self.title.setObjectName("camera-ref-drop-title")
-        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title.setWordWrap(True)
-
-        self.hint = QLabel()
-        self.hint.setObjectName("camera-ref-drop-hint")
-        self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.hint.setWordWrap(True)
-
-        lay.addStretch()
-        lay.addWidget(self.title)
-        lay.addWidget(self.hint)
-        lay.addStretch()
-        self.retranslate()
-
-    def retranslate(self) -> None:
-        self.title.setText(tr("camera_refs_drop"))
-        self.hint.setText(tr("camera_refs_drop_hint"))
-
-    def dragEnterEvent(self, event):  # noqa: N802 - Qt override
-        if event.mimeData().hasUrls():
-            paths = [Path(u.toLocalFile()) for u in event.mimeData().urls()]
-            if any(ImageDropSlot._is_image_path(path) for path in paths):
-                event.acceptProposedAction()
-                return
-        event.ignore()
-
-    def dropEvent(self, event):  # noqa: N802 - Qt override
-        paths = [
-            Path(u.toLocalFile())
-            for u in event.mimeData().urls()
-            if ImageDropSlot._is_image_path(Path(u.toLocalFile()))
-        ]
-        if paths:
-            self.filesDropped.emit("Reference", paths)
-            event.acceptProposedAction()
-            return
-        event.ignore()
 
 
 class CameraResultArea(QFrame):
@@ -876,123 +757,23 @@ class CameraResultThumb(QFrame):
         self.image.setPixmap(rounded)
 
 
-class CameraRefThumb(QFrame):
-    clicked = pyqtSignal(Path)
-    deleteRequested = pyqtSignal(Path)
-
-    def __init__(self, ref: CameraReference, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._ref = ref
-        self._pixmap = QPixmap(str(ref.path))
-        self.setObjectName("camera-ref-thumb")
-        self.setToolTip(str(ref.path))
-        self.setFixedWidth(112)
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(8)
-        lay.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-
-        self.image_wrap = QFrame()
-        self.image_wrap.setObjectName("camera-ref-thumb-wrap")
-        self.image_wrap.setFixedSize(104, 82)
-        image_lay = QGridLayout(self.image_wrap)
-        image_lay.setContentsMargins(0, 0, 0, 0)
-        image_lay.setSpacing(0)
-
-        self.image = QLabel()
-        self.image.setObjectName("camera-thumb-image")
-        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setFixedSize(104, 82)
-        self.image.setCursor(Qt.CursorShape.PointingHandCursor)
-        image_lay.addWidget(self.image, 0, 0)
-
-        self.overlay = QWidget()
-        self.overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.overlay.setVisible(False)
-        overlay_lay = QHBoxLayout(self.overlay)
-        overlay_lay.setContentsMargins(4, 4, 4, 4)
-        overlay_lay.setSpacing(0)
-        overlay_lay.addStretch()
-
-        self.delete_btn = QToolButton()
-        self.delete_btn.setObjectName("camera-thumb-overlay-trash")
-        self.delete_btn.setIcon(_camera_icon("trash-2-red"))
-        self.delete_btn.setIconSize(QSize(14, 14))
-        self.delete_btn.setFixedSize(22, 22)
-        self.delete_btn.setToolTip(tr("camera_ref_remove"))
-        self.delete_btn.clicked.connect(lambda: self.deleteRequested.emit(self._ref.path))
-        overlay_lay.addWidget(self.delete_btn)
-        overlay_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        image_lay.addWidget(self.overlay, 0, 0)
-
-        self.name = QLabel(ref.path.name)
-        self.name.setObjectName("camera-ref-name")
-        self.name.setToolTip(str(ref.path))
-        self.name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.name.setWordWrap(True)
-
-        lay.addWidget(self.image_wrap)
-        lay.addWidget(self.name)
-        self._refresh_pixmap()
-
-    def path(self) -> Path:
-        return self._ref.path
-
-    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self._ref.path)
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def enterEvent(self, event):  # noqa: N802 - Qt override
-        self.overlay.setVisible(True)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):  # noqa: N802 - Qt override
-        self.overlay.setVisible(False)
-        super().leaveEvent(event)
-
-    def _refresh_pixmap(self) -> None:
-        if self._pixmap.isNull():
-            return
-        target = self.image.size()
-        scaled = self._pixmap.scaled(
-            target,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.image.setPixmap(scaled)
-
 
 class CameraLabView(QWidget):
-    """Admin-only prototype tab for Krea-like camera angle experiments."""
+    """Вкладка «Камера»: ракурс кадра через fal (qwen multi-angle)."""
 
     def __init__(
         self,
         project_root: Path,
         parent: Optional[QWidget] = None,
-        default_provider: str = PROVIDER_NARWHAL,
-        provider_changed: Optional[Callable[[str], None]] = None,
         get_shot_clipboard: Optional[Callable[[], Optional[bytes]]] = None,
         set_shot_clipboard: Optional[Callable[[bytes], None]] = None,
     ):
         super().__init__(parent)
         self._project_root = Path(project_root)
-        self._provider_changed = provider_changed
         self._get_shot_clipboard = get_shot_clipboard
         self._set_shot_clipboard = set_shot_clipboard
-        self._provider = (
-            default_provider
-            if default_provider in (PROVIDER_NARWHAL, PROVIDER_OPENAI)
-            else PROVIDER_NARWHAL
-        )
-        self._selected_model_id = (
-            MODEL_OPENAI_IMAGE if self._provider == PROVIDER_OPENAI else MODEL_NANO_BANANA_2
-        )
         self._current_ref: Optional[CameraReference] = None
-        self._refs: List[CameraReference] = []
+        self._balance_thread: Optional[FalBalanceThread] = None
         self._loading_state = True
         self._slider_labels: List[QLabel] = []
         self._slider_value_labels: Dict[str, QLabel] = {}
@@ -1041,35 +822,11 @@ class CameraLabView(QWidget):
         self.current_slot.pasteRequested.connect(self._paste_current_from_shot_clipboard)
         left_lay.addWidget(self.current_slot, stretch=1)
 
-        self.refs_title_lbl = QLabel()
-        self.refs_title_lbl.setObjectName("camera-section-title")
-        left_lay.addWidget(self.refs_title_lbl)
-
-        self.refs_drop_area = ReferenceDropArea()
-        self.refs_drop_area.filesDropped.connect(self._add_references)
-
-        self.refs_scroll = QScrollArea()
-        self.refs_scroll.setObjectName("camera-refs-scroll")
-        self.refs_scroll.setWidgetResizable(True)
-        self.refs_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.refs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.refs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.refs_strip = QWidget()
-        self.refs_strip.setObjectName("camera-refs-strip")
-        self.refs_strip_lay = QHBoxLayout(self.refs_strip)
-        self.refs_strip_lay.setContentsMargins(0, 0, 0, 0)
-        self.refs_strip_lay.setSpacing(10)
-        self.refs_strip_lay.addStretch()
-        self.refs_scroll.setWidget(self.refs_strip)
-        self.refs_scroll.setVisible(False)
-        self.refs_drop_area.layout().insertWidget(0, self.refs_scroll)
-
         refs_results_split = QFrame()
         refs_results_split.setObjectName("camera-refs-results-split")
         refs_results_lay = QVBoxLayout(refs_results_split)
         refs_results_lay.setContentsMargins(0, 0, 0, 0)
         refs_results_lay.setSpacing(12)
-        refs_results_lay.addWidget(self.refs_drop_area, stretch=1)
 
         self.result_title_lbl = QLabel()
         self.result_title_lbl.setObjectName("camera-section-title")
@@ -1120,32 +877,41 @@ class CameraLabView(QWidget):
         self.controls_title_lbl.setObjectName("camera-section-title")
         controls_lay.addWidget(self.controls_title_lbl)
 
-        self.rotate_slider = self._add_slider(controls_lay, "camera_horizontal", -90, 90, 0)
-        self.vertical_slider = self._add_slider(controls_lay, "camera_vertical", -90, 90, 0)
-        self.zoom_slider = self._add_slider(controls_lay, "camera_zoom", 50, 200, 100)
+        # 2026-07-02: диапазоны fal OpenAPI. Горизонталь — слайдер 0..72 с
+        # множителем ×5 (честный шаг 5°); вертикаль −30..90 шаг 1°;
+        # зум — слайдер 0..100 = 0.0..10.0 (шаг 0.1). В API уходят реальные
+        # значения БЕЗ защёлкивания в пресеты (квантование — на сервере).
+        self.rotate_slider = self._add_slider(controls_lay, "camera_horizontal", 0, 72, 0)
+        self.vertical_slider = self._add_slider(controls_lay, "camera_vertical", -30, 90, 0)
+        self.zoom_slider = self._add_slider(controls_lay, "camera_zoom", 0, 100, 50)
 
         self.orbit = CameraPerspectiveControl()
         self.orbit.valuesChanged.connect(self._on_preview_values_changed)
         controls_lay.addWidget(self.orbit)
 
-        self.prompt_title_lbl = QLabel()
-        self.prompt_title_lbl.setObjectName("camera-section-title")
-        controls_lay.addWidget(self.prompt_title_lbl)
+        # ── Ключ fal + живой баланс (2026-07-02) ──
+        self.fal_key_title_lbl = QLabel()
+        self.fal_key_title_lbl.setObjectName("camera-section-title")
+        controls_lay.addWidget(self.fal_key_title_lbl)
 
-        self.prompt_box = QPlainTextEdit()
-        self.prompt_box.setObjectName("camera-prompt-preview")
-        self.prompt_box.setReadOnly(True)
-        self.prompt_box.setMinimumHeight(150)
-        controls_lay.addWidget(self.prompt_box)
+        key_row = QHBoxLayout()
+        key_row.setSpacing(8)
+        self.fal_key_edit = QLineEdit()
+        self.fal_key_edit.setObjectName("camera-fal-key")
+        self.fal_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        key_row.addWidget(self.fal_key_edit, stretch=1)
+        self.fal_key_btn = QPushButton()
+        self.fal_key_btn.setObjectName("camera-fal-key-btn")
+        self.fal_key_btn.setFixedHeight(32)
+        self.fal_key_btn.clicked.connect(self._on_fal_key_confirm)
+        key_row.addWidget(self.fal_key_btn)
+        controls_lay.addLayout(key_row)
 
-        self.provider_label = QLabel()
-        self.provider_label.setObjectName("camera-section-title")
-        controls_lay.addWidget(self.provider_label)
-
-        self.provider_toggle = CameraModelToggle(self)
-        self.provider_toggle.set_value(self._selected_model_id)
-        self.provider_toggle.valueChanged.connect(self._on_model_changed)
-        controls_lay.addWidget(self.provider_toggle)
+        self.fal_balance_lbl = QLabel()
+        self.fal_balance_lbl.setObjectName("camera-fal-balance")
+        self.fal_balance_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.fal_balance_lbl.setOpenExternalLinks(True)
+        controls_lay.addWidget(self.fal_balance_lbl)
 
         self.generate_btn = QPushButton()
         self.generate_btn.setObjectName("camera-generate-btn")
@@ -1205,27 +971,33 @@ class CameraLabView(QWidget):
         return slider
 
     def _update_value_label(self, label: QLabel, key: str, value: int) -> None:
+        # rotate-слайдер хранит value 0..72 (×5 = градусы); zoom 0..100 (=/10).
         if key == "camera_zoom":
-            label.setText(f"{value / 100:.2f}")
+            label.setText(f"{value / 10:.1f}")
+        elif key == "camera_horizontal":
+            label.setText(f"{value * 5}°")
         else:
-            label.setText(f"{value:+d}")
+            label.setText(f"{value:+d}°")
+
+    # значения камеры для API (реальные единицы fal)
+    def _api_values(self) -> Tuple[float, float, float]:
+        return (
+            float(self.rotate_slider.value() * 5),      # 0..360°
+            float(self.vertical_slider.value()),        # -30..90°
+            self.zoom_slider.value() / 10.0,            # 0.0..10.0
+        )
 
     def _add_references(self, slot_type: str, paths: List[Path]) -> None:
+        """Оставлен только основной кадр (Current shot); референсы убраны
+        вместе со старым промпт-путём (2026-07-02, fal)."""
         for path in paths:
-            if slot_type == "Current shot":
-                current_path = self._copy_current_shot_to_camera_folder(path)
-                self._current_ref = CameraReference(path=current_path, ref_type=slot_type)
-                self.current_slot.set_image(current_path)
-                self.orbit.set_frame_image(current_path)
-                self.orbit.set_frame_aspect(self.current_slot.aspect_ratio())
-                self._reset_camera_controls()
-                self._refresh_prompt_preview()
+            if slot_type != "Current shot":
                 continue
-            ref_type = self._infer_reference_type(path) if slot_type == "Reference" else slot_type
-            ref = CameraReference(path=path, ref_type=ref_type)
-            self._refs.append(ref)
-            self._append_ref_thumb(ref)
-        self._refresh_prompt_preview()
+            current_path = self._copy_current_shot_to_camera_folder(path)
+            self._current_ref = CameraReference(path=current_path, ref_type=slot_type)
+            self.current_slot.set_image(current_path)
+            self.orbit.set_frame_image(current_path)
+            self._reset_camera_controls()
         self._save_state()
 
     def _copy_current_shot_to_camera_folder(self, path: Path) -> Path:
@@ -1286,55 +1058,6 @@ class CameraLabView(QWidget):
         except Exception as exc:
             self._set_generation_status(f"{tr('camera_generation_error')}\n{exc}")
 
-    @staticmethod
-    def _infer_reference_type(path: Path) -> str:
-        name = path.stem.lower()
-        object_markers = (
-            "door", "gate", "key", "phone", "ring", "weapon", "gun", "knife",
-            "book", "cup", "glass", "table", "chair", "object", "prop",
-            "flesh_door",
-        )
-        location_markers = (
-            "room", "hall", "corridor", "street", "kitchen", "bedroom",
-            "office", "lobby", "garage", "location", "environment", "interior",
-            "exterior",
-        )
-        if any(marker in name for marker in object_markers):
-            return "Object"
-        if any(marker in name for marker in location_markers):
-            return "Location"
-        return "Character"
-
-    def _append_ref_thumb(self, ref: CameraReference) -> None:
-        self.refs_scroll.setVisible(True)
-        card = CameraRefThumb(ref)
-        card.clicked.connect(self._open_image_popup)
-        card.deleteRequested.connect(lambda path, widget=card: self._remove_reference(path, widget))
-        self.refs_strip_lay.insertWidget(self.refs_strip_lay.count() - 1, card)
-
-    def _remove_reference(self, path: Path, widget: Optional[QWidget] = None) -> None:
-        self._refs = [ref for ref in self._refs if ref.path != path]
-        if widget is None:
-            for i in range(self.refs_strip_lay.count() - 1, -1, -1):
-                item = self.refs_strip_lay.itemAt(i)
-                candidate = item.widget() if item else None
-                if isinstance(candidate, CameraRefThumb) and candidate.path() == path:
-                    widget = candidate
-                    break
-        if widget is not None:
-            self.refs_strip_lay.removeWidget(widget)
-            widget.setParent(None)
-            widget.deleteLater()
-        self.refs_scroll.setVisible(bool(self._refs))
-        if (
-            self.generation_status_lbl.property("error")
-            and self.generation_status_lbl.text() == tr("camera_flower_refs_error")
-            and not self._refs
-        ):
-            self._set_generation_status("")
-        self._refresh_prompt_preview()
-        self._save_state()
-
     def _open_image_popup(self, path: Path) -> None:
         if not path or not path.exists():
             return
@@ -1354,28 +1077,26 @@ class CameraLabView(QWidget):
             pass
 
     def _sync_control_state(self) -> None:
+        # орбита живёт в РЕАЛЬНЫХ единицах API: градусы h, градусы v, зум×10
         self.orbit.set_values(
-            self.rotate_slider.value(),
+            self.rotate_slider.value() * 5,
             self.vertical_slider.value(),
             self.zoom_slider.value(),
         )
         if self._current_ref:
             self.orbit.set_frame_image(self._current_ref.path)
-            self.orbit.set_frame_aspect(self.current_slot.aspect_ratio())
-        self._refresh_prompt_preview()
         self._save_state()
 
-    def _on_preview_values_changed(self, rotate: int, vertical: int, zoom: int) -> None:
+    def _on_preview_values_changed(self, h_deg: int, vertical: int, zoom_x10: int) -> None:
         for slider, value in (
-            (self.rotate_slider, rotate),
+            (self.rotate_slider, int(round(h_deg / 5))),   # градусы → шаг ×5
             (self.vertical_slider, vertical),
-            (self.zoom_slider, zoom),
+            (self.zoom_slider, zoom_x10),
         ):
             slider.blockSignals(True)
             slider.setValue(value)
             slider.blockSignals(False)
         self._refresh_slider_value_labels()
-        self._refresh_prompt_preview()
         self._save_state()
 
     def _refresh_slider_value_labels(self) -> None:
@@ -1389,30 +1110,27 @@ class CameraLabView(QWidget):
                 self._update_value_label(label, key, slider.value())
 
     def _reset_camera_controls(self) -> None:
+        # дефолты fal: h=0, v=0, zoom=5.0 (слайдер 50)
         for slider, value in (
             (self.rotate_slider, 0),
             (self.vertical_slider, 0),
-            (self.zoom_slider, 100),
+            (self.zoom_slider, 50),
         ):
             slider.blockSignals(True)
             slider.setValue(value)
             slider.blockSignals(False)
+        self._refresh_slider_value_labels()
         self._sync_control_state()
 
     def apply_lang(self) -> None:
         self.title_lbl.setText(tr("camera_title"))
         self.subtitle_lbl.setText(tr("camera_subtitle"))
-        self.refs_title_lbl.setText(tr("camera_refs_title"))
         self.controls_title_lbl.setText(tr("camera_controls_title"))
-        self.prompt_title_lbl.setText(tr("camera_prompt_preview"))
-        self.prompt_box.setPlaceholderText(tr("camera_prompt_placeholder"))
-        self.provider_label.setText(tr("camera_model_label"))
-        self.provider_toggle.set_labels([
-            "Nano Banana 2",
-            "Nano Banana 2 Flower",
-            "OpenAI",
-        ])
-        self.generate_btn.setText(f"{tr('camera_generate')} ×{CAMERA_GENERATION_BATCH_SIZE}")
+        self.fal_key_title_lbl.setText(tr("camera_fal_key_label"))
+        self.fal_key_edit.setPlaceholderText(tr("camera_fal_key_placeholder"))
+        self.fal_key_btn.setText(tr("camera_fal_key_confirm"))
+        self._set_balance_text(None)
+        self.generate_btn.setText(tr("camera_generate"))
         self.result_title_lbl.setText(tr("camera_result"))
         self.result_box.setPlaceholderText(tr("camera_result_placeholder"))
         for label in self._slider_labels:
@@ -1420,391 +1138,43 @@ class CameraLabView(QWidget):
             if key:
                 label.setText(tr(key))
         self.current_slot.retranslate()
-        self.refs_drop_area.retranslate()
-        self._refresh_prompt_preview()
+        self._refresh_slider_value_labels()
 
-    def _on_model_changed(self, value: str) -> None:
-        valid_models = {item[0] for item in CAMERA_MODEL_OPTIONS}
-        if value not in valid_models:
-            value = MODEL_NANO_BANANA_2
-        self._selected_model_id = value
-        self._provider = PROVIDER_OPENAI if value == MODEL_OPENAI_IMAGE else PROVIDER_NARWHAL
-        if self._provider_changed is not None:
-            self._provider_changed(self._provider)
-        self._refresh_prompt_preview()
-        self._save_state()
-
-    def selected_provider(self) -> str:
-        return self._provider
-
-    def selected_model_name(self) -> str:
-        return next(
-            (label for value, label in CAMERA_MODEL_OPTIONS if value == self._selected_model_id),
-            "Nano Banana 2",
-        )
-
-    def selected_model_id(self) -> str:
-        return self._selected_model_id
-
-    def _refresh_prompt_preview(self) -> None:
-        prompt_box = getattr(self, "prompt_box", None)
-        if prompt_box is None:
+    # ── Ключ fal + баланс (2026-07-02) ─────────────────────────────────
+    def _on_fal_key_confirm(self) -> None:
+        """«Подтвердить»: сохранить ключ (QSettings + fal_key.txt, без
+        перезапуска) и проверить его запросом баланса."""
+        from storyboard_app import save_fal_key
+        key = self.fal_key_edit.text().strip()
+        save_fal_key(key)
+        if not key:
+            self._set_balance_text(None)
             return
-        prompt_box.setPlainText(self._build_camera_prompt())
+        self._set_generation_status(tr("camera_fal_key_saved"))
+        self._refresh_fal_balance()
 
-    def _supports_support_references(self, model_id: Optional[str] = None) -> bool:
-        return (model_id or self.selected_model_id()) != MODEL_NANO_BANANA_2_FLOWER
-
-    def _generation_references_for_model(self, model_id: str) -> Tuple[List[Path], List[str]]:
-        if self._current_ref is None:
-            return [], []
-        refs = [self._current_ref.path]
-        ref_types = ["Current shot"]
-        if self._supports_support_references(model_id):
-            refs.extend(ref.path for ref in self._refs)
-            ref_types.extend(ref.ref_type for ref in self._refs)
-        return refs, ref_types
-
-    def _build_camera_prompt(self) -> str:
-        rotate = self.rotate_slider.value()
-        vertical = self.vertical_slider.value()
-        zoom = self.zoom_slider.value() / 100.0
-        support_refs = self._refs if self._supports_support_references() else []
-
-        references = []
-        if self._current_ref:
-            references.append({
-                "tag": "[@]img1",
-                "filename": self._current_ref.path.name,
-                "role": "current_shot",
-                "priority": "primary_source_frame",
-                "instructions": [
-                    "Use this image as the authoritative source frame.",
-                    "Rotate only the virtual camera around the anchored center of interest.",
-                    "Preserve the frozen performance exactly.",
-                ],
-            })
-        if support_refs:
-            counts = {"Character": 0, "Location": 0, "Object": 0}
-            start_index = 2 if self._current_ref else 1
-            for offset, ref in enumerate(support_refs):
-                counts[ref.ref_type] = counts.get(ref.ref_type, 0) + 1
-                role = ref.ref_type.lower()
-                references.append({
-                    "tag": f"[@]img{start_index + offset}",
-                    "filename": ref.path.name,
-                    "role": f"{role}_reference_{counts[ref.ref_type]}",
-                    "priority": "support_reference_only",
-                    "instructions": [
-                        "Keep this reference separate from all other references.",
-                        "Do not merge identities, outfits, props, or environments from different reference cards.",
-                        "Do not replace the current shot subject or rebuild the whole scene from this support reference.",
-                    ],
-                })
-
-        if rotate > 0:
-            horizontal_direction = "left"
-            horizontal_degrees = rotate
-        elif rotate < 0:
-            horizontal_direction = "right"
-            horizontal_degrees = abs(rotate)
-        else:
-            horizontal_direction = "unchanged"
-            horizontal_degrees = 0
-
-        if vertical > 0:
-            vertical_direction = "upward"
-            vertical_degrees = vertical
-        elif vertical < 0:
-            vertical_direction = "downward"
-            vertical_degrees = abs(vertical)
-        else:
-            vertical_direction = "unchanged"
-            vertical_degrees = 0
-
-        if zoom < 1.0:
-            distance_factor = 1.0 / max(0.01, zoom)
-            zoom_action = "move_camera_farther"
-            zoom_distance_factor = f"{distance_factor:.2f}x farther"
-        elif zoom > 1.0:
-            zoom_action = "move_camera_closer"
-            zoom_distance_factor = f"{zoom:.2f}x closer"
-        else:
-            zoom_action = "unchanged"
-            zoom_distance_factor = "original distance"
-
-        prompt_spec = {
-            "prompt_format": "camera_lab_json_prompt_v1",
-            "task": "full_scene_camera_viewpoint_change",
-            "output": {
-                "type": "single_image",
-                "must_match_source_aspect_ratio": True,
-                "primary_goal": (
-                    "Create a novel-view render of the entire photographed scene from the new camera position. "
-                    "The subject, foreground, background, and environment must all be reobserved from that new position."
-                ),
-                "reject_if": [
-                    "the background is the original image background reused as a 2D plate",
-                    "only the person changes while the environment keeps the same composition",
-                    "the subject is rotated in place instead of the camera moving through the scene",
-                ],
-            },
-            "references": references,
-            "source_frame_contract": {
-                "authoritative_source": "[@]img1",
-                "preserve_from_source": "subject identity, clothing, moment, lighting style, location identity, and lens feel",
-                "do_not_preserve_as_2d_backplate": (
-                    "The source frame is not a background plate. Do not paste, freeze, trace, or keep the original "
-                    "background layout behind a changed subject."
-                ),
-                "scene": "same physical location, seen from a different camera position",
-                "new_content_policy": (
-                    "If the source image does not show enough information for the new side/top view, hallucinate "
-                    "plausible unseen background, foreground, occlusions, side surfaces, and depth continuations "
-                    "that match the same real location."
-                ),
-            },
-            "novel_view_synthesis_contract": {
-                "mode": "3d_scene_rephotography_not_2d_image_edit",
-                "required_behavior": (
-                    "Infer the 3D layout of the whole scene from the source frame, then render a new photograph "
-                    "from the requested camera position."
-                ),
-                "background_rule": (
-                    "The environment must be regenerated from the new viewpoint. It may preserve the same place, "
-                    "materials, lighting, and style, but not the same 2D arrangement of background objects."
-                ),
-                "if_background_reference_is_missing": (
-                    "Invent plausible unseen parts of the same environment. Do not use missing information as a "
-                    "reason to keep the old background unchanged."
-                ),
-                "minimum_visible_changes": [
-                    "background object positions shift relative to the subject",
-                    "foreground/background occlusion boundaries change",
-                    "side surfaces or newly visible areas appear",
-                    "near elements move more than far elements",
-                    "the horizon/vertical posts/roof/floor lines obey the new camera angle",
-                ],
-                "self_check_before_final": [
-                    "Would this image still look plausible if the subject were removed? The remaining environment must still show a new camera viewpoint.",
-                    "If the old and new backgrounds could be aligned by a simple crop/warp, the result is wrong.",
-                    "If only the person appears to rotate, the result is wrong.",
-                ],
-            },
-            "full_scene_geometry_contract": {
-                "rule": "This is a novel camera view of a whole 3D scene, not a character turntable or face/body edit.",
-                "camera_motion": "the whole scene is reobserved and re-rendered from the new camera position",
-                "subject": {
-                    "must_not_rotate_in_place": True,
-                    "must_not_turn_head_or_body_to_create_side_view": True,
-                    "stays_fixed_in_world_space": True,
-                    "new_view_reveals_subject_side_due_to_camera_position_only": True,
-                    "head_and_gaze_remain_fixed_in_world_space": True,
-                },
-                "environment": {
-                    "must_change_with_parallax": True,
-                    "near_background_shifts_more_than_far_background": True,
-                    "side_background_becomes_visible": True,
-                    "old_background_layout_must_not_remain_locked": True,
-                    "rebuild_occluded_areas_from_new_viewpoint": True,
-                    "must_not_keep_same_pixel_or_compositional_background": True,
-                    "must_invent_plausible_unseen_environment_when_needed": True,
-                },
-                "depth_cues_required": [
-                    "parallax_between_subject_and_background",
-                    "changed relative positions of roof, fence, posts, plants, and background openings",
-                    "newly visible side surfaces around the subject",
-                    "occlusion changes caused by the new camera angle",
-                ],
-                "forbidden_failure_modes": [
-                    "rotating only the man while leaving the hut/fence/background unchanged",
-                    "using the old background as a pasted static backdrop",
-                    "cutting out the subject and placing him on the original frame",
-                    "face/head/body turntable",
-                    "2d warp of the person only",
-                    "same background composition with a different face angle",
-                    "unchanged background with a rotated subject",
-                    "static wallpaper/background behind a newly posed person",
-                    "simple cutout of the person pasted over the source frame",
-                ],
-            },
-            "camera_change": {
-                "operation": "orbit_virtual_camera_around_anchored_subject_in_full_3d_scene",
-                "anchor": "current shot center of interest",
-                "strength": "apply the full requested orbit, do not soften or reduce the angle",
-                "max_range_note": "Horizontal and vertical orbit controls may request up to 90 degrees.",
-                "ui_values": {
-                    "horizontal_slider": rotate,
-                    "vertical_slider": vertical,
-                    "zoom_slider": self.zoom_slider.value(),
-                },
-                "horizontal_orbit": {
-                    "direction": horizontal_direction,
-                    "degrees": horizontal_degrees,
-                    "interpretation": "move the camera around the subject by exactly this many degrees",
-                    "screen_mapping": (
-                        "positive horizontal slider means the requested final camera is on the left side of the subject; "
-                        "negative horizontal slider means the requested final camera is on the right side of the subject"
-                    ),
-                    "anti_mirror_instruction": (
-                        "Do not mirror this direction. A negative horizontal value must reveal the opposite side "
-                        "from a positive horizontal value."
-                    ),
-                    "keep_subject_frame_position": True,
-                },
-                "vertical_orbit": {
-                    "direction": vertical_direction,
-                    "degrees": vertical_degrees,
-                    "interpretation": "raise or lower the camera around the subject by exactly this many degrees",
-                    "screen_mapping": (
-                        "positive vertical slider means higher camera viewpoint; "
-                        "negative vertical slider means lower camera viewpoint"
-                    ),
-                    "arc_center": "same anchored subject",
-                },
-                "zoom": {
-                    "value": f"{zoom:.2f}",
-                    "action": zoom_action,
-                    "distance_factor": zoom_distance_factor,
-                    "preserve_center_of_interest": True,
-                },
-                "forbidden_camera_moves": [
-                    "pan",
-                    "slide",
-                    "truck_sideways",
-                    "dolly_sideways",
-                    "flat_image_shift",
-                    "crop_change_unrelated_to_viewpoint",
-                    "reframe_to_new_composition",
-                    "subject_only_rotation",
-                    "background_locked_subject_turntable",
-                    "same_background_new_person_angle",
-                    "2d_backplate_reuse",
-                ],
-            },
-            "identity_and_performance_lock": {
-                "rule": (
-                    "The subject is frozen in the exact same moment as the source frame. "
-                    "Only the camera moves; the subject does not rotate, re-pose, turn the head, or redirect the eyes."
-                ),
-                "head_and_gaze_lock": {
-                    "rule": (
-                        "Keep the head, neck, face orientation, nose direction, chin direction, and eye gaze aimed "
-                        "at the same real-world point as in the source frame."
-                    ),
-                    "world_space_gaze_target": "unchanged from source frame",
-                    "world_space_head_orientation": "unchanged from source frame",
-                    "if_new_camera_is_on_the_side": (
-                        "the subject must still look toward the original off-camera point, not toward the new camera"
-                    ),
-                    "preserve_head_yaw_pitch_roll": True,
-                    "preserve_neck_rotation": True,
-                    "preserve_nose_direction": True,
-                    "preserve_chin_direction": True,
-                    "preserve_eye_aim_vector": True,
-                    "forbidden": [
-                        "turning the head to face the new camera",
-                        "rotating the eyes toward the new camera",
-                        "making eye contact with the new camera",
-                        "changing the gaze target",
-                        "changing the neck angle",
-                        "changing the head pose to make a prettier side profile",
-                        "re-aiming the face after the camera move",
-                    ],
-                },
-                "preserve_exactly": [
-                    "character_identity",
-                    "face",
-                    "body_pose",
-                    "gesture",
-                    "head_angle",
-                    "head_yaw",
-                    "head_pitch",
-                    "head_roll",
-                    "neck_angle",
-                    "nose_direction",
-                    "chin_direction",
-                    "eye_gaze_direction",
-                    "eye_aim_vector",
-                    "gaze_target_in_scene",
-                    "eyelid_state",
-                    "mouth_shape",
-                    "eyebrows",
-                    "cheeks",
-                    "wrinkles",
-                    "face_tension",
-                    "micro_expression",
-                    "emotional_state",
-                    "clothing",
-                    "proportions",
-                ],
-                "eyes": {
-                    "preserve_source_eyelid_state": True,
-                    "preserve_gaze_as_world_space_direction": True,
-                    "do_not_rotate_eyes_or_head_to_follow_the_new_camera": True,
-                    "if_camera_orbits_to_side_subject_should_not_make_new_eye_contact": True,
-                    "keep_original_off_camera_gaze_target_even_after_side_orbit": True,
-                    "if_source_eyes_are_closed": "must_remain_closed",
-                    "if_source_eyes_are_half_closed": "must_remain_same_half_closed_shape",
-                    "never_redirect_gaze_to_camera": True,
-                },
-                "face_forbidden_changes": [
-                    "do_not_open_closed_eyes",
-                    "do_not_change_expression",
-                    "do_not_change_head_yaw",
-                    "do_not_change_head_pitch",
-                    "do_not_change_head_roll",
-                    "do_not_change_neck_rotation",
-                    "do_not_change_nose_direction",
-                    "do_not_change_chin_direction",
-                    "do_not_change_eye_aim_vector",
-                    "do_not_change_gaze_target",
-                    "do_not_make_eye_contact_with_new_camera",
-                    "do_not_turn_head_to_side",
-                    "do_not_rotate_body_to_side",
-                    "do_not_beautify",
-                    "do_not_normalize_face",
-                    "do_not_age_shift",
-                    "do_not_face_swap",
-                    "do_not_reinterpret_emotion",
-                ],
-            },
-            "reference_policy": {
-                "keep_references_separate": True,
-                "support_references_do_not_override_current_shot": True,
-                "object_and_location_references_are_support_only": True,
-                "do_not_introduce_extra_people_or_props_unless_already_visible": True,
-            },
-            "critical_plain_english_override": (
-                "Create a new photograph from a different camera position by re-rendering the whole scene. Do not rotate only the man. "
-                f"The requested horizontal camera side is {horizontal_direction} by {horizontal_degrees} degrees; do not mirror it to the opposite side. "
-                "The hut, fence, roof, posts, plants, foreground, and background must all change with real parallax. "
-                "If the new camera view reveals unseen areas, invent plausible unseen parts of the same location. "
-                "Do not keep the old background locked behind a side-turned subject; do not use the source image as a 2D backplate. "
-                "Keep the man's head orientation, neck angle, nose direction, chin direction, and eye gaze aimed at the same real-world point as in the original. "
-                "If the camera moves to the side, he must not turn his head or eyes to look into the new camera. "
-                "Do not open closed eyes. Do not change the face, expression, gaze, pose, clothing, identity, or performance. "
-                "Do not make the subject look into the new camera; preserve the original gaze vector in the scene."
-            ),
-        }
-
-        json_block = json.dumps(prompt_spec, ensure_ascii=False, indent=2)
-        return (
-            "Use the following JSON-style prompt as plain-text instructions for image editing. "
-            "Do not parse it as an API request. The attached images are already provided in "
-            "the request inputs and are referenced by their tags.\n\n"
-            f"{json_block}\n\n"
-            "Critical override: create a new photograph from a different camera position by re-rendering the whole scene. Do not rotate only the man. "
-            f"The requested horizontal camera side is {horizontal_direction} by {horizontal_degrees} degrees; do not mirror it to the opposite side. "
-            "The hut, fence, roof, posts, plants, foreground, and background must all change with real parallax. "
-            "If the new camera view reveals unseen areas, invent plausible unseen parts of the same location. "
-            "Do not keep the old background locked behind a side-turned subject; do not use the source image as a 2D backplate. "
-            "Keep the man's head orientation, neck angle, nose direction, chin direction, and eye gaze aimed at the same real-world point as in the original. "
-            "If the camera moves to the side, he must not turn his head or eyes to look into the new camera. "
-            "Do not open closed eyes. Do not change the face, expression, gaze, pose, "
-            "clothing, identity, or performance. Do not make the subject look into the new camera; "
-            "preserve the original gaze vector in the scene."
+    def _set_balance_text(self, value: Optional[float]) -> None:
+        amount = f"${value:.2f}" if value is not None else "$ —"
+        self.fal_balance_lbl.setText(
+            f"{tr('camera_fal_balance')} <b>{amount}</b> &nbsp; "
+            f"<a href=\"https://fal.ai/dashboard\" style=\"color:#8ab4f8;\">"
+            f"{tr('camera_fal_dashboard')}</a>"
         )
+
+    def _refresh_fal_balance(self) -> None:
+        """Живой баланс: при подтверждении ключа, показе вкладки и после
+        каждой генерации. Один тред за раз; ошибки не критичны ($ —)."""
+        if self._balance_thread is not None and self._balance_thread.isRunning():
+            return
+        thread = FalBalanceThread(self)
+        thread.balance.connect(lambda v: self._set_balance_text(v))
+        thread.error.connect(lambda _msg: self._set_balance_text(None))
+        self._balance_thread = thread
+        thread.start()
+
+    def showEvent(self, event):  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self._refresh_fal_balance()
 
     def _set_generation_status(self, text: str = "", is_error: bool = False) -> None:
         if not hasattr(self, "generation_status_lbl"):
@@ -1816,6 +1186,8 @@ class CameraLabView(QWidget):
         self.generation_status_lbl.setVisible(bool(text))
 
     def _run_generation(self) -> None:
+        """2026-07-02: генерация через fal (FalAnglesThread). Одна генерация
+        на клик — углы детерминированы, батч не нужен."""
         if self._generation_jobs:
             return
         self._last_generation_status = ""
@@ -1826,45 +1198,36 @@ class CameraLabView(QWidget):
         if not show_slug:
             self._set_generation_status(tr("camera_need_show"))
             return
-        model_id = self.selected_model_id()
-        model_name = self.selected_model_name()
-        if model_id == MODEL_NANO_BANANA_2_FLOWER and self._refs:
-            self._set_generation_status(tr("camera_flower_refs_error"), is_error=True)
+        from storyboard_app import load_fal_key
+        if not load_fal_key():
+            self._set_generation_status(tr("camera_fal_no_key"), is_error=True)
             return
-        prompt = self._build_camera_prompt()
         out_dir = self._project_root / "shows" / show_slug / "camera_lab" / "outputs"
-        refs, ref_types = self._generation_references_for_model(model_id)
-        ref_names = [f"img{i + 1}" for i in range(len(refs))]
-        batch_size = CAMERA_GENERATION_BATCH_SIZE
+        h_deg, v_deg, zoom = self._api_values()
         self.generate_btn.setEnabled(False)
-        for _ in range(batch_size):
-            self._generation_run_id += 1
-            run_id = self._generation_run_id
-            thread = GeneratorImageThread(
-                prompt,
-                self._current_aspect_ratio_label(),
-                model_id,
-                out_dir,
-                refs=refs,
-                ref_names=ref_names,
-                parent=None,
-            )
-            job = CameraGenerationJob(
-                thread=thread,
-                prompt=prompt,
-                refs=list(refs),
-                ref_types=list(ref_types),
-                provider=self._provider,
-                model_id=model_id,
-                model_name=model_name,
-                status=tr("camera_generation_starting"),
-            )
-            self._generation_jobs[run_id] = job
-            thread.progress.connect(lambda message, rid=run_id: self._on_generation_progress(rid, message))
-            thread.finished.connect(lambda path, rid=run_id: self._on_generation_done(rid, path))
-            thread.finished.connect(lambda _path, rid=run_id: self._on_generation_finished(rid))
-            thread.error.connect(lambda message, rid=run_id: self._on_generation_error(rid, message))
-            thread.start()
+        self._generation_run_id += 1
+        run_id = self._generation_run_id
+        thread = FalAnglesThread(
+            image_path=self._current_ref.path,
+            horizontal_angle=h_deg,
+            vertical_angle=v_deg,
+            zoom=zoom,
+            out_dir=out_dir,
+            parent=None,
+        )
+        job = CameraGenerationJob(
+            thread=thread,
+            horizontal=h_deg,
+            vertical=v_deg,
+            zoom=zoom,
+            status=tr("camera_generation_starting"),
+        )
+        self._generation_jobs[run_id] = job
+        thread.progress.connect(lambda message, rid=run_id: self._on_generation_progress(rid, message))
+        thread.finished.connect(lambda path, rid=run_id: self._on_generation_done(rid, path))
+        thread.finished.connect(lambda _path, rid=run_id: self._on_generation_finished(rid))
+        thread.error.connect(lambda message, rid=run_id: self._on_generation_error(rid, message))
+        thread.start()
         self._render_generation_status()
         if not self._generation_timer.isActive():
             self._generation_timer.start()
@@ -1928,8 +1291,9 @@ class CameraLabView(QWidget):
             return
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
+            h_deg, v_deg, zoom = self._api_values()
             data = {
-                "version": 1,
+                "version": 2,   # v2 (2026-07-02, fal): без refs/model; controls в API-единицах
                 "current_ref": (
                     {
                         "path": str(self._current_ref.path),
@@ -1938,23 +1302,16 @@ class CameraLabView(QWidget):
                     if self._current_ref
                     else None
                 ),
-                "refs": [
-                    {"path": str(ref.path), "type": ref.ref_type}
-                    for ref in self._refs
-                    if ref.path.exists()
-                ],
                 "results": [
                     {"path": str(path)}
                     for path in self._result_paths()
                     if path.exists()
                 ],
                 "controls": {
-                    "horizontal": self.rotate_slider.value(),
-                    "vertical": self.vertical_slider.value(),
-                    "zoom": self.zoom_slider.value(),
+                    "horizontal_deg": h_deg,
+                    "vertical_deg": v_deg,
+                    "zoom": zoom,
                 },
-                "selected_model_id": self._selected_model_id,
-                "provider": self._provider,
             }
             state_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -1973,20 +1330,19 @@ class CameraLabView(QWidget):
                 if isinstance(loaded, dict):
                     data = loaded
 
-            model_id = str(data.get("selected_model_id") or self._selected_model_id)
-            if model_id in {item[0] for item in CAMERA_MODEL_OPTIONS}:
-                self.provider_toggle.set_value(model_id)
-                self._selected_model_id = model_id
-                self._provider = PROVIDER_OPENAI if model_id == MODEL_OPENAI_IMAGE else PROVIDER_NARWHAL
-
             controls = data.get("controls") if isinstance(data.get("controls"), dict) else {}
-            for slider, key, default in (
-                (self.rotate_slider, "horizontal", 0),
-                (self.vertical_slider, "vertical", 0),
-                (self.zoom_slider, "zoom", 100),
+            # v2-ключи (fal, 2026-07-02). Старый state (v1: horizontal/vertical/
+            # zoom в других шкалах) не мигрируем — дефолты.
+            h_deg = int(controls.get("horizontal_deg", 0))
+            v_deg = int(controls.get("vertical_deg", 0))
+            zoom = float(controls.get("zoom", 5.0))
+            for slider, value in (
+                (self.rotate_slider, max(0, min(72, int(round(h_deg / 5))))),
+                (self.vertical_slider, max(-30, min(90, v_deg))),
+                (self.zoom_slider, max(0, min(100, int(round(zoom * 10))))),
             ):
                 slider.blockSignals(True)
-                slider.setValue(int(controls.get(key, default)))
+                slider.setValue(value)
                 slider.blockSignals(False)
             self._refresh_slider_value_labels()
 
@@ -1999,21 +1355,6 @@ class CameraLabView(QWidget):
                 )
                 self.current_slot.set_image(current_path)
                 self.orbit.set_frame_image(current_path)
-                self.orbit.set_frame_aspect(self.current_slot.aspect_ratio())
-
-            self._remove_layout_widgets(self.refs_strip_lay, QFrame)
-            self._refs.clear()
-            refs_data = data.get("refs") if isinstance(data.get("refs"), list) else []
-            for item in refs_data:
-                if not isinstance(item, dict) or not item.get("path"):
-                    continue
-                path = Path(str(item.get("path")))
-                if not path.exists():
-                    continue
-                ref = CameraReference(path=path, ref_type=str(item.get("type") or "Character"))
-                self._refs.append(ref)
-                self._append_ref_thumb(ref)
-            self.refs_scroll.setVisible(bool(self._refs))
 
             self._remove_layout_widgets(self.results_strip_lay, CameraResultThumb)
             result_items = data.get("results") if isinstance(data.get("results"), list) else []
@@ -2037,7 +1378,6 @@ class CameraLabView(QWidget):
             pass
         finally:
             self._loading_state = False
-            self._refresh_prompt_preview()
 
     def _render_generation_status(self) -> None:
         if not self._generation_jobs:
@@ -2047,7 +1387,8 @@ class CameraLabView(QWidget):
         for index, run_id in enumerate(sorted(self._generation_jobs), start=1):
             job = self._generation_jobs[run_id]
             status = job.status or tr("camera_generation_starting")
-            line = f"{index}. {job.model_name} ({job.model_id}) — {status}"
+            line = (f"{index}. fal · {int(job.horizontal)}° / {int(job.vertical):+d}° / "
+                    f"{job.zoom:.1f} — {status}")
             if job.elapsed_started:
                 line += f" · {tr('camera_generation_elapsed', sec=job.elapsed)}"
             lines.append(line)
@@ -2058,7 +1399,7 @@ class CameraLabView(QWidget):
         if job is None:
             return
         job.status = message or job.status
-        if message == tr("gen_prog_generating") and not job.elapsed_started:
+        if message == tr("camera_fal_generating") and not job.elapsed_started:
             job.elapsed = 0
             job.elapsed_started = True
             self._generation_timer.start()
@@ -2087,6 +1428,7 @@ class CameraLabView(QWidget):
         self._append_generation_manifest(path, job)
         self._last_result_path = path
         self._show_result_preview(path)
+        self._refresh_fal_balance()   # генерация списала $ — обновляем
 
     def _on_generation_error(self, run_id: int, message: str) -> None:
         job = self._generation_jobs.get(run_id)
@@ -2095,7 +1437,8 @@ class CameraLabView(QWidget):
         job.elapsed_started = False
         error_text = (message or "").strip() or tr("camera_generation_error")
         job.status = f"{tr('camera_generation_error')} {error_text}"
-        line = f"{job.model_name} ({job.model_id}) — {job.status}"
+        line = (f"fal · {int(job.horizontal)}° / {int(job.vertical):+d}° / "
+                f"{job.zoom:.1f} — {job.status}")
         self._last_generation_status = (
             f"{self._last_generation_status}\n{line}"
             if self._last_generation_status
@@ -2261,18 +1604,14 @@ class CameraLabView(QWidget):
                 rel_output = str(output_path)
             data.append({
                 "output": rel_output,
-                "model": job.model_id,
-                "provider": job.provider,
+                "model": FAL_MODEL,
+                "provider": "fal",
                 "elapsed_sec": job.elapsed,
-                "prompt": job.prompt,
-                "references": [
-                    {
-                        "path": str(path),
-                        "tag": f"[@]img{i + 1}",
-                        "type": job.ref_types[i] if i < len(job.ref_types) else "Reference",
-                    }
-                    for i, path in enumerate(job.refs)
-                ],
+                "angles": {
+                    "horizontal_deg": job.horizontal,
+                    "vertical_deg": job.vertical,
+                    "zoom": job.zoom,
+                },
             })
             manifest_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -2410,6 +1749,29 @@ class CameraLabView(QWidget):
             border-radius: 0px;
             padding: 8px;
             selection-background-color: #2c2f31;
+        }
+        QLineEdit#camera-fal-key {
+            background: #131516;
+            color: #e4e5df;
+            border: 1px solid #1d1e20;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+        QPushButton#camera-fal-key-btn {
+            background: #242628;
+            color: #f2f3f0;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 8px;
+            padding: 0px 14px;
+            font-weight: 600;
+        }
+        QPushButton#camera-fal-key-btn:hover {
+            background: #2c2f31;
+        }
+        QLabel#camera-fal-balance {
+            color: #b8b8b8;
+            font-size: 12px;
         }
         QPlainTextEdit#camera-prompt-preview {
             background: #131516;

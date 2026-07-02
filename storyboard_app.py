@@ -7648,11 +7648,11 @@ class MainWindow(QMainWindow):
         self.generator_view = GeneratorPage(self)
         self.tabs.addTab(self.generator_view, tr('tab_generator'))
         if self._is_admin:
+            # 2026-07-02: вкладка «Камера» на fal — провайдер-переключатель
+            # убран (default_provider/provider_changed больше не принимает).
             self.camera_lab_view = CameraLabView(
                 self._project_root,
                 self,
-                default_provider=image_provider_admin(),
-                provider_changed=set_image_provider_admin,
                 get_shot_clipboard=lambda: self._shot_clipboard,
                 set_shot_clipboard=self._set_shot_clipboard_bytes,
             )

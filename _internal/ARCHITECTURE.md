@@ -1361,6 +1361,34 @@ Sonnet даёт заметно хуже качество. Карту и PromptWr
 чат эпизода). Ключ никем не пишется с 2026-05-09 (дропдаун убран) —
 фактически у всех работает дефолт из кода.
 
+## Camera Lab — вкладка «Камера» (2026-07-02: fal)
+
+`views/camera_lab.py` + `generator/fal_angles_thread.py`. Смена ракурса
+кадра через fal-ai/qwen-image-edit-2511-multiple-angles (queue.fal.run:
+submit POST → poll status_url → result URL; вход `image_urls` принимает
+data:URI base64 — upload-шага нет). Числовые углы уходят КАК ЕСТЬ:
+horizontal 0..360° (слайдер шаг 5°), vertical −30..90° (шаг 1°),
+zoom 0.0..10.0 (шаг 0.1); квантование в пресеты LoRA — на сервере.
+
+Ключ fal: `load_fal_key()`/`save_fal_key()` в storyboard_app.py (~:4240,
+образец load_api_key): QSettings `fal_api_key` → сайдкар
+`<project_root>/fal_key.txt` (в .gitignore). Поле ввода — на самой
+вкладке, работает без перезапуска. Баланс живой:
+`GET https://rest.alpha.fal.ai/billing/user_balance` (голое число $;
+alpha-эндпоинт, при недоступности UI кажет «$ —», генерацию не блокирует).
+
+Орбитальная миникарта (CameraPerspectiveControl): миниатюра кадра ровная
+в центре, значок камеры (Lucide 'video') на эллиптической орбите,
+пунктир взгляда; drag = углы, колесо = зум. Чистый QPainter, Mac/Win.
+
+Убрано в 2026-07-02: референсы (ReferenceDropArea/CameraRefThumb),
+JSON-промпт (~340 строк _build_camera_prompt), выбор моделей
+(CameraModelToggle, Nano Banana 2/Flower/OpenAI), путь GeneratorImageThread,
+батч ×2 (углы детерминированы — одна генерация на клик). state v2
+(camera_lab/state.json): controls в API-единицах, без refs/model; старый
+v1-state не мигрируется (дефолты). manifest.json: поле angles{h,v,zoom},
+model=fal-модель, provider="fal".
+
 ## Bundled instructions (v1.0.66)
 
 Studio загружает `instructions/ГЛАВНАЯ_ИНСТРУКЦИЯ.md` из bundle в runtime
