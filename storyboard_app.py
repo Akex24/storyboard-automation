@@ -14772,6 +14772,20 @@ class MainWindow(QMainWindow):
                             / f"v{int(parent_version)}.jpg")
                 if _sel_img.exists():
                     base_override = _sel_img
+            # 2026-07-02: сохраняем AI-edit промт СРАЗУ, ДО старта треда —
+            # чтобы обрыв/ошибка генерации не потеряли введённый текст. При
+            # успехе generate.py:1127 перезапишет тем же ключом (идемпотентно).
+            # Привязка к parent_version (существующей версии); parent==0 (edit
+            # с грида) — ключа нет, пропускаем. Сбой записи не критичен.
+            if parent_version and parent_version > 0:
+                try:
+                    (shot_history_dir(target_block, panel_idx)
+                     / f"edit_v{int(parent_version)}.json").write_text(
+                        json.dumps({"ai_edit": short_instruction},
+                                   ensure_ascii=False),
+                        encoding='utf-8')
+                except Exception:
+                    pass
             thread = GenerateThread(target_block, panel_idx,
                                      edit_instruction=short_instruction,
                                      base_image_override=base_override,
