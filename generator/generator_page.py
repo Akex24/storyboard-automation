@@ -609,6 +609,23 @@ class GeneratorPage(QWidget):
         for _k, _b in self.mode_btns.items():
             _b.clicked.connect(
                 lambda _checked=False, key=_k: self._on_mode_change(key))
+        # 2026-07-02 (пиксельный дрейф ряда): QSS активного сегмента делает
+        # текст bold (font-weight:700, :248) — bold шире regular на ~1px →
+        # при Image↔Video mode_seg менял ширину и толкал всё правее (кнопка
+        # модели «дёргалась»). Фиксируем ширину КАЖДОЙ кнопки сегмента по
+        # BOLD-метрике её текста (bold ≥ regular; pixelSize 12 = QSS
+        # font-size) + QSS-padding 11+11; группа = сумма + margins 2+2.
+        # Ширина ряда физически идентична в обоих режимах.
+        _bf = QFont(self.mode_seg.font())
+        _bf.setPixelSize(12)
+        _bf.setBold(True)
+        _bfm = QFontMetrics(_bf)
+        _seg_total = 0
+        for _b in self.mode_btns.values():
+            _bw = _bfm.horizontalAdvance(_b.text()) + 22
+            _b.setFixedWidth(_bw)
+            _seg_total += _bw
+        self.mode_seg.setFixedWidth(_seg_total + 4)
         ctl.addWidget(self.mode_seg)
 
         # Модель — ВТОРАЯ, сразу после режима (зависит от режима).
