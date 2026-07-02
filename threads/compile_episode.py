@@ -311,7 +311,8 @@ class CompileEpisodeThread(QThread):
                 save_copy, block, resolved,
                 sheet if sheet.is_file() else None,
                 grid_cols, grid_rows,
-                block_dir / "shots", self.ep_id, n, log=self._log)
+                block_dir / "shots", self.ep_id, n, log=self._log,
+                grid_root=show_root / "refs" / "characters_grid")
         except Exception as e:
             self._log(f"shot-slicing failed for block {n}: "
                       f"{type(e).__name__}: {e}")

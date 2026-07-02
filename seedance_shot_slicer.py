@@ -50,6 +50,34 @@ _FENCE_RE = re.compile(r'^\s*```')
 _VOICE_REF_RE = re.compile(r'使用与镜头\s*(\d+)\s*相同的.*声音档案')
 _VOICE_HDR_RE = re.compile(r'^\s*声音')
 _DIALOG_RE = re.compile(r'用英语说|用中文说|说[：:]')
+# 2026-07-02 (grid в шоты): расширения картинок для поиска grid-версии.
+_IMG_EXT = {'.jpg', '.jpeg', '.png'}
+
+
+def _find_grid_for(grid_root: Optional[Path], slug: str,
+                   clean_stem: str) -> Optional[Path]:
+    """Grid-версия рефа ПЕРСОНАЖА: refs/characters_grid/<slug>/<stem>_grid.<ext>.
+    Матч по ТОЧНОМУ stem (`<clean_stem>_grid`, как пишет views/actors.py),
+    latest по mtime. None если grid нет — это НОРМА (сетку делают не всегда),
+    caller просто не докладывает, без warning-спама. Зеркало блочного 5b-2."""
+    if grid_root is None or not slug or not clean_stem:
+        return None
+    d = grid_root / slug
+    try:
+        if not d.is_dir():
+            return None
+        target = clean_stem + "_grid"
+        cands = [p for p in d.iterdir()
+                 if p.is_file() and p.suffix.lower() in _IMG_EXT
+                 and p.stem == target]
+    except Exception:
+        return None
+    if not cands:
+        return None
+    try:
+        return max(cands, key=lambda p: p.stat().st_mtime)
+    except Exception:
+        return cands[0]
 
 
 def _norm(name: str) -> str:
@@ -282,6 +310,7 @@ def slice_block_to_shots(
     ep_id: str,
     block_n: int,
     log: Optional[Callable[[str], None]] = None,
+    grid_root: Optional[Path] = None,
 ) -> int:
     """Нарезать блочный Seedance-промпт на пошотовые папки.
 
@@ -301,6 +330,9 @@ def slice_block_to_shots(
                           rmtree-циклом)
       ep_id, block_n    — для имени файла <ep>_block<N>_shot<k>.txt/.jpg
       log               — callable(str) для диагностики [block_refs]; может быть None
+      grid_root         — refs/characters_grid (для докладки grid-версии рефа
+                          ПЕРСОНАЖА в каждый шот — зеркало блочного 5b-2). None →
+                          grid не докладываем. Локации/объекты grid не имеют.
 
     Возвращает количество нарезанных шотов (0 если промпт нераспознан/нет шотов).
     Все ошибки копирования — в log, не кидаем (caller не должен падать).
@@ -368,6 +400,15 @@ def slice_block_to_shots(
             if 1 <= K <= len(resolved):
                 _cat, slug, src, basename = resolved[K - 1]
                 copy_files.append((src, basename))
+                # 2026-07-02: docкласть grid-версию ПЕРСОНАЖА (чистая + grid,
+                # как в рефах блока). resolved НЕ трогаем (позиционный маппинг
+                # [@]imgK → resolved[K-1]); grid — отдельным файлом с именем
+                # grid__<slug>__<name>, коллизий с чистой нет. Нет grid → skip.
+                if _cat == 'character':
+                    gsrc = _find_grid_for(grid_root, slug, src.stem)
+                    if gsrc is not None:
+                        copy_files.append(
+                            (gsrc, f"grid__{slug}__{gsrc.name}"))
                 n = slug_to_imageN.get(slug)
                 if n is not None:
                     used_imageN.add(n)

@@ -17182,6 +17182,7 @@ class MainWindow(QMainWindow):
                         grid_cols, grid_rows,
                         dest_dir / "shots", ep_id, block_n,
                         log=_sys_log.stderr.write,
+                        grid_root=refs_root / "characters_grid",
                     )
                 else:
                     _sys_log.stderr.write(
