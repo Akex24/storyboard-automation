@@ -196,6 +196,25 @@ class CameraPerspectiveControl(QWidget):
         self.valuesChanged.emit(self._h, self._v, self._z)
         event.accept()
 
+    # ── 3D-проекция сферы (2026-07-02, референс Higgsfield Angles) ──
+    # Ортографическая проекция с фиксированным наклоном оси (объём глобуса):
+    # точка сферы (lat, lon) → 3D (y вверх, z к зрителю) → наклон вокруг X
+    # на _AXIS_TILT → экран (x, -y). z после наклона = depth cue (перед/зад).
+    _AXIS_TILT = math.radians(-18.0)
+
+    @classmethod
+    def _project(cls, lat_deg: float, lon_deg: float, radius: float):
+        """(lat°, lon°) → (dx, dy, depth). depth>0 — передняя полусфера."""
+        lat = math.radians(lat_deg)
+        lon = math.radians(lon_deg)
+        x = radius * math.cos(lat) * math.sin(lon)
+        y = radius * math.sin(lat)
+        z = radius * math.cos(lat) * math.cos(lon)
+        ct, st = math.cos(cls._AXIS_TILT), math.sin(cls._AXIS_TILT)
+        y2 = y * ct - z * st
+        z2 = y * st + z * ct
+        return x, -y2, z2
+
     def paintEvent(self, event):  # noqa: N802 - Qt override
         super().paintEvent(event)
         painter = QPainter(self)
@@ -207,51 +226,49 @@ class CameraPerspectiveControl(QWidget):
         painter.drawRoundedRect(rect, 8, 8)
 
         cx, cy = rect.center().x(), rect.center().y() + 6
+        radius = min(rect.width(), rect.height()) * 0.40
 
-        # ── орбита: rx от зума (близко=малый радиус), ry от вертикали ──
-        max_rx = min(rect.width(), rect.height() * 1.6) * 0.42
-        min_rx = max_rx * 0.45
-        t_z = self._z / 100.0                      # 0 wide … 1 close-up
-        rx = max_rx - t_z * (max_rx - min_rx)
-        t_v = (self._v + 30) / 120.0               # -30..90 → 0..1
-        ry = rx * (0.22 + 0.68 * t_v)
+        pen_front = QPen(QColor(255, 255, 255, 70), 1.0)
+        pen_back = QPen(QColor(255, 255, 255, 22), 1.0)
 
-        # ── миниатюра кадра: РОВНАЯ, в центре, поверх дальней дуги ──
-        thumb_w = max_rx * 0.98
+        def _polyline(points):
+            """Ломаная по точкам сферы: сегменты красятся по глубине
+            (задняя полусфера бледнее — depth cue как у глобуса)."""
+            for (x1, y1, z1), (x2, y2, z2) in zip(points, points[1:]):
+                painter.setPen(pen_front if (z1 + z2) * 0.5 >= 0 else pen_back)
+                painter.drawLine(QPointF(cx + x1, cy + y1),
+                                 QPointF(cx + x2, cy + y2))
+
+        # меридианы (12) и параллели (8)
+        for lon in range(0, 360, 30):
+            pts = [self._project(lat, lon, radius) for lat in range(-90, 91, 10)]
+            _polyline(pts)
+        for k in range(1, 9):
+            lat = -90 + k * 20   # -70..70
+            pts = [self._project(lat, lon, radius) for lon in range(0, 361, 10)]
+            _polyline(pts)
+
+        # позиция камеры: долгота = горизонталь, широта = вертикаль
+        cam_dx, cam_dy, cam_z = self._project(self._v, self._h, radius)
+        cam_x, cam_y = cx + cam_dx, cy + cam_dy
+        behind = cam_z < 0
+
+        if behind:
+            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=True,
+                              zoom_x10=self._z)
+
+        # ── миниатюра кадра: РОВНАЯ, небольшая, в центре сферы ──
+        thumb_w = radius * 0.95
         thumb_h = thumb_w * 9 / 16
         if self._frame_pixmap is not None:
             pw, ph = self._frame_pixmap.width(), max(1, self._frame_pixmap.height())
             aspect = pw / ph
-            if aspect < 1.0:                       # вертикальный кадр 9:16
+            if aspect < 1.0:
                 thumb_h = thumb_w
                 thumb_w = thumb_h * aspect
             else:
                 thumb_h = thumb_w / aspect
         thumb_rect = QRectF(cx - thumb_w / 2, cy - thumb_h / 2, thumb_w, thumb_h)
-
-        import math as _m
-        phi = _m.radians(self._h)
-        cam_x = cx + rx * _m.sin(phi)
-        cam_y = cy + ry * _m.cos(phi)
-        behind = _m.cos(phi) < 0                   # 90..270 → камера за кадром
-
-        def _draw_orbit(front: bool) -> None:
-            """Дуга орбиты: задняя половина рисуется ДО миниатюры, передняя —
-            ПОСЛЕ (эффект прохода за кадром)."""
-            pen = QPen(QColor(255, 255, 255, 60 if not front else 110), 1.4)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            span = 180 * 16
-            start = 0 if front else 180 * 16
-            painter.drawArc(QRectF(cx - rx, cy - ry, rx * 2, ry * 2),
-                            start, span)
-
-        _draw_orbit(front=False)
-
-        if behind:
-            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=True)
-
         painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
         if self._frame_pixmap is not None:
             scaled = self._frame_pixmap.scaled(
@@ -260,7 +277,7 @@ class CameraPerspectiveControl(QWidget):
                 Qt.TransformationMode.SmoothTransformation,
             )
             clip = QPainterPath()
-            clip.addRoundedRect(thumb_rect, 6, 6)
+            clip.addRoundedRect(thumb_rect, 5, 5)
             painter.save()
             painter.setClipPath(clip)
             painter.drawPixmap(
@@ -270,15 +287,14 @@ class CameraPerspectiveControl(QWidget):
             )
             painter.restore()
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(thumb_rect, 6, 6)
+            painter.drawRoundedRect(thumb_rect, 5, 5)
         else:
             painter.setBrush(QColor(26, 29, 31))
-            painter.drawRoundedRect(thumb_rect, 6, 6)
-
-        _draw_orbit(front=True)
+            painter.drawRoundedRect(thumb_rect, 5, 5)
 
         if not behind:
-            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=False)
+            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=False,
+                              zoom_x10=self._z)
 
         painter.setPen(QColor(184, 184, 184))
         font = QFont()
@@ -294,11 +310,14 @@ class CameraPerspectiveControl(QWidget):
 
     @staticmethod
     def _draw_camera(painter: QPainter, x: float, y: float,
-                     cx: float, cy: float, dim: bool) -> None:
-        """Значок камеры на орбите + пунктирная линия взгляда на кадр.
-        Lucide 'video' через get_icon (правило иконок); fallback — кружок."""
+                     cx: float, cy: float, dim: bool, zoom_x10: int) -> None:
+        """Значок камеры НА ПОВЕРХНОСТИ сферы + линия взгляда к центру.
+        Сфера от зума НЕ меняется — зум кодируется ТОЛЩИНОЙ линии взгляда
+        и бейджем «N.N» у значка. За сферой — полупрозрачный (depth cue).
+        Lucide 'video' через get_icon; fallback — точка."""
         alpha = 90 if dim else 235
-        line_pen = QPen(QColor(232, 184, 106, 50 if dim else 140), 1.2)
+        line_w = 0.8 + (zoom_x10 / 100.0) * 2.6   # zoom 0→0.8px … 10→3.4px
+        line_pen = QPen(QColor(232, 184, 106, 45 if dim else 150), line_w)
         line_pen.setStyle(Qt.PenStyle.DotLine)
         painter.setPen(line_pen)
         painter.drawLine(QPointF(x, y), QPointF(cx, cy))
@@ -309,6 +328,7 @@ class CameraPerspectiveControl(QWidget):
         painter.setPen(QPen(QColor(232, 184, 106, alpha), 1.4))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(QPointF(x, y), 13, 13)
+        icon_ok = False
         try:
             from storyboard_app import get_icon
             icon = get_icon('video')
@@ -318,11 +338,20 @@ class CameraPerspectiveControl(QWidget):
                     painter.setOpacity(0.45)
                 icon.paint(painter, QRect(int(x) - 8, int(y) - 8, 16, 16))
                 painter.restore()
-                return
+                icon_ok = True
         except Exception:
             pass
-        painter.setBrush(QColor(232, 184, 106, alpha))
-        painter.drawEllipse(QPointF(x, y), 4, 4)
+        if not icon_ok:
+            painter.setBrush(QColor(232, 184, 106, alpha))
+            painter.drawEllipse(QPointF(x, y), 4, 4)
+        # бейдж зума у значка
+        font = QFont()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QColor(232, 184, 106, alpha))
+        painter.drawText(QRectF(x - 24, y + 13, 48, 14),
+                         Qt.AlignmentFlag.AlignCenter, f"{zoom_x10 / 10:.1f}")
+
 
 
 
