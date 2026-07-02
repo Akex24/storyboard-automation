@@ -1353,9 +1353,13 @@ Sonnet даёт заметно хуже качество. Карту и PromptWr
 **Когда снимать:** только если будет внутренний бенч-тест на Sonnet/Opus
 по идентичной выборке Seedance-промптов и Sonnet выходит на паритет.
 
-### Default model = `claude-opus-4-7` — [views/episode_chat.py:297](views/episode_chat.py:297)
+### Default model = `claude-opus-4-8` — [views/new_episode.py:1790](views/new_episode.py:1790)
 Сохранённое в `QSettings` по ключу `"new_ep/model_v2"`. Если ключа нет
-у юзера — загружается Opus 4.7 как fallback.
+у юзера — загружается Opus 4.8 как fallback (2026-07-02, был 4.7; старая
+ссылка на episode_chat.py:297 была неверной — ключ читается ТОЛЬКО в
+`new_episode.py:_current_model`; покрывает манифест ШАГ 1 + свободный
+чат эпизода). Ключ никем не пишется с 2026-05-09 (дропдаун убран) —
+фактически у всех работает дефолт из кода.
 
 ## Bundled instructions (v1.0.66)
 

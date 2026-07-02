@@ -1782,11 +1782,11 @@ class NewEpisodeView(QWidget):
         2026-05-09: виджет дропдауна убран из этого view — модель
         синхронизируется через QSettings. RunEpisodeThread на этом
         стартовом экране (свободный чат до handed-off) использует ту
-        же модель что и чат эпизода после переезда. Дефолт — Opus 4.7
-        для legacy-юзеров без записи в QSettings.
+        же модель что и чат эпизода после переезда. Дефолт — Opus 4.8
+        (2026-07-02, был 4.7) для юзеров без записи в QSettings.
         """
         try:
             qs = QSettings(_sa.APP_ORG, _sa.APP_NAME)
-            return qs.value("new_ep/model_v2", "claude-opus-4-7", type=str)
+            return qs.value("new_ep/model_v2", "claude-opus-4-8", type=str)
         except Exception:
             return None
