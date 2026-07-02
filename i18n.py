@@ -697,6 +697,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'status_regenerating': 'Регенерирую SHOT {n} в {block}…',
         'status_editing': 'Применяю изменения к SHOT {n}…',
         'status_already_genning': 'SHOT {n} уже генерируется — подожди…',
+        'status_all_versions_present': 'Все {versions_count} {versions_word} на месте — добор не нужен',
+        'status_topup_started': 'Догенерирую {versions_count} {versions_word} из {n}…',
         'status_no_shots': 'Нет шотов для экспорта',
         'status_saved': 'Сохранено: {path}',
         'status_shot_done': 'SHOT {n} обновлён ✓',
@@ -1603,6 +1605,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'status_regenerating': 'Регенерую SHOT {n} у {block}…',
         'status_editing': 'Застосовую зміни до SHOT {n}…',
         'status_already_genning': 'SHOT {n} вже генерується — зачекай…',
+        'status_all_versions_present': 'Усі {versions_count} {versions_word} на місці — добір не потрібен',
+        'status_topup_started': 'Догенеровую {versions_count} {versions_word} із {n}…',
         'status_no_shots': 'Немає шотів для експорту',
         'status_saved': 'Збережено: {path}',
         'status_shot_done': 'SHOT {n} оновлено ✓',
@@ -2492,6 +2496,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'status_regenerating': 'Regenerating SHOT {n} in {block}…',
         'status_editing': 'Applying changes to SHOT {n}…',
         'status_already_genning': 'SHOT {n} is already generating — wait…',
+        'status_all_versions_present': 'All {versions_count} {versions_word} present — no top-up needed',
+        'status_topup_started': 'Generating {versions_count} {versions_word} of {n}…',
         'status_no_shots': 'No shots to export',
         'status_saved': 'Saved: {path}',
         'status_shot_done': 'SHOT {n} updated ✓',
@@ -2810,6 +2816,17 @@ def plural_shots(n: int, lang: str = None) -> str:
     return 'shot' if abs(int(n)) == 1 else 'shots'
 
 
+def plural_versions(n: int, lang: str = None) -> str:
+    """Форма слова «версия» для языка UI (ru/uk 3 формы, en 2)."""
+    if lang is None:
+        lang = get_lang()
+    if lang == 'ru':
+        return _plural_slavic(n, 'версия', 'версии', 'версий')
+    if lang == 'uk':
+        return _plural_slavic(n, 'версія', 'версії', 'версій')
+    return 'version' if abs(int(n)) == 1 else 'versions'
+
+
 def plural_blocks(n: int, lang: str = None) -> str:
     """Форма слова «блок» для языка UI (ru/uk 3 формы, en 2)."""
     if lang is None:
@@ -2854,6 +2871,8 @@ def tr(key: str, **kwargs) -> str:
         kwargs['blocks_word'] = plural_blocks(kwargs['blocks_count'], lang)
     if 'shots_loc_count' in kwargs and 'shots_loc_word' not in kwargs:
         kwargs['shots_loc_word'] = plural_shots_loc(kwargs['shots_loc_count'], lang)
+    if 'versions_count' in kwargs and 'versions_word' not in kwargs:
+        kwargs['versions_word'] = plural_versions(kwargs['versions_count'], lang)
     if kwargs:
         try:
             text = text.format(**kwargs)

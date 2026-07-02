@@ -15821,6 +15821,70 @@ class MainWindow(QMainWindow):
 
         key = (target_block, panel_idx)
 
+        # 2026-07-02: Mode C + versions_per_shot>1 → «Перегенерировать» = ДОБОР
+        # недостающих ПЛОСКИХ слотов v1..vN (а не одиночная дочерняя версия).
+        # present считаем ТОЛЬКО по верхнеуровневым слотам: vn ≤ N И БЕЗ
+        # parent_v{vn}.json (дочерние (parent_version>0) sidecar имеют — они не
+        # слоты; их номер обычно >N, но при дырах может попасть в 1..N, потому
+        # фильтруем по sidecar, не по одному диапазону).
+        if (mode_loader.get_current_mode() == 'c'
+                and mode_c_versions_per_shot() > 1):
+            self._generation_stopped = False
+            # уже идёт по этому шоту (ручной regen ИЛИ слот конвейера) → не дублируем
+            if key in self._active_regens or key in self._shot_window_inflight:
+                self.status_bar.showMessage(
+                    tr('status_already_genning', n=panel_idx + 1))
+                self._refresh_stop_btn()
+                return
+            _n = mode_c_versions_per_shot()
+            _hist = shot_history_dir(target_block, panel_idx)
+            _present = set()
+            for _p in list_shot_versions(_hist):
+                try:
+                    _vn = int(_p.stem[1:])
+                except (ValueError, IndexError):
+                    continue
+                # верхнеуровневый слот: в диапазоне И без parent-сайдкара
+                if _vn <= _n and not (_hist / f"parent_v{_vn}.json").exists():
+                    _present.add(_vn)
+            _gaps = [v for v in range(1, _n + 1) if v not in _present]
+            if not _gaps:
+                self.status_bar.showMessage(
+                    tr('status_all_versions_present', versions_count=_n))
+                self._log_shot_regen(
+                    f"topup-noop block={target_block} panel={panel_idx} "
+                    f"n={_n} (все слоты на месте)")
+                return
+            # ручной клик перебивает исчерпанный бюджет авто-проходов
+            self._shot_retry_pass[key] = 0
+            # держим слот шота в конвейере + учёт pending (как серийный добор)
+            self._shot_window_inflight.add(key)
+            self._shot_window_versions_left[key] = len(_gaps)
+            self._storyboard_active_pending += len(_gaps)
+            _now = time.time()
+            self._shot_gen_started_at[key] = _now
+            if (self.current_block == target_block
+                    and 0 <= panel_idx < len(self.shot_cards)):
+                try:
+                    self.shot_cards[panel_idx].set_loading(True)
+                    self.shot_cards[panel_idx].start_progress(_now, redrive=True)
+                except Exception:
+                    pass
+            # спавним ТОЛЬКО дыры как ПЛОСКИЕ слоты (version_index=v, БЕЗ
+            # parent_version → sidecar не пишется), ракурс из v{v}.prompt.txt.
+            for v in _gaps:
+                _cam = self._recover_camera_override(target_block, panel_idx, v)
+                self._spawn_one_mode_c_version(target_block, panel_idx, v, _cam)
+            self._refresh_block_indicator(target_block)
+            self._refresh_stop_btn()
+            self._log_shot_regen(
+                f"topup block={target_block} panel={panel_idx} n={_n} "
+                f"gaps={_gaps}")
+            self.status_bar.showMessage(
+                tr('status_topup_started', versions_count=len(_gaps), n=_n))
+            return
+        # ── иначе (versions_per_shot<=1 или не Mode C) — прежнее поведение ──
+
         # 2026-06-19: пользовательский regen = свежее намерение генерации.
         # Снимаем залипший глобальный стоп-флаг В САМОМ НАЧАЛЕ — чтобы ЛЮБОЙ
         # последующий _refresh_stop_btn (в т.ч. на раннем return ниже) видел
