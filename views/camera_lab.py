@@ -163,8 +163,7 @@ class CameraPerspectiveControl(QWidget):
     def mousePressEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.position()
-            self._drag_h = self._h
-            self._drag_v = self._v
+            self._apply_cursor(event.position())   # камера сразу под курсор
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
@@ -174,12 +173,43 @@ class CameraPerspectiveControl(QWidget):
         if self._drag_start is None:
             super().mouseMoveEvent(event)
             return
-        delta = event.position() - self._drag_start
-        self._h = int(round(self._drag_h + delta.x() * 0.9)) % 360
-        self._v = max(-30, min(90, int(round(self._drag_v - delta.y() * 0.5))))
+        self._apply_cursor(event.position())       # 1:1 за точкой курсора
+        event.accept()
+
+    def _apply_cursor(self, pos) -> None:
+        """2026-07-02 (фикс drag 1:1): экранные координаты курсора →
+        (долгота, широта) ИНВЕРСИЕЙ той же проекции — камера следует ТОЧНО
+        за курсором, без дельты с множителем. Курсор вне диска сферы →
+        нормируем на край. Двузначность перед/зад решается непрерывностью:
+        из двух долгот (передней и зеркальной задней) берём ближайшую к
+        текущей — так камера «прокручивается» через край на заднюю сторону."""
+        cx, cy, radius = self._sphere_geometry()
+        if radius <= 0:
+            return
+        sx = pos.x() - cx
+        sy = pos.y() - cy
+        rr = math.hypot(sx, sy)
+        if rr > radius * 0.999:
+            sx *= radius * 0.999 / rr
+            sy *= radius * 0.999 / rr
+        y2 = -sy
+        z2 = math.sqrt(max(0.0, radius * radius - sx * sx - y2 * y2))
+        ct, st = math.cos(self._AXIS_TILT), math.sin(self._AXIS_TILT)
+        # обратный наклон (транспонированная матрица поворота вокруг X)
+        y = y2 * ct + z2 * st
+        z = -y2 * st + z2 * ct
+        vis_lat = math.degrees(math.asin(max(-1.0, min(1.0, y / radius))))
+        lon_front = math.degrees(math.atan2(sx, z)) % 360
+        lon_back = (180.0 - math.degrees(math.atan2(sx, z))) % 360
+        def _dist(a: float, b: float) -> float:
+            d = abs(a - b) % 360
+            return min(d, 360 - d)
+        lon = lon_front if _dist(lon_front, self._h) <= _dist(lon_back, self._h) \
+            else lon_back
+        self._h = int(round(lon)) % 360
+        self._v = self._vis_to_v(vis_lat)
         self.update()
         self.valuesChanged.emit(self._h, self._v, self._z)
-        event.accept()
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
@@ -201,6 +231,24 @@ class CameraPerspectiveControl(QWidget):
     # точка сферы (lat, lon) → 3D (y вверх, z к зрителю) → наклон вокруг X
     # на _AXIS_TILT → экран (x, -y). z после наклона = depth cue (перед/зад).
     _AXIS_TILT = math.radians(-18.0)
+
+    def _sphere_geometry(self):
+        """(cx, cy, radius) сферы — единая точка правды для paint и drag."""
+        rect = QRectF(self.rect()).adjusted(12, 10, -12, -10)
+        return (rect.center().x(), rect.center().y() + 6,
+                min(rect.width(), rect.height()) * 0.40)
+
+    # 2026-07-02 (фикс №2): ВИЗУАЛЬНАЯ широта камеры — растянутый маппинг
+    # на полный видимый диапазон сферы (якоря: −30°=дно, ПОД кадром;
+    # 0°=экватор; +90°=полюс, НАД кадром). В API уходит реальный v.
+    @staticmethod
+    def _v_to_vis(v_deg: float) -> float:
+        return v_deg * 3.0 if v_deg < 0 else v_deg
+
+    @staticmethod
+    def _vis_to_v(vis_deg: float) -> int:
+        v = vis_deg / 3.0 if vis_deg < 0 else vis_deg
+        return max(-30, min(90, int(round(v))))
 
     @classmethod
     def _project(cls, lat_deg: float, lon_deg: float, radius: float):
@@ -225,19 +273,20 @@ class CameraPerspectiveControl(QWidget):
         painter.setBrush(QColor("#090a0a"))
         painter.drawRoundedRect(rect, 8, 8)
 
-        cx, cy = rect.center().x(), rect.center().y() + 6
-        radius = min(rect.width(), rect.height()) * 0.40
+        cx, cy, radius = self._sphere_geometry()
 
         pen_front = QPen(QColor(255, 255, 255, 70), 1.0)
         pen_back = QPen(QColor(255, 255, 255, 22), 1.0)
 
+        # 2026-07-02 (фикс №1): сегменты сетки копятся в ДВА слоя и рисуются
+        # задние → миниатюра → ПЕРЕДНИЕ ПОВЕРХ — кадр читается ВНУТРИ глобуса.
+        front_segs = []
+        back_segs = []
+
         def _polyline(points):
-            """Ломаная по точкам сферы: сегменты красятся по глубине
-            (задняя полусфера бледнее — depth cue как у глобуса)."""
             for (x1, y1, z1), (x2, y2, z2) in zip(points, points[1:]):
-                painter.setPen(pen_front if (z1 + z2) * 0.5 >= 0 else pen_back)
-                painter.drawLine(QPointF(cx + x1, cy + y1),
-                                 QPointF(cx + x2, cy + y2))
+                seg = (QPointF(cx + x1, cy + y1), QPointF(cx + x2, cy + y2))
+                (front_segs if (z1 + z2) * 0.5 >= 0 else back_segs).append(seg)
 
         # меридианы (12) и параллели (8)
         for lon in range(0, 360, 30):
@@ -248,10 +297,18 @@ class CameraPerspectiveControl(QWidget):
             pts = [self._project(lat, lon, radius) for lon in range(0, 361, 10)]
             _polyline(pts)
 
-        # позиция камеры: долгота = горизонталь, широта = вертикаль
-        cam_dx, cam_dy, cam_z = self._project(self._v, self._h, radius)
+        painter.setPen(pen_back)
+        for a, b in back_segs:
+            painter.drawLine(a, b)
+
+        # камера: долгота = горизонталь; широта — растянутый ВИЗУАЛЬНЫЙ
+        # маппинг (фикс №2: −30° уходит ПОД кадр, +90° — над). Признак
+        # «за глобусом» — ЧИСТО по долготе 90..270 (фикс №4: знак Z после
+        # наклона оси ошибочно топил камеру на передней стороне у полюса).
+        cam_dx, cam_dy, _cam_z = self._project(
+            self._v_to_vis(self._v), self._h, radius)
         cam_x, cam_y = cx + cam_dx, cy + cam_dy
-        behind = cam_z < 0
+        behind = 90 < (self._h % 360) < 270
 
         if behind:
             self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=True,
@@ -291,6 +348,10 @@ class CameraPerspectiveControl(QWidget):
         else:
             painter.setBrush(QColor(26, 29, 31))
             painter.drawRoundedRect(thumb_rect, 5, 5)
+
+        painter.setPen(pen_front)
+        for a, b in front_segs:
+            painter.drawLine(a, b)
 
         if not behind:
             self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=False,
