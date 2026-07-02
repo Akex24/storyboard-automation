@@ -161,6 +161,16 @@ class VersionThumb(QFrame):
         self.btn_del.setVisible(self._can_delete)
         self.btn_del.raise_()
 
+        # 2026-07-02: бейдж NEW — overlay в top-LEFT превьюшки (тот же приём,
+        # что крестик: родитель img_lbl, вне layout, .move + .raise_).
+        # objectName "new-badge" → общий QSS приложения (storyboard_app.py:3934).
+        # Видимость ставит refresh() через set_new_badge (по MW._unseen_versions).
+        self.badge_new = QLabel("NEW", self.img_lbl)
+        self.badge_new.setObjectName("new-badge")
+        self.badge_new.move(2, 2)
+        self.badge_new.hide()
+        self.badge_new.raise_()
+
         active_suffix = "  ✓" if self._is_active else ""
         # 2026-06-13 (Слой 2.2): подпись = dotted ('v5.1'), fallback плоский.
         _base = self._dotted or f"v{self.version_n}"
@@ -183,6 +193,11 @@ class VersionThumb(QFrame):
         self._can_delete = bool(ok)
         if hasattr(self, 'btn_del'):
             self.btn_del.setVisible(self._can_delete)
+
+    def set_new_badge(self, visible: bool):
+        """Показ/скрытие бейджа NEW (без пересоздания thumb) — образец set_deletable."""
+        if hasattr(self, 'badge_new'):
+            self.badge_new.setVisible(bool(visible))
 
     def _refresh_style(self):
         # 2026-06-14: фон по depth; ПРИОРИТЕТ рамок: АКТИВНАЯ (яркое золото
@@ -409,6 +424,10 @@ class ShotViewerDialog(QDialog):
         # MW забирает через take_pending_marked(). One-shot; сброс при
         # закрытии/отмене (_clear_pending_marked).
         self._pending_marked_path = None
+        # 2026-07-02: одноразовый флаг «не закрывать попап после regen-клика».
+        # Ставит show_limit_banner (MW зовёт при лимите N/N). Дефолт False —
+        # обычный regen / ветки vps<=1 и не-Mode-C закрывают попап как раньше.
+        self._suppress_close_after_regen = False
         self.setWindowTitle(
             tr('shot_viewer_title', n=panel_idx + 1))
         self.setModal(False)
@@ -671,9 +690,13 @@ class ShotViewerDialog(QDialog):
         # генерация идёт от неё (для regen это смена «текущей» перед новой).
         def _on_regen_clicked():
             _parent = self._selected_version  # родитель ДО активации
+            self._suppress_close_after_regen = False
             self._activate_selected_version()
+            # DirectConnection: _on_regen (MW) отрабатывает СИНХРОННО здесь же.
+            # При лимите N/N он вызовет show_limit_banner → флаг True → не закрываем.
             self.regen_requested.emit(self.panel_idx, _parent, self.block_name)
-            self.close()
+            if not self._suppress_close_after_regen:
+                self.close()
         self.btn_regen.clicked.connect(_on_regen_clicked)
         actions.addWidget(self.btn_regen)
 
@@ -708,6 +731,63 @@ class ShotViewerDialog(QDialog):
         actions.addStretch()
 
         lay.addLayout(actions)
+
+        # 2026-07-02: оверлей-баннер «лимит N/N» (скрыт; показывается MW при добор-нооп).
+        self._build_limit_banner()
+
+    def _build_limit_banner(self):
+        """Внутридиалоговый оверлей-баннер (overlay-приём как btn_del: родитель —
+        сам диалог, .move + .raise_, репозиция в resizeEvent). Скрыт по умолчанию."""
+        self.limit_banner = QFrame(self)
+        self.limit_banner.setObjectName("limit-banner")
+        self.limit_banner.setStyleSheet(
+            "QFrame#limit-banner { background:#2a1f0a;"
+            " border:1px solid #4a3010; border-radius:8px; }"
+            "QLabel#limit-banner-text { color:#ffaa44; font-size:12px;"
+            " font-weight:600; background:transparent; border:none; }")
+        _bl = QHBoxLayout(self.limit_banner)
+        _bl.setContentsMargins(12, 8, 8, 8)
+        _bl.setSpacing(10)
+        self._limit_banner_lbl = QLabel("")
+        self._limit_banner_lbl.setObjectName("limit-banner-text")
+        self._limit_banner_lbl.setWordWrap(True)
+        _bl.addWidget(self._limit_banner_lbl, stretch=1)
+        from storyboard_app import get_icon
+        _close = QPushButton(self.limit_banner)
+        _close.setObjectName("limit-banner-close")
+        _close.setIcon(get_icon('x'))
+        _close.setIconSize(QSize(14, 14))
+        _close.setFixedSize(22, 22)
+        _close.setCursor(Qt.CursorShape.PointingHandCursor)
+        _close.setStyleSheet(
+            "QPushButton#limit-banner-close { background:transparent;"
+            " border:none; border-radius:11px; }"
+            "QPushButton#limit-banner-close:hover {"
+            " background:rgba(255,170,68,0.18); }")
+        _close.clicked.connect(self.limit_banner.hide)
+        _bl.addWidget(_close, alignment=Qt.AlignmentFlag.AlignTop)
+        self.limit_banner.hide()
+
+    def show_limit_banner(self, n: int):
+        """MW зовёт при добор-нооп (лимит N/N): показать баннер И подавить
+        закрытие попапа после regen-клика. Синхронно в рамках DirectConnection."""
+        self._suppress_close_after_regen = True
+        try:
+            self._limit_banner_lbl.setText(tr('banner_limit_reached', n=int(n)))
+        except Exception:
+            pass
+        self._position_limit_banner()
+        self.limit_banner.show()
+        self.limit_banner.raise_()
+
+    def _position_limit_banner(self):
+        """Ширина = контент-полоса диалога (минус боковые поля 16), верх — 10px."""
+        if not hasattr(self, 'limit_banner'):
+            return
+        m = 16
+        self.limit_banner.setFixedWidth(max(1, self.width() - 2 * m))
+        self.limit_banner.adjustSize()
+        self.limit_banner.move(m, 10)
 
     def _activate_selected_version(self):
         """Делает ВЫДЕЛЕННУЮ версию активной (копия vN→активный файл шота +
@@ -801,6 +881,9 @@ class ShotViewerDialog(QDialog):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._fit_preview_box()
+        if (getattr(self, 'limit_banner', None) is not None
+                and self.limit_banner.isVisible()):
+            self._position_limit_banner()
 
     def _fit_preview_box(self):
         """Подгоняет 9:16-рамку превью под доступную область контейнера:
@@ -1150,10 +1233,21 @@ class ShotViewerDialog(QDialog):
         # (она ещё в self._selected_version) — иначе правка v3 теряется при
         # переключении v3→v1. Не dirty → _maybe_save_crop выходит сразу.
         self._maybe_save_crop()
+        # 2026-07-02: ЯВНЫЙ клик по версии снимает её NEW (авто-select при
+        # открытии идёт НЕ сюда — refresh ставит selected напрямую, поэтому NEW
+        # на активной держится до реального клика). Закрытие/смена блока — не чистят.
+        try:
+            _mw = self.parent()
+            if _mw is not None and hasattr(_mw, 'mark_version_seen'):
+                _mw.mark_version_seen(self.block_name, self.panel_idx, version_n)
+        except Exception:
+            pass
         self._selected_version = version_n
         # Update visual selection
         for thumb in self._thumbs:
             thumb.set_selected(thumb.version_n == version_n)
+            if thumb.version_n == version_n:
+                thumb.set_new_badge(False)
         # Показ версии с учётом сохранённого кропа (restore от оригинала).
         self._show_version(version_n)
         # Update label
@@ -1336,6 +1430,16 @@ class ShotViewerDialog(QDialog):
                                  dotted=node.get("dotted"))
             thumb.clicked.connect(self._on_thumb_clicked)
             thumb.delete_requested.connect(self._on_delete_version)
+            # 2026-07-02: NEW на доборной версии — источник истины MW
+            # (_unseen_versions), геттер держит refresh актуальным. parent()
+            # диалога = MainWindow (создан parent=self в _open_shot_viewer).
+            try:
+                _mw = self.parent()
+                if _mw is not None and hasattr(_mw, 'is_version_unseen'):
+                    thumb.set_new_badge(
+                        _mw.is_version_unseen(self.block_name, self.panel_idx, n))
+            except Exception:
+                pass
             self.strip_layout.insertWidget(
                 self.strip_layout.count() - 1, thumb)
             self._thumbs.append(thumb)

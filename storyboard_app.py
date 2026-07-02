@@ -6685,6 +6685,12 @@ class MainWindow(QMainWindow):
         # Множество (block, panel_idx) — недавно регенерированные шоты, ещё не
         # просмотренные пользователем. На карточке у них висит бейдж NEW.
         self._unseen_shots: set = set()
+        # 2026-07-02: (block, panel_idx, version_n) — доборные версии Mode C,
+        # ещё не открытые кликом. NEW на плитке версии в попапе. Переживает
+        # закрытие/переоткрытие попапа (источник истины — MW, не диалог).
+        # Снимается ТОЛЬКО кликом по версии (mark_version_seen); смена блока
+        # НЕ чистит (в отличие от _unseen_shots).
+        self._unseen_versions: set = set()
         # 2026-05-07: per-episode set путей рефов которые юзер ещё не «увидел»
         # после обновления (regen/edit). На карточке висит NEW-бейдж до тех
         # пор пока юзер не уйдёт с refs view этого эпизода (тогда чистим).
@@ -13680,6 +13686,16 @@ class MainWindow(QMainWindow):
             and any(b == block_name for (b, _) in self._unseen_shots)
         )
 
+    def is_version_unseen(self, block_name: str, panel_idx: int,
+                          version_n: int) -> bool:
+        """NEW на плитке версии в попапе (геттер для ShotViewerDialog.refresh)."""
+        return (block_name, panel_idx, int(version_n)) in self._unseen_versions
+
+    def mark_version_seen(self, block_name: str, panel_idx: int,
+                          version_n: int) -> None:
+        """Явный клик по версии в попапе снимает её NEW (закрытие/смена блока — нет)."""
+        self._unseen_versions.discard((block_name, panel_idx, int(version_n)))
+
     def _apply_block_pill_state(self, block_name: str, btn: QPushButton) -> None:
         """Apply active/generating/unseen state from registries to one block pill.
 
@@ -15849,8 +15865,15 @@ class MainWindow(QMainWindow):
                     _present.add(_vn)
             _gaps = [v for v in range(1, _n + 1) if v not in _present]
             if not _gaps:
-                self.status_bar.showMessage(
-                    tr('status_all_versions_present', versions_count=_n))
+                # Попап открыт → баннер поверх него (он НЕ закроется: диалог
+                # читает suppress-флаг после синхронного DirectConnection-эмита).
+                # Нет попапа (клик с карточки грида) → прежний тихий статус-бар.
+                dlg = self._get_open_shot_viewer(target_block, panel_idx)
+                if dlg is not None:
+                    dlg.show_limit_banner(_n)
+                else:
+                    self.status_bar.showMessage(
+                        tr('status_all_versions_present', versions_count=_n))
                 self._log_shot_regen(
                     f"topup-noop block={target_block} panel={panel_idx} "
                     f"n={_n} (все слоты на месте)")
@@ -15873,6 +15896,8 @@ class MainWindow(QMainWindow):
             # спавним ТОЛЬКО дыры как ПЛОСКИЕ слоты (version_index=v, БЕЗ
             # parent_version → sidecar не пишется), ракурс из v{v}.prompt.txt.
             for v in _gaps:
+                # NEW на доборной версии (снимется кликом по плитке в попапе).
+                self._unseen_versions.add((target_block, panel_idx, v))
                 _cam = self._recover_camera_override(target_block, panel_idx, v)
                 self._spawn_one_mode_c_version(target_block, panel_idx, v, _cam)
             self._refresh_block_indicator(target_block)
