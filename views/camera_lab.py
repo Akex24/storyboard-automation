@@ -856,6 +856,13 @@ class CameraLabView(QWidget):
         left_lay.setContentsMargins(18, 18, 18, 18)
         left_lay.setSpacing(14)
 
+        # 2026-07-02 (структура ЖЁСТКО): 1) Исходник (только юзер),
+        # 2) Результат (только генерация), 3) лента. Заголовок исходника —
+        # чтобы блоки никогда не путались визуально.
+        self.source_title_lbl = QLabel()
+        self.source_title_lbl.setObjectName("camera-section-title")
+        left_lay.addWidget(self.source_title_lbl)
+
         self.current_slot = ImageDropSlot(
             "Current shot",
             "camera_drop_current",
@@ -1192,6 +1199,7 @@ class CameraLabView(QWidget):
     def apply_lang(self) -> None:
         self.title_lbl.setText(tr("camera_title"))
         self.subtitle_lbl.setText(tr("camera_subtitle"))
+        self.source_title_lbl.setText(tr("camera_source_title"))
         self.controls_title_lbl.setText(tr("camera_controls_title"))
         self.fal_key_title_lbl.setText(tr("camera_fal_key_label"))
         self.fal_key_edit.setPlaceholderText(tr("camera_fal_key_placeholder"))
@@ -1243,9 +1251,10 @@ class CameraLabView(QWidget):
         каждой генерации. Один тред за раз; ошибки не критичны ($ —)."""
         if self._balance_thread is not None and self._balance_thread.isRunning():
             return
-        thread = FalBalanceThread(self)
-        thread.balance.connect(lambda v: self._set_balance_text(v))
+        thread = FalBalanceThread()   # без parent + deleteLater: не умирает
+        thread.balance.connect(lambda v: self._set_balance_text(v))   # вместе с вью
         thread.error.connect(lambda _msg: self._set_balance_text(None))
+        thread.finished.connect(thread.deleteLater)
         self._balance_thread = thread
         thread.start()
 
@@ -1733,158 +1742,161 @@ class CameraLabView(QWidget):
 
     @staticmethod
     def _qss() -> str:
-        return """
-        QWidget#camera-lab {
-            background: #121313;
-        }
-        QLabel#camera-title {
+        # Единый токен фона страницы вкладки (тема-ремаппер красит литерал):
+        # им же заливаются паспарту исходника и окно «Результат».
+        page_bg = "#121313"
+        return f"""
+        QWidget#camera-lab {{{{
+            background: {page_bg};
+        }}}}
+        QLabel#camera-title {{
             color: #f7f8f4;
             font-size: 24px;
             font-weight: 700;
-        }
-        QLabel#camera-subtitle {
+        }}
+        QLabel#camera-subtitle {{
             color: rgba(255,255,255,0.48);
             font-size: 12px;
-        }
-        QFrame#camera-panel {
+        }}
+        QFrame#camera-panel {{
             background: #191b1d;
             border: none;
             border-radius: 8px;
-        }
-        QFrame#camera-main-slot {
+        }}
+        QFrame#camera-main-slot {{
+            background: {page_bg};   /* паспарту = фон страницы, без серой плитки */
+            border: 1px solid #1d1e20;
+            border-radius: 8px;
+        }}
+        QFrame#camera-ref-drop-area {{
             background: #131516;
             border: 1px solid #1d1e20;
             border-radius: 8px;
-        }
-        QFrame#camera-ref-drop-area {
-            background: #131516;
+        }}
+        QFrame#camera-ref-drop-area:hover {{
             border: 1px solid #1d1e20;
-            border-radius: 8px;
-        }
-        QFrame#camera-ref-drop-area:hover {
-            border: 1px solid #1d1e20;
-        }
-        QLabel#camera-slot-image {
-            background: rgba(255,255,255,0.02);
+        }}
+        QLabel#camera-slot-image {{
+            background: transparent;   /* поля вокруг кадра = фон страницы */
             border-radius: 6px;
-        }
-        QLabel#camera-slot-title {
+        }}
+        QLabel#camera-slot-title {{
             color: #f7f8f4;
             font-size: 13px;
             font-weight: 650;
-        }
-        QFrame#camera-main-slot QLabel#camera-slot-title {
+        }}
+        QFrame#camera-main-slot QLabel#camera-slot-title {{
             font-size: 18px;
-        }
+        }}
         QLabel#camera-slot-hint,
         QLabel#camera-slider-label,
-        QLabel#camera-ref-drop-hint {
+        QLabel#camera-ref-drop-hint {{
             color: rgba(255,255,255,0.55);
             font-size: 12px;
-        }
-        QLabel#camera-ref-drop-title {
+        }}
+        QLabel#camera-ref-drop-title {{
             color: #f7f8f4;
             font-size: 15px;
             font-weight: 650;
-        }
-        QLabel#camera-section-title {
+        }}
+        QLabel#camera-section-title {{
             color: #b8b8b8;
             font-size: 13px;
             font-weight: 650;
-        }
-        QLabel#camera-generation-status {
+        }}
+        QLabel#camera-generation-status {{
             color: #e4e5df;
             background: transparent;
             font-size: 12px;
             line-height: 1.25;
             padding: 2px 0px 0px 0px;
-        }
-        QLabel#camera-generation-status[error="true"] {
+        }}
+        QLabel#camera-generation-status[error="true"] {{
             color: #ff7b86;
-        }
-        QScrollArea#camera-refs-scroll {
+        }}
+        QScrollArea#camera-refs-scroll {{
             background: transparent;
             border: none;
             min-height: 142px;
             max-height: 152px;
-        }
-        QWidget#camera-refs-strip {
+        }}
+        QWidget#camera-refs-strip {{
             background: transparent;
-        }
-        QScrollArea#camera-results-panel {
+        }}
+        QScrollArea#camera-results-panel {{
             background: transparent;
             border: none;
             min-height: 184px;
-        }
-        QWidget#camera-results-strip {
+        }}
+        QWidget#camera-results-strip {{
             background: transparent;
-        }
-        QFrame#camera-ref-thumb {
+        }}
+        QFrame#camera-ref-thumb {{
             background: #131516;
             border: none;
             border-radius: 8px;
             min-width: 112px;
             max-width: 112px;
-        }
-        QFrame#camera-ref-thumb-wrap {
+        }}
+        QFrame#camera-ref-thumb-wrap {{
             background: rgba(255,255,255,0.04);
             border-radius: 6px;
-        }
-        QFrame#camera-result-thumb {
+        }}
+        QFrame#camera-result-thumb {{
             background: transparent;
             border: none;
             border-radius: 8px;
-        }
-        QFrame#camera-result-thumb-wrap {
+        }}
+        QFrame#camera-result-thumb-wrap {{
             background: rgba(255,255,255,0.04);
             border: 1px solid rgba(255,255,255,0.06);
             border-radius: 8px;
-        }
-        QLabel#camera-thumb-image {
+        }}
+        QLabel#camera-thumb-image {{
             background: rgba(255,255,255,0.04);
             border-radius: 6px;
-        }
-        QLabel#camera-result-thumb-image {
+        }}
+        QLabel#camera-result-thumb-image {{
             background: transparent;
             border-radius: 8px;
-        }
-        QLabel#camera-result-big {
-            /* палитра 1-в-1 с окном исходника (#camera-main-slot) */
-            background: #131516;
+        }}
+        QLabel#camera-result-big {{
+            /* весь блок — на фоне страницы, без собственной заливки */
+            background: {page_bg};
             color: rgba(255,255,255,0.35);
             border: 1px solid #1d1e20;
             border-radius: 8px;
             font-size: 12px;
-        }
-        QScrollArea#camera-results-panel, QWidget#camera-results-strip {
+        }}
+        QScrollArea#camera-results-panel, QWidget#camera-results-strip {{
             /* лента миниатюр — на общем фоне панели, без своих плашек */
             background: transparent;
             border: none;
-        }
-        QLineEdit#camera-fal-key {
+        }}
+        QLineEdit#camera-fal-key {{
             background: #131516;
             color: #e4e5df;
             border: 1px solid #1d1e20;
             border-radius: 8px;
             padding: 6px 10px;
             font-size: 12px;
-        }
-        QPushButton#camera-fal-key-btn {
+        }}
+        QPushButton#camera-fal-key-btn {{
             background: #242628;
             color: #f2f3f0;
             border: 1px solid rgba(255, 255, 255, 0.10);
             border-radius: 8px;
             padding: 0px 14px;
             font-weight: 600;
-        }
-        QPushButton#camera-fal-key-btn:hover {
+        }}
+        QPushButton#camera-fal-key-btn:hover {{
             background: #2c2f31;
-        }
-        QLabel#camera-fal-balance {
+        }}
+        QLabel#camera-fal-balance {{
             color: #b8b8b8;
             font-size: 12px;
-        }
-        QPlainTextEdit#camera-prompt-preview {
+        }}
+        QPlainTextEdit#camera-prompt-preview {{
             background: #131516;
             color: #b8b8b8;
             border: 1px solid #1d1e20;
@@ -1892,20 +1904,20 @@ class CameraLabView(QWidget):
             padding: 8px;
             selection-background-color: #2c2f31;
             font-size: 11px;
-        }
-        QLabel#camera-result-preview {
+        }}
+        QLabel#camera-result-preview {{
             background: #131516;
             border: 1px solid #1d1e20;
             border-radius: 8px;
-        }
+        }}
         QLabel#camera-ref-name,
-        QLabel#camera-slider-value {
+        QLabel#camera-slider-value {{
             color: #f7f8f4;
             font-size: 11px;
-        }
+        }}
         QToolButton#camera-thumb-overlay-btn,
         QToolButton#camera-thumb-overlay-trash,
-        QToolButton#camera-slot-paste-btn {
+        QToolButton#camera-slot-paste-btn {{
             background: rgba(29,31,33,0.82);
             border: 1px solid rgba(255,255,255,0.20);
             border-radius: 8px;
@@ -1914,66 +1926,66 @@ class CameraLabView(QWidget):
             max-width: 22px;
             min-height: 22px;
             max-height: 22px;
-        }
-        QToolButton#camera-slot-paste-btn {
+        }}
+        QToolButton#camera-slot-paste-btn {{
             min-width: 28px;
             max-width: 28px;
             min-height: 28px;
             max-height: 28px;
-        }
+        }}
         QToolButton#camera-thumb-overlay-btn:hover,
-        QToolButton#camera-slot-paste-btn:hover {
+        QToolButton#camera-slot-paste-btn:hover {{
             background: rgba(48,51,53,0.94);
             border: 1px solid rgba(255,255,255,0.34);
-        }
-        QToolButton#camera-thumb-overlay-trash {
+        }}
+        QToolButton#camera-thumb-overlay-trash {{
             border: 1px solid rgba(232,75,74,0.38);
-        }
-        QToolButton#camera-thumb-overlay-trash:hover {
+        }}
+        QToolButton#camera-thumb-overlay-trash:hover {{
             background: rgba(52,32,34,0.94);
             border: 1px solid rgba(255,105,105,0.72);
-        }
-        QSlider::groove:horizontal {
+        }}
+        QSlider::groove:horizontal {{
             height: 4px;
             background: #2c2f31;
             border-radius: 2px;
-        }
-        QSlider::handle:horizontal {
+        }}
+        QSlider::handle:horizontal {{
             background: #d4a256;
             width: 16px;
             height: 16px;
             margin: -6px 0;
             border-radius: 8px;
-        }
-        QPushButton#camera-generate-btn {
+        }}
+        QPushButton#camera-generate-btn {{
             background: #2c2f31;
             color: #f7f8f4;
             border: 1px solid #1d1e20;
             border-radius: 8px;
             font-weight: 650;
-        }
-        QPushButton#camera-generate-btn:hover {
+        }}
+        QPushButton#camera-generate-btn:hover {{
             background: #36393b;
-        }
-        QPushButton#camera-generate-btn:pressed {
+        }}
+        QPushButton#camera-generate-btn:pressed {{
             background: #242729;
-        }
+        }}
         QPushButton#camera-secondary-btn,
-        QPushButton#camera-danger-btn {
+        QPushButton#camera-danger-btn {{
             background: #2c2f31;
             color: #f7f8f4;
             border: 1px solid #1d1e20;
             border-radius: 8px;
             font-weight: 650;
             padding: 8px 10px;
-        }
-        QPushButton#camera-secondary-btn:hover {
+        }}
+        QPushButton#camera-secondary-btn:hover {{
             background: #36393b;
-        }
-        QPushButton#camera-danger-btn {
+        }}
+        QPushButton#camera-danger-btn {{
             color: #ff7b8d;
-        }
-        QPushButton#camera-danger-btn:hover {
+        }}
+        QPushButton#camera-danger-btn:hover {{
             background: #3a2429;
-        }
+        }}
         """
