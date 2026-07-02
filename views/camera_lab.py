@@ -856,6 +856,12 @@ class CameraLabView(QWidget):
         left_lay.setContentsMargins(18, 18, 18, 18)
         left_lay.setSpacing(14)
 
+        # 2026-07-02: заголовок исходника — блоки «Исходник/Результат»
+        # больше не путаются визуально.
+        self.source_title_lbl = QLabel()
+        self.source_title_lbl.setObjectName("camera-section-title")
+        left_lay.addWidget(self.source_title_lbl)
+
         self.current_slot = ImageDropSlot(
             "Current shot",
             "camera_drop_current",
@@ -1192,6 +1198,7 @@ class CameraLabView(QWidget):
     def apply_lang(self) -> None:
         self.title_lbl.setText(tr("camera_title"))
         self.subtitle_lbl.setText(tr("camera_subtitle"))
+        self.source_title_lbl.setText(tr("camera_source_title"))
         self.controls_title_lbl.setText(tr("camera_controls_title"))
         self.fal_key_title_lbl.setText(tr("camera_fal_key_label"))
         self.fal_key_edit.setPlaceholderText(tr("camera_fal_key_placeholder"))
@@ -1752,7 +1759,9 @@ class CameraLabView(QWidget):
             border-radius: 8px;
         }
         QFrame#camera-main-slot {
-            background: #131516;
+            /* 2026-07-02: паспарту = фон страницы (#121313, как
+               QWidget#camera-lab) — без серой плитки вокруг кадра */
+            background: #121313;
             border: 1px solid #1d1e20;
             border-radius: 8px;
         }
@@ -1765,7 +1774,7 @@ class CameraLabView(QWidget):
             border: 1px solid #1d1e20;
         }
         QLabel#camera-slot-image {
-            background: rgba(255,255,255,0.02);
+            background: transparent;   /* поля вокруг кадра = фон страницы */
             border-radius: 6px;
         }
         QLabel#camera-slot-title {
@@ -1849,8 +1858,8 @@ class CameraLabView(QWidget):
             border-radius: 8px;
         }
         QLabel#camera-result-big {
-            /* палитра 1-в-1 с окном исходника (#camera-main-slot) */
-            background: #131516;
+            /* фон страницы (#121313, как QWidget#camera-lab) */
+            background: #121313;
             color: rgba(255,255,255,0.35);
             border: 1px solid #1d1e20;
             border-radius: 8px;
