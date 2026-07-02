@@ -4236,6 +4236,49 @@ def save_api_key(key: str) -> None:
         traceback.print_exc()
 
 
+# ─── fal.ai ключ (вкладка «Камера»: qwen multi-angle) ────────────────────
+# 2026-07-02: хранение по образцу FastGen-ключа (load_api_key): приоритет
+# QSettings (юзер вставил на вкладке, работает без перезапуска) → сайдкар
+# fal_key.txt в project_root (fallback/бэкап; в .gitignore — содержит ключ).
+
+def load_fal_key() -> str:
+    """API-ключ fal.ai (формат id:secret). QSettings → fal_key.txt → ''."""
+    try:
+        qs = QSettings(APP_ORG, APP_NAME)
+        ui_key = qs.value("fal_api_key", "", type=str)
+        if ui_key and ui_key.strip():
+            return ui_key.strip()
+    except Exception:
+        pass
+    try:
+        root = _project_root_for_provider_sync()
+        if root is not None:
+            return (root / "fal_key.txt").read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def save_fal_key(key: str) -> None:
+    """Сохраняет fal-ключ: QSettings + сайдкар fal_key.txt (project_root).
+    Пустой key → очистка обоих мест. Ошибки молча (Studio не падает)."""
+    key = (key or "").strip()
+    try:
+        QSettings(APP_ORG, APP_NAME).setValue("fal_api_key", key)
+    except Exception:
+        traceback.print_exc()
+    try:
+        root = _project_root_for_provider_sync()
+        if root is not None:
+            dst = root / "fal_key.txt"
+            if key:
+                dst.write_text(key, encoding="utf-8")
+            elif dst.exists():
+                dst.unlink()
+    except Exception:
+        traceback.print_exc()
+
+
 def sync_api_key_to_env(project_root: Path, key: str) -> None:
     """Bridge для pipeline.py: обновляет первую строку .env свежим
     Fast Gen API ключом. Сохраняет остальные строки (Anthropic ключ

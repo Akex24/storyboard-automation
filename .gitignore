@@ -57,3 +57,5 @@ _session_handoff.md
 .fastgen_keys_active
 .fastgen_keys_cursor
 fastgen_keys.txt
+# fal.ai ключ (вкладка «Камера»). СОДЕРЖИТ КЛЮЧ — критично не коммитить.
+fal_key.txt
