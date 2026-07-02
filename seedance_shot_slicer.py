@@ -42,6 +42,14 @@ _REFBLOCK_RE = re.compile(r'^\s*\[[^\]]*?参考[:：]\s*@image(\d+)\s*\]')
 _LEGEND_RE = re.compile(r'^\s*@image(\d+)\s*=\s*(.+?)\s*$')
 _IMG_TAG_RE = re.compile(r'\[@\]img(\d+)')
 _FENCE_RE = re.compile(r'^\s*```')
+# 2026-07-02 (voice-ref fix при нарезке): строка-отсылка голоса и маркеры
+# секции 声音/台词. Полный профиль первого говорящего шота инлайнится в
+# каждый нарезанный шот, чья 声音/台词 содержит отсылку — иначе после
+# нарезки на отдельные генерации 镜头N (с профилем) в другой папке →
+# ссылка повисает, голос не подхватывается.
+_VOICE_REF_RE = re.compile(r'使用与镜头\s*(\d+)\s*相同的.*声音档案')
+_VOICE_HDR_RE = re.compile(r'^\s*声音')
+_DIALOG_RE = re.compile(r'用英语说|用中文说|说[：:]')
 
 
 def _norm(name: str) -> str:
@@ -171,7 +179,77 @@ def _filter_legend(pre: List[str], used: set) -> List[str]:
     return out
 
 
-def _build_shot_text(parsed: dict, shot_lines: List[str], used: set) -> str:
+def _extract_voice_profile(shot_n_lines: List[str]) -> Optional[List[str]]:
+    """Полный голосовой профиль из сегмента шота N (первого говорящего).
+
+    Берём строки секции 声音/台词 ПОСЛЕ её заголовка, КРОМЕ строки
+    реплики (环境音…用英语说…«…») — она шот-специфична и в другой шот не
+    копируется. Возвращаем только строки-описание голоса (пол/возраст,
+    тембр, скорость, интонация). None если:
+      • секции 声音 нет;
+      • в 镜头N самом стоит отсылка (а не полный профиль) — тогда
+        разворачивать нечего (край: caller оставит ссылку + warning).
+    """
+    start = None
+    for i, ln in enumerate(shot_n_lines):
+        if _VOICE_HDR_RE.match(ln):
+            start = i
+            break
+    if start is None:
+        return None
+    profile: List[str] = []
+    for ln in shot_n_lines[start + 1:]:
+        s = ln.strip()
+        if not s:
+            continue
+        if _DIALOG_RE.search(s):          # строка реплики — шот-специфична
+            continue
+        if _VOICE_REF_RE.search(s):       # сам 镜头N — отсылка, не профиль
+            return None
+        profile.append(ln)
+    return profile or None
+
+
+def _expand_voice_refs(shot_lines: List[str],
+                       shots: List[Tuple[int, List[str]]],
+                       log: Optional[Callable[[str], None]],
+                       ctx: str) -> List[str]:
+    """Заменяет строки-отсылки 使用与镜头N相同的…声音档案 в сегменте шота
+    на ПОЛНЫЙ профиль из 镜头N того же блока (самодостаточность нарезки).
+
+    Край (НЕ ломаем генерацию, оставляем строку как есть + warning):
+      • 镜头N нет в этом блоке;
+      • в 镜头N нет полного профиля (сам отсылка / немой).
+    Немые шоты сюда приходят уже без отсылок (их снял _purge_phantom_voice
+    на этапе writer/regen) — конфликта нет.
+    """
+    by_num = {num: lines for num, lines in shots}
+    out: List[str] = []
+    for ln in shot_lines:
+        m = _VOICE_REF_RE.search(ln)
+        if not m:
+            out.append(ln)
+            continue
+        n = int(m.group(1))
+        src = by_num.get(n)
+        if src is None:
+            if log:
+                log(f"[voice] {ctx}: 镜头{n} not in block → ссылка оставлена как есть\n")
+            out.append(ln)
+            continue
+        profile = _extract_voice_profile(src)
+        if not profile:
+            if log:
+                log(f"[voice] {ctx}: полный профиль в 镜头{n} не найден → ссылка оставлена\n")
+            out.append(ln)
+            continue
+        out.extend(profile)               # отсылка → полный профиль
+    return out
+
+
+def _build_shot_text(parsed: dict, shot_lines: List[str], used: set,
+                     shot_num: int = 0,
+                     log: Optional[Callable[[str], None]] = None) -> str:
     """Собрать нарезанный промпт одного шота из распарсенных частей."""
     out: List[str] = []
     out += _filter_legend(parsed['pre'], used)
@@ -183,7 +261,11 @@ def _build_shot_text(parsed: dict, shot_lines: List[str], used: set) -> str:
         if num in used:
             out += blk
     out += parsed['scene']
-    out += shot_lines
+    # 2026-07-02: разворачиваем голосовую отсылку 使用与镜头N → полный
+    # профиль (самодостаточность нарезанного шота). При отсутствии 镜头N
+    # строка остаётся дословной (см. _expand_voice_refs).
+    out += _expand_voice_refs(shot_lines, parsed['shots'], log,
+                              f"shot{shot_num}")
     out += parsed['tail']
     out += parsed['post']
     return '\n'.join(out)
@@ -307,7 +389,8 @@ def slice_block_to_shots(
 
         # 1) нарезанный промпт
         try:
-            out_text = _build_shot_text(parsed, shot_lines, used_imageN)
+            out_text = _build_shot_text(parsed, shot_lines, used_imageN,
+                                        shot_num=shot_num, log=_log)
             (shot_dir / f"{ep_id}_block{block_n}_shot{shot_num}.txt").write_text(
                 out_text, encoding='utf-8')
         except Exception as e:
