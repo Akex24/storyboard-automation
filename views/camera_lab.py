@@ -701,6 +701,29 @@ def _camera_icon(name: str) -> QIcon:
         return QIcon()
 
 
+def _file_data_available(path: Path) -> bool:
+    """True, если у файла есть РЕАЛЬНЫЕ данные на диске. Ловит iCloud-evicted
+    (dataless) плейсхолдеры: на macOS/APFS выгруженный файл имеет st_size>0,
+    но st_blocks==0 (данные в облаке), и/или рядом лежит скрытый
+    '.<имя>.icloud'. Кроссплатформенно: на Win/Linux st_blocks нет (getattr →
+    None) → возвращаем True (нет iCloud-eviction в этом виде — генерацию НЕ
+    блокируем). При любой ошибке — True (не мешаем). 2026-07-03."""
+    try:
+        p = Path(path)
+        # старый механизм eviction — скрытый .icloud-сайдкар рядом
+        if (p.parent / f".{p.name}.icloud").exists():
+            return False
+        if not p.exists():
+            return False
+        st = p.stat()
+        blocks = getattr(st, "st_blocks", None)   # None на Windows → пропуск
+        if blocks is not None and st.st_size > 0 and blocks == 0:
+            return False   # dataless: логический размер есть, физических блоков ноль
+        return True
+    except Exception:
+        return True
+
+
 class CameraResultThumb(QFrame):
     clicked = pyqtSignal(Path)
     revealRequested = pyqtSignal(Path)
@@ -1452,6 +1475,14 @@ class CameraLabView(QWidget):
             self._current_ref = CameraReference(
                 path=healed_src, ref_type=self._current_ref.ref_type)
             self._save_state()   # догоняем png→jpg и в state
+        # 2026-07-03: защита от iCloud-evicted (dataless) кадра — файл ЕСТЬ, но
+        # данные выгружены в облако; FalAnglesThread прочитал бы пусто/упал, а
+        # юзер видел невнятное «Drop the current shot first». Даём внятную ошибку.
+        if not _file_data_available(healed_src):
+            print(f"[CAMLAB] run_gen: DATALESS source {healed_src} "
+                  f"(iCloud-evicted) — генерация заблокирована")
+            self._set_generation_status(tr("camera_source_dataless"), is_error=True)
+            return
         show_slug = self._current_show_slug()
         if not show_slug:
             self._set_generation_status(tr("camera_need_show"))
