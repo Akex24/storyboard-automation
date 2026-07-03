@@ -180,7 +180,7 @@ class CameraPerspectiveControl(QWidget):
     def set_values(self, h_deg: int, v_deg: int, zoom_x10: int) -> None:
         self._h = int(h_deg) % 360
         self._v = max(-30, min(90, int(v_deg)))
-        self._z = max(0, min(200, int(zoom_x10)))   # 2026-07-03: зум до 20.0
+        self._z = max(0, min(100, int(zoom_x10)))   # 2026-07-03: fal-предел 10.0 (422 на >10)
         # синк float-аккумуляторов drag (во время drag слайдеры blockSignals →
         # сюда не заходим, аккумулятор не сбивается)
         self._h_f = float(self._h)
@@ -255,7 +255,7 @@ class CameraPerspectiveControl(QWidget):
 
     def wheelEvent(self, event):  # noqa: N802 - Qt override
         step = 5 if event.angleDelta().y() > 0 else -5   # 0.5 зума за щелчок
-        self._z = max(0, min(200, self._z + step))       # 2026-07-03: до 20.0
+        self._z = max(0, min(100, self._z + step))       # 2026-07-03: fal-предел 10.0
         self.update()
         self.valuesChanged.emit(self._h, self._v, self._z)
         event.accept()
@@ -273,15 +273,14 @@ class CameraPerspectiveControl(QWidget):
                 min(rect.width(), rect.height()) * 0.40)
 
     def _cam_dist(self, radius: float) -> float:
-        """2026-07-03 (п.3): ВИЗУАЛЬНАЯ дистанция значка камеры от центра =
-        f(зум); в API зум уходит как есть, это только отрисовка. Края шкалы:
-        зум 0 → 0.18r (вплотную к кадру), зум 20 → 1.0r (край сферы).
-        2026-07-03 (фикс «прилип»): кривая √ вместо линейной — дефолт-зум 5.0
-        визуально дальше от кадра (0.59r ≈ 66px vs 43px линейно, +23px),
-        края шкалы не сдвинуты. Drag-чувствительность 1:1 считается от этого
-        же r_cam — пересчитывается автоматически."""
-        t = self._z / 200.0
-        return radius * (0.18 + 0.82 * math.sqrt(t))
+        """2026-07-03: ВИЗУАЛЬНАЯ дистанция значка камеры от центра = f(зум).
+        UI-семантика зума (фикс инверсии): 0 = камера ДАЛЕКО (общий план),
+        10 = ВПЛОТНУЮ (крупно) — значок синхронен: ui 0 → 1.0r (край сферы),
+        ui 10 → 0.18r (вплотную к кадру). Линейно по перевёрнутой шкале —
+        дефолт ui 5.0 → 0.59r ≈ 66px (утверждённая точка «не прилипает»).
+        Drag-чувствительность 1:1 считается от этого же r_cam."""
+        t_far = 1.0 - (self._z / 100.0)          # доля «дальности» камеры
+        return radius * (0.18 + 0.82 * t_far)
 
     # 2026-07-02 (фикс №2): ВИЗУАЛЬНАЯ широта камеры — растянутый маппинг
     # на полный видимый диапазон сферы (якоря: −30°=дно, ПОД кадром;
@@ -457,7 +456,7 @@ class CameraPerspectiveControl(QWidget):
         (последний слой paintEvent — ничем не перекрывается).
         Lucide 'video' через get_icon; fallback — точка."""
         alpha = 110 if dim else 235   # 110/255 ≈ 43% — видим всегда
-        line_w = 0.8 + (zoom_x10 / 200.0) * 2.6   # zoom 0→0.8px … 20→3.4px
+        line_w = 0.8 + (zoom_x10 / 100.0) * 2.6   # ui-zoom 0→0.8px … 10→3.4px
         line_pen = QPen(QColor(232, 184, 106, 70 if dim else 150), line_w)
         line_pen.setStyle(Qt.PenStyle.DotLine)
         painter.setPen(line_pen)
@@ -1104,8 +1103,11 @@ class CameraLabView(QWidget):
         # значения БЕЗ защёлкивания в пресеты (квантование — на сервере).
         self.rotate_slider = self._add_slider(controls_lay, "camera_horizontal", 0, 72, 0)
         self.vertical_slider = self._add_slider(controls_lay, "camera_vertical", -30, 90, 0)
-        # 2026-07-03 (п.3): верх зума 10 → 20 (слайдер ×10, шаг 0.1 как был)
-        self.zoom_slider = self._add_slider(controls_lay, "camera_zoom", 0, 200, 50)
+        # 2026-07-03: верх зума ВЕРНУЛИ на 10.0 — fal-модель принимает 0..10
+        # (HTTP 422 на >10, подтверждено схемой OpenAPI: min 0 / max 10 / def 5).
+        # UI-семантика: 0 = далеко (общий план), 10 = вплотную (крупно) — в fal
+        # уходит ИНВЕРСИЯ (10 − ui), см. _run_generation.
+        self.zoom_slider = self._add_slider(controls_lay, "camera_zoom", 0, 100, 50)
 
         self.orbit = CameraPerspectiveControl()
         self.orbit.valuesChanged.connect(self._on_preview_values_changed)
@@ -1586,6 +1588,12 @@ class CameraLabView(QWidget):
             return
         out_dir = self._project_root / "shows" / show_slug / "camera_lab" / "outputs"
         h_deg, v_deg, zoom = self._api_values()
+        # 2026-07-03 (фикс инверсии зума): UI-шкала = 0 далеко / 10 вплотную,
+        # а fal-модель по факту генераций (и титулу «Zoom (Distance)») ждёт
+        # ДИСТАНЦИЮ: 0 вплотную / 10 далеко → инвертируем перед отправкой.
+        # В манифест/статусы/бейджи идёт UI-значение (совпадает со слайдером).
+        fal_zoom = max(0.0, min(10.0, 10.0 - zoom))
+        print(f"[CAMLAB] run_gen: ui_zoom={zoom:.1f} -> fal_zoom={fal_zoom:.1f}")
         self.generate_btn.setEnabled(False)
         self._generation_run_id += 1
         run_id = self._generation_run_id
@@ -1593,7 +1601,7 @@ class CameraLabView(QWidget):
             image_path=self._current_ref.path,
             horizontal_angle=h_deg,
             vertical_angle=v_deg,
-            zoom=zoom,
+            zoom=fal_zoom,
             out_dir=out_dir,
             parent=None,
         )
@@ -1726,7 +1734,7 @@ class CameraLabView(QWidget):
             for slider, value in (
                 (self.rotate_slider, max(0, min(72, int(round(h_deg / 5))))),
                 (self.vertical_slider, max(-30, min(90, v_deg))),
-                (self.zoom_slider, max(0, min(200, int(round(zoom * 10))))),
+                (self.zoom_slider, max(0, min(100, int(round(zoom * 10))))),
             ):
                 slider.blockSignals(True)
                 slider.setValue(value)
