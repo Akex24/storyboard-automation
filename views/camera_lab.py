@@ -1376,12 +1376,17 @@ class CameraLabView(QWidget):
         self._set_balance_text(None)
 
     def shutdown_threads(self, wait_ms: int = 8000) -> None:
-        """Остановить/дождаться FalBalanceThread и все FalAnglesThread.
-        Зовётся на aboutToQuit (и из смоков перед выходом). Не кидает."""
+        """Остановить/дождаться FalBalanceThread и все FalAnglesThread ДО
+        разрушения виджетов. Зовётся из closeEvent, MainWindow.closeEvent,
+        aboutToQuit (и смоков). Не кидает. 2026-07-03: сперва .stop() (флаг
+        отмены), потом wait() — GET (timeout 6с) вернётся сам, wait его
+        дождётся чисто, без рискованного terminate()."""
         try:
             bt = self._balance_thread
             if bt is not None and bt.isRunning():
-                bt.wait(wait_ms)   # сетевой GET с timeout=6с — дождёмся
+                if hasattr(bt, "stop"):
+                    bt.stop()          # флаг: не тронет UI после отмены
+                bt.wait(wait_ms)       # GET timeout=6с — дождёмся завершения
         except Exception:
             pass
         try:
@@ -1392,6 +1397,13 @@ class CameraLabView(QWidget):
                     th.wait(wait_ms)
         except Exception:
             pass
+
+    def closeEvent(self, event):  # noqa: N802 - Qt override
+        # 2026-07-03: закрытие вкладки/окна — гасим сетевые треды ДО разрушения
+        # виджетов (живой FalBalanceThread на GET иначе → SIGABRT на выходе).
+        # Тройная страховка: здесь + MainWindow.closeEvent + aboutToQuit.
+        self.shutdown_threads()
+        super().closeEvent(event)
 
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)

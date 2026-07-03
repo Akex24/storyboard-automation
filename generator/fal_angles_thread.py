@@ -200,18 +200,32 @@ class FalBalanceThread(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._cancelled = False
+
+    def stop(self):
+        """Кооперативная отмена (2026-07-03): при закрытии Studio во время
+        сетевого GET помечаем тред — run() НЕ трогает UI после отмены (сам
+        блокирующий GET прервать нельзя, но timeout=6с его ограничивает, а
+        teardown ждёт wait() дольше). Даёт единый контракт .stop() как у
+        FalAnglesThread — чтобы shutdown/graceful-shutdown гасили одинаково."""
+        self._cancelled = True
 
     def run(self):
         import storyboard_app as _sa
         try:
+            if self._cancelled:
+                return
             key = _sa.load_fal_key()
             if not key:
-                self.error.emit("no key")
+                if not self._cancelled:
+                    self.error.emit("no key")
                 return
             r = requests.get(FAL_BALANCE_URL,
                              headers={"Authorization": f"Key {key}"},
                              timeout=6)   # короткий: teardown ждёт максимум ~7с
             r.raise_for_status()
-            self.balance.emit(float(r.text.strip()))
+            if not self._cancelled:      # не эмитим в разрушаемые виджеты
+                self.balance.emit(float(r.text.strip()))
         except Exception as e:
-            self.error.emit(str(e)[:200])
+            if not self._cancelled:
+                self.error.emit(str(e)[:200])

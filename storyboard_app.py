@@ -11900,6 +11900,17 @@ class MainWindow(QMainWindow):
                 _gs.sync()
             except Exception:
                 traceback.print_exc()
+            # 2026-07-03: камерные треды (FalBalanceThread/FalAnglesThread) НЕ
+            # попадают в _collect_all_threads — гасим их явно ЗДЕСЬ, до graceful
+            # и до разрушения виджетов. shutdown_threads ждёт wait() (GET сам
+            # вернётся за ≤6с) без terminate() → без SIGABRT при закрытии с
+            # открытой вкладкой «Камера» во время запроса баланса.
+            try:
+                cam = getattr(self, 'camera_lab_view', None)
+                if cam is not None:
+                    cam.shutdown_threads()
+            except Exception:
+                traceback.print_exc()
             # 2026-05-11 (v1.0.45): graceful shutdown всех QThread'ов
             # ПЕРЕД event.accept() чтобы избежать Qt fatal'а при
             # destruction'е живого thread'а.
