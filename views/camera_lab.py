@@ -638,7 +638,18 @@ class ImageDropSlot(QFrame):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.image.setPixmap(scaled)
+        # 2026-07-03 (п.4): скругление углов картинки clip-путём (радиус
+        # как у рамки блока) — равномерно все 4 угла.
+        rounded = QPixmap(scaled.size())
+        rounded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(rounded.rect()), 8, 8)
+        painter.setClipPath(clip)
+        painter.drawPixmap(0, 0, scaled)
+        painter.end()
+        self.image.setPixmap(rounded)
 
     def dragEnterEvent(self, event):  # noqa: N802 - Qt override
         if event.mimeData().hasUrls():
@@ -677,7 +688,6 @@ def _camera_icon(name: str) -> QIcon:
 
 class CameraResultThumb(QFrame):
     clicked = pyqtSignal(Path)
-    viewRequested = pyqtSignal(Path)   # лупа → попап-просмотр
     revealRequested = pyqtSignal(Path)
     copyRequested = pyqtSignal(Path)
     deleteRequested = pyqtSignal(Path)
@@ -727,7 +737,7 @@ class CameraResultThumb(QFrame):
         self.reveal_btn.setIconSize(QSize(14, 14))
         self.reveal_btn.setFixedSize(22, 22)
         self.reveal_btn.setToolTip(tr("camera_result_reveal"))
-        self.reveal_btn.clicked.connect(lambda: self.revealRequested.emit(self._path))
+        self.reveal_btn.clicked.connect(self._emit_reveal)
 
         self.copy_btn = QToolButton()
         self.copy_btn.setObjectName("camera-thumb-overlay-btn")
@@ -743,18 +753,8 @@ class CameraResultThumb(QFrame):
         self.delete_btn.setIconSize(QSize(14, 14))
         self.delete_btn.setFixedSize(22, 22)
         self.delete_btn.setToolTip(tr("camera_result_delete"))
-        self.delete_btn.clicked.connect(lambda: self.deleteRequested.emit(self._path))
+        self.delete_btn.clicked.connect(self._emit_delete)
 
-        # 2026-07-03: кнопка-лупа — попап-просмотр этой миниатюры
-        self.view_btn = QToolButton()
-        self.view_btn.setObjectName("camera-thumb-overlay-btn")
-        self.view_btn.setIcon(_camera_icon("maximize-2"))
-        self.view_btn.setIconSize(QSize(14, 14))
-        self.view_btn.setFixedSize(22, 22)
-        self.view_btn.setToolTip(tr("camera_result_view"))
-        self.view_btn.clicked.connect(lambda: self.viewRequested.emit(self._path))
-
-        overlay_lay.addWidget(self.view_btn)
         overlay_lay.addWidget(self.reveal_btn)
         overlay_lay.addWidget(self.copy_btn)
         overlay_lay.addStretch()
@@ -765,6 +765,14 @@ class CameraResultThumb(QFrame):
 
         lay.addWidget(self.image_wrap)
         self._refresh_pixmap()
+
+    def _emit_reveal(self) -> None:
+        print(f"[CAMLAB] thumb reveal_btn CLICKED path={self._path}")
+        self.revealRequested.emit(self._path)
+
+    def _emit_delete(self) -> None:
+        print(f"[CAMLAB] thumb delete_btn CLICKED path={self._path}")
+        self.deleteRequested.emit(self._path)
 
     def path(self) -> Path:
         return self._path
@@ -794,6 +802,7 @@ class CameraResultThumb(QFrame):
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
+            print(f"[CAMLAB] thumb CLICK path={self._path} exists={self._path.exists()}")
             self.clicked.emit(self._path)
             event.accept()
             return
@@ -801,6 +810,7 @@ class CameraResultThumb(QFrame):
 
     def enterEvent(self, event):  # noqa: N802 - Qt override
         self.overlay.setVisible(True)
+        self.overlay.raise_()
         super().enterEvent(event)
 
     def leaveEvent(self, event):  # noqa: N802 - Qt override
@@ -822,16 +832,17 @@ class CameraResultThumb(QFrame):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        rounded = QPixmap(target)
+        # 2026-07-03 (п.4): clip по РАЗМЕРУ SCALED — раньше скругление шло
+        # по target-боксу, и когда картинка не заполняла бокс, часть углов
+        # оставалась прямой (скруглялся бокс, не картинка).
+        rounded = QPixmap(scaled.size())
         rounded.fill(Qt.GlobalColor.transparent)
         painter = QPainter(rounded)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         clip = QPainterPath()
         clip.addRoundedRect(QRectF(rounded.rect()), 8, 8)
         painter.setClipPath(clip)
-        x = (target.width() - scaled.width()) // 2
-        y = (target.height() - scaled.height()) // 2
-        painter.drawPixmap(x, y, scaled)
+        painter.drawPixmap(0, 0, scaled)
         painter.end()
         self.image.setPixmap(rounded)
 
@@ -852,6 +863,7 @@ class CameraLabView(QWidget):
         self._get_shot_clipboard = get_shot_clipboard
         self._set_shot_clipboard = set_shot_clipboard
         self._current_ref: Optional[CameraReference] = None
+        self._loaded_slug: Optional[str] = None   # чей state загружен (per-show)
         self._big_path: Optional[Path] = None   # что показано в большом окне
         self._balance_thread: Optional[FalBalanceThread] = None
         self._loading_state = True
@@ -1323,6 +1335,13 @@ class CameraLabView(QWidget):
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)
         self._refresh_fal_balance()
+        # 2026-07-03 (п.7): state per-сериал — при смене активного сериала
+        # (или первом показе после старта) перечитываем state ЭТОГО сериала.
+        slug = self._current_show_slug()
+        if slug != self._loaded_slug:
+            print(f"[CAMLAB] showEvent: reload state "
+                  f"{self._loaded_slug!r} -> {slug!r}")
+            self._load_state()
         QTimer.singleShot(0, self._update_big_result)   # size-sync после layout
 
     def _set_generation_status(self, text: str = "", is_error: bool = False) -> None:
@@ -1473,6 +1492,7 @@ class CameraLabView(QWidget):
 
     def _load_state(self) -> None:
         self._loading_state = True
+        self._loaded_slug = self._current_show_slug()
         try:
             state_path = self._state_path()
             data = {}
@@ -1480,6 +1500,8 @@ class CameraLabView(QWidget):
                 loaded = json.loads(state_path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     data = loaded
+            print(f"[CAMLAB] load_state slug={self._loaded_slug!r} "
+                  f"file={state_path} keys={sorted(data.keys())}")
 
             controls = data.get("controls") if isinstance(data.get("controls"), dict) else {}
             # v2-ключи (fal, 2026-07-02). Старый state (v1: horizontal/vertical/
@@ -1524,6 +1546,10 @@ class CameraLabView(QWidget):
             if last and Path(str(last)).exists():
                 self._big_path = Path(str(last))
                 self._last_result_path = Path(str(last))
+            print(f"[CAMLAB] load_state: results={len(result_paths)} "
+                  f"restored={self._result_thumb_count()} "
+                  f"current={'да' if self._current_ref else 'нет'} "
+                  f"big={self._current_big_path()}")
 
             self.generate_btn.setEnabled(not bool(self._generation_jobs))
             self._set_generation_status("")
@@ -1626,7 +1652,6 @@ class CameraLabView(QWidget):
             aspect_ratio=self.current_slot.aspect_ratio() if self._current_ref else None,
         )
         thumb.clicked.connect(self._set_big_from)      # клик = показать в big
-        thumb.viewRequested.connect(self._open_image_popup)  # лупа = попап
         thumb.revealRequested.connect(self._reveal_result)
         thumb.copyRequested.connect(self._copy_result_to_shot_clipboard)
         thumb.deleteRequested.connect(lambda path, widget=thumb: self._delete_result(path, widget))
@@ -1646,12 +1671,15 @@ class CameraLabView(QWidget):
     def _set_big_from(self, path: Path) -> None:
         """Клик по миниатюре: показать её в большом окне + углы генерации."""
         self._big_path = Path(path)
+        print(f"[CAMLAB] set_big_from path={self._big_path} "
+              f"exists={self._big_path.exists()}")
         self._update_big_result()
         self._update_angles_info()
         self._save_state()
 
     def _open_big_popup(self) -> None:
         path = self._current_big_path()
+        print(f"[CAMLAB] big CLICK -> popup path={path}")
         if path is not None:
             self._open_image_popup(path)
 
@@ -1698,11 +1726,16 @@ class CameraLabView(QWidget):
             for item in reversed(data if isinstance(data, list) else []):
                 if item.get("output") == rel:
                     a = item.get("angles") or {}
+                    if not a:
+                        print(f"[CAMLAB] angles: запись без angles rel={rel}")
+                        return ""
                     return (f"{int(a.get('horizontal_deg', 0))}° / "
                             f"{int(a.get('vertical_deg', 0)):+d}° / "
                             f"{float(a.get('zoom', 5.0)):.1f}")
-        except Exception:
-            pass
+            print(f"[CAMLAB] angles: НЕТ записи в манифесте rel={rel} "
+                  f"(записей={len(data) if isinstance(data, list) else 0})")
+        except Exception as exc:
+            print(f"[CAMLAB] angles: EXC {exc}")
         return ""
 
     def _update_angles_info(self) -> None:
@@ -1737,15 +1770,29 @@ class CameraLabView(QWidget):
             return
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
+            print(f"[CAMLAB] update_big: pixmap NULL path={path}")
             big.setText("")
             return
         big.setText("")
         size = big.size()
-        big.setPixmap(pixmap.scaled(
+        scaled = pixmap.scaled(
             max(64, size.width()), max(64, size.height()),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
-        ))
+        )
+        # 2026-07-03 (п.4): картинка в блоке — со скруглёнными углами
+        # (clip QPainterPath, как у миниатюр), радиус как у рамки блока.
+        rounded = QPixmap(scaled.size())
+        rounded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(rounded.rect()), 8, 8)
+        painter.setClipPath(clip)
+        painter.drawPixmap(0, 0, scaled)
+        painter.end()
+        big.setPixmap(rounded)
+        print(f"[CAMLAB] update_big OK path={path} scaled={scaled.width()}x{scaled.height()}")
 
     def resizeEvent(self, event):  # noqa: N802 - Qt override
         super().resizeEvent(event)
@@ -1768,14 +1815,17 @@ class CameraLabView(QWidget):
 
     def _reveal_result(self, path: Optional[Path] = None) -> None:
         path = path or self._last_result_path
+        print(f"[CAMLAB] reveal handler path={path} "
+              f"exists={bool(path and Path(path).exists())}")
         if not path or not path.exists():
             return
         try:
             from storyboard_app import reveal_in_file_manager
 
             reveal_in_file_manager(path)
-        except Exception:
-            pass
+            print("[CAMLAB] reveal OK")
+        except Exception as exc:
+            print(f"[CAMLAB] reveal EXC {exc}")
 
     def _delete_result(self, path: Optional[Path] = None, widget: Optional[QWidget] = None) -> None:
         path = path or self._last_result_path
@@ -1795,6 +1845,7 @@ class CameraLabView(QWidget):
             return
         try:
             path.unlink()
+            print(f"[CAMLAB] delete OK path={path}")
             self._remove_from_manifest(path)
         except Exception as exc:
             self._set_generation_status(f"{tr('camera_generation_error')}\n{exc}")
