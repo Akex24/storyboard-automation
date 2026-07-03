@@ -1381,6 +1381,15 @@ alpha-эндпоинт, при недоступности UI кажет «$ —�
 в центре, значок камеры (Lucide 'video') на эллиптической орбите,
 пунктир взгляда; drag = углы, колесо = зум. Чистый QPainter, Mac/Win.
 
+Окна «Источник»/«Результат» (2026-07-03): ФИКС-форма, высота АДАПТИВНА от
+размера окна (не от аспекта кадра — раньше `heightForWidth(width/aspect)`
+раздувал окно на 9:16-кадре, лейаут ехал). `CameraLabView._recalc_media_
+windows` (зеркало `_recalc_shot_cards_size` Редактора) на resize/show:
+`H = max(_FLOOR_MEDIA_H=150, min(col_w*9/16, доступная_высота_колонки//2))`
+— одна H на ОБА окна (всегда равны), ширина обе тянут от колонки (Expanding).
+Картинка внутри — contain (KeepAspectRatio, касается 2 краёв, по 2 — поля
+фона). `heightForWidth`/`hasHeightForWidth` в `ImageDropSlot` удалены.
+
 Убрано в 2026-07-02: референсы (ReferenceDropArea/CameraRefThumb),
 JSON-промпт (~340 строк _build_camera_prompt), выбор моделей
 (CameraModelToggle, Nano Banana 2/Flower/OpenAI), путь GeneratorImageThread,

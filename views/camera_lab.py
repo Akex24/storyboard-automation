@@ -472,9 +472,11 @@ class ImageDropSlot(QFrame):
         self.setAcceptDrops(True)
         self.setObjectName("camera-main-slot" if large else "camera-ref-slot")
         if large:
-            policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            policy.setHeightForWidth(True)
-            self.setSizePolicy(policy)
+            # 2026-07-03: высоту окна задаёт РОДИТЕЛЬ (CameraLabView.
+            # _recalc_media_windows) — адаптивно от размера окна, НЕ от аспекта
+            # кадра. Раньше heightForWidth(width/aspect) → 9:16-кадр раздувал
+            # окно на весь экран и лейаут ехал.
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             self.setMinimumWidth(420)
         else:
             self.setFixedSize(128, 128)
@@ -529,21 +531,13 @@ class ImageDropSlot(QFrame):
             self.clear_btn = None
         self.retranslate()
 
-    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt override
-        return self._large
-
-    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt override
-        if not self._large:
-            return super().heightForWidth(width)
-        # Default is 16:9; after image load the slot follows the real image
-        # aspect ratio. Clamp height so portrait refs do not crush the controls.
-        return max(260, min(560, int(width / max(0.2, self._aspect_ratio))))
-
     def sizeHint(self):  # noqa: N802 - Qt override
+        # 2026-07-03: heightForWidth/hasHeightForWidth убраны — высота окна
+        # больше НЕ зависит от аспекта кадра (её задаёт родитель через
+        # maximumHeight в _recalc_media_windows). Оставлен только width-hint.
         hint = super().sizeHint()
         if self._large:
             hint.setWidth(max(hint.width(), 640))
-            hint.setHeight(self.heightForWidth(hint.width()))
         return hint
 
     def aspect_ratio(self) -> float:
@@ -563,8 +557,8 @@ class ImageDropSlot(QFrame):
         self.title.setText("" if self._large else path.name)
         self.hint.setText("" if self._large else tr(REF_TYPE_LABEL_KEYS[self._slot_type]))
         self._refresh_pixmap()
-        if self._large:
-            self.updateGeometry()
+        # 2026-07-03: updateGeometry() убран — высота окна фиксируется извне,
+        # перелейаут под аспект кадра больше не нужен.
 
     def set_paste_available(self, available: bool) -> None:
         self._paste_available = bool(available)
@@ -612,8 +606,6 @@ class ImageDropSlot(QFrame):
         self._aspect_ratio = 16 / 9
         self.image.setPixmap(QPixmap())
         self.retranslate()   # large → плейсхолдер-строка по центру
-        if self._large:
-            self.updateGeometry()
         self.update()
 
     def resizeEvent(self, event):  # noqa: N802 - Qt override
@@ -940,7 +932,10 @@ class CameraLabView(QWidget):
         self.current_slot.imageClicked.connect(self._open_image_popup)
         self.current_slot.pasteRequested.connect(self._paste_current_from_shot_clipboard)
         self.current_slot.clearRequested.connect(self._clear_current_source)
-        left_lay.addWidget(self.current_slot)
+        # подход B: пол высоты + большой stretch (окна делят место с лентой,
+        # растут до потолка 16:9, сжимаются к полу на маленьком экране).
+        self.current_slot.setMinimumHeight(self._FLOOR_MEDIA_H)
+        left_lay.addWidget(self.current_slot, stretch=100)
 
         # 2026-07-02 (лейаут v2): под исходником — БОЛЬШОЕ окно результата
         # (последняя генерация, клик = попап-просмотрщик), под ним —
@@ -949,15 +944,14 @@ class CameraLabView(QWidget):
         self.result_title_lbl.setObjectName("camera-section-title")
         left_lay.addWidget(self.result_title_lbl)
 
-        # 2026-07-02 (лейаут v3): большое окно РОВНО размера исходника —
-        # ширина общая (вся панель), высота жёстко синкается с
-        # current_slot.height() в _update_big_result (у исходника высота
-        # детерминирована heightForWidth). Лента ниже забирает остаток.
+        # Большое окно РОВНО размера исходника: ширина общая (вся панель),
+        # высота = та же адаптивная (_recalc_media_windows задаёт обоим один
+        # maximumHeight, равный stretch → всегда равны). Лента ниже — остаток.
         self.big_result = ResultPreviewLabel()
         self.big_result.setObjectName("camera-result-big")
         self.big_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.big_result.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                      QSizePolicy.Policy.Fixed)
+                                      QSizePolicy.Policy.Expanding)
         self.big_result.setCursor(Qt.CursorShape.PointingHandCursor)
         # 2026-07-03: клик по большому окну → попап текущей показанной
         self.big_result.clicked.connect(self._open_big_popup)
@@ -984,7 +978,9 @@ class CameraLabView(QWidget):
         self.big_result.entered.connect(self._show_big_btns)
         self.big_result.left.connect(
             lambda: [b.setVisible(False) for b in self._big_btns])
-        left_lay.addWidget(self.big_result)
+        # подход B: пол высоты + большой stretch (равный со слотом → окна равны)
+        self.big_result.setMinimumHeight(self._FLOOR_MEDIA_H)
+        left_lay.addWidget(self.big_result, stretch=100)
 
         self.results_scroll = HWheelScrollArea()
         self.results_scroll.setObjectName("camera-results-panel")
@@ -1817,23 +1813,58 @@ class CameraLabView(QWidget):
         lbl.setText(f"{tr('camera_angles_info')} {text}" if text else "")
         lbl.setVisible(bool(text))
 
+    # 2026-07-03: пол высоты окон «Источник»/«Результат» на маленьком экране —
+    # окна СЖИМАЮТСЯ к нему, а не форсят гигантский минимум окна (setFixedHeight
+    # форсил минимум окна ~990px → не влезало в 14"). Потолок адаптивный, ниже.
+    _FLOOR_MEDIA_H = 150
+
+    def _recalc_media_windows(self) -> None:
+        """Адаптивная высота окон «Источник»/«Результат» (подход B). Высоту НЕ
+        фиксируем — ставим только ПОТОЛОК maximumHeight = col_w*9/16 (форма 16:9);
+        пол minimumHeight=_FLOOR, Expanding и равный stretch заданы в _build_ui.
+        Высоту делит layout: окна РАСТУТ до потолка на большом окне и СЖИМАЮТСЯ
+        к полу на маленьком, всегда равны (равный stretch), ширину тянут от
+        колонки. НЕ зависит от аспекта кадра (потолок от ширины, не от картинки).
+        Идея как у storyboard_app._recalc_shot_cards_size — размер от реального
+        размера окна, а не от контента."""
+        slot = getattr(self, "current_slot", None)
+        big = getattr(self, "big_result", None)
+        if slot is None or big is None:
+            return
+        col_w = slot.width()
+        if col_w <= 0:
+            return
+        cap = int(col_w * 9 / 16)                 # потолок формы 16:9 (от ширины)
+        # доступная высота колонки под ДВА окна (реальные соседи + резерв ленты),
+        # всё меряем, не хардкодим. left.height() честна: max НЕ форсит минимум
+        # окна (в отличие от setFixedHeight) → обратной связи нет.
+        h_by_height = cap
+        left = slot.parentWidget()
+        lay = left.layout() if left is not None else None
+        if left is not None and lay is not None:
+            m = lay.contentsMargins()
+            avail_v = (left.height() - m.top() - m.bottom()
+                       - self.source_title_lbl.height()
+                       - self.result_title_lbl.height()
+                       - self.results_scroll.minimumHeight()   # резерв ленты
+                       - lay.spacing() * 4)                     # 4 зазора колонки
+            if avail_v > 0:
+                h_by_height = avail_v // 2                       # два окна делят
+        # ОДИН и тот же потолок обоим → оба упираются ровно в него → РАВНЫ
+        # (остаток-парити уходит в ленту, а не одному из окон).
+        cap_h = max(self._FLOOR_MEDIA_H, min(cap, h_by_height))
+        for w in (slot, big):
+            if w.maximumHeight() != cap_h:
+                w.setMaximumHeight(cap_h)
+
     def _update_big_result(self) -> None:
-        """Большое окно результата: последняя генерация, scaled под размер;
-        нет результатов → текстовый placeholder."""
+        """Большое окно результата: последняя генерация, contain под фикс-окно;
+        нет результатов → пустой placeholder. Высоту обоих окон синкает
+        _recalc_media_windows (адаптив от размера окна, не от аспекта)."""
         big = getattr(self, "big_result", None)
         if big is None:
             return
-        # 2026-07-03: высоту исходника задаём ЯВНО из heightForWidth —
-        # QVBoxLayout игнорирует HFW при vertical=Fixed (смок ловил слот
-        # высотой 1px). Потом big — один в один со слотом.
-        slot = getattr(self, "current_slot", None)
-        if slot is not None and slot.width() > 50:
-            slot_h = slot.heightForWidth(slot.width())
-            if slot_h > 50:
-                if slot.height() != slot_h:
-                    slot.setFixedHeight(slot_h)
-                if big.height() != slot_h:
-                    big.setFixedHeight(slot_h)
+        self._recalc_media_windows()   # обе окна → одна адаптивная высота
         path = self._current_big_path()
         if path is None:
             big.setPixmap(QPixmap())
@@ -1845,19 +1876,15 @@ class CameraLabView(QWidget):
             big.setText("")
             return
         big.setText("")
-        # ЦЕЛЕВОЙ размер: ширина big + ИЗВЕСТНАЯ высота слота (big.height()
-        # в этот момент может быть ещё старым — layout применит фикс позже;
-        # из-за этого низ картинки обрезался и нижние углы «теряли» радиус).
-        target_w = max(64, big.width() - 2)          # минус рамка 1px×2
-        target_h = max(64, (slot_h if slot is not None and slot_h > 50
-                            else big.height()) - 2)
+        # contain: вписываем в фикс-окно (минус рамка 1px×2), KeepAspectRatio →
+        # касается 2 краёв, по 2 другим — поля фона; форма окна не меняется.
+        target_w = max(64, big.width() - 2)
+        target_h = max(64, big.height() - 2)
         scaled = pixmap.scaled(
             target_w, target_h,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        # Радиус картинки = радиус рамки (8) − толщина бордера (1); clip
-        # строго по прямоугольнику отрисованной картинки — 4 угла одним путём.
         big.setPixmap(_rounded_pixmap(scaled))
         print(f"[CAMLAB] update_big OK path={path} scaled={scaled.width()}x{scaled.height()}")
 
