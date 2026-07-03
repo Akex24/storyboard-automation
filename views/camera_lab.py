@@ -2114,7 +2114,12 @@ class CameraLabView(QWidget):
         }
         QFrame#camera-result-thumb-wrap {
             background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.06);
+            /* 2026-07-03: рамку убрали — QSS-бордер уменьшал contentsRect
+               обёртки и выпихивал фикс-лейбл на (1,1); его низ/право
+               свисали за край и клипались → нижние углы теряли скругление
+               (верх ~6px, низ ~2px на retina). Скругление даёт сама
+               пиксмапа (radius 7, симметрична), как у #camera-ref-thumb-wrap. */
+            border: none;
             border-radius: 8px;
         }
         QLabel#camera-thumb-image {
