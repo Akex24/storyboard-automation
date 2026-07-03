@@ -21,7 +21,10 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtGui import (
+    QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap,
+    QPolygonF, QTransform,
+)
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -172,7 +175,7 @@ class CameraPerspectiveControl(QWidget):
     def set_values(self, h_deg: int, v_deg: int, zoom_x10: int) -> None:
         self._h = int(h_deg) % 360
         self._v = max(-30, min(90, int(v_deg)))
-        self._z = max(0, min(100, int(zoom_x10)))
+        self._z = max(0, min(200, int(zoom_x10)))   # 2026-07-03: зум до 20.0
         self.update()
 
     def set_frame_aspect(self, aspect: float) -> None:
@@ -215,19 +218,22 @@ class CameraPerspectiveControl(QWidget):
         cx, cy, radius = self._sphere_geometry()
         if radius <= 0:
             return
+        # 2026-07-03 (п.3): камера рисуется на орбите _cam_dist(зум) — курсор
+        # инвертируем на ТОЙ ЖЕ сфере (r_eff), иначе значок прыгал бы при drag.
+        r_eff = max(1.0, self._cam_dist(radius))
         sx = pos.x() - cx
         sy = pos.y() - cy
         rr = math.hypot(sx, sy)
-        if rr > radius * 0.999:
-            sx *= radius * 0.999 / rr
-            sy *= radius * 0.999 / rr
+        if rr > r_eff * 0.999:
+            sx *= r_eff * 0.999 / rr
+            sy *= r_eff * 0.999 / rr
         y2 = -sy
-        z2 = math.sqrt(max(0.0, radius * radius - sx * sx - y2 * y2))
+        z2 = math.sqrt(max(0.0, r_eff * r_eff - sx * sx - y2 * y2))
         ct, st = math.cos(self._AXIS_TILT), math.sin(self._AXIS_TILT)
         # обратный наклон (транспонированная матрица поворота вокруг X)
         y = y2 * ct + z2 * st
         z = -y2 * st + z2 * ct
-        vis_lat = math.degrees(math.asin(max(-1.0, min(1.0, y / radius))))
+        vis_lat = math.degrees(math.asin(max(-1.0, min(1.0, y / r_eff))))
         lon_front = math.degrees(math.atan2(sx, z)) % 360
         lon_back = (180.0 - math.degrees(math.atan2(sx, z))) % 360
         def _dist(a: float, b: float) -> float:
@@ -250,7 +256,7 @@ class CameraPerspectiveControl(QWidget):
 
     def wheelEvent(self, event):  # noqa: N802 - Qt override
         step = 5 if event.angleDelta().y() > 0 else -5   # 0.5 зума за щелчок
-        self._z = max(0, min(100, self._z + step))
+        self._z = max(0, min(200, self._z + step))       # 2026-07-03: до 20.0
         self.update()
         self.valuesChanged.emit(self._h, self._v, self._z)
         event.accept()
@@ -266,6 +272,12 @@ class CameraPerspectiveControl(QWidget):
         rect = QRectF(self.rect()).adjusted(12, 10, -12, -10)
         return (rect.center().x(), rect.center().y() + 6,
                 min(rect.width(), rect.height()) * 0.40)
+
+    def _cam_dist(self, radius: float) -> float:
+        """2026-07-03 (п.3): дистанция значка камеры от центра = f(зум),
+        растянутый ход по всей шкале: зум 0 → 0.18r (наезд вплотную к кадру),
+        зум 20 (слайдер 200) → 1.0r (у самого края сферы)."""
+        return radius * (0.18 + 0.82 * (self._z / 200.0))
 
     # 2026-07-02 (фикс №2): ВИЗУАЛЬНАЯ широта камеры — растянутый маппинг
     # на полный видимый диапазон сферы (якоря: −30°=дно, ПОД кадром;
@@ -334,8 +346,10 @@ class CameraPerspectiveControl(QWidget):
         # маппинг (фикс №2: −30° уходит ПОД кадр, +90° — над). Признак
         # «за глобусом» — ЧИСТО по долготе 90..270 (фикс №4: знак Z после
         # наклона оси ошибочно топил камеру на передней стороне у полюса).
+        # 2026-07-03 (п.3): камера ходит по орбите РАДИУСА _cam_dist(зум) —
+        # наезд/отъезд виден по всей шкале (0 → вплотную к кадру, 20 → край).
         cam_dx, cam_dy, _cam_z = self._project(
-            self._v_to_vis(self._v), self._h, radius)
+            self._v_to_vis(self._v), self._h, self._cam_dist(radius))
         cam_x, cam_y = cx + cam_dx, cy + cam_dy
         behind = 90 < (self._h % 360) < 270
 
@@ -343,40 +357,73 @@ class CameraPerspectiveControl(QWidget):
             self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=True,
                               zoom_x10=self._z)
 
-        # ── миниатюра кадра: РОВНАЯ, небольшая, в центре сферы ──
-        thumb_w = radius * 0.95
-        thumb_h = thumb_w * 9 / 16
-        if self._frame_pixmap is not None:
-            pw, ph = self._frame_pixmap.width(), max(1, self._frame_pixmap.height())
-            aspect = pw / ph
-            if aspect < 1.0:
-                thumb_h = thumb_w
-                thumb_w = thumb_h * aspect
-            else:
-                thumb_h = thumb_w / aspect
-        thumb_rect = QRectF(cx - thumb_w / 2, cy - thumb_h / 2, thumb_w, thumb_h)
-        painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        # ── миниатюра кадра: ЛЕЖИТ в экваториальной плоскости глобуса ──
+        # (2026-07-03, п.2): раньше кадр рисовался строго анфас и выглядел
+        # «наклейкой поверх» наклонённого глобуса. Теперь та же матрица
+        # наклона, что у сетки (_AXIS_TILT): точка кадра (u, 0, z) →
+        # y2 = −z·st, z2 = z·ct → экран (u, −y2); плюс лёгкая перспектива
+        # (f = 3r, ближний край чуть шире) — кадр читается частью глобуса.
+        # Значок камеры и линия взгляда — без изменений.
+        aspect = 16 / 9
+        if self._frame_pixmap is not None and self._frame_pixmap.height() > 0:
+            aspect = self._frame_pixmap.width() / self._frame_pixmap.height()
+        plane_w = radius * 1.35                     # хорда вдоль X
+        plane_d = plane_w / max(0.2, aspect)        # «глубина» вдоль Z
+        half_diag = math.hypot(plane_w / 2, plane_d / 2)
+        if half_diag > radius * 0.95:               # вписываем в сферу
+            k = radius * 0.95 / half_diag
+            plane_w *= k
+            plane_d *= k
+        ct, st = math.cos(self._AXIS_TILT), math.sin(self._AXIS_TILT)
+        focus = radius * 3.0
+
+        def _eq_point(u: float, z: float) -> QPointF:
+            """Точка экваториальной плоскости (u вдоль X, z — вглубь) → экран
+            той же матрицей наклона оси + слабая перспектива."""
+            y2 = -z * st                       # наклон вокруг X (y=0)
+            z2 = z * ct                        # depth после наклона
+            m = focus / max(1e-3, focus - z2)  # перспективный масштаб
+            return QPointF(cx + u * m, cy + (-y2) * m)
+
+        # верх кадра — на ближней стороне экватора (z=+d/2): верх сверху
+        quad = QPolygonF([
+            _eq_point(-plane_w / 2, +plane_d / 2),   # верх-лево
+            _eq_point(+plane_w / 2, +plane_d / 2),   # верх-право
+            _eq_point(+plane_w / 2, -plane_d / 2),   # низ-право
+            _eq_point(-plane_w / 2, -plane_d / 2),   # низ-лево
+        ])
+        frame_pen = QPen(QColor(255, 255, 255, 70), 1)
+        frame_pen.setCosmetic(True)     # рамка 1px, не сплющивается трансформом
         if self._frame_pixmap is not None:
             scaled = self._frame_pixmap.scaled(
-                QSize(int(thumb_rect.width()), int(thumb_rect.height())),
+                QSize(max(2, int(plane_w)), max(2, int(plane_w / max(0.2, aspect)))),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            clip = QPainterPath()
-            clip.addRoundedRect(thumb_rect, 5, 5)
-            painter.save()
-            painter.setClipPath(clip)
-            painter.drawPixmap(
-                int(thumb_rect.center().x() - scaled.width() / 2),
-                int(thumb_rect.center().y() - scaled.height() / 2),
-                scaled,
-            )
-            painter.restore()
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(thumb_rect, 5, 5)
+            src_quad = QPolygonF([
+                QPointF(0, 0), QPointF(scaled.width(), 0),
+                QPointF(scaled.width(), scaled.height()),
+                QPointF(0, scaled.height()),
+            ])
+            xform = QTransform()
+            if QTransform.quadToQuad(src_quad, quad, xform):
+                painter.save()
+                painter.setTransform(xform, True)
+                clip = QPainterPath()
+                clip.addRoundedRect(
+                    QRectF(0, 0, scaled.width(), scaled.height()), 5, 5)
+                painter.setClipPath(clip)
+                painter.drawPixmap(0, 0, scaled)
+                painter.setClipping(False)
+                painter.setPen(frame_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(
+                    QRectF(0, 0, scaled.width(), scaled.height()), 5, 5)
+                painter.restore()
         else:
+            painter.setPen(frame_pen)
             painter.setBrush(QColor(26, 29, 31))
-            painter.drawRoundedRect(thumb_rect, 5, 5)
+            painter.drawPolygon(quad)
 
         painter.setPen(pen_front)
         for a, b in front_segs:
@@ -406,7 +453,7 @@ class CameraPerspectiveControl(QWidget):
         и бейджем «N.N» у значка. За сферой — полупрозрачный (depth cue).
         Lucide 'video' через get_icon; fallback — точка."""
         alpha = 90 if dim else 235
-        line_w = 0.8 + (zoom_x10 / 100.0) * 2.6   # zoom 0→0.8px … 10→3.4px
+        line_w = 0.8 + (zoom_x10 / 200.0) * 2.6   # zoom 0→0.8px … 20→3.4px
         line_pen = QPen(QColor(232, 184, 106, 45 if dim else 150), line_w)
         line_pen.setStyle(Qt.PenStyle.DotLine)
         painter.setPen(line_pen)
@@ -570,11 +617,18 @@ class ImageDropSlot(QFrame):
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self._image_path is not None
-            and self._image_path.exists()
         ):
-            self.imageClicked.emit(self._image_path)
-            event.accept()
-            return
+            # 2026-07-03 (регрессия «клик по Источнику молчит»): путь ЛЕЧИМ
+            # стем-резолвом — Hazel конвертит source_*.png→.jpg, старый guard
+            # `.exists()` на мёртвом .png тихо гасил клик (у Result пути
+            # лечатся, у Source — нет было).
+            healed = resolve_existing_path(self._image_path)
+            print(f"[CAMLAB] source CLICK raw={self._image_path} healed={healed}")
+            if healed:
+                self._image_path = Path(healed)
+                self.imageClicked.emit(self._image_path)
+                event.accept()
+                return
         super().mouseReleaseEvent(event)
 
     def retranslate(self) -> None:
@@ -1046,7 +1100,8 @@ class CameraLabView(QWidget):
         # значения БЕЗ защёлкивания в пресеты (квантование — на сервере).
         self.rotate_slider = self._add_slider(controls_lay, "camera_horizontal", 0, 72, 0)
         self.vertical_slider = self._add_slider(controls_lay, "camera_vertical", -30, 90, 0)
-        self.zoom_slider = self._add_slider(controls_lay, "camera_zoom", 0, 100, 50)
+        # 2026-07-03 (п.3): верх зума 10 → 20 (слайдер ×10, шаг 0.1 как был)
+        self.zoom_slider = self._add_slider(controls_lay, "camera_zoom", 0, 200, 50)
 
         self.orbit = CameraPerspectiveControl()
         self.orbit.valuesChanged.connect(self._on_preview_values_changed)
@@ -1277,8 +1332,12 @@ class CameraLabView(QWidget):
             self._set_generation_status(f"{tr('camera_generation_error')}\n{exc}")
 
     def _open_image_popup(self, path: Path) -> None:
-        if not path or not path.exists():
+        # 2026-07-03: guard тоже через стем-резолв (Hazel png→jpg) — мёртвый
+        # путь раньше тихо ронял открытие попапа «Источника».
+        healed = resolve_existing_path(path) if path else None
+        if not healed:
             return
+        path = Path(healed)
         existing = getattr(self, "_image_viewer", None)
         if existing is not None and existing.isVisible():
             existing.raise_()
@@ -1663,7 +1722,7 @@ class CameraLabView(QWidget):
             for slider, value in (
                 (self.rotate_slider, max(0, min(72, int(round(h_deg / 5))))),
                 (self.vertical_slider, max(-30, min(90, v_deg))),
-                (self.zoom_slider, max(0, min(100, int(round(zoom * 10))))),
+                (self.zoom_slider, max(0, min(200, int(round(zoom * 10))))),
             ):
                 slider.blockSignals(True)
                 slider.setValue(value)
