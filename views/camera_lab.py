@@ -1435,6 +1435,23 @@ class CameraLabView(QWidget):
         if not self._current_ref:
             self._set_generation_status(tr("camera_need_current"))
             return
+        # 2026-07-03: вход генерации ЛЕЧИМ стем-резолвом. Hazel-вотчер конвертит
+        # копию source_*.png → .jpg и удаляет .png; _current_ref.path остаётся
+        # мёртвым .png (pixmap виден из RAM), а FalAnglesThread.run падал на
+        # `not image_path.exists()` → «Drop the current shot first» при ВИДИМОМ
+        # кадре. resolve_existing_path догоняет png→jpg (как у ленты/big).
+        healed_src = resolve_existing_path(self._current_ref.path)
+        print(f"[CAMLAB] run_gen: current_ref set={self._current_ref is not None} "
+              f"raw={self._current_ref.path} exists={self._current_ref.path.exists()} "
+              f"healed={healed_src}")
+        if not healed_src:
+            self._set_generation_status(tr("camera_need_current"))
+            return
+        healed_src = Path(healed_src)
+        if healed_src != self._current_ref.path:
+            self._current_ref = CameraReference(
+                path=healed_src, ref_type=self._current_ref.ref_type)
+            self._save_state()   # догоняем png→jpg и в state
         show_slug = self._current_show_slug()
         if not show_slug:
             self._set_generation_status(tr("camera_need_show"))
@@ -1594,7 +1611,12 @@ class CameraLabView(QWidget):
 
             current_data = data.get("current_ref") if isinstance(data.get("current_ref"), dict) else None
             current_path = Path(str(current_data.get("path"))) if current_data and current_data.get("path") else None
-            if current_path is not None and current_path.exists():
+            # 2026-07-03: лечим стем-резолвом (вотчер png→jpg) — иначе после
+            # конвертации Hazel сохранённый .png-путь не existed и слот
+            # восстанавливался ПУСТЫМ, хотя .jpg на диске лежит.
+            healed_cur = resolve_existing_path(current_path) if current_path else None
+            if healed_cur:
+                current_path = Path(healed_cur)
                 self._current_ref = CameraReference(
                     path=current_path,
                     ref_type=str(current_data.get("type") or "Current shot"),
