@@ -357,46 +357,47 @@ class CameraPerspectiveControl(QWidget):
             self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=True,
                               zoom_x10=self._z)
 
-        # ── миниатюра кадра: ЛЕЖИТ в экваториальной плоскости глобуса ──
-        # (2026-07-03, п.2): раньше кадр рисовался строго анфас и выглядел
-        # «наклейкой поверх» наклонённого глобуса. Теперь та же матрица
-        # наклона, что у сетки (_AXIS_TILT): точка кадра (u, 0, z) →
-        # y2 = −z·st, z2 = z·ct → экран (u, −y2); плюс лёгкая перспектива
-        # (f = 3r, ближний край чуть шире) — кадр читается частью глобуса.
+        # ── миниатюра кадра: СТОИТ вертикально, наклонена КАК ОСЬ глобуса ──
+        # (2026-07-03, фикс оси наклона): предыдущая версия клала кадр плашмя
+        # в экватор (pitch вокруг горизонтали X) — карточка «ложилась на
+        # спину» и сплющивалась в блин. Правильно: кадр — ФРОНТАЛЬНАЯ
+        # вертикальная плоскость, к которой применена ТА ЖЕ матрица наклона
+        # мировой оси (_AXIS_TILT), что у сетки: точка (u, v, 0) →
+        # y2 = v·ct, z2 = v·st → экран (u, −v·ct) — высота сохраняется
+        # (·cos18° ≈ 0.95, НЕ схлопывается), верх слегка откинут вглубь;
+        # лёгкая перспектива (f = 3r) даёт мягкую трапецию — картина,
+        # откинутая назад ВМЕСТЕ с наклонённым глобусом, не блин.
         # Значок камеры и линия взгляда — без изменений.
-        aspect = 16 / 9
+        thumb_w = radius * 0.95
+        thumb_h = thumb_w * 9 / 16
         if self._frame_pixmap is not None and self._frame_pixmap.height() > 0:
             aspect = self._frame_pixmap.width() / self._frame_pixmap.height()
-        plane_w = radius * 1.35                     # хорда вдоль X
-        plane_d = plane_w / max(0.2, aspect)        # «глубина» вдоль Z
-        half_diag = math.hypot(plane_w / 2, plane_d / 2)
-        if half_diag > radius * 0.95:               # вписываем в сферу
-            k = radius * 0.95 / half_diag
-            plane_w *= k
-            plane_d *= k
+            if aspect < 1.0:
+                thumb_h = thumb_w
+                thumb_w = thumb_h * aspect
+            else:
+                thumb_h = thumb_w / aspect
         ct, st = math.cos(self._AXIS_TILT), math.sin(self._AXIS_TILT)
         focus = radius * 3.0
 
-        def _eq_point(u: float, z: float) -> QPointF:
-            """Точка экваториальной плоскости (u вдоль X, z — вглубь) → экран
+        def _tilt_point(u: float, v: float) -> QPointF:
+            """Точка фронтальной плоскости кадра (u вправо, v вверх) → экран
             той же матрицей наклона оси + слабая перспектива."""
-            y2 = -z * st                       # наклон вокруг X (y=0)
-            z2 = z * ct                        # depth после наклона
+            z2 = v * st                        # depth: верх уходит вглубь
             m = focus / max(1e-3, focus - z2)  # перспективный масштаб
-            return QPointF(cx + u * m, cy + (-y2) * m)
+            return QPointF(cx + u * m, cy - (v * ct) * m)
 
-        # верх кадра — на ближней стороне экватора (z=+d/2): верх сверху
         quad = QPolygonF([
-            _eq_point(-plane_w / 2, +plane_d / 2),   # верх-лево
-            _eq_point(+plane_w / 2, +plane_d / 2),   # верх-право
-            _eq_point(+plane_w / 2, -plane_d / 2),   # низ-право
-            _eq_point(-plane_w / 2, -plane_d / 2),   # низ-лево
+            _tilt_point(-thumb_w / 2, +thumb_h / 2),   # верх-лево
+            _tilt_point(+thumb_w / 2, +thumb_h / 2),   # верх-право
+            _tilt_point(+thumb_w / 2, -thumb_h / 2),   # низ-право
+            _tilt_point(-thumb_w / 2, -thumb_h / 2),   # низ-лево
         ])
         frame_pen = QPen(QColor(255, 255, 255, 70), 1)
         frame_pen.setCosmetic(True)     # рамка 1px, не сплющивается трансформом
         if self._frame_pixmap is not None:
             scaled = self._frame_pixmap.scaled(
-                QSize(max(2, int(plane_w)), max(2, int(plane_w / max(0.2, aspect)))),
+                QSize(max(2, int(thumb_w)), max(2, int(thumb_h))),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
