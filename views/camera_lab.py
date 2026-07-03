@@ -1471,8 +1471,19 @@ class CameraLabView(QWidget):
     def _run_generation(self) -> None:
         """2026-07-02: генерация через fal (FalAnglesThread). Одна генерация
         на клик — углы детерминированы, батч не нужен."""
+        # 2026-07-03: блокируем ТОЛЬКО пока реально идёт генерация (живой тред).
+        # Залипшие завершённые job'ы (если по какой-то причине не снялись в
+        # _on_generation_finished) НЕ должны навсегда запирать новый Generate
+        # при наличии прошлого результата — чистим их и продолжаем. Новый
+        # Generate заменяет прошлый результат в большом окне.
         if self._generation_jobs:
-            return
+            if any(j.thread is not None and j.thread.isRunning()
+                   for j in self._generation_jobs.values()):
+                print("[CAMLAB] run_gen: живая генерация уже идёт — пропускаю клик")
+                return
+            print(f"[CAMLAB] run_gen: чищу залипшие job'ы "
+                  f"({len(self._generation_jobs)}), продолжаю")
+            self._generation_jobs.clear()
         self._last_generation_status = ""
         if not self._current_ref:
             self._set_generation_status(tr("camera_need_current"))
