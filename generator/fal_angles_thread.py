@@ -210,7 +210,7 @@ class FalBalanceThread(QThread):
                 return
             r = requests.get(FAL_BALANCE_URL,
                              headers={"Authorization": f"Key {key}"},
-                             timeout=15)
+                             timeout=6)   # короткий: teardown ждёт максимум ~7с
             r.raise_for_status()
             self.balance.emit(float(r.text.strip()))
         except Exception as e:

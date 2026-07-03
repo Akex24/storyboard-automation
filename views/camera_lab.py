@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QApplication,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -879,6 +880,16 @@ class CameraLabView(QWidget):
         self._generation_timer = QTimer(self)
         self._generation_timer.setInterval(1000)
         self._generation_timer.timeout.connect(self._tick_generation_timer)
+        # 2026-07-03 (фикс SIGABRT «QThread destroyed while running»):
+        # на выходе приложения дожидаемся живых тредов — иначе Py_FinalizeEx
+        # рушит процесс, у Alex всплывало окно ошибки Python на каждый
+        # teardown offscreen-смоков.
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(self.shutdown_threads)
+        except Exception:
+            pass
         self._build_ui()
         self._load_state()
         self.set_shot_clipboard_available(bool(self._shot_clipboard_bytes()))
@@ -1334,6 +1345,24 @@ class CameraLabView(QWidget):
         thread.error.connect(lambda _msg: self._set_balance_text(None))
         self._balance_thread = thread
         thread.start()
+
+    def shutdown_threads(self, wait_ms: int = 8000) -> None:
+        """Остановить/дождаться FalBalanceThread и все FalAnglesThread.
+        Зовётся на aboutToQuit (и из смоков перед выходом). Не кидает."""
+        try:
+            bt = self._balance_thread
+            if bt is not None and bt.isRunning():
+                bt.wait(wait_ms)   # сетевой GET с timeout=6с — дождёмся
+        except Exception:
+            pass
+        try:
+            for job in list(self._generation_jobs.values()):
+                th = job.thread
+                if th is not None and th.isRunning():
+                    th.stop()          # кооперативный — выйдет на poll-шаге
+                    th.wait(wait_ms)
+        except Exception:
+            pass
 
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)
