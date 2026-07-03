@@ -1152,11 +1152,14 @@ class CameraLabView(QWidget):
         )
 
     def _clear_current_source(self) -> None:
-        """Крестик на исходнике: слот → «перетащи кадр», сфера без кадра.
-        Результаты не трогаем."""
+        """Крестик на исходнике: слот → «перетащи кадр», сфера без кадра,
+        камера/ползунки — в дефолт (как при загрузке нового кадра). Результаты
+        не трогаем. 2026-07-03: reset висел только на drop/paste — добавлен и
+        сюда (иначе после удаления исходника оставались старые углы/глобус)."""
         self._current_ref = None
         self.current_slot.clear_image()
         self.orbit.set_frame_image(None)
+        self._reset_camera_controls()   # h=0, v=0, zoom=5.0 + камера по центру
         QTimer.singleShot(0, self._update_big_result)   # высота слота изменилась
         self._save_state()
 
@@ -1350,14 +1353,31 @@ class CameraLabView(QWidget):
 
     def _refresh_fal_balance(self) -> None:
         """Живой баланс: при подтверждении ключа, показе вкладки и после
-        каждой генерации. Один тред за раз; ошибки не критичны ($ —)."""
+        каждой генерации. Один тред за раз, СВЕЖИЙ на каждый показ.
+        2026-07-03: при ошибке (alpha-эндпоинт fal мигает) — ОДИН авто-ретрай
+        через ~1.5с, и только если он тоже упал — «$ —». Раньше первая же
+        осечка сети давала пустой баланс до следующего показа вкладки."""
+        self._start_balance_thread(allow_retry=True)
+
+    def _start_balance_thread(self, allow_retry: bool) -> None:
         if self._balance_thread is not None and self._balance_thread.isRunning():
             return
         thread = FalBalanceThread(self)
         thread.balance.connect(lambda v: self._set_balance_text(v))
-        thread.error.connect(lambda _msg: self._set_balance_text(None))
+        thread.error.connect(
+            lambda _msg, retry=allow_retry: self._on_balance_error(retry))
         self._balance_thread = thread
         thread.start()
+
+    def _on_balance_error(self, allow_retry: bool) -> None:
+        """Ошибка баланса: один авто-ретрай (alpha fal мигает), потом «$ —».
+        Лейбл при первой осечке НЕ трогаем — если ретрай успеет, пустого
+        баланса юзер даже не увидит."""
+        if allow_retry:
+            QTimer.singleShot(
+                1500, lambda: self._start_balance_thread(allow_retry=False))
+            return
+        self._set_balance_text(None)
 
     def shutdown_threads(self, wait_ms: int = 8000) -> None:
         """Остановить/дождаться FalBalanceThread и все FalAnglesThread.
