@@ -70,8 +70,29 @@ class CameraGenerationJob:
     status: str = ""
 
 
+class HWheelScrollArea(QScrollArea):
+    """Лента миниатюр: вертикальное колесо крутит ГОРИЗОНТАЛЬНЫЙ скролл
+    (без зажатых модификаторов). 2026-07-03."""
+
+    def wheelEvent(self, event):  # noqa: N802 - Qt override
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - delta)
+        event.accept()
+
+
 class ResultPreviewLabel(QLabel):
     clicked = pyqtSignal()
+    entered = pyqtSignal()
+    left = pyqtSignal()
+
+    def enterEvent(self, event):  # noqa: N802 - Qt override
+        self.entered.emit()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt override
+        self.left.emit()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
@@ -455,7 +476,8 @@ class ImageDropSlot(QFrame):
             self.setFixedSize(128, 128)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 10)
+        # 2026-07-03: large-слот — без внутренних полей, кадр касается краёв
+        lay.setContentsMargins(*( (0, 0, 0, 0) if large else (10, 10, 10, 10) ))
         lay.setSpacing(6)
 
         self.image = QLabel()
@@ -655,6 +677,7 @@ def _camera_icon(name: str) -> QIcon:
 
 class CameraResultThumb(QFrame):
     clicked = pyqtSignal(Path)
+    viewRequested = pyqtSignal(Path)   # лупа → попап-просмотр
     revealRequested = pyqtSignal(Path)
     copyRequested = pyqtSignal(Path)
     deleteRequested = pyqtSignal(Path)
@@ -722,12 +745,23 @@ class CameraResultThumb(QFrame):
         self.delete_btn.setToolTip(tr("camera_result_delete"))
         self.delete_btn.clicked.connect(lambda: self.deleteRequested.emit(self._path))
 
+        # 2026-07-03: кнопка-лупа — попап-просмотр этой миниатюры
+        self.view_btn = QToolButton()
+        self.view_btn.setObjectName("camera-thumb-overlay-btn")
+        self.view_btn.setIcon(_camera_icon("maximize-2"))
+        self.view_btn.setIconSize(QSize(14, 14))
+        self.view_btn.setFixedSize(22, 22)
+        self.view_btn.setToolTip(tr("camera_result_view"))
+        self.view_btn.clicked.connect(lambda: self.viewRequested.emit(self._path))
+
+        overlay_lay.addWidget(self.view_btn)
         overlay_lay.addWidget(self.reveal_btn)
         overlay_lay.addWidget(self.copy_btn)
         overlay_lay.addStretch()
         overlay_lay.addWidget(self.delete_btn)
         overlay_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
         image_lay.addWidget(self.overlay, 0, 0)
+        self.overlay.raise_()   # кнопки гарантированно ПОВЕРХ картинки
 
         lay.addWidget(self.image_wrap)
         self._refresh_pixmap()
@@ -818,6 +852,7 @@ class CameraLabView(QWidget):
         self._get_shot_clipboard = get_shot_clipboard
         self._set_shot_clipboard = set_shot_clipboard
         self._current_ref: Optional[CameraReference] = None
+        self._big_path: Optional[Path] = None   # что показано в большом окне
         self._balance_thread: Optional[FalBalanceThread] = None
         self._loading_state = True
         self._slider_labels: List[QLabel] = []
@@ -841,10 +876,7 @@ class CameraLabView(QWidget):
 
         self.title_lbl = QLabel()
         self.title_lbl.setObjectName("camera-title")
-        self.subtitle_lbl = QLabel()
-        self.subtitle_lbl.setObjectName("camera-subtitle")
         root.addWidget(self.title_lbl)
-        root.addWidget(self.subtitle_lbl)
 
         body = QHBoxLayout()
         body.setSpacing(18)
@@ -891,10 +923,34 @@ class CameraLabView(QWidget):
         self.big_result.setSizePolicy(QSizePolicy.Policy.Expanding,
                                       QSizePolicy.Policy.Fixed)
         self.big_result.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.big_result.clicked.connect(lambda: self._open_result_viewer(None))
+        # 2026-07-03: клик по большому окну → попап текущей показанной
+        self.big_result.clicked.connect(self._open_big_popup)
+        # hover-кнопки на большом окне (в папке / в буфер / удалить) —
+        # действуют на ТЕКУЩУЮ показанную картинку
+        self._big_btns = []
+        for _icon, _tip_key, _handler in (
+            ("folder-open", "camera_result_reveal", self._big_reveal),
+            ("copy", "shot_copy", self._big_copy),
+            ("trash-2-red", "camera_result_delete", self._big_delete),
+        ):
+            _b = QToolButton(self.big_result)
+            _b.setObjectName("camera-thumb-overlay-btn"
+                             if _icon != "trash-2-red"
+                             else "camera-thumb-overlay-trash")
+            _b.setIcon(_camera_icon(_icon))
+            _b.setIconSize(QSize(14, 14))
+            _b.setFixedSize(22, 22)
+            _b.setCursor(Qt.CursorShape.PointingHandCursor)
+            _b.setToolTip(tr(_tip_key))
+            _b.clicked.connect(_handler)
+            _b.setVisible(False)
+            self._big_btns.append(_b)
+        self.big_result.entered.connect(self._show_big_btns)
+        self.big_result.left.connect(
+            lambda: [b.setVisible(False) for b in self._big_btns])
         left_lay.addWidget(self.big_result)
 
-        self.results_scroll = QScrollArea()
+        self.results_scroll = HWheelScrollArea()
         self.results_scroll.setObjectName("camera-results-panel")
         self.results_scroll.setWidgetResizable(True)
         self.results_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -984,6 +1040,12 @@ class CameraLabView(QWidget):
         self.generate_btn.setFixedHeight(42)
         self.generate_btn.clicked.connect(self._run_generation)
         controls_lay.addWidget(self.generate_btn)
+
+        # 2026-07-03: углы генерации выбранного результата (из манифеста)
+        self.angles_info_lbl = QLabel()
+        self.angles_info_lbl.setObjectName("camera-generation-status")
+        self.angles_info_lbl.setVisible(False)
+        controls_lay.addWidget(self.angles_info_lbl)
 
         self.generation_status_lbl = QLabel()
         self.generation_status_lbl.setObjectName("camera-generation-status")
@@ -1200,7 +1262,6 @@ class CameraLabView(QWidget):
 
     def apply_lang(self) -> None:
         self.title_lbl.setText(tr("camera_title"))
-        self.subtitle_lbl.setText(tr("camera_subtitle"))
         self.source_title_lbl.setText(tr("camera_source_title"))
         self.controls_title_lbl.setText(tr("camera_controls_title"))
         self.fal_key_title_lbl.setText(tr("camera_fal_key_label"))
@@ -1398,6 +1459,10 @@ class CameraLabView(QWidget):
                     "vertical_deg": v_deg,
                     "zoom": zoom,
                 },
+                "last_result": (
+                    str(self._current_big_path())
+                    if self._current_big_path() is not None else None
+                ),
             }
             state_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -1444,21 +1509,26 @@ class CameraLabView(QWidget):
 
             self._remove_layout_widgets(self.results_strip_lay, CameraResultThumb)
             result_items = data.get("results") if isinstance(data.get("results"), list) else []
-            result_paths = []
-            if self._current_ref is not None:
-                result_paths = [
-                    Path(str(item.get("path")))
-                    for item in result_items
-                    if isinstance(item, dict) and item.get("path")
-                ]
+            # 2026-07-03 (фикс пустого big): результаты живут НЕЗАВИСИМО от
+            # исходника (раньше guard current_ref ронял и ленту, и big).
+            result_paths = [
+                Path(str(item.get("path")))
+                for item in result_items
+                if isinstance(item, dict) and item.get("path")
+            ]
             for path in result_paths:
                 if path.exists():
                     self._show_result_preview(path)
                     self._last_result_path = path
+            last = data.get("last_result")
+            if last and Path(str(last)).exists():
+                self._big_path = Path(str(last))
+                self._last_result_path = Path(str(last))
 
             self.generate_btn.setEnabled(not bool(self._generation_jobs))
             self._set_generation_status("")
             self._update_big_result()
+            self._update_angles_info()
             self._sync_control_state()
         except Exception:
             pass
@@ -1513,7 +1583,9 @@ class CameraLabView(QWidget):
         path = Path(output_path)
         self._append_generation_manifest(path, job)
         self._last_result_path = path
+        self._big_path = path          # свежий результат — в большое окно
         self._show_result_preview(path)
+        self._update_angles_info()
         self._refresh_fal_balance()   # генерация списала $ — обновляем
 
     def _on_generation_error(self, run_id: int, message: str) -> None:
@@ -1553,13 +1625,93 @@ class CameraLabView(QWidget):
             self.results_strip,
             aspect_ratio=self.current_slot.aspect_ratio() if self._current_ref else None,
         )
-        thumb.clicked.connect(self._open_result_viewer)
+        thumb.clicked.connect(self._set_big_from)      # клик = показать в big
+        thumb.viewRequested.connect(self._open_image_popup)  # лупа = попап
         thumb.revealRequested.connect(self._reveal_result)
         thumb.copyRequested.connect(self._copy_result_to_shot_clipboard)
         thumb.deleteRequested.connect(lambda path, widget=thumb: self._delete_result(path, widget))
         self.results_strip_lay.insertWidget(self.results_strip_lay.count() - 1, thumb)
         self._update_big_result()
         self._save_state()
+
+    def _current_big_path(self) -> Optional[Path]:
+        """Показанная в большом окне картинка: явная → последняя → новейшая
+        миниатюра. Fallback-цепочка чинит «пустое окно при живой ленте»."""
+        for cand in (self._big_path, self._last_result_path,
+                     self._newest_result_path()):
+            if cand is not None and Path(cand).exists():
+                return Path(cand)
+        return None
+
+    def _set_big_from(self, path: Path) -> None:
+        """Клик по миниатюре: показать её в большом окне + углы генерации."""
+        self._big_path = Path(path)
+        self._update_big_result()
+        self._update_angles_info()
+        self._save_state()
+
+    def _open_big_popup(self) -> None:
+        path = self._current_big_path()
+        if path is not None:
+            self._open_image_popup(path)
+
+    def _show_big_btns(self) -> None:
+        if self._current_big_path() is None:
+            return
+        x = self.big_result.width() - 4
+        for b in reversed(self._big_btns):
+            x -= b.width() + 4
+            b.move(x, 4)
+            b.setVisible(True)
+            b.raise_()
+
+    def _big_reveal(self) -> None:
+        path = self._current_big_path()
+        if path is not None:
+            self._reveal_result(path)
+
+    def _big_copy(self) -> None:
+        path = self._current_big_path()
+        if path is not None:
+            self._copy_result_to_shot_clipboard(path)
+
+    def _big_delete(self) -> None:
+        path = self._current_big_path()
+        if path is not None:
+            self._delete_result(path)
+
+    def _angles_text_for(self, path: Optional[Path]) -> str:
+        """Углы генерации картинки из manifest.json (запись angles)."""
+        if path is None:
+            return ""
+        show_slug = self._current_show_slug()
+        if not show_slug:
+            return ""
+        show_root = self._project_root / "shows" / show_slug
+        manifest_path = show_root / "camera_lab" / "manifest.json"
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            try:
+                rel = str(Path(path).relative_to(show_root))
+            except Exception:
+                rel = str(path)
+            for item in reversed(data if isinstance(data, list) else []):
+                if item.get("output") == rel:
+                    a = item.get("angles") or {}
+                    return (f"{int(a.get('horizontal_deg', 0))}° / "
+                            f"{int(a.get('vertical_deg', 0)):+d}° / "
+                            f"{float(a.get('zoom', 5.0)):.1f}")
+        except Exception:
+            pass
+        return ""
+
+    def _update_angles_info(self) -> None:
+        lbl = getattr(self, "angles_info_lbl", None)
+        if lbl is None:
+            return
+        text = self._angles_text_for(self._current_big_path())
+        lbl.setText(f"{tr('camera_angles_info')} {text}" if text else "")
+        lbl.setVisible(bool(text))
 
     def _update_big_result(self) -> None:
         """Большое окно результата: последняя генерация, scaled под размер;
@@ -1578,10 +1730,10 @@ class CameraLabView(QWidget):
                     slot.setFixedHeight(slot_h)
                 if big.height() != slot_h:
                     big.setFixedHeight(slot_h)
-        path = self._last_result_path
-        if path is None or not Path(path).exists():
+        path = self._current_big_path()
+        if path is None:
             big.setPixmap(QPixmap())
-            big.setText("")   # 2026-07-02: без центр-подписи — заголовок слева
+            big.setText("")   # без центр-подписи — заголовок слева
             return
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
@@ -1649,6 +1801,8 @@ class CameraLabView(QWidget):
             return
         if self._last_result_path == path:
             self._last_result_path = self._newest_result_path(excluding=path)
+        if self._big_path == path:
+            self._big_path = None      # fallback-цепочка возьмёт новейшую
         if widget is None:
             widget = self._find_result_thumb(path)
         if widget is not None:
