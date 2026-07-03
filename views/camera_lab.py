@@ -589,6 +589,15 @@ class ImageDropSlot(QFrame):
             self.hint.setVisible(not self._large)
             self.title.setText("" if self._large else self._image_name)
             self.hint.setText("" if self._large else tr(REF_TYPE_LABEL_KEYS[self._slot_type]))
+            if self._large:
+                self.image.setText("")   # кадр загружен — текст не нужен
+            return
+        if self._large:
+            # 2026-07-03: ОДНА строка по центру блока (image растянут
+            # stretch=1 → честный центр по вертикали и горизонтали)
+            self.title.setVisible(False)
+            self.hint.setVisible(False)
+            self.image.setText(tr("camera_drop_single"))
             return
         self.title.setVisible(True)
         self.hint.setVisible(True)
@@ -602,7 +611,7 @@ class ImageDropSlot(QFrame):
         self._image_name = None
         self._aspect_ratio = 16 / 9
         self.image.setPixmap(QPixmap())
-        self.retranslate()
+        self.retranslate()   # large → плейсхолдер-строка по центру
         if self._large:
             self.updateGeometry()
         self.update()
@@ -644,16 +653,7 @@ class ImageDropSlot(QFrame):
         )
         # 2026-07-03 (п.4): скругление углов картинки clip-путём (радиус
         # как у рамки блока) — равномерно все 4 угла.
-        rounded = QPixmap(scaled.size())
-        rounded.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(rounded)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(rounded.rect()), 8, 8)
-        painter.setClipPath(clip)
-        painter.drawPixmap(0, 0, scaled)
-        painter.end()
-        self.image.setPixmap(rounded)
+        self.image.setPixmap(_rounded_pixmap(scaled))
 
     def dragEnterEvent(self, event):  # noqa: N802 - Qt override
         if event.mimeData().hasUrls():
@@ -679,6 +679,25 @@ class ImageDropSlot(QFrame):
     def _is_image_path(path: Path) -> bool:
         return path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
 
+
+
+def _rounded_pixmap(scaled: QPixmap, radius: int = 7) -> QPixmap:
+    """Скругление картинки clip-путём с ГАРАНТИРОВАННОЙ альфой.
+    2026-07-03: QPixmap.fill(transparent) платформо-зависим (без альфа-
+    канала углы оставались непрозрачными → «кривые углы» вживую);
+    QImage ARGB32_Premultiplied даёт альфу всегда, Mac/Win одинаково."""
+    from PyQt6.QtGui import QImage
+    img = QImage(scaled.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    painter = QPainter(img)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    clip = QPainterPath()
+    clip.addRoundedRect(QRectF(0, 0, scaled.width(), scaled.height()),
+                        radius, radius)
+    painter.setClipPath(clip)
+    painter.drawPixmap(0, 0, scaled)
+    painter.end()
+    return QPixmap.fromImage(img)
 
 
 def _camera_icon(name: str) -> QIcon:
@@ -839,16 +858,7 @@ class CameraResultThumb(QFrame):
         # 2026-07-03 (п.4): clip по РАЗМЕРУ SCALED — раньше скругление шло
         # по target-боксу, и когда картинка не заполняла бокс, часть углов
         # оставалась прямой (скруглялся бокс, не картинка).
-        rounded = QPixmap(scaled.size())
-        rounded.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(rounded)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(rounded.rect()), 8, 8)
-        painter.setClipPath(clip)
-        painter.drawPixmap(0, 0, scaled)
-        painter.end()
-        self.image.setPixmap(rounded)
+        self.image.setPixmap(_rounded_pixmap(scaled))
 
 
 
@@ -1217,6 +1227,9 @@ class CameraLabView(QWidget):
             self.orbit.set_frame_image(path)
             self.orbit.set_frame_aspect(self.current_slot.aspect_ratio())
             self._reset_camera_controls()
+            # тот же пересинк высоты/скейла, что при drop (без него кадр
+            # вставал мелким до ухода-возврата на вкладку)
+            QTimer.singleShot(0, self._update_big_result)
             self._set_generation_status(tr("camera_pasted_from_clipboard"))
             self._save_state()
         except Exception as exc:
@@ -1812,24 +1825,20 @@ class CameraLabView(QWidget):
             big.setText("")
             return
         big.setText("")
-        size = big.size()
+        # ЦЕЛЕВОЙ размер: ширина big + ИЗВЕСТНАЯ высота слота (big.height()
+        # в этот момент может быть ещё старым — layout применит фикс позже;
+        # из-за этого низ картинки обрезался и нижние углы «теряли» радиус).
+        target_w = max(64, big.width() - 2)          # минус рамка 1px×2
+        target_h = max(64, (slot_h if slot is not None and slot_h > 50
+                            else big.height()) - 2)
         scaled = pixmap.scaled(
-            max(64, size.width()), max(64, size.height()),
+            target_w, target_h,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        # 2026-07-03 (п.4): картинка в блоке — со скруглёнными углами
-        # (clip QPainterPath, как у миниатюр), радиус как у рамки блока.
-        rounded = QPixmap(scaled.size())
-        rounded.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(rounded)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(rounded.rect()), 8, 8)
-        painter.setClipPath(clip)
-        painter.drawPixmap(0, 0, scaled)
-        painter.end()
-        big.setPixmap(rounded)
+        # Радиус картинки = радиус рамки (8) − толщина бордера (1); clip
+        # строго по прямоугольнику отрисованной картинки — 4 угла одним путём.
+        big.setPixmap(_rounded_pixmap(scaled))
         print(f"[CAMLAB] update_big OK path={path} scaled={scaled.width()}x{scaled.height()}")
 
     def resizeEvent(self, event):  # noqa: N802 - Qt override
