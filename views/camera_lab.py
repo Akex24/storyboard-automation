@@ -1188,7 +1188,17 @@ class CameraLabView(QWidget):
         for path in paths:
             if slot_type != "Current shot":
                 continue
+            # 2026-07-03: диагностика drop-пути в runtime.log — путь/exists/
+            # size/st_dev оригинала (междисковый drop) и результат копии.
+            try:
+                _st = path.stat()
+                print(f"[CAMLAB] drop: src={path} exists={path.exists()} "
+                      f"size={_st.st_size} st_dev={_st.st_dev}")
+            except Exception as _e:
+                print(f"[CAMLAB] drop: src={path} exists={path.exists()} stat_err={_e}")
             current_path = self._copy_current_shot_to_camera_folder(path)
+            print(f"[CAMLAB] drop: copied -> {current_path} "
+                  f"exists={Path(current_path).exists()}")
             self._current_ref = CameraReference(path=current_path, ref_type=slot_type)
             self.current_slot.set_image(current_path)
             self.orbit.set_frame_image(current_path)
@@ -1199,6 +1209,7 @@ class CameraLabView(QWidget):
     def _copy_current_shot_to_camera_folder(self, path: Path) -> Path:
         show_slug = self._current_show_slug()
         if not show_slug:
+            print(f"[CAMLAB] copy: нет активного шоу — источник остаётся вне проекта: {path}")
             return path
         out_dir = self._project_root / "shows" / show_slug / "camera_lab" / "outputs"
         try:
@@ -1212,9 +1223,17 @@ class CameraLabView(QWidget):
             while dest.exists():
                 dest = out_dir / f"source_{path.stem}_{index}{suffix}"
                 index += 1
-            shutil.copy2(path, dest)
+            shutil.copy2(path, dest)   # кроссдиск ок (shutil читает+пишет байты)
+            try:
+                print(f"[CAMLAB] copy: {path} -> {dest} ok size={dest.stat().st_size}")
+            except Exception:
+                pass
             return dest
-        except Exception:
+        except Exception as exc:
+            # 2026-07-03: раньше except молчал — если копия падала (права/диск),
+            # _current_ref указывал на оригинал вне проекта, а причина терялась.
+            print(f"[CAMLAB] copy FAILED {path} -> {out_dir}: {exc} "
+                  f"(источник остаётся вне проекта)")
             return path
 
     def set_shot_clipboard_available(self, available: bool) -> None:
