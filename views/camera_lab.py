@@ -44,6 +44,9 @@ from i18n import tr
 from generator.fal_angles_thread import (
     FAL_MODEL, FalAnglesThread, FalBalanceThread,
 )
+# Стем-резолв протухших путей (Adobe/Hazel-вотчер конвертит png→jpg и
+# удаляет оригинал) — тот же лекарь, что у плиток Генератора.
+from generator.result_cell import resolve_existing_path
 
 
 # 2026-07-02 (fal): остался только основной кадр — референсы вырезаны.
@@ -1539,13 +1542,14 @@ class CameraLabView(QWidget):
                 if isinstance(item, dict) and item.get("path")
             ]
             for path in result_paths:
-                if path.exists():
-                    self._show_result_preview(path)
-                    self._last_result_path = path
-            last = data.get("last_result")
-            if last and Path(str(last)).exists():
-                self._big_path = Path(str(last))
-                self._last_result_path = Path(str(last))
+                healed = resolve_existing_path(path)   # вотчер png→jpg
+                if healed:
+                    self._show_result_preview(Path(healed))
+                    self._last_result_path = Path(healed)
+            last = resolve_existing_path(data.get("last_result"))
+            if last:
+                self._big_path = Path(last)
+                self._last_result_path = Path(last)
             print(f"[CAMLAB] load_state: results={len(result_paths)} "
                   f"restored={self._result_thumb_count()} "
                   f"current={'да' if self._current_ref else 'нет'} "
@@ -1661,17 +1665,19 @@ class CameraLabView(QWidget):
 
     def _current_big_path(self) -> Optional[Path]:
         """Показанная в большом окне картинка: явная → последняя → новейшая
-        миниатюра. Fallback-цепочка чинит «пустое окно при живой ленте»."""
+        миниатюра. Каждый кандидат лечится стем-резолвом (вотчер png→jpg)."""
         for cand in (self._big_path, self._last_result_path,
                      self._newest_result_path()):
-            if cand is not None and Path(cand).exists():
-                return Path(cand)
+            healed = resolve_existing_path(cand)
+            if healed:
+                return Path(healed)
         return None
 
     def _set_big_from(self, path: Path) -> None:
         """Клик по миниатюре: показать её в большом окне + углы генерации."""
-        self._big_path = Path(path)
-        print(f"[CAMLAB] set_big_from path={self._big_path} "
+        healed = resolve_existing_path(path)
+        self._big_path = Path(healed) if healed else Path(path)
+        print(f"[CAMLAB] set_big_from raw={path} healed={healed} "
               f"exists={self._big_path.exists()}")
         self._update_big_result()
         self._update_angles_info()
@@ -1723,8 +1729,11 @@ class CameraLabView(QWidget):
                 rel = str(Path(path).relative_to(show_root))
             except Exception:
                 rel = str(path)
+            rel_stem = Path(rel).with_suffix("").as_posix()
             for item in reversed(data if isinstance(data, list) else []):
-                if item.get("output") == rel:
+                # матч по стему: вотчер меняет расширение файла, запись
+                # манифеста остаётся со старым (.png) — стем стабилен
+                if Path(str(item.get("output", ""))).with_suffix("").as_posix() == rel_stem:
                     a = item.get("angles") or {}
                     if not a:
                         print(f"[CAMLAB] angles: запись без angles rel={rel}")
@@ -1801,8 +1810,11 @@ class CameraLabView(QWidget):
     def _copy_result_to_shot_clipboard(self, path: Path) -> None:
         if self._set_shot_clipboard is None:
             return
-        if not path or not path.exists():
+        healed = resolve_existing_path(path)
+        print(f"[CAMLAB] copy handler raw={path} healed={healed}")
+        if not healed:
             return
+        path = Path(healed)
         try:
             self._set_shot_clipboard(path.read_bytes())
             self._set_generation_status(tr("camera_result_copied"))
@@ -1815,10 +1827,11 @@ class CameraLabView(QWidget):
 
     def _reveal_result(self, path: Optional[Path] = None) -> None:
         path = path or self._last_result_path
-        print(f"[CAMLAB] reveal handler path={path} "
-              f"exists={bool(path and Path(path).exists())}")
-        if not path or not path.exists():
+        healed = resolve_existing_path(path)
+        print(f"[CAMLAB] reveal handler raw={path} healed={healed}")
+        if not healed:
             return
+        path = Path(healed)
         try:
             from storyboard_app import reveal_in_file_manager
 
@@ -1828,9 +1841,15 @@ class CameraLabView(QWidget):
             print(f"[CAMLAB] reveal EXC {exc}")
 
     def _delete_result(self, path: Optional[Path] = None, widget: Optional[QWidget] = None) -> None:
-        path = path or self._last_result_path
-        if not path or not path.exists():
+        raw = path or self._last_result_path
+        healed = resolve_existing_path(raw)
+        print(f"[CAMLAB] delete handler raw={raw} healed={healed}")
+        if not healed:
             return
+        # widget ищем по СЫРОМУ пути (thumb хранит старое имя), удаляем — healed
+        if widget is None and raw is not None:
+            widget = self._find_result_thumb(Path(raw))
+        path = Path(healed)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(tr("camera_delete_confirm_title"))

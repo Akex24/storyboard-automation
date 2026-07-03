@@ -154,10 +154,20 @@ class FalAnglesThread(QThread):
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             h = int(round(self.horizontal_angle))
             v = int(round(self.vertical_angle))
-            out_path = self.out_dir / f"angle_{stamp}_h{h}_v{v}.png"
+            # 2026-07-03: сохраняем СРАЗУ В JPEG. Внешний Adobe/Hazel-вотчер
+            # у Alex пере-кодирует свежие .png → .jpg и УДАЛЯЕТ оригинал
+            # (лог: exists=False через минуту после генерации; тот же
+            # призрак, что в generator — см. память project_4k_ref_break).
+            # JPEG вотчер не трогает (все старые .jpg в outputs целы).
+            out_path = self.out_dir / f"angle_{stamp}_h{h}_v{v}.jpg"
             rd = requests.get(img_url, timeout=120)
             rd.raise_for_status()
-            out_path.write_bytes(rd.content)
+            import io as _io
+            from PIL import Image as _Image
+            with _Image.open(_io.BytesIO(rd.content)) as img:
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                img.save(str(out_path), "JPEG", quality=95, optimize=True)
 
             self._diag(rid, status, int(time.time() - t0), "ok",
                        f" prompt={out.get('prompt', '')!r}")
