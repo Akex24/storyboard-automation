@@ -910,7 +910,10 @@ class CameraLabView(QWidget):
         self.results_strip_lay.setSpacing(10)
         self.results_strip_lay.addStretch()
         self.results_scroll.setWidget(self.results_strip)
-        self.results_scroll.setVisible(False)
+        # 2026-07-03 (фикс разъехавшейся колонки): ленту НЕ прячем — она
+        # единственный stretch-носитель; скрытая (setVisible(False))
+        # выпадала из layout, stretch исчезал и QVBoxLayout растаскивал
+        # блоки по колонке гигантскими зазорами. Пустая лента прозрачна.
         left_lay.addWidget(self.results_scroll, stretch=1)   # остаток панели
 
         body.addWidget(left, stretch=3)
@@ -1452,7 +1455,6 @@ class CameraLabView(QWidget):
                 if path.exists():
                     self._show_result_preview(path)
                     self._last_result_path = path
-            self.results_scroll.setVisible(self._result_thumb_count() > 0)
 
             self.generate_btn.setEnabled(not bool(self._generation_jobs))
             self._set_generation_status("")
@@ -1556,7 +1558,6 @@ class CameraLabView(QWidget):
         thumb.copyRequested.connect(self._copy_result_to_shot_clipboard)
         thumb.deleteRequested.connect(lambda path, widget=thumb: self._delete_result(path, widget))
         self.results_strip_lay.insertWidget(self.results_strip_lay.count() - 1, thumb)
-        self.results_scroll.setVisible(True)
         self._update_big_result()
         self._save_state()
 
@@ -1566,11 +1567,17 @@ class CameraLabView(QWidget):
         big = getattr(self, "big_result", None)
         if big is None:
             return
-        # один в один с окном исходника: ширина у обоих = ширина панели,
-        # высоту жёстко копируем (у слота она из heightForWidth по аспекту)
-        slot_h = self.current_slot.height() if hasattr(self, "current_slot") else 0
-        if slot_h > 50 and big.height() != slot_h:
-            big.setFixedHeight(slot_h)
+        # 2026-07-03: высоту исходника задаём ЯВНО из heightForWidth —
+        # QVBoxLayout игнорирует HFW при vertical=Fixed (смок ловил слот
+        # высотой 1px). Потом big — один в один со слотом.
+        slot = getattr(self, "current_slot", None)
+        if slot is not None and slot.width() > 50:
+            slot_h = slot.heightForWidth(slot.width())
+            if slot_h > 50:
+                if slot.height() != slot_h:
+                    slot.setFixedHeight(slot_h)
+                if big.height() != slot_h:
+                    big.setFixedHeight(slot_h)
         path = self._last_result_path
         if path is None or not Path(path).exists():
             big.setPixmap(QPixmap())
@@ -1649,7 +1656,6 @@ class CameraLabView(QWidget):
             widget.setParent(None)
             widget.deleteLater()
         has_results = self._result_thumb_count() > 0
-        self.results_scroll.setVisible(has_results)
         self._update_big_result()
         self._set_generation_status("" if has_results else tr("camera_result_deleted"))
         self._save_state()
