@@ -274,12 +274,11 @@ class CameraPerspectiveControl(QWidget):
 
     def _cam_dist(self, radius: float) -> float:
         """2026-07-03: ВИЗУАЛЬНАЯ дистанция значка камеры от центра = f(зум).
-        UI-семантика зума (фикс инверсии): 0 = камера ДАЛЕКО (общий план),
-        10 = ВПЛОТНУЮ (крупно) — значок синхронен: ui 0 → 1.0r (край сферы),
-        ui 10 → 0.18r (вплотную к кадру). Линейно по перевёрнутой шкале —
-        дефолт ui 5.0 → 0.59r ≈ 66px (утверждённая точка «не прилипает»).
-        Drag-чувствительность 1:1 считается от этого же r_cam."""
-        t_far = 1.0 - (self._z / 100.0)          # доля «дальности» камеры
+        Семантика ЗАФИКСИРОВАНА: ползунок 0 = БЛИЗКО → значок ВПЛОТНУЮ к
+        карточке (0.18r); ползунок 10 = ДАЛЕКО → значок на КРАЮ сферы (1.0r).
+        Линейно; дефолт ui 5.0 → 0.59r ≈ 66px (средняя «не прилипающая»
+        дистанция). Drag-чувствительность 1:1 считается от этого же r_cam."""
+        t_far = self._z / 100.0                  # ползунок = «дальность»
         return radius * (0.18 + 0.82 * t_far)
 
     # 2026-07-02 (фикс №2): ВИЗУАЛЬНАЯ широта камеры — растянутый маппинг
@@ -700,9 +699,10 @@ class ImageDropSlot(QFrame):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        # 2026-07-03 (п.4): скругление углов картинки clip-путём (радиус
-        # как у рамки блока) — равномерно все 4 угла.
-        self.image.setPixmap(_rounded_pixmap(scaled))
+        # 2026-07-03: картинка — прямоугольник; клип по скруглённой рамке
+        # КОНТЕЙНЕРА (radius 8 у #camera-main-slot) только где дотягивается.
+        self.image.setPixmap(_pixmap_clipped_to_box(
+            scaled, target.width(), target.height(), 8))
 
     def dragEnterEvent(self, event):  # noqa: N802 - Qt override
         if event.mimeData().hasUrls():
@@ -730,19 +730,26 @@ class ImageDropSlot(QFrame):
 
 
 
-def _rounded_pixmap(scaled: QPixmap, radius: int = 7) -> QPixmap:
-    """Скругление картинки clip-путём с ГАРАНТИРОВАННОЙ альфой.
-    2026-07-03: QPixmap.fill(transparent) платформо-зависим (без альфа-
-    канала углы оставались непрозрачными → «кривые углы» вживую);
-    QImage ARGB32_Premultiplied даёт альфу всегда, Mac/Win одинаково."""
+def _pixmap_clipped_to_box(scaled: QPixmap, box_w: int, box_h: int,
+                           radius: int = 8) -> QPixmap:
+    """Картинка — обычный ПРЯМОУГОЛЬНИК; обрезается по скруглённой рамке
+    КОНТЕЙНЕРА только там, где до неё дотягивается (2026-07-03, замена
+    _rounded_pixmap: раньше скруглялась сама картинка и на вертикальном
+    кадре «висела уголками в воздухе» внутри прямой рамки).
+    Картинка центрирована в боксе (box_w×box_h, как AlignCenter у QLabel) —
+    клип-путь = roundedRect бокса, переведённый в координаты картинки.
+    Если картинка меньше бокса по обеим осям — клип её не касается (углы
+    прямые); где касается краёв бокса — срез по дуге рамки.
+    QImage ARGB32_Premultiplied — гарантированная альфа, Mac/Win одинаково."""
     from PyQt6.QtGui import QImage
     img = QImage(scaled.size(), QImage.Format.Format_ARGB32_Premultiplied)
     img.fill(0)
     painter = QPainter(img)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    off_x = (box_w - scaled.width()) / 2.0    # позиция бокса отн. картинки
+    off_y = (box_h - scaled.height()) / 2.0
     clip = QPainterPath()
-    clip.addRoundedRect(QRectF(0, 0, scaled.width(), scaled.height()),
-                        radius, radius)
+    clip.addRoundedRect(QRectF(-off_x, -off_y, box_w, box_h), radius, radius)
     painter.setClipPath(clip)
     painter.drawPixmap(0, 0, scaled)
     painter.end()
@@ -927,10 +934,11 @@ class CameraResultThumb(QFrame):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        # 2026-07-03 (п.4): clip по РАЗМЕРУ SCALED — раньше скругление шло
-        # по target-боксу, и когда картинка не заполняла бокс, часть углов
-        # оставалась прямой (скруглялся бокс, не картинка).
-        self.image.setPixmap(_rounded_pixmap(scaled))
+        # 2026-07-03: картинка — прямоугольник; клип по скруглённой рамке
+        # контейнера-миниатюры (radius 8 у #camera-result-thumb-wrap) там,
+        # где картинка дотягивается до углов бокса.
+        self.image.setPixmap(_pixmap_clipped_to_box(
+            scaled, target.width(), target.height(), 8))
 
 
 
@@ -1588,12 +1596,22 @@ class CameraLabView(QWidget):
             return
         out_dir = self._project_root / "shows" / show_slug / "camera_lab" / "outputs"
         h_deg, v_deg, zoom = self._api_values()
-        # 2026-07-03 (фикс инверсии зума): UI-шкала = 0 далеко / 10 вплотную,
-        # а fal-модель по факту генераций (и титулу «Zoom (Distance)») ждёт
-        # ДИСТАНЦИЮ: 0 вплотную / 10 далеко → инвертируем перед отправкой.
-        # В манифест/статусы/бейджи идёт UI-значение (совпадает со слайдером).
-        fal_zoom = max(0.0, min(10.0, 10.0 - zoom))
-        print(f"[CAMLAB] run_gen: ui_zoom={zoom:.1f} -> fal_zoom={fal_zoom:.1f}")
+        # 2026-07-03 (семантика зума ЗАФИКСИРОВАНА): ползунок 0 = МАКСИМАЛЬНО
+        # БЛИЗКО (крупный план), 10 = МАКСИМАЛЬНО ДАЛЕКО (общий план).
+        # По ДВУМ независимым фактам генераций Alex близкий конец модели =
+        # fal 0 (старые генерации: fal 0 → крупный портрет; новый скрин:
+        # fal 10 → «как оригинал», не close-up) — description схемы OpenAPI
+        # («10=close-up») практикой не подтверждается. Маппинг ПРЯМОЙ:
+        # fal_zoom = ui — ползунок 0 шлёт fal 0 (максимальный close-up,
+        # который модель реально умеет), 10 → fal 10 (максимально далеко).
+        fal_zoom = max(0.0, min(10.0, zoom))
+        try:
+            _, _, _r = self.orbit._sphere_geometry()
+            _cd = self.orbit._cam_dist(_r)
+        except Exception:
+            _cd = -1.0
+        print(f"[CAMLAB] run_gen: ui_zoom={zoom:.1f} fal_zoom={fal_zoom:.1f} "
+              f"cam_dist={_cd:.1f}px")
         self.generate_btn.setEnabled(False)
         self._generation_run_id += 1
         run_id = self._generation_run_id
@@ -2051,7 +2069,9 @@ class CameraLabView(QWidget):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        big.setPixmap(_rounded_pixmap(scaled))
+        # 2026-07-03: картинка — прямоугольник; клип по скруглённой рамке
+        # окна «Результат» (radius 8) только где дотягивается до углов.
+        big.setPixmap(_pixmap_clipped_to_box(scaled, target_w, target_h, 8))
         print(f"[CAMLAB] update_big OK path={path} scaled={scaled.width()}x{scaled.height()}")
 
     def resizeEvent(self, event):  # noqa: N802 - Qt override
