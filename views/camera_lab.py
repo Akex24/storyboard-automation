@@ -143,30 +143,35 @@ class CameraResultDialog(QDialog):
 
 
 class CameraPerspectiveControl(QWidget):
-    """Орбитальная миникарта камеры (2026-07-02, замена перекоса кадра).
+    """Орбитальная миникарта камеры (2026-07-03: переписана A/B/C).
 
-    Миниатюра кадра — РОВНАЯ в центре (без искажений). Значок камеры ходит
-    по эллиптической орбите вокруг неё:
-      • горизонталь (0..360°) — позиция по кругу (0° = перед кадром, низ);
-      • вертикаль (-30..90°) — «высота» точки зрения: эллипс раскрывается
-        от плоского (взгляд в упор) к почти кругу (вид сверху);
-      • зум (0..100 = 0.0..10.0) — дистанция камеры от кадра (радиус).
-    Значения = РЕАЛЬНЫЕ API-значения (h в градусах, v в градусах,
-    зум ×10 int) — без защёлкивания в пресеты. Drag мышью крутит h/v,
-    колесо — зум (тот же контракт valuesChanged, что и раньше).
+    (A) МОДЕЛЬ — единственный источник правды: horizontal 0..360 (wrap),
+        vertical −30..90 (clamp), zoom 0..200 (= 0.0..20.0 ×10 int).
+        Наружу — int (сигнал valuesChanged, API fal); внутри drag — float-
+        аккумуляторы (_h_f/_v_f), чтобы 1px-дельты не съедались округлением.
+    (B) DRAG→МОДЕЛЬ — ИНКРЕМЕНТАЛЬНО от дельты курсора (dx→h полный круг с
+        wrap, dy→v в пределах диапазона), БЕЗ инверсии arccos/atan2 от
+        абсолютной позиции — нет ни зеркал, ни упоров, ни двузначности.
+        Колесо — зум. Телепорта «камера под курсор» нет.
+    (C) МОДЕЛЬ→ЭКРАН — сферическая проекция (h,v) с наклоном мировой оси
+        (_AXIS_TILT), орбита радиуса _cam_dist(зум); значок ВСЕГДА рисуется
+        последним слоем (на задней полусфере полупрозрачный ≥40%).
+    Слайдеры и превью читают одну модель (set_values ↔ valuesChanged).
     Чистый QPainter — кроссплатформенно (Mac/Win)."""
 
     valuesChanged = pyqtSignal(int, int, int)   # h_deg, v_deg, zoom_x10
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._h = 0        # 0..360
+        self._h = 0        # 0..360 (наружу/в API — int)
         self._v = 0        # -30..90
-        self._z = 50       # 0..100 (= zoom 5.0)
+        self._z = 50       # 0..200 (= zoom 5.0)
+        # 2026-07-03 (delta-drag, модель A): float-аккумуляторы углов — чтобы
+        # медленный drag (dx=1px → доли градуса) не съедался int-округлением.
+        self._h_f = 0.0
+        self._v_f = 0.0
         self._frame_pixmap: Optional[QPixmap] = None
-        self._drag_start: Optional[QPointF] = None
-        self._drag_h = 0
-        self._drag_v = 0
+        self._drag_last: Optional[QPointF] = None   # последняя позиция drag
         self.setMinimumSize(260, 300)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -176,6 +181,10 @@ class CameraPerspectiveControl(QWidget):
         self._h = int(h_deg) % 360
         self._v = max(-30, min(90, int(v_deg)))
         self._z = max(0, min(200, int(zoom_x10)))   # 2026-07-03: зум до 20.0
+        # синк float-аккумуляторов drag (во время drag слайдеры blockSignals →
+        # сюда не заходим, аккумулятор не сбивается)
+        self._h_f = float(self._h)
+        self._v_f = float(self._v)
         self.update()
 
     def set_frame_aspect(self, aspect: float) -> None:
@@ -194,68 +203,44 @@ class CameraPerspectiveControl(QWidget):
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_start = event.position()
-            self._apply_cursor(event.position())   # камера сразу под курсор
+            # 2026-07-03 (delta-drag, B): только захват — телепорта «камера
+            # под курсор» больше нет (он был источником зеркал/прыжков).
+            self._drag_last = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt override
-        if self._drag_start is None:
+        if self._drag_last is None:
             super().mouseMoveEvent(event)
             return
-        self._apply_cursor(event.position())       # 1:1 за точкой курсора
-        event.accept()
-
-    def _apply_cursor(self, pos) -> None:
-        """2026-07-02 (фикс drag 1:1): экранные координаты курсора →
-        (долгота, широта) ИНВЕРСИЕЙ той же проекции — камера следует ТОЧНО
-        за курсором, без дельты с множителем. Курсор вне диска сферы →
-        нормируем на край. Двузначность перед/зад решается непрерывностью:
-        из двух долгот (передней и зеркальной задней) берём ближайшую к
-        текущей — так камера «прокручивается» через край на заднюю сторону."""
-        cx, cy, radius = self._sphere_geometry()
+        # 2026-07-03 (delta-drag, B — переписано начисто): приращение углов
+        # от дельты курсора, БЕЗ arccos/atan2 от абсолютной позиции — так нет
+        # ни зеркал, ни упоров, ни двузначности перед/зад. dx → горизонталь
+        # (полный круг, wrap 360→0 в обе стороны; тянешь вправо — мир
+        # крутится, как в орбит-контролах Blender/three.js), dy → вертикаль
+        # (кламп −30..90, мышь вверх — камера выше). Чувствительность от
+        # радиуса сферы (DPI-независимо): полный круг ≈ диаметр диска,
+        # весь вертикальный диапазон 120° ≈ 1.6 радиуса.
+        pos = event.position()
+        dx = pos.x() - self._drag_last.x()
+        dy = pos.y() - self._drag_last.y()
+        self._drag_last = pos
+        _, _, radius = self._sphere_geometry()
         if radius <= 0:
             return
-        # 2026-07-03 (п.3): камера рисуется на орбите _cam_dist(зум) — курсор
-        # инвертируем на ТОЙ ЖЕ сфере (r_eff), иначе значок прыгал бы при drag.
-        r_eff = max(1.0, self._cam_dist(radius))
-        sx = pos.x() - cx
-        sy = pos.y() - cy
-        rr = math.hypot(sx, sy)
-        if rr < 1e-6:
-            return
-        # 2026-07-03 (фикс застревания горизонтали ~80/280): курсор ВСЕГДА
-        # проецируем на КРАЙ орбиты (нормировка в обе стороны, не только
-        # наружный кламп). Внутри диска depth z2≫0 запирал долготу у ~90°/270°
-        # (фронтальная инверсия + back-ветка «ближайшей» отбрасывала назад) —
-        # полный оборот шёл только по краю. На краю (z2≈0) круг курсора даёт
-        # непрерывные 0..360 на любом зуме и любой траектории мыши.
-        sx *= r_eff * 0.999 / rr
-        sy *= r_eff * 0.999 / rr
-        y2 = -sy
-        z2 = math.sqrt(max(0.0, r_eff * r_eff - sx * sx - y2 * y2))
-        ct, st = math.cos(self._AXIS_TILT), math.sin(self._AXIS_TILT)
-        # обратный наклон (транспонированная матрица поворота вокруг X)
-        y = y2 * ct + z2 * st
-        z = -y2 * st + z2 * ct
-        vis_lat = math.degrees(math.asin(max(-1.0, min(1.0, y / r_eff))))
-        lon_front = math.degrees(math.atan2(sx, z)) % 360
-        lon_back = (180.0 - math.degrees(math.atan2(sx, z))) % 360
-        def _dist(a: float, b: float) -> float:
-            d = abs(a - b) % 360
-            return min(d, 360 - d)
-        lon = lon_front if _dist(lon_front, self._h) <= _dist(lon_back, self._h) \
-            else lon_back
-        self._h = int(round(lon)) % 360
-        self._v = self._vis_to_v(vis_lat)
+        self._h_f = (self._h_f + dx * (180.0 / radius)) % 360.0
+        self._v_f = max(-30.0, min(90.0, self._v_f - dy * (75.0 / radius)))
+        self._h = int(round(self._h_f)) % 360
+        self._v = int(round(self._v_f))
         self.update()
         self.valuesChanged.emit(self._h, self._v, self._z)
+        event.accept()
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
-        if event.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
-            self._drag_start = None
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_last is not None:
+            self._drag_last = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
             return
@@ -292,11 +277,8 @@ class CameraPerspectiveControl(QWidget):
     @staticmethod
     def _v_to_vis(v_deg: float) -> float:
         return v_deg * 3.0 if v_deg < 0 else v_deg
-
-    @staticmethod
-    def _vis_to_v(vis_deg: float) -> int:
-        v = vis_deg / 3.0 if vis_deg < 0 else vis_deg
-        return max(-30, min(90, int(round(v))))
+    # (_vis_to_v удалён 2026-07-03 вместе с инверсией _apply_cursor —
+    # delta-drag работает напрямую в градусах модели)
 
     @classmethod
     def _project(cls, lat_deg: float, lon_deg: float, radius: float):
@@ -349,20 +331,19 @@ class CameraPerspectiveControl(QWidget):
         for a, b in back_segs:
             painter.drawLine(a, b)
 
-        # камера: долгота = горизонталь; широта — растянутый ВИЗУАЛЬНЫЙ
-        # маппинг (фикс №2: −30° уходит ПОД кадр, +90° — над). Признак
-        # «за глобусом» — ЧИСТО по долготе 90..270 (фикс №4: знак Z после
-        # наклона оси ошибочно топил камеру на передней стороне у полюса).
-        # 2026-07-03 (п.3): камера ходит по орбите РАДИУСА _cam_dist(зум) —
-        # наезд/отъезд виден по всей шкале (0 → вплотную к кадру, 20 → край).
+        # камера (модель→экран, C): долгота = горизонталь; широта —
+        # растянутый ВИЗУАЛЬНЫЙ маппинг (−30° ПОД кадр, +90° — над). Признак
+        # «за глобусом» — по долготе 90..270 (знак Z после наклона оси
+        # ошибочно топил камеру у полюса). Орбита РАДИУСА _cam_dist(зум) —
+        # наезд/отъезд по всей шкале (0 → вплотную к кадру, 20 → край).
+        # 2026-07-03 (слои, C): значок НЕ рисуется здесь — он ПОСЛЕДНИЙ слой
+        # (после карточки и передней сетки), см. конец paintEvent: раньше
+        # behind-значок рисовался ПЕРВЫМ и полностью перекрывался карточкой
+        # кадра («значок пропадает» на части горизонтали).
         cam_dx, cam_dy, _cam_z = self._project(
             self._v_to_vis(self._v), self._h, self._cam_dist(radius))
         cam_x, cam_y = cx + cam_dx, cy + cam_dy
         behind = 90 < (self._h % 360) < 270
-
-        if behind:
-            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=True,
-                              zoom_x10=self._z)
 
         # ── миниатюра кадра: СТОИТ вертикально, наклонена КАК ОСЬ глобуса ──
         # (2026-07-03, фикс оси наклона): предыдущая версия клала кадр плашмя
@@ -437,9 +418,11 @@ class CameraPerspectiveControl(QWidget):
         for a, b in front_segs:
             painter.drawLine(a, b)
 
-        if not behind:
-            self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=False,
-                              zoom_x10=self._z)
+        # 2026-07-03 (C): значок камеры + линия — ВСЕГДА, ПОСЛЕДНИМ слоем
+        # (поверх карточки и сетки). На задней полусфере — полупрозрачный
+        # (dim), но никогда не исчезает.
+        self._draw_camera(painter, cam_x, cam_y, cx, cy, dim=behind,
+                          zoom_x10=self._z)
 
         painter.setPen(QColor(184, 184, 184))
         font = QFont()
@@ -456,13 +439,14 @@ class CameraPerspectiveControl(QWidget):
     @staticmethod
     def _draw_camera(painter: QPainter, x: float, y: float,
                      cx: float, cy: float, dim: bool, zoom_x10: int) -> None:
-        """Значок камеры НА ПОВЕРХНОСТИ сферы + линия взгляда к центру.
-        Сфера от зума НЕ меняется — зум кодируется ТОЛЩИНОЙ линии взгляда
-        и бейджем «N.N» у значка. За сферой — полупрозрачный (depth cue).
+        """Значок камеры на орбите (_cam_dist) + линия взгляда к центру.
+        Зум кодируется дистанцией орбиты, толщиной линии и бейджем «N.N».
+        Задняя полусфера (dim) — полупрозрачный ≥40%, но ВСЕГДА рисуется
+        (последний слой paintEvent — ничем не перекрывается).
         Lucide 'video' через get_icon; fallback — точка."""
-        alpha = 90 if dim else 235
+        alpha = 110 if dim else 235   # 110/255 ≈ 43% — видим всегда
         line_w = 0.8 + (zoom_x10 / 200.0) * 2.6   # zoom 0→0.8px … 20→3.4px
-        line_pen = QPen(QColor(232, 184, 106, 45 if dim else 150), line_w)
+        line_pen = QPen(QColor(232, 184, 106, 70 if dim else 150), line_w)
         line_pen.setStyle(Qt.PenStyle.DotLine)
         painter.setPen(line_pen)
         painter.drawLine(QPointF(x, y), QPointF(cx, cy))
@@ -480,7 +464,7 @@ class CameraPerspectiveControl(QWidget):
             if icon is not None and not icon.isNull():
                 painter.save()
                 if dim:
-                    painter.setOpacity(0.45)
+                    painter.setOpacity(0.5)   # иконка тоже ≥40% на задней стороне
                 icon.paint(painter, QRect(int(x) - 8, int(y) - 8, 16, 16))
                 painter.restore()
                 icon_ok = True
