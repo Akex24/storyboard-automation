@@ -5193,15 +5193,18 @@ def list_shot_versions(history_dir: Path) -> list:
     for p in history_dir.iterdir():
         if not p.is_file():
             continue
-        name = p.name
-        # vN.jpg / vN.jpeg / vN.png
-        if name.startswith("v") and "." in name:
-            stem = name.split(".", 1)[0]
-            try:
-                n = int(stem[1:])
-                out.append((n, p))
-            except ValueError:
-                continue
+        # 2026-07-04: версией считаем ТОЛЬКО картинки vN.jpg/jpeg/png по
+        # РЕАЛЬНОМУ расширению. Раньше стем брался «до первой точки» —
+        # v7.prompt.txt проходил как «версия 7»: double-count версий в
+        # Mode C и ValueError (max() empty) в ShotViewerDialog.refresh на
+        # папках, где от сорванных генераций остались одни .prompt.txt
+        # (клик по шоту молча не открывал попап).
+        if p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+            continue
+        stem = p.stem                      # у vN.jpg → "vN"; у vN.prompt.txt сюда не дойдёт
+        if not (stem.startswith("v") and stem[1:].isdigit()):
+            continue
+        out.append((int(stem[1:]), p))
     out.sort(key=lambda x: x[0])
     return [p for _, p in out]
 

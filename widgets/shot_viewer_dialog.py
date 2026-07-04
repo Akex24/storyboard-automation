@@ -1351,10 +1351,15 @@ class ShotViewerDialog(QDialog):
         # Если active не в списке (например 0) — берём максимальный v.
         if not any(p.stem == f"v{self._active_version}" for p in versions):
             if versions:
-                # max N
+                # max N. 2026-07-04: default=0 — на пустом фильтре (ни одного
+                # валидного vN) НЕ падаем ValueError, а штатно открываемся в
+                # состоянии «нет версий» (кнопка «Перегенерировать» работает
+                # с parent=0). Раньше крэш конструктора глотался в MW и клик
+                # по шоту молча ничего не открывал.
                 self._active_version = max(
-                    int(p.stem[1:]) for p in versions
-                    if p.stem.startswith("v") and p.stem[1:].isdigit())
+                    (int(p.stem[1:]) for p in versions
+                     if p.stem.startswith("v") and p.stem[1:].isdigit()),
+                    default=0)
             else:
                 self._active_version = 0
 
