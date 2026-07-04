@@ -20651,6 +20651,22 @@ def main():
     apply_proxy_from_settings()
     app = QApplication(sys.argv)
     load_active_theme_overrides(QSettings(APP_ORG, APP_NAME))
+    # 2026-07-04: одноразовая миграция модели чата эпизода. У части коллег в
+    # QSettings (Win — реестр) по ключу "new_ep/model_v2" лежит старое
+    # "claude-opus-4-7" от УДАЛЁННОГО дропдауна (2a6fba8) — UI-ручки сменить
+    # больше нет, а дефолт 4.8 в _current_model касается только пустого ключа.
+    # Ровно это значение → "claude-opus-4-8"; ключа нет / уже 4.8 / другое
+    # (sonnet/haiku — сознательный выбор) — не трогаем. Идемпотентно: после
+    # первой перезаписи условие больше не сработает, флаг не нужен. Сбой
+    # миграции старт не роняет.
+    try:
+        _mig_qs = QSettings(APP_ORG, APP_NAME)
+        if _mig_qs.value("new_ep/model_v2", "", type=str) == "claude-opus-4-7":
+            _mig_qs.setValue("new_ep/model_v2", "claude-opus-4-8")
+            sys.stderr.write(
+                "[migrate] new_ep/model_v2: claude-opus-4-7 -> claude-opus-4-8\n")
+    except Exception:
+        pass
     install_theme_runtime()
     app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("Storyboard Studio")
