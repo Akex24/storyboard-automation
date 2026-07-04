@@ -39,6 +39,10 @@ KEY_SEARCH_TIMEOUT_SEC = 180  # потолок ожидания СВОБОДНО
                               # По истечении — error + return, не виснем навсегда.
 _OK_STATUSES = ("succeeded", "success", "completed", "done")
 _FAIL_STATUSES = ("failed", "error", "cancelled")
+# 2026-07-04: HTTP-коды перегруза/сброса гейтвея FastGen — ретраятся на submit/poll.
+# 499 = «Client Closed Request» (гейтвей сбросил соединение под нагрузкой). 429 сюда
+# НЕ входит (занятость ключа — свой перебор по кругу). Зеркально video-треду.
+_RETRYABLE_HTTP = (499, 500, 502, 503, 504)
 
 
 # Детектор транзиентных ошибок (is_transient) + человеческие локализованные
@@ -94,6 +98,16 @@ class GeneratorImageThread(QThread):
         # момент run() страница уже загружена, circular нет). is_transient — ретрай-
         # решение; human_message — локализованная причина для юзера.
         from generator.gen_errors import is_transient, human_message, classify_error
+
+        # 2026-07-04: единый механизм паузы перед авто-повтором (submit+poll).
+        # 10с, дроблёные по _stop. False → пришёл stop, вызывающий обязан return.
+        def _retry_pause(attempt) -> bool:
+            self.progress.emit(tr('gen_prog_retry', n=attempt + 1, total=3))
+            for _ in range(20):
+                if self._stop:
+                    return False
+                time.sleep(0.5)
+            return True
         try:
             # Рефы → v5 inputs[].input как base64 data URI (без /upload, без
             # storage hash, без TTL/expiration). Видны любому ключу — фикс 403
@@ -146,10 +160,15 @@ class GeneratorImageThread(QThread):
             # обёрнута в цикл до 4 попыток. На транзиентном failed (gen_errors.is_transient)
             # и retry_attempt<3 → пауза 10с + новая попытка (свежий перебор ключей).
             # Контент/лицензия/валидация и POLL_TIMEOUT — НЕ ретраятся (см. ниже).
+            # 2026-07-04: сюда же добавлены транзиентные HTTP 499/500/502/503/504 и обрыв
+            # соединения (connection aborted / read-write timeout) на submit И poll —
+            # тот же потолок 3 повтора. 401/403/429 (ключи), key_search_timeout,
+            # POLL_TIMEOUT, invalid_request/контент/лицензия — НЕ ретраятся.
             for retry_attempt in range(4):
                 # Сброс submit-состояния на КАЖДОЙ попытке (свежий перебор ключей).
                 session = None
                 op_id = None
+                retry_pending = False   # True → транзиентный сбой submit/poll → повтор
                 dead = set()
                 round_tried = set()
                 spins = 0
@@ -203,7 +222,14 @@ class GeneratorImageThread(QThread):
                                    params={"result_format": "ref"},
                                    json=payload, timeout=60)
                     except requests.exceptions.RequestException as e:
-                        # Сетевой сбой — НЕ ключевая проблема, не перебираем.
+                        # 2026-07-04: обрыв/таймаут транспорта (connection aborted /
+                        # read-write timeout) — транзиент. Ретраим до потолка.
+                        if retry_attempt < 3:
+                            self._fastgen("-", "submit", 0, "error", " error=net_retry")
+                            if not _retry_pause(retry_attempt):
+                                return
+                            retry_pending = True
+                            break
                         self.error.emit(tr('gen_err_network', detail=str(e)[:200]))
                         return
                     code = r.status_code
@@ -234,6 +260,13 @@ class GeneratorImageThread(QThread):
                             f"http={code} code={b_code} error={b_err[:300]} "
                             f"body={r.text[:500]}"
                         )
+                        # 2026-07-04: перегруз/сброс гейтвея (499/500/502/503/504) —
+                        # транзиент, ретраим. invalid_request/контент ниже — НЕ ретраятся.
+                        if code in _RETRYABLE_HTTP and retry_attempt < 3:
+                            if not _retry_pause(retry_attempt):
+                                return
+                            retry_pending = True
+                            break
                         # validation.invalid_request одинаков на всех ключах → человеческая
                         # причина; прочее (5xx) — с HTTP-кодом.
                         if classify_error(b_code, b_err) == 'invalid_request':
@@ -248,10 +281,13 @@ class GeneratorImageThread(QThread):
                         return
                     session = s   # рабочий ключ — им поллим и качаем
 
+                # 2026-07-04: submit-стадия попросила повтор (net/5xx) → следующая
+                # попытка retry-цикла (op_id ещё None, poll пропускаем).
+                if retry_pending:
+                    continue
                 self.progress.emit(tr('gen_prog_generating'))
                 t0 = time.monotonic()
                 last_status = ""
-                retry_pending = False   # станет True → транзиентный сбой, повторить генерацию
                 while True:
                     if self._stop:
                         return
@@ -264,9 +300,38 @@ class GeneratorImageThread(QThread):
                                       "error", " error=timeout")
                         self.error.emit(tr('gen_err_poll_timeout', status=last_status or 'unknown', sec=elapsed))
                         return
-                    rr = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
-                                     params={"result_format": "ref"}, timeout=30)
-                    rr.raise_for_status()
+                    try:
+                        rr = session.get(f"{_sa.API_BASE}/api/v6/generations/{op_id}",
+                                         params={"result_format": "ref"}, timeout=30)
+                        rr.raise_for_status()
+                    except requests.exceptions.HTTPError as e:
+                        # op_id привязан к ключу submit → переключить ключ на poll НЕЛЬЗЯ.
+                        pc = getattr(getattr(e, "response", None), "status_code", None)
+                        self._fastgen(op_id, last_status or "poll", elapsed,
+                                      "error", f" error=poll_http_{pc}")
+                        # 2026-07-04: перегруз/сброс гейтвея (499/500/502/503/504) на poll —
+                        # транзиент, ретраим (новый submit+op_id). 401/403/429 ниже — НЕ ретраим.
+                        if pc in _RETRYABLE_HTTP and retry_attempt < 3:
+                            if not _retry_pause(retry_attempt):
+                                return
+                            retry_pending = True
+                            break
+                        if pc in (401, 403, 429):
+                            self.error.emit(tr('gen_err_key_exhausted_poll'))
+                        else:
+                            self.error.emit(tr('gen_err_poll_http', code=pc))
+                        return
+                    except requests.exceptions.RequestException as e:
+                        # 2026-07-04: обрыв/таймаут транспорта на poll — транзиент, ретраим.
+                        if retry_attempt < 3:
+                            self._fastgen(op_id, last_status or "poll", elapsed,
+                                          "error", " error=net_retry")
+                            if not _retry_pause(retry_attempt):
+                                return
+                            retry_pending = True
+                            break
+                        self.error.emit(tr('gen_err_network', detail=str(e)[:200]))
+                        return
                     d = rr.json()
                     status = (d.get("status") or "").lower()
                     last_status = status
@@ -309,11 +374,8 @@ class GeneratorImageThread(QThread):
                                       f" error={str(err or '<none>')[:120]}")
                         # Транзиент + остались попытки → пауза 10с (дроблёно по stop) + повтор.
                         if is_transient(err) and retry_attempt < 3:
-                            self.progress.emit(tr('gen_prog_retry', n=retry_attempt + 1, total=3))
-                            for _ in range(20):
-                                if self._stop:
-                                    return
-                                time.sleep(0.5)
+                            if not _retry_pause(retry_attempt):
+                                return
                             retry_pending = True
                             break
                         # Реальная ошибка (контент/лицензия/валидация) или попытки кончились →

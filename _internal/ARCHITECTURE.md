@@ -2841,24 +2841,30 @@ project_root старым бандлом — до пересборки .app не
 `RefGenerateThread` крутили `while True` без потолка → под нагрузкой Mode C
 (~40 потоков) зависшая операция висела вечно (600+с), карточка не закрывалась.
 
-### Авто-ретрай транзиентных сбоев генерации (video-путь, 2026-06-28 + 2026-07-04)
-`GeneratorVideoThread.run` (`generator/generator_video_thread.py`) оборачивает ВСЮ
-генерацию (submit+poll) в `for retry_attempt in range(4)` — потолок 3 повтора,
-пауза 10с (`_retry_pause()`, дроблёная по `_stop`), единый механизм
-`retry_pending`/`break` (submit-стадия → гвард `if retry_pending: continue` перед
-poll; poll-стадия → существующий гвард в конце цикла).
+### Авто-ретрай транзиентных сбоев генерации (video + image, 2026-06-28 + 2026-07-04)
+`GeneratorVideoThread.run` (`generator/generator_video_thread.py`) И
+`GeneratorImageThread.run` (`generator/generator_thread.py`) — СИММЕТРИЧНЫ:
+оборачивают ВСЮ генерацию (submit+poll) в `for retry_attempt in range(4)` — потолок
+3 повтора, пауза 10с (`_retry_pause(attempt)`, дроблёная по `_stop`, статус
+`gen_prog_retry` «повтор n из 3»), единый механизм `retry_pending`/`break`
+(submit-стадия → гвард `if retry_pending: continue` перед poll; poll-стадия →
+гвард в конце цикла).
 - 2026-06-28: ретрай серверного `status=failed` с транзиентным текстом
   (`gen_errors.is_transient`: try again / captcha / concurrency / 502/503/504 / …).
-- 2026-07-04: + транзиентные HTTP `_RETRYABLE_HTTP = (500,502,503,504)` на submit
+- 2026-07-04: + транзиентные HTTP `_RETRYABLE_HTTP = (499,500,502,503,504)` на submit
   И poll; + обрыв транспорта (`requests.RequestException`: connection aborted /
   read-write timeout) на submit И poll. Каждый повтор пишет `error=net_retry` в
-  `runtime.log` (видно в live-мониторе `tail -f`).
-НЕ ретраятся (deny-wins): 401/403 (мёртвый ключ) → `dead`; 429 → перебор ключей по
-кругу (свой механизм, НЕ `range(4)`); `key_search_timeout` 180с; `POLL_TIMEOUT` 600с;
-`invalid_request`/контент/лицензия → `human_message`. Картиночный путь
-(`generator/generator_thread.py`) те же 500/502/503/504 + обрыв пока НЕ ретраит —
-зеркальная правка отложена (poll-GET там вообще без try → сырое исключение в общий
-`except`).
+  `runtime.log`. **499 = «Client Closed Request»** — гейтвей FastGen (nginx) сбрасывает
+  соединение под параллельной нагрузкой; это ответ сервера, не наш таймаут (наш
+  таймаут ушёл бы в `RequestException`). Голый poll-GET у картинок обёрнут в те же
+  `except HTTPError / RequestException`, что у видео (раньше сырое исключение падало
+  в общий `except`).
+НЕ ретраятся (deny-wins) в ОБОИХ: 401/403 (мёртвый ключ) → `dead`; 429 → перебор ключей
+по кругу (свой механизм, НЕ `range(4)`); `key_search_timeout` 180с; `POLL_TIMEOUT`;
+`invalid_request`/контент/лицензия → `human_message`.
+Осознанные доменные НЕ-симметрии (НЕ ретрай-логика): `POLL_TIMEOUT_SEC` видео 600 /
+картинки 300; download timeout видео 300 / картинки 120; видео сохраняет `.mp4` +
+первый кадр, payload с `duration`/`keyframes`.
 
 ### Задача Б (НЕ сделана, отложена)
 Failover при лимите/ошибке ключа: если ключ упёрся в лимит или отвалился —

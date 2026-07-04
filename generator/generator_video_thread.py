@@ -41,7 +41,7 @@ _OK_STATUSES = ("succeeded", "success", "completed", "done")
 _FAIL_STATUSES = ("failed", "error", "cancelled")
 # 2026-07-04: HTTP-коды перегруза FastGen — ретраятся на submit/poll. 429 сюда НЕ
 # входит (это занятость ключа, у неё свой перебор ключей по кругу).
-_RETRYABLE_HTTP = (500, 502, 503, 504)
+_RETRYABLE_HTTP = (499, 500, 502, 503, 504)
 
 
 # Детектор транзиентных ошибок (is_transient) + человеческие локализованные
