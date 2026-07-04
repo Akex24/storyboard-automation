@@ -39,6 +39,9 @@ KEY_SEARCH_TIMEOUT_SEC = 180  # потолок ожидания СВОБОДНО
                               # По истечении — error + return, не виснем навсегда.
 _OK_STATUSES = ("succeeded", "success", "completed", "done")
 _FAIL_STATUSES = ("failed", "error", "cancelled")
+# 2026-07-04: HTTP-коды перегруза FastGen — ретраятся на submit/poll. 429 сюда НЕ
+# входит (это занятость ключа, у неё свой перебор ключей по кругу).
+_RETRYABLE_HTTP = (500, 502, 503, 504)
 
 
 # Детектор транзиентных ошибок (is_transient) + человеческие локализованные
@@ -97,6 +100,17 @@ class GeneratorVideoThread(QThread):
         # момент run() страница уже загружена, circular нет). is_transient — ретрай-
         # решение; human_message — локализованная причина для юзера.
         from generator.gen_errors import is_transient, human_message, classify_error
+
+        # 2026-07-04: единый механизм паузы перед авто-повтором (submit+poll).
+        # 10с, дроблёные по _stop (как было инлайном в poll status=failed).
+        # False → пришёл stop, вызывающий обязан return.
+        def _retry_pause() -> bool:
+            self.progress.emit(tr('gen_prog_retry'))
+            for _ in range(20):
+                if self._stop:
+                    return False
+                time.sleep(0.5)
+            return True
         try:
             # Сколько живых ключей — столько максимум попыток submit (часть ключей
             # может быть без видео-доступа → 403, или с исчерпанным лимитом → 429).
@@ -158,10 +172,15 @@ class GeneratorVideoThread(QThread):
             # обёрнута в цикл до 4 попыток. На транзиентном failed (gen_errors.is_transient)
             # и retry_attempt<3 → пауза 10с + новая попытка (свежий перебор ключей).
             # Контент/лицензия/валидация и POLL_TIMEOUT — НЕ ретраятся (см. ниже).
+            # 2026-07-04: сюда же добавлены транзиентные HTTP 500/502/503/504 и обрыв
+            # соединения (connection aborted / read-write timeout) на submit И poll —
+            # тот же потолок 3 повтора. 401/403/429 (ключи), key_search_timeout,
+            # POLL_TIMEOUT, invalid_request/контент/лицензия — НЕ ретраятся.
             for retry_attempt in range(4):
                 # Сброс submit-состояния на КАЖДОЙ попытке (свежий перебор ключей).
                 session = None
                 op_id = None
+                retry_pending = False   # True → транзиентный сбой submit/poll → повтор
                 dead = set()
                 round_tried = set()
                 spins = 0
@@ -214,7 +233,14 @@ class GeneratorVideoThread(QThread):
                                    params={"result_format": "ref"},
                                    json=payload, timeout=60)
                     except requests.exceptions.RequestException as e:
-                        # Сетевой сбой — НЕ ключевая проблема, не перебираем.
+                        # 2026-07-04: обрыв/таймаут транспорта (connection aborted /
+                        # read-write timeout) — транзиент. Ретраим до потолка.
+                        if retry_attempt < 3:
+                            self._fastgen("-", "submit", 0, "error", " error=net_retry")
+                            if not _retry_pause():
+                                return
+                            retry_pending = True
+                            break
                         self.error.emit(tr('gen_err_network', detail=str(e)[:200]))
                         return
                     code = r.status_code
@@ -255,6 +281,13 @@ class GeneratorVideoThread(QThread):
                                 b_err = str(jb.get('error') or '')
                         except Exception:
                             pass
+                        # 2026-07-04: перегруз FastGen (500/502/503/504) — транзиент,
+                        # ретраим. invalid_request/контент проверяются ниже и НЕ ретраятся.
+                        if code in _RETRYABLE_HTTP and retry_attempt < 3:
+                            if not _retry_pause():
+                                return
+                            retry_pending = True
+                            break
                         # validation.invalid_request одинаков на ВСЕХ ключах (битый payload) →
                         # человеческая причина (перебор ключей не помог бы). Прочее (5xx) — с HTTP.
                         if classify_error(b_code, b_err) == 'invalid_request':
@@ -269,10 +302,13 @@ class GeneratorVideoThread(QThread):
                         return
                     session = s   # рабочий ключ — им поллим и качаем
 
+                # 2026-07-04: submit-стадия попросила повтор (net/5xx) → следующая
+                # попытка retry-цикла (op_id ещё None, poll пропускаем).
+                if retry_pending:
+                    continue
                 self.progress.emit(tr('gen_prog_generating'))
                 t0 = time.monotonic()
                 last_status = ""
-                retry_pending = False   # станет True → транзиентный сбой, повторить генерацию
                 while True:
                     if self._stop:
                         return
@@ -294,12 +330,27 @@ class GeneratorVideoThread(QThread):
                         pc = getattr(getattr(e, "response", None), "status_code", None)
                         self._fastgen(op_id, last_status or "poll", elapsed,
                                       "error", f" error=poll_http_{pc}")
+                        # 2026-07-04: перегруз FastGen (500/502/503/504) на poll —
+                        # транзиент, ретраим (новый submit+op_id). 401/403/429 ниже — НЕ ретраим.
+                        if pc in _RETRYABLE_HTTP and retry_attempt < 3:
+                            if not _retry_pause():
+                                return
+                            retry_pending = True
+                            break
                         if pc in (401, 403, 429):
                             self.error.emit(tr('gen_err_key_exhausted_poll'))
                         else:
                             self.error.emit(tr('gen_err_poll_http', code=pc))
                         return
                     except requests.exceptions.RequestException as e:
+                        # 2026-07-04: обрыв/таймаут транспорта на poll — транзиент, ретраим.
+                        if retry_attempt < 3:
+                            self._fastgen(op_id, last_status or "poll", elapsed,
+                                          "error", " error=net_retry")
+                            if not _retry_pause():
+                                return
+                            retry_pending = True
+                            break
                         self.error.emit(tr('gen_err_network', detail=str(e)[:200]))
                         return
                     d = rr.json()
@@ -346,11 +397,8 @@ class GeneratorVideoThread(QThread):
                                       f" error={str(err or '<none>')[:120]}")
                         # Транзиент + остались попытки → пауза 10с (дроблёно по stop) + повтор.
                         if is_transient(err) and retry_attempt < 3:
-                            self.progress.emit(tr('gen_prog_retry'))
-                            for _ in range(20):
-                                if self._stop:
-                                    return
-                                time.sleep(0.5)
+                            if not _retry_pause():
+                                return
                             retry_pending = True
                             break
                         # Реальная ошибка (контент/лицензия/валидация) или попытки кончились →

@@ -2841,6 +2841,25 @@ project_root старым бандлом — до пересборки .app не
 `RefGenerateThread` крутили `while True` без потолка → под нагрузкой Mode C
 (~40 потоков) зависшая операция висела вечно (600+с), карточка не закрывалась.
 
+### Авто-ретрай транзиентных сбоев генерации (video-путь, 2026-06-28 + 2026-07-04)
+`GeneratorVideoThread.run` (`generator/generator_video_thread.py`) оборачивает ВСЮ
+генерацию (submit+poll) в `for retry_attempt in range(4)` — потолок 3 повтора,
+пауза 10с (`_retry_pause()`, дроблёная по `_stop`), единый механизм
+`retry_pending`/`break` (submit-стадия → гвард `if retry_pending: continue` перед
+poll; poll-стадия → существующий гвард в конце цикла).
+- 2026-06-28: ретрай серверного `status=failed` с транзиентным текстом
+  (`gen_errors.is_transient`: try again / captcha / concurrency / 502/503/504 / …).
+- 2026-07-04: + транзиентные HTTP `_RETRYABLE_HTTP = (500,502,503,504)` на submit
+  И poll; + обрыв транспорта (`requests.RequestException`: connection aborted /
+  read-write timeout) на submit И poll. Каждый повтор пишет `error=net_retry` в
+  `runtime.log` (видно в live-мониторе `tail -f`).
+НЕ ретраятся (deny-wins): 401/403 (мёртвый ключ) → `dead`; 429 → перебор ключей по
+кругу (свой механизм, НЕ `range(4)`); `key_search_timeout` 180с; `POLL_TIMEOUT` 600с;
+`invalid_request`/контент/лицензия → `human_message`. Картиночный путь
+(`generator/generator_thread.py`) те же 500/502/503/504 + обрыв пока НЕ ретраит —
+зеркальная правка отложена (poll-GET там вообще без try → сырое исключение в общий
+`except`).
+
 ### Задача Б (НЕ сделана, отложена)
 Failover при лимите/ошибке ключа: если ключ упёрся в лимит или отвалился —
 временно вывести из ротации, нагрузка на живые без перезагрузки; крестик
