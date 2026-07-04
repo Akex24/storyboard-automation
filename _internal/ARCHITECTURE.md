@@ -1370,6 +1370,10 @@ data:URI base64 — upload-шага нет). Числовые углы уход�
 horizontal 0..360° (слайдер шаг 5°), vertical −30..90° (шаг 1°),
 zoom 0.0..10.0 (шаг 0.1); квантование в пресеты LoRA — на сервере.
 
+С 2026-07-04 вкладка видна ВСЕМ пользователям (админ-гейт `if self._is_admin`
+снят с создания CameraLabView и pill в шапке); H1-заголовок «Камера» в теле
+вкладки убран — панели «Исходник»/«Результат» начинаются от верхнего поля.
+
 Ключ fal: `load_fal_key()`/`save_fal_key()` в storyboard_app.py (~:4240,
 образец load_api_key): QSettings `fal_api_key` → сайдкар
 `<project_root>/fal_key.txt` (в .gitignore). Поле ввода — на самой
