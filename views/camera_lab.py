@@ -990,10 +990,9 @@ class CameraLabView(QWidget):
         root.setContentsMargins(28, 24, 28, 28)
         root.setSpacing(18)
 
-        self.title_lbl = QLabel()
-        self.title_lbl.setObjectName("camera-title")
-        root.addWidget(self.title_lbl)
-
+        # 2026-07-04: H1-заголовок «Камера» в теле вкладки удалён — panels
+        # «Исходник»/«Результат» поднимаются к верхнему полю (24px). Заголовок
+        # таба в шапке (tab_camera_lab) не тронут.
         body = QHBoxLayout()
         body.setSpacing(18)
         root.addLayout(body, stretch=1)
@@ -1414,7 +1413,6 @@ class CameraLabView(QWidget):
         self._sync_control_state()
 
     def apply_lang(self) -> None:
-        self.title_lbl.setText(tr("camera_title"))
         self.source_title_lbl.setText(tr("camera_source_title"))
         self.controls_title_lbl.setText(tr("camera_controls_title"))
         self.fal_key_title_lbl.setText(tr("camera_fal_key_label"))
@@ -2243,11 +2241,6 @@ class CameraLabView(QWidget):
         return """
         QWidget#camera-lab {
             background: #121313;
-        }
-        QLabel#camera-title {
-            color: #f7f8f4;
-            font-size: 24px;
-            font-weight: 700;
         }
         QLabel#camera-subtitle {
             color: rgba(255,255,255,0.48);

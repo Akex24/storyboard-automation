@@ -7650,17 +7650,18 @@ class MainWindow(QMainWindow):
         # шапки pill «Генератор» рисуется ПЕРВЫМ (см. _build_header, явный _tab_idx).
         self.generator_view = GeneratorPage(self)
         self.tabs.addTab(self.generator_view, tr('tab_generator'))
-        if self._is_admin:
-            # 2026-07-02: вкладка «Камера» на fal — провайдер-переключатель
-            # убран (default_provider/provider_changed больше не принимает).
-            self.camera_lab_view = CameraLabView(
-                self._project_root,
-                self,
-                get_shot_clipboard=lambda: self._shot_clipboard,
-                set_shot_clipboard=self._set_shot_clipboard_bytes,
-            )
-            self.tabs.addTab(self.camera_lab_view, tr('tab_camera_lab'))
-            self._camera_lab_tab_idx = self.tabs.count() - 1
+        # 2026-07-02: вкладка «Камера» на fal — провайдер-переключатель
+        # убран (default_provider/provider_changed больше не принимает).
+        # 2026-07-04: админ-гейт снят — вкладка видна ВСЕМ пользователям
+        # (раньше if self._is_admin; ключ fal коллеги вводят на самой вкладке).
+        self.camera_lab_view = CameraLabView(
+            self._project_root,
+            self,
+            get_shot_clipboard=lambda: self._shot_clipboard,
+            set_shot_clipboard=self._set_shot_clipboard_bytes,
+        )
+        self.tabs.addTab(self.camera_lab_view, tr('tab_camera_lab'))
+        self._camera_lab_tab_idx = self.tabs.count() - 1
         # Скрываем нативный QTabBar — переключение через pill в шапке.
         try:
             self.tabs.tabBar().hide()
@@ -8183,7 +8184,9 @@ class MainWindow(QMainWindow):
         tab_items = [(3, 'tab_generator'), (0, 'tab_editor'),
                      (1, 'tab_actors'), (2, 'tab_settings')]
         camera_idx = getattr(self, '_camera_lab_tab_idx', None)
-        if getattr(self, '_is_admin', False) and camera_idx is not None:
+        # 2026-07-04: админ-гейт снят — pill «Камера» видна всем (гейт только
+        # на наличие индекса; вкладка теперь создаётся безусловно).
+        if camera_idx is not None:
             tab_items.insert(0, (camera_idx, 'tab_camera_lab'))
         for page_idx, key in tab_items:
             btn = QPushButton(tr(key))
