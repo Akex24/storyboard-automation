@@ -104,8 +104,8 @@ class GeneratorVideoThread(QThread):
         # 2026-07-04: единый механизм паузы перед авто-повтором (submit+poll).
         # 10с, дроблёные по _stop (как было инлайном в poll status=failed).
         # False → пришёл stop, вызывающий обязан return.
-        def _retry_pause() -> bool:
-            self.progress.emit(tr('gen_prog_retry'))
+        def _retry_pause(attempt) -> bool:
+            self.progress.emit(tr('gen_prog_retry', n=attempt + 1, total=3))
             for _ in range(20):
                 if self._stop:
                     return False
@@ -186,7 +186,6 @@ class GeneratorVideoThread(QThread):
                 spins = 0
                 idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
                 search_t0 = time.monotonic()
-                self.progress.emit(tr('gen_prog_queue'))
                 while op_id is None:
                     if self._stop:
                         return
@@ -226,6 +225,7 @@ class GeneratorVideoThread(QThread):
                         continue
                     # Дошли до реальной попытки submit — сбрасываем idle-счётчик.
                     idle_skips = 0
+                    self.progress.emit(tr('gen_prog_sending'))
                     s = requests.Session()
                     s.headers.update({"X-API-Key": key})
                     try:
@@ -237,7 +237,7 @@ class GeneratorVideoThread(QThread):
                         # read-write timeout) — транзиент. Ретраим до потолка.
                         if retry_attempt < 3:
                             self._fastgen("-", "submit", 0, "error", " error=net_retry")
-                            if not _retry_pause():
+                            if not _retry_pause(retry_attempt):
                                 return
                             retry_pending = True
                             break
@@ -284,7 +284,7 @@ class GeneratorVideoThread(QThread):
                         # 2026-07-04: перегруз FastGen (500/502/503/504) — транзиент,
                         # ретраим. invalid_request/контент проверяются ниже и НЕ ретраятся.
                         if code in _RETRYABLE_HTTP and retry_attempt < 3:
-                            if not _retry_pause():
+                            if not _retry_pause(retry_attempt):
                                 return
                             retry_pending = True
                             break
@@ -333,7 +333,7 @@ class GeneratorVideoThread(QThread):
                         # 2026-07-04: перегруз FastGen (500/502/503/504) на poll —
                         # транзиент, ретраим (новый submit+op_id). 401/403/429 ниже — НЕ ретраим.
                         if pc in _RETRYABLE_HTTP and retry_attempt < 3:
-                            if not _retry_pause():
+                            if not _retry_pause(retry_attempt):
                                 return
                             retry_pending = True
                             break
@@ -347,7 +347,7 @@ class GeneratorVideoThread(QThread):
                         if retry_attempt < 3:
                             self._fastgen(op_id, last_status or "poll", elapsed,
                                           "error", " error=net_retry")
-                            if not _retry_pause():
+                            if not _retry_pause(retry_attempt):
                                 return
                             retry_pending = True
                             break
@@ -397,7 +397,7 @@ class GeneratorVideoThread(QThread):
                                       f" error={str(err or '<none>')[:120]}")
                         # Транзиент + остались попытки → пауза 10с (дроблёно по stop) + повтор.
                         if is_transient(err) and retry_attempt < 3:
-                            if not _retry_pause():
+                            if not _retry_pause(retry_attempt):
                                 return
                             retry_pending = True
                             break

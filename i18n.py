@@ -883,8 +883,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # ── Генератор: прогресс + ошибки (gen_*) ──
         'gen_prog_ref_failed': 'Реф не загрузился: {name}',
         'gen_prog_queue': 'Жду в очереди…',
+        'gen_prog_sending': 'Отправка…',
         'gen_prog_generating': 'Генерирую…',
-        'gen_prog_retry': 'Сервер занят, повторяю…',
+        'gen_prog_retry': 'Сервер не отвечает, повтор {n} из {total}…',
         'gen_err_no_refs': 'Не удалось подготовить ни одного рефа',
         'gen_err_queue_timeout': 'Очередь не освободилась за {sec}с — все ключи заняты, попробуйте позже',
         'gen_err_no_video_keys': 'Нет ключей с доступом к видео',
@@ -1775,8 +1776,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # ── Генератор: прогрес + помилки (gen_*) ──
         'gen_prog_ref_failed': 'Реф не завантажився: {name}',
         'gen_prog_queue': 'Чекаю в черзі…',
+        'gen_prog_sending': 'Надсилання…',
         'gen_prog_generating': 'Генерую…',
-        'gen_prog_retry': 'Сервер зайнятий, повторюю…',
+        'gen_prog_retry': 'Сервер не відповідає, повтор {n} з {total}…',
         'gen_err_no_refs': 'Не вдалося підготувати жодного рефа',
         'gen_err_queue_timeout': 'Черга не звільнилася за {sec}с — усі ключі зайняті, спробуйте пізніше',
         'gen_err_no_video_keys': 'Немає ключів з доступом до відео',
@@ -2667,8 +2669,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # ── Generator: progress + errors (gen_*) ──
         'gen_prog_ref_failed': 'Reference failed to load: {name}',
         'gen_prog_queue': 'Waiting in queue…',
+        'gen_prog_sending': 'Sending…',
         'gen_prog_generating': 'Generating…',
-        'gen_prog_retry': 'Server busy, retrying…',
+        'gen_prog_retry': 'Server not responding, retry {n} of {total}…',
         'gen_err_no_refs': 'Failed to prepare any reference',
         'gen_err_queue_timeout': 'Queue did not free up in {sec}s — all keys are busy, try again later',
         'gen_err_no_video_keys': 'No keys with video access',

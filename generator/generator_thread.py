@@ -155,7 +155,6 @@ class GeneratorImageThread(QThread):
                 spins = 0
                 idle_skips = 0   # подряд dead-пропусков без реальной работы (guard от busy-loop)
                 search_t0 = time.monotonic()
-                self.progress.emit(tr('gen_prog_queue'))
                 while op_id is None:
                     if self._stop:
                         return
@@ -196,6 +195,7 @@ class GeneratorImageThread(QThread):
                         continue
                     # Дошли до реальной попытки submit — сбрасываем idle-счётчик.
                     idle_skips = 0
+                    self.progress.emit(tr('gen_prog_sending'))
                     s = requests.Session()
                     s.headers.update({"X-API-Key": key})
                     try:
@@ -309,7 +309,7 @@ class GeneratorImageThread(QThread):
                                       f" error={str(err or '<none>')[:120]}")
                         # Транзиент + остались попытки → пауза 10с (дроблёно по stop) + повтор.
                         if is_transient(err) and retry_attempt < 3:
-                            self.progress.emit(tr('gen_prog_retry'))
+                            self.progress.emit(tr('gen_prog_retry', n=retry_attempt + 1, total=3))
                             for _ in range(20):
                                 if self._stop:
                                     return
