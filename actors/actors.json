@@ -17,7 +17,8 @@
       "finalnyy_raschet_2": "david",
       "taynyy_investor": "jagger",
       "taynyy_investor_2": "jagger",
-      "eshche_odin_muzh": "david"
+      "eshche_odin_muzh": "david",
+      "ashes_west": "marauder_three"
     }
   },
   "zhenya": {
@@ -74,7 +75,10 @@
       "taynyy_investor": "linda",
       "eshche_odin_muzh": "jennifer",
       "test_623626": "mara",
-      "test11111": "mara"
+      "test11111": "mara",
+      "test_23948572345": "ivy",
+      "marara": "serena",
+      "mara": "mara"
     }
   },
   "akter_5": {
@@ -86,7 +90,12 @@
       "taynyy_investor": "lobby_concierge",
       "eshche_odin_muzh": "barlow",
       "testovyy_serial_s_odnoy_seriey": "marcus",
-      "test11111": "dominik"
+      "test11111": "dominik",
+      "ashes_west": "frank_mercer",
+      "not_today": "cole",
+      "kiberpankk": "vail",
+      "marara": "dominik",
+      "mara": "dominik"
     }
   },
   "akter_6": {
@@ -96,7 +105,9 @@
       "testovyy_serial": "mark",
       "finalnyy_raschet_2": "police_officer",
       "testovyy_serial_2": "max",
-      "taynyy_investor": "derrick"
+      "taynyy_investor": "derrick",
+      "test_23948572345": "holden",
+      "marara": "arthur_kross"
     }
   },
   "vremennyi_akter_1": {
@@ -122,7 +133,9 @@
       "finalnyy_raschet_2": "khloe",
       "testovyy_serial_2": "anna",
       "taynyy_investor": "maya",
-      "test11111": "serena"
+      "test11111": "serena",
+      "kiberpankk": "lady_living_dress",
+      "ne_dvigaysya": "eliza"
     }
   },
   "vremennyi_akter_3": {
@@ -138,7 +151,9 @@
       "audit_na_vyzhivanie": "donna",
       "taynyy_investor": "sierra",
       "taynyy_investor_2": "sierra",
-      "eshche_odin_muzh": "receptionist"
+      "eshche_odin_muzh": "receptionist",
+      "marara": "woman_guest",
+      "mara": "serena"
     }
   },
   "maks": {
@@ -146,34 +161,60 @@
     "roles": {
       "audit_na_vyzhivanie": "foreman",
       "taynyy_investor": "waiter",
-      "testovyy_serial_s_odnoy_seriey": "jimmy"
+      "testovyy_serial_s_odnoy_seriey": "jimmy",
+      "ashes_west": "marauder_two"
     }
   },
   "alina": {
     "display_name": "Алiна",
     "roles": {
       "taynyy_investor": "gloria",
-      "taynyy_investor_2": "gloria"
+      "taynyy_investor_2": "gloria",
+      "kiberpankk": "masked_lady",
+      "marara": "serena"
     }
   },
   "viktoriya": {
     "display_name": "Вiкторiя",
     "roles": {
-      "taynyy_investor": "katherine"
+      "taynyy_investor": "katherine",
+      "kiberpankk": "guest_2",
+      "marara": "woman_guest"
     }
   },
   "valeriya": {
     "display_name": "Валерiя",
     "roles": {
       "taynyy_investor": "bianca",
-      "testovyy_serial_s_odnoy_seriey": "gina"
+      "testovyy_serial_s_odnoy_seriey": "gina",
+      "kiberpankk": "guest_1"
     }
   },
   "aleksey": {
     "display_name": "ALeksey",
     "roles": {
       "taynyy_investor": "concierge",
-      "eshche_odin_muzh": "eric"
+      "eshche_odin_muzh": "eric",
+      "ashes_west": "marauder_leader",
+      "kiberpankk": "guest_4"
+    }
+  },
+  "mexican_1": {
+    "display_name": "Ferdi Stallone",
+    "roles": {
+      "kiberpankk": "guest_3"
+    }
+  },
+  "666unique666x": {
+    "display_name": "666unique666x",
+    "roles": {
+      "not_today": "cole"
+    }
+  },
+  "aktrisa_2": {
+    "display_name": "Актриса 2",
+    "roles": {
+      "marara": "mara"
     }
   }
 }

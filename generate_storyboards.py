@@ -29,13 +29,13 @@ PROVIDER_FILE = ROOT / "image_provider.txt"
 
 
 def load_provider() -> str:
-    """Возвращает 'narwhal' / 'narwhal_lite' / 'openai'. Default — 'openai'.
+    """Возвращает 'narwhal' или 'openai'. Default — 'openai'.
     См. pipeline.load_provider — поведение симметрично."""
     try:
         if not PROVIDER_FILE.exists():
             return "openai"
         v = PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
-        return v if v in ("narwhal", "narwhal_lite", "openai") else "openai"
+        return v if v in ("narwhal", "openai") else "openai"
     except Exception:
         return "openai"
 
@@ -88,8 +88,6 @@ def upload_ref(path: Path, session: requests.Session) -> str:
     file_hash = data.get("file_hash") or data.get("file") or data.get("hash")
     if not file_hash:
         raise RuntimeError(f"upload missing file_hash: {data}")
-    # v5: inputs.input требует ГОЛЫЙ 32-hex — срезаем "file:" (v5 422 на префиксе).
-    file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
     _upload_cache[key] = file_hash
     print(f"    uploaded {path.name} → {file_hash[:35]}...")
     return file_hash
@@ -97,34 +95,18 @@ def upload_ref(path: Path, session: requests.Session) -> str:
 
 def poll_operation(op_id: str, session: requests.Session) -> bytes:
     while True:
-        time.sleep(1.5)
-        r = session.get(f"{API_BASE}/api/v6/generations/{op_id}",
-                        params={"result_format": "ref"}, timeout=30)
+        time.sleep(4)
+        r = session.get(f"{API_BASE}/api/v4/operations/{op_id}", timeout=30)
         r.raise_for_status()
         data = r.json()
         status = data.get("status")
         print(f"    status: {status}")
-        # v5: успешные статусы — множество.
-        if status in ("succeeded", "success", "completed", "done"):
-            results = data.get("results") or data.get("result") or []
-            # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
-            # Если поля нет — fallback на v5 (storage_id → STORAGE_BASE/file/{file_hash}/raw).
-            download_url = ""
-            if results and isinstance(results[0], dict):
-                download_url = results[0].get("download_url") or ""
-            if download_url:
-                r2 = session.get(download_url, timeout=120)
-                r2.raise_for_status()
-                return r2.content
-            # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
-            uri = ""
-            if results and isinstance(results[0], dict):
-                uri = ((results[0].get("metadata") or {}).get("storage_id") or "")
-            if not uri:
-                uri = results[0] if (isinstance(results, list) and results) else results
-                if isinstance(uri, dict):
-                    uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
-                uri = str(uri)
+        if status == "success":
+            result = data.get("result") or []
+            uri = result[0] if isinstance(result, list) else result
+            if isinstance(uri, dict):
+                uri = uri.get("url") or uri.get("ref") or uri.get("file_hash") or ""
+            uri = str(uri)
             if uri.startswith("data:"):
                 _, b64 = uri.split(",", 1)
                 return base64.b64decode(b64)
@@ -132,11 +114,7 @@ def poll_operation(op_id: str, session: requests.Session) -> bytes:
             r2 = session.get(f"{STORAGE_BASE}/file/{file_hash}/raw", timeout=120)
             r2.raise_for_status()
             return r2.content
-        # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
-        if status in ("failed", "error", "cancelled"):
-            print(f"[FASTGEN] path=generate_storyboards.main api=v6 "
-                  f"op_id={op_id} status={status} result=error "
-                  f"error={str(data.get('error') or '<none>')[:120]}")
+        if status == "error":
             raise RuntimeError(f"Generation error: {data.get('error')}")
 
 
@@ -234,49 +212,31 @@ def main():
         # flow без него работает как Nano Banana 2; с ним маршрутизирует
         # обратно в OpenAI с pydantic-ошибкой).
         provider = load_provider()
-        # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Мапа
-        # provider→model — копия IMAGE_PROVIDER_MODEL из storyboard_app.py.
-        model = {"narwhal": "nano-banana-2",
-                 "narwhal_lite": "nano-banana-2-lite",
-                 "openai": "openai-image"}.get(provider, "openai-image")
         payload = {
             "prompt": clean_prompt,
             "aspect_ratio": "16:9",
-            "model": model,
         }
         if ref_hashes:
             if provider == "openai" and len(ref_hashes) > 2:
                 print(f"  OpenAI режет рефы до 2 (было {len(ref_hashes)})")
                 ref_hashes = ref_hashes[:2]
-            # v5: рефы как inputs [{name, input}], биндинг ПОЗИЦИОННЫЙ (name произвольный).
-            payload["inputs"] = [{"name": f"img{i+1}", "input": h}
-                                 for i, h in enumerate(ref_hashes)]
+            payload["reference_images"] = ref_hashes
 
-        # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param.
-        endpoint = "/api/v6/generations"
+        endpoint = ("/api/v4/flow/image/generate"
+                    if provider == "narwhal"
+                    else "/api/v4/openai/image/generate")
         print(f"  Prompt length: {len(clean_prompt)} chars | "
               f"Refs: {len(ref_hashes)} | Provider: {provider}")
-        _fastgen_t0 = time.monotonic()  # [FASTGEN] засечка времени генерации
         r = session.post(f"{API_BASE}{endpoint}",
-                         params={"result_format": "ref"},
                          json=payload, timeout=60)
         r.raise_for_status()
         data = r.json()
-        # v5: op_id в поле "id" (operation_id в v5 НЕТ — был бы KeyError).
-        if not data.get("id"):
-            raise RuntimeError(f"No id: {data}")
+        if not data.get("operation_id"):
+            raise RuntimeError(f"No operation_id: {data}")
 
-        op_id = data["id"]
+        op_id = data["operation_id"]
         print(f"  op_id: {op_id}")
         image_bytes = poll_operation(op_id, session)
-        # [FASTGEN] диаг-строка успеха (stdout → читает агент). status=succeeded
-        # (poll_operation вернул без raise ⇒ успех); storage_id опущен (внутри poll).
-        print(f"[FASTGEN] path=generate_storyboards.main api=v6 "
-              f"endpoint={endpoint} auth=X-API-Key "
-              f"model={model} provider={provider} "
-              f"result_format=ref inputs={len(payload.get('inputs', []))} "
-              f"op_id={op_id} status=succeeded "
-              f"time={int(time.monotonic() - _fastgen_t0)} result=ok")
 
         out_jpg.write_bytes(image_bytes)
         print(f"  → Saved: output/storyboards/{out_jpg.name} ({len(image_bytes)} bytes)")

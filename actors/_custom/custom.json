@@ -1,0 +1,32 @@
+{
+  "guest_2": {
+    "display_name": "guest_2",
+    "description": "A guest at an upper-tier baroque biotech gala, full body from head to feet, no longer fully human.\n\nBare smooth skull, translucent porcelain-white skin with faint pink veins underneath. Across the entire face — a delicate gold-and-platinum mesh embedded flush into the flesh, skin gathering in tiny folds around each intersection, slightly inflamed where metal meets skin. No eyebrows, replaced by lines of tiny gold studs. Eyes too large, no whites, irises glowing with shifting amber light. Wine-red full slick lips. From the lip corners, taut gold chains run up to elongated gold-filigree ears, hooked through small piercings. A high gold plate collar fuses seamlessly with the neck and continues into layered gold epaulets on the shoulders.\n\nShe wears a floor-length sleeveless gown of dark emerald-black fabric with metallic iridescent sheen shifting between green, black and purple. The fitted bodice carries the same gold mesh pattern woven into the fabric. A thin gold biotech belt with a glowing amber stone at the waist. Long heavy sculpted skirt to the floor with a high slit on the left side.\n\nBare arms, same porcelain skin, gold mesh thinning toward the elbows. Wide ornate gold bracelets fused into both wrists with amber inlays. Long fingers with sharp gold-plated talon nails, massive wine-red and amber gemstone rings.\n\nSlim porcelain legs visible through the slit. Sharp pointed high-heeled shoes of dark polished leather with gold filigree along the edges, tall slender heels.\n\nAlien, decadent, baroque biotech opulence.",
+    "sheets": [
+      "shows/kiberpankk/refs/characters/guest_2/guest_2_guest_upper_tier_baroque_2.jpg"
+    ],
+    "created": "2026-06-25 09:22:24",
+    "portrait": "guest_2/guest_2_portrait.jpg",
+    "portrait_src": "/Volumes/DaVinci SSD/Работа/storyboard-automation/shows/kiberpankk/refs/characters/guest_2/guest_2_guest_upper_tier_baroque_2.jpg"
+  },
+  "guest_3": {
+    "display_name": "guest_3",
+    "description": "Гость корпоратива — у колонны обсуждает покупку Tessera gene vault. Сцена 15 — массивный лысый мужчина средних лет; на черепе десятки мелких золотых штифтов с бусинами на концах торчат как короткая металлическая щетина; свободная мантия тёмно-бордового бархата с золотым шитьём по вороту; в руке плоская чаша с густым тёмным напитком",
+    "sheets": [
+      "shows/kiberpankk/refs/characters/guest_3/guest_3_gost_korporativa_kolonny_2.jpg"
+    ],
+    "created": "2026-06-25 09:43:17",
+    "portrait": "guest_3/guest_3_portrait.jpg",
+    "portrait_src": "/Volumes/DaVinci SSD/Работа/storyboard-automation/shows/kiberpankk/refs/characters/guest_3/guest_3_gost_korporativa_kolonny_2.jpg"
+  },
+  "masked_lady": {
+    "display_name": "masked_lady",
+    "description": "Дама в маске — собеседница lady_living_dress на диване, без реплик но смеётся и ест фиолетовый плод. Сцена 15а — лицо целиком закрыто золотой филигранной маской приросшей к коже; видны только губы крашеные чёрной помадой и глаза в прорезях маски",
+    "sheets": [
+      "shows/kiberpankk/refs/characters/masked_lady/masked_lady_dama_maske_sobesednitsa_lady.jpg"
+    ],
+    "created": "2026-06-25 09:46:53",
+    "portrait": "masked_lady/masked_lady_portrait.jpg",
+    "portrait_src": "/Volumes/DaVinci SSD/Работа/storyboard-automation/shows/kiberpankk/refs/characters/masked_lady/masked_lady_dama_maske_sobesednitsa_lady.jpg"
+  }
+}

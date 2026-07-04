@@ -63,7 +63,7 @@ def load_key() -> str:
 
 
 def load_provider() -> str:
-    """Возвращает 'narwhal' / 'narwhal_lite' / 'openai'. Default — 'openai'.
+    """Возвращает 'narwhal' или 'openai'. Default — 'openai'.
 
     Studio пишет это значение в `image_provider.txt` рядом с .env при
     каждом изменении настройки и при старте. Если файла нет (старая
@@ -74,16 +74,16 @@ def load_provider() -> str:
         if not PROVIDER_FILE.exists():
             return "openai"
         v = PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
-        return v if v in ("narwhal", "narwhal_lite", "openai") else "openai"
+        return v if v in ("narwhal", "openai") else "openai"
     except Exception:
         return "openai"
 
 
 def _fastgen_poll(op_id: str, headers: dict) -> dict:
     while True:
-        time.sleep(1.5)
+        time.sleep(4)
         r = requests.get(
-            f"{FASTGEN_BASE}/api/v6/generations/{op_id}",
+            f"{FASTGEN_BASE}/api/v4/operations/{op_id}",
             headers=headers,
             params={"result_format": "ref"},
             timeout=30,
@@ -92,14 +92,9 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
         data = r.json()
         status = data.get("status")
         print(f"    status: {status}")
-        # v5: успешные статусы — множество; result-разбор делает caller.
-        if status in ("succeeded", "success", "completed", "done"):
+        if status == "success" and data.get("result"):
             return data
-        # v5: queued/running — НЕ матчатся, цикл продолжает поллинг.
-        if status in ("failed", "error", "cancelled"):
-            print(f"[FASTGEN] path=pipeline.generate_image api=v6 "
-                  f"op_id={op_id} status={status} result=error "
-                  f"error={str(data.get('error') or '<none>')[:120]}")
+        if status == "error":
             raise RuntimeError(f"Fast Gen error: {data}")
 
 
@@ -133,68 +128,34 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     #   • cost_charged=1. Без полей `model`/`resolution`.
     #   • Content-policy блокирует огнестрел/узнаваемых людей.
     provider = load_provider()
-    # v5: провайдер задаётся полем "model" (НЕ путём эндпоинта). Мапа
-    # provider→model — копия IMAGE_PROVIDER_MODEL из storyboard_app.py
-    # (CLI не может импортировать Studio). Default openai-image — прежний
-    # else-путь (исторический дефолт CLI).
-    model = {"narwhal": "nano-banana-2",
-             "narwhal_lite": "nano-banana-2-lite",
-             "openai": "openai-image"}.get(provider, "openai-image")
-    # v5: единый эндпоинт для всех провайдеров; result_format=ref — query-param (ниже).
-    endpoint = "/api/v6/generations"
-    print(f"  provider: {provider} (model={model}, {endpoint})")
-    _fastgen_t0 = time.monotonic()  # [FASTGEN] засечка времени генерации
+    endpoint = ("/api/v4/flow/image/generate"
+                if provider == "narwhal"
+                else "/api/v4/openai/image/generate")
+    print(f"  provider: {provider} ({endpoint})")
     r = requests.post(
         f"{FASTGEN_BASE}{endpoint}",
         headers=headers,
         params={"result_format": "ref"},
-        json={"prompt": prompt, "aspect_ratio": "16:9", "model": model},
+        json={"prompt": prompt, "aspect_ratio": "16:9"},
         timeout=30,
     )
     r.raise_for_status()
     data = r.json()
-    # v5: op_id в поле "id" (полей "success"/"operation_id" в v5 НЕТ — старая
-    # проверка `not data.get("success")` всегда валила бы запуск генерации).
-    if not data.get("id"):
+    if not data.get("success") or not data.get("operation_id"):
         raise RuntimeError(f"Failed to start generation: {data}")
 
-    op_id = data["id"]
+    op_id = data["operation_id"]
     print(f"  op_id: {op_id}")
     result_data = _fastgen_poll(op_id, headers)
 
-    results = result_data.get("results") or result_data.get("result") or []
-    # v6: results[0].download_url — полный URL, скачиваем КАК ЕСТЬ.
-    # Если поля нет — fallback на v5 (storage_id → FASTGEN_STORAGE/file/{file_hash}/raw).
-    download_url = ""
-    if results and isinstance(results[0], dict):
-        download_url = results[0].get("download_url") or ""
-    if download_url:
-        file_hash = download_url   # для диаг-строки storage_id={file_hash[:8]} ниже
-    else:
-        # v5: storage_id = results[0].metadata.storage_id; fallback на v4-разбор.
-        file_hash = ""
-        if results and isinstance(results[0], dict):
-            file_hash = ((results[0].get("metadata") or {}).get("storage_id") or "")
-        if not file_hash:
-            # FALLBACK (v4-форма): result[0] → ref/url/file_hash, file:-префикс.
-            ref = results[0] if (isinstance(results, list) and results) else results
-            if isinstance(ref, dict):
-                ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
-            file_hash = str(ref)
-        file_hash = file_hash[5:] if file_hash.startswith("file:") else file_hash
+    result = result_data["result"]
+    ref = result[0] if isinstance(result, list) else result
+    if isinstance(ref, dict):
+        ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
+    file_hash = ref[5:] if str(ref).startswith("file:") else ref
 
-    # [FASTGEN] диаг-строка успеха (stdout → читает агент). inputs=0 (чистый text2img).
-    print(f"[FASTGEN] path=pipeline.generate_image api=v6 "
-          f"endpoint={endpoint} auth=X-API-Key "
-          f"model={model} provider={provider} "
-          f"result_format=ref inputs=0 "
-          f"op_id={op_id} status={result_data.get('status')} "
-          f"storage_id={str(file_hash)[:8]} "
-          f"time={int(time.monotonic() - _fastgen_t0)} result=ok")
-    # v6: если есть download_url — качаем по нему КАК ЕСТЬ; иначе v5-путь FASTGEN_STORAGE/file/{file_hash}/raw.
-    _dl_target = download_url if download_url else f"{FASTGEN_STORAGE}/file/{file_hash}/raw"
     r = requests.get(
-        _dl_target,
+        f"{FASTGEN_STORAGE}/file/{file_hash}/raw",
         headers={"X-API-Key": fastgen_key},
         timeout=60,
     )
@@ -271,16 +232,7 @@ def main() -> None:
             sys.exit(1)
         name = args[0]
         prompt = args[1]
-        # 2026-06-19: ключ через round-robin пул (key_pool), как в
-        # generate_storyboards.py:160-161. Ленивый импорт + fallback на
-        # load_key(): если key_pool.py не докопировался рядом (старая
-        # установка) или next_key кинул — работаем на одиночном .env-ключе
-        # (старое поведение сохраняется при любых проблемах с пулом).
-        try:
-            from key_pool import next_key
-            key = next_key() or load_key()
-        except Exception:
-            key = load_key()
+        key = load_key()
         target_dir = OBJECTS_DIR if kind == "object" else LOCATIONS_DIR
         existing = list(target_dir.glob(f"{name}.*"))
         if existing and not force:
