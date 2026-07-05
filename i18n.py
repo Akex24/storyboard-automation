@@ -903,6 +903,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'gen_err_generic': 'Не удалось сгенерировать',
         # ── Генератор: UI страницы (вкладки/сегменты/хинты/диалоги/тултипы/апскейл) ──
         'gen_canvas': 'Холст {n}',
+        'gen_favorites': 'Избранное',
+        'gen_fav_title': 'Избранное',
+        'gen_fav_empty': 'Пока пусто',
         'gen_empty_canvas': 'Здесь появятся сгенерированные картинки',
         'gen_prompt_placeholder': 'Что хочешь сгенерировать?',
         'gen_seg_image': 'Картинка',
@@ -1796,6 +1799,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'gen_err_generic': 'Не вдалося згенерувати',
         # ── Генератор: UI сторінки (вкладки/сегменти/хінти/діалоги/тултіпи/апскейл) ──
         'gen_canvas': 'Полотно {n}',
+        'gen_favorites': 'Обране',
+        'gen_fav_title': 'Обране',
+        'gen_fav_empty': 'Поки що порожньо',
         'gen_empty_canvas': 'Тут з\'являться згенеровані картинки',
         'gen_prompt_placeholder': 'Що хочеш згенерувати?',
         'gen_seg_image': 'Картинка',
@@ -2689,6 +2695,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'gen_err_generic': 'Generation failed',
         # ── Generator: page UI (tabs/segments/hints/dialogs/tooltips/upscale) ──
         'gen_canvas': 'Canvas {n}',
+        'gen_favorites': 'Favorites',
+        'gen_fav_title': 'Favorites',
+        'gen_fav_empty': 'Nothing here yet',
         'gen_empty_canvas': 'Generated images will appear here',
         'gen_prompt_placeholder': 'What do you want to generate?',
         'gen_seg_image': 'Image',

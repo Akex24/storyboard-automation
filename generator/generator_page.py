@@ -202,6 +202,9 @@ class GeneratorPage(QWidget):
             " border:none; border-radius:8px; padding:0px; font-size:18px; }"
             "QPushButton#canvas-new:hover { color:#cfcfcf; background:#191b1d; }"
             "QPushButton#canvas-new:disabled { color:#4a4458; background:transparent; }"
+            "QPushButton#canvas-fav { background:transparent; border:none;"
+            " border-radius:8px; padding:0 10px; }"
+            "QPushButton#canvas-fav:hover { background:#191b1d; }"
             "QFrame#canvas-divider { background:#2a2438; border:none; }"
             "QPushButton#canvas-close { background:transparent; border:none;"
             " border-radius:4px; }"
@@ -328,6 +331,35 @@ class GeneratorPage(QWidget):
         new_btn.clicked.connect(self._add_canvas)   # активна (КУСОК 2)
         lay.addWidget(new_btn)
         lay.addStretch()
+        # Кнопка «Избранное» — прижата к ПРАВОМУ краю ряда (после stretch), симметрично
+        # левым чипам холстов. Иконка heart, стиль как canvas-new. Клик → окно избранного.
+        fav_btn = QPushButton()
+        fav_btn.setObjectName("canvas-fav")
+        fav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        fav_btn.setFixedHeight(34)
+        try:
+            from storyboard_app import get_icon
+            fav_btn.setIcon(get_icon("heart"))
+            fav_btn.setIconSize(QSize(16, 16))
+        except Exception:
+            fav_btn.setText("♥")
+        fav_btn.setToolTip(tr('gen_favorites'))
+        fav_btn.clicked.connect(self._open_favorites)
+        lay.addWidget(fav_btn)
+
+    def _open_favorites(self):
+        """Открыть окно «Избранное» (сетка избранных карточек текущего сериала).
+        Ссылку держим на странице (анти-GC, как _open_viewer в result_cell)."""
+        try:
+            from generator.favorites_dialog import FavoritesDialog
+            dlg = FavoritesDialog(self)
+            self._favorites_dialog = dlg   # анти-GC
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     def _canvas_chip(self, canvas: dict, active: bool) -> QFrame:
         chip = QFrame()

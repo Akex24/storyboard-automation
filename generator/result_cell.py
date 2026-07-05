@@ -232,6 +232,9 @@ class ShimmerCell(QFrame):
         self._last_video_frame = None  # последний QImage от sink (рисуется в paintEvent)
         self._meta = {}              # метаданные плитки (prompt/model_id/model_label/aspect/
                                      # type/file/ts) — in-memory; на диск тут НЕ пишется
+        self._is_fav = False         # карточка в избранном (favorites.json)
+        self._hovering = False       # курсор над плиткой (покой↔hover-видимость сердечка)
+        self._fav_lite = False       # режим окна «Избранное»: генеративные кнопки скрыты
 
         v = QVBoxLayout(self)
         # Поля для ТЕКСТА (loading «{n}с» / error-причина). Картинка рисуется
@@ -862,11 +865,67 @@ class ShimmerCell(QFrame):
             btn._hover_icon = _tinted_icon("heart", "#ffffff")
         if ic is not None:
             btn.setIcon(ic)
+        # покой (без hover): избранная показывает залитое сердечко всегда; не-избранная — скрыт
+        if not getattr(self, "_hovering", False):
+            self._apply_heart_rest_visibility()
+
+    def _show_cluster_rest(self):
+        """Покой избранной карточки: в кластере видно ТОЛЬКО залитое сердечко
+        (остальные кнопки скрыты). Оверлей остаётся показанным мини-пилюлей."""
+        for b in (getattr(self, "btn_back", None), getattr(self, "btn_ref", None),
+                  getattr(self, "btn_trash", None), getattr(self, "btn_mute", None),
+                  getattr(self, "btn_2k", None)):
+            if b is not None:
+                b.setVisible(False)
+        h = getattr(self, "btn_heart", None)
+        if h is not None:
+            h.setVisible(True)
+
+    def _show_cluster_full(self):
+        """Hover: показать кнопки кластера. В fav-lite (окно «Избранное») — только
+        heart/ref (генеративные скрыты). Иначе полный набор; mute/2k — по своим правилам."""
+        for b in (getattr(self, "btn_heart", None), getattr(self, "btn_ref", None)):
+            if b is not None:
+                b.setVisible(True)
+        if getattr(self, "_fav_lite", False):
+            return
+        for b in (getattr(self, "btn_back", None), getattr(self, "btn_trash", None)):
+            if b is not None:
+                b.setVisible(True)
+        b2k = getattr(self, "btn_2k", None)
+        if b2k is not None:
+            b2k.setVisible(self._aspect != "9:16")
+        self._refresh_mute_visible()   # mute — только на видео
+
+    def _apply_heart_rest_visibility(self):
+        """Пересчёт видимости в ПОКОЕ: избранная → оверлей с одним сердечком;
+        не-избранная → оверлей скрыт. Зовётся из _refresh_heart_state (после toggle)."""
+        ov = getattr(self, "_actions_overlay", None)
+        if ov is None:
+            return
+        if getattr(self, "_is_fav", False) and self._state in ("image", "video"):
+            self._show_cluster_rest()
+            ov.show()
+            ov.raise_()
+            self._reanchor_overlays()
+        else:
+            ov.hide()
+
+    def enable_favorites_lite(self):
+        """Окно «Избранное»: скрыть генеративные кнопки (trash/2k/back/mute), оставить
+        heart/ref/reveal. Влияет на hover-раскладку (_show_cluster_full их пропускает)."""
+        self._fav_lite = True
+        for b in (getattr(self, "btn_trash", None), getattr(self, "btn_2k", None),
+                  getattr(self, "btn_back", None), getattr(self, "btn_mute", None)):
+            if b is not None:
+                b.setVisible(False)
 
     def enterEvent(self, ev):
         super().enterEvent(ev)
+        self._hovering = True
         ov = getattr(self, "_actions_overlay", None)
         if ov is not None:
+            self._show_cluster_full()
             ov.show()
             ov.raise_()
             # overlay теперь ПОКАЗАН → его layout можно активировать; пересчитать
@@ -906,9 +965,16 @@ class ShimmerCell(QFrame):
 
     def leaveEvent(self, ev):
         super().leaveEvent(ev)
+        self._hovering = False
         ov = getattr(self, "_actions_overlay", None)
         if ov is not None:
-            ov.hide()
+            if getattr(self, "_is_fav", False) and self._state in ("image", "video"):
+                self._show_cluster_rest()   # оставить залитое сердечко, спрятать остальные
+                ov.show()
+                ov.raise_()
+                self._reanchor_overlays()
+            else:
+                ov.hide()
         lov = getattr(self, "_left_overlay", None)
         if lov is not None:
             lov.hide()

@@ -117,6 +117,9 @@ a = Analysis(
         # (button-only — smoke-тест старта его не дёргает), поэтому явный хинт
         # страхует бандл в frozen .app/.exe.
         'seedance_shot_slicer',
+        # 2026-07-05: окно «Избранное» — button-only, лениво из generator_page._open_favorites;
+        # smoke не дёргает → явный хинт чтобы модуль попал в frozen .app/.exe.
+        'generator.favorites_dialog',
     ] + _heif_hiddenimports,
     hookspath=[],
     hooksconfig={},
