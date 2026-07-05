@@ -170,6 +170,36 @@ def _tinted_icon(icon_name: str, color: str) -> QIcon:
         return QIcon()
 
 
+def _filled_icon(icon_name: str, color: str) -> QIcon:
+    """Как _tinted_icon, но ЗАЛИВАЕТ форму (fill + stroke = color) — для «активного»
+    состояния (сердечко в избранном). Цвет — токен темы, приходит строкой."""
+    if not icon_name:
+        return QIcon()
+    try:
+        import sys
+        candidates = [
+            Path(__file__).parent.parent / "assets" / "icons" / f"{icon_name}.svg",
+        ]
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(Path(sys._MEIPASS) / "assets" / "icons" / f"{icon_name}.svg")
+        svg_path = next((p for p in candidates if p.exists()), None)
+        if svg_path is None:
+            return QIcon()
+        svg = svg_path.read_text(encoding="utf-8")
+        svg = re.sub(r'stroke="#[0-9a-fA-F]{3,8}"', f'stroke="{color}"', svg)
+        svg = re.sub(r'fill="none"', f'fill="{color}"', svg)
+        from PyQt6.QtSvg import QSvgRenderer
+        pix = QPixmap(24, 24)
+        pix.fill(Qt.GlobalColor.transparent)
+        renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        painter = QPainter(pix)
+        renderer.render(painter)
+        painter.end()
+        return QIcon(pix)
+    except Exception:
+        return QIcon()
+
+
 class ShimmerCell(QFrame):
     """Плитка результата. Создаётся в loading; page — для (un)register общего shimmer."""
 
@@ -346,12 +376,13 @@ class ShimmerCell(QFrame):
             # cocoa), лишняя высота уходит в нижний stretch, а ряды кнопок остаются
             # ПРИЖАТЫ К ВЕРХУ (y=8). Без этого VBox распихивал место → кнопки съезжали.
             ah.addStretch()
-        # btn_back / btn_ref / btn_trash / btn_2k оживлены; heart пока пустая.
+        # btn_back / btn_ref / btn_trash / btn_2k / heart оживлены.
         self.btn_back.clicked.connect(self._on_back_clicked)
         self.btn_ref.clicked.connect(self._on_ref_clicked)
         self.btn_trash.clicked.connect(self._on_trash_clicked)
         self.btn_2k.clicked.connect(self._on_2k_clicked)
         self.btn_mute.clicked.connect(self._page.toggle_video_muted)  # ГЛОБАЛЬНЫЙ mute
+        self.btn_heart.clicked.connect(self._on_heart_clicked)        # избранное (этап 2)
         self._refresh_back_enabled()   # начальное состояние от текущего _meta
         self._refresh_ref_enabled()    # btn_ref активна, когда есть meta.file
         self._refresh_trash_enabled()  # trash активна, когда есть готовый файл
@@ -381,6 +412,8 @@ class ShimmerCell(QFrame):
         self._left_overlay.hide()
         self._position_left_overlay()
         self._refresh_reveal_enabled()   # стартово файла нет (loading) → скрыта
+
+        self._refresh_heart_state()   # вид сердечка по page.is_favorite (старт: файла нет → обычный)
 
     # ── счётчик секунд ──────────────────────────────────────────────────
     def _tick_seconds(self):
@@ -470,6 +503,7 @@ class ShimmerCell(QFrame):
             self._rescale_pixmap()
         self._refresh_reveal_enabled()
         self._refresh_2k_enabled()
+        self._refresh_heart_state()   # файл известен → инициализировать вид сердечка
         self.update()
 
     def set_video_placeholder(self, path: str):
@@ -496,6 +530,7 @@ class ShimmerCell(QFrame):
         self._refresh_reveal_enabled()
         self._refresh_mute_visible()   # видео-карточка → показать кнопку mute
         self._apply_mute_icon(bool(getattr(self._page, "_video_muted", False)))  # синк иконки
+        self._refresh_heart_state()    # файл известен → инициализировать вид сердечка
         self.update()
 
     def set_model_label(self, text: str):
@@ -768,6 +803,65 @@ class ShimmerCell(QFrame):
             reveal_in_file_manager(path)
         except Exception:
             pass
+
+    # ── btn_heart («избранное»): toggle + отражение состояния (этап 2) ──
+    def _fav_key(self) -> str:
+        """Имя файла — ключ избранного. meta['file'], фолбэк — имя из _result_path."""
+        f = ""
+        if isinstance(self._meta, dict):
+            f = (self._meta.get("file") or "").strip()
+        if not f and self._result_path:
+            try:
+                f = Path(self._result_path).name
+            except Exception:
+                f = ""
+        return f
+
+    def _on_heart_clicked(self):
+        """Клик по сердечку (в hover-кластере): page.toggle_favorite(file, type) +
+        перекрасить кнопку на месте. Нет page/file → тихий выход."""
+        if self._page is None:
+            return
+        fname = self._fav_key()
+        if not fname:
+            return
+        ftype = (self._meta.get("type") if isinstance(self._meta, dict) else None) or "image"
+        try:
+            self._page.toggle_favorite(fname, ftype)
+        except Exception:
+            pass
+        self._refresh_heart_state()
+
+    def _refresh_heart_state(self):
+        """Вид кластерного сердечка (btn_heart, на своём месте в hover-оверлее) по
+        page.is_favorite: в избранном → ЗАЛИТОЕ красное (accent_red, _filled_icon);
+        вне — обычная иконка (hover→белый, как все кнопки кластера). Отдельного
+        индикатора нет — просто toggle цвета кнопки. Цвет только из токена темы. Не кидает."""
+        btn = getattr(self, "btn_heart", None)
+        if btn is None:
+            return
+        fav = False
+        try:
+            fname = self._fav_key()
+            if self._page is not None and fname and hasattr(self._page, "is_favorite"):
+                fav = bool(self._page.is_favorite(fname))
+        except Exception:
+            fav = False
+        self._is_fav = fav
+        try:
+            from storyboard_app import get_icon as _get_icon
+        except Exception:
+            _get_icon = lambda _n: None   # noqa: E731
+        if fav:
+            ic = _filled_icon("heart", LUMZ_THEME["accent_red"])   # залитое красное (токен)
+            btn._normal_icon = ic
+            btn._hover_icon = ic
+        else:
+            ic = _get_icon("heart")
+            btn._normal_icon = ic
+            btn._hover_icon = _tinted_icon("heart", "#ffffff")
+        if ic is not None:
+            btn.setIcon(ic)
 
     def enterEvent(self, ev):
         super().enterEvent(ev)

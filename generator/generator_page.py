@@ -2046,6 +2046,79 @@ class GeneratorPage(QWidget):
             import sys
             print(f"[generator] canvas save failed: {e}", file=sys.stderr)
 
+    # ── ИЗБРАННОЕ (favorites.json — близнец canvas.json, per-show, локально) ──
+    def _favorites_path(self):
+        """shows/<slug>/generator/favorites.json активного сериала (или None).
+        slug = get_current_show(get_stored_root()) — как canvas.json."""
+        import storyboard_app as _sa
+        root = _sa.get_stored_root()
+        slug = _sa.get_current_show(root) if root else None
+        if not root or not slug:
+            return None
+        return root / "shows" / slug / "generator" / "favorites.json"
+
+    def _load_favorites(self) -> list:
+        """favorites.json → list[{"file","type"}] (дедуп по file). Битый/нет файла/
+        нет сериала → []. Старт не роняем."""
+        import json
+        try:
+            p = self._favorites_path()
+            if not p or not p.exists():
+                return []
+            data = json.loads(p.read_text(encoding="utf-8"))
+            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                return []
+            out, seen = [], set()
+            for it in items:
+                if isinstance(it, dict):
+                    f = (it.get("file") or "").strip()
+                    if f and f not in seen:
+                        seen.add(f)
+                        out.append({"file": f, "type": it.get("type") or "image"})
+            return out
+        except Exception:
+            return []
+
+    def _save_favorites(self, items: list) -> None:
+        """Атомарно записать favorites.json (tmp+os.replace — копия _save_canvas).
+        Персист необязателен — ошибка не валит UI."""
+        import json, os, sys
+        try:
+            p = self._favorites_path()
+            if not p:
+                return
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.parent / "favorites.json.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"version": 1, "items": items}, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, p)
+        except Exception as e:  # noqa: BLE001
+            print(f"[generator] favorites save failed: {e}", file=sys.stderr)
+
+    def is_favorite(self, file: str) -> bool:
+        """Есть ли file в избранном активного сериала (ключ — имя файла)."""
+        f = (file or "").strip()
+        if not f:
+            return False
+        return any(it.get("file") == f for it in self._load_favorites())
+
+    def toggle_favorite(self, file: str, type: str = "image") -> bool:
+        """Переключить file → вернуть НОВОЕ состояние (True=в избранном). Дедуп по
+        file. Пустой file → False (без записи)."""
+        f = (file or "").strip()
+        if not f:
+            return False
+        items = self._load_favorites()
+        idx = next((i for i, it in enumerate(items) if it.get("file") == f), -1)
+        if idx >= 0:
+            items.pop(idx)
+            self._save_favorites(items)
+            return False
+        items.append({"file": f, "type": type or "image"})
+        self._save_favorites(items)
+        return True
+
     # ── чтение/восстановление холста (под-шаг 3) ──────────────────────
     def _clear_canvas(self):
         """Полная очистка холста: снять все плитки с экрана и shimmer-такта,
