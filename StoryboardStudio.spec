@@ -7,6 +7,16 @@ import sys
 import certifi
 from PyInstaller.utils.hooks import collect_all
 
+# 2026-07-05: build-stamp — уникальный id КАЖДОЙ сборки. .spec исполняется и на Mac,
+# и на Windows (pyinstaller StoryboardStudio.spec) → build_stamp.txt генерится на ОБЕИХ
+# ОС каждую сборку (build.sh — Mac-only, поэтому генерация тут). Бандлится (datas ниже),
+# storyboard_app.main() читает его из _MEIPASS и сбрасывает язык UI на ru при новом
+# стемпе (первый старт новой сборки = русский, рестарт той же сборки = выбор юзера).
+# time.time() уникален на билд. build_stamp.txt в .gitignore (не коммитим).
+import time as _time
+from pathlib import Path as _Path
+_Path('build_stamp.txt').write_text(str(int(_time.time())), encoding='utf-8')
+
 # 2026-06-24: pillow-heif тащит нативные libheif/libde265/x265. collect_all
 # собирает их .dylib/.dll + data + hidden submodules для onedir Win и .app Mac.
 # ВАЖНО: pillow_heif ДОЛЖЕН быть установлен в окружении сборки — иначе collect_all
@@ -19,6 +29,9 @@ a = Analysis(
     binaries=_heif_binaries,
     datas=[
         (certifi.where(), 'certifi'),
+        # 2026-07-05: build-stamp (уникален на сборку, генерится выше) → бандл-root;
+        # main() читает через _MEIPASS для сброса языка на ru при каждой пересборке.
+        ('build_stamp.txt', '.'),
         # Иконки табов (Lucide SVG) и иконки приложения
         ('assets/icons', 'assets/icons'),
         # 2026-05-09: pipeline.py забандливается чтобы Studio при старте

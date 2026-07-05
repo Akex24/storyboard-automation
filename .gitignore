@@ -59,3 +59,6 @@ _session_handoff.md
 fastgen_keys.txt
 # fal.ai ключ (вкладка «Камера»). СОДЕРЖИТ КЛЮЧ — критично не коммитить.
 fal_key.txt
+# build_stamp.txt — уникальный id сборки, генерится StoryboardStudio.spec каждую
+# сборку (сброс языка на ru при пересборке). Меняется каждый билд — не коммитим.
+build_stamp.txt
