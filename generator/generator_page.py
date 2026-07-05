@@ -2137,7 +2137,8 @@ class GeneratorPage(QWidget):
 
     def toggle_favorite(self, file: str, type: str = "image") -> bool:
         """Переключить file → вернуть НОВОЕ состояние (True=в избранном). Дедуп по
-        file. Пустой file → False (без записи)."""
+        file. Пустой file → False. После записи — освежить сердечки ВСЕХ живых карточек
+        холста с этим file (синхронизация окно↔холст, без перезапуска)."""
         f = (file or "").strip()
         if not f:
             return False
@@ -2145,11 +2146,34 @@ class GeneratorPage(QWidget):
         idx = next((i for i, it in enumerate(items) if it.get("file") == f), -1)
         if idx >= 0:
             items.pop(idx)
-            self._save_favorites(items)
-            return False
-        items.append({"file": f, "type": type or "image"})
+            new_state = False
+        else:
+            items.append({"file": f, "type": type or "image"})
+            new_state = True
         self._save_favorites(items)
-        return True
+        self._refresh_cells_favorite(f)
+        return new_state
+
+    def _refresh_cells_favorite(self, file: str):
+        """Освежить вид сердечка у ВСЕХ живых карточек холста с этим file (после смены
+        избранного из окна ИЛИ с карточки). Идёт по _cells активного + всем _canvas_cells
+        (кэш неактивных холстов); дедуп по id (список активного == _canvas_cells[active])."""
+        f = (file or "").strip()
+        if not f:
+            return
+        seen = set()
+        groups = [getattr(self, "_cells", [])] + list(getattr(self, "_canvas_cells", {}).values())
+        for grp in groups:
+            for cell in (grp or []):
+                if cell is None or id(cell) in seen:
+                    continue
+                seen.add(id(cell))
+                try:
+                    meta = cell.meta() if hasattr(cell, "meta") else {}
+                    if isinstance(meta, dict) and (meta.get("file") or "") == f:
+                        cell._refresh_heart_state()
+                except Exception:
+                    pass
 
     # ── чтение/восстановление холста (под-шаг 3) ──────────────────────
     def _clear_canvas(self):

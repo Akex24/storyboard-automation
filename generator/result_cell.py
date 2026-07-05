@@ -533,6 +533,7 @@ class ShimmerCell(QFrame):
         self._refresh_reveal_enabled()
         self._refresh_mute_visible()   # видео-карточка → показать кнопку mute
         self._apply_mute_icon(bool(getattr(self._page, "_video_muted", False)))  # синк иконки
+        self._refresh_2k_enabled()     # 2K скрыта на видео (только image)
         self._refresh_heart_state()    # файл известен → инициализировать вид сердечка
         self.update()
 
@@ -892,9 +893,7 @@ class ShimmerCell(QFrame):
         for b in (getattr(self, "btn_back", None), getattr(self, "btn_trash", None)):
             if b is not None:
                 b.setVisible(True)
-        b2k = getattr(self, "btn_2k", None)
-        if b2k is not None:
-            b2k.setVisible(self._aspect != "9:16")
+        self._refresh_2k_enabled()     # 2K — ТОЛЬКО на картинках (video → скрыта)
         self._refresh_mute_visible()   # mute — только на видео
 
     def _apply_heart_rest_visibility(self):
