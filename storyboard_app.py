@@ -20670,6 +20670,22 @@ def main():
                 "[migrate] new_ep/model_v2: claude-opus-4-7 -> claude-opus-4-8\n")
     except Exception:
         pass
+    # 2026-07-05: сброс языка UI на РУССКИЙ при СМЕНЕ версии сборки. Команда русскоязычная;
+    # после установки новой сборки / Send Update приложение должно открываться на русском.
+    # Ключим на app_version: пока версия та же — уважаем выбор юзера (переключил на uk →
+    # живёт через обычные рестарты); версия сменилась (или маркер пуст = первый старт после
+    # этой правки, чиним залипший 'en') → один раз ставим ru. Namespace QSettings тот же,
+    # что у i18n get_lang/set_lang. Сбой миграции старт не роняет.
+    try:
+        _lang_qs = QSettings(APP_ORG, APP_NAME)
+        _lang_root = _project_root_for_provider_sync()
+        _cur_build = read_local_app_version(_lang_root) if _lang_root else ""
+        if _cur_build and _cur_build != _lang_qs.value("lang_reset_build", "", type=str):
+            _lang_qs.setValue("ui_lang", "ru")
+            _lang_qs.setValue("lang_reset_build", _cur_build)
+            sys.stderr.write(f"[migrate] ui_lang -> ru (new build {_cur_build})\n")
+    except Exception:
+        pass
     install_theme_runtime()
     app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("Storyboard Studio")
