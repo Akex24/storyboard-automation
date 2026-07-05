@@ -2885,6 +2885,31 @@ Request». `_file_to_data_uri` (`generator_video_thread.py` и `generator_thread
 количество). НЕ путать со сжатием дропнутого рефа при ДОБАВЛЕНИИ
 (`generator_page.py:957` — там JPEG q95 без даунскейла, для on-disk парити с Adobe).
 
+### Избранное генератора — favorites.json (2026-07-05)
+Пометка карточки «в избранное» → `shows/<slug>/generator/favorites.json` (per-show,
+близнец `canvas.json`; `slug = get_current_show(get_stored_root())`). Формат
+`{"version":1, "items":[{"file":"gen_…jpg","type":"image|video"}, …]}`, ключ = имя
+файла (`meta['file']`), дедуп по нему. Атомарная запись (`.tmp` + `os.replace`, Mac/Win).
+Локально: `shows/` в `.gitignore`, Send Update синкает только `actors/` → избранное
+коллег не затирается.
+
+API на `GeneratorPage` (`generator_page.py`): `_load_favorites()` / `_save_favorites()` /
+`is_favorite(file)` / `toggle_favorite(file, type)→новое состояние`. `toggle_favorite` —
+ЕДИНАЯ точка (её зовут и карточка холста, и окно): после записи json дёргает
+`_refresh_cells_favorite(file)` → освежает `_refresh_heart_state()` у ВСЕХ живых карточек
+(`_cells` активного холста + `_canvas_cells` кэш неактивных, дедуп по `id`) с этим file →
+сердечки холст↔окно синхронны без перезапуска.
+
+UI (`result_cell.py`): `btn_heart` в hover-кластере; в избранном — ЗАЛИТОЕ красное
+(`_filled_icon` + токен `accent_red`), видно ВСЕГДА (покой = мини-пилюля оверлея через
+`_show_cluster_rest`/`_apply_heart_rest_visibility`), не-избранное — только на hover.
+Окно `FavoritesDialog` (`generator/favorites_dialog.py`, button-only, hiddenimport в
+`.spec`): адаптивная сетка `ShimmerCell` из `_load_favorites()` в lite-режиме
+(`enable_favorites_lite`: heart/ref/reveal, генеративные скрыты), размер/центр по
+`GeneratorViewerDialog._target_size` (60% availableGeometry). Ссылка на диалог — на
+`page` (анти-GC, как `_open_viewer`). Референс (`add_ref_from_meta`) и reveal
+переиспользуют существующие пути.
+
 ### Задача Б (НЕ сделана, отложена)
 Failover при лимите/ошибке ключа: если ключ упёрся в лимит или отвалился —
 временно вывести из ротации, нагрузка на живые без перезагрузки; крестик
