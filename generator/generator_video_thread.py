@@ -84,29 +84,30 @@ class GeneratorVideoThread(QThread):
         ext = path.suffix.lower().lstrip(".")
         mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp"}.get(ext, "png")
         raw = path.read_bytes()
-        # 2026-07-04: тяжёлые рефы (4K/~4МБ) раздувают тело submit → на медленном
-        # аплоаде gateway рвёт запрос (write timeout / 499). Жмём КОПИЮ В ПАМЯТИ
-        # (on-disk реф не трогаем): длинная сторона ≤2048px, JPEG q90→80 до ~1МБ.
-        # Мелкий лёгкий реф (≤2048px И ≤1.5МБ) — как есть. Любая ошибка PIL →
-        # фолбэк на сырой файл (сжатие генерацию не роняет).
+        # 2026-07-05: рефы уходят в теле submit base64 → тяжёлые ИЛИ МНОГО (до 7 видео /
+        # 10 картинок) раздувают тело → gateway рвёт (write timeout / 499 / 504). Жмём
+        # КАЖДЫЙ реф в памяти (on-disk не трогаем): downscale ≤2048px + JPEG q90→80 до
+        # ~1МБ. Шлём версию, что ЛЕГЧЕ (сжатая vs сырой) — крошечный реф не раздуваем.
+        # Любая ошибка PIL → фолбэк на сырой файл (сжатие генерацию не роняет).
         try:
             import io
             from PIL import Image, ImageOps
             im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
-            if max(im.size) > 2048 or len(raw) > 1_500_000:
-                if max(im.size) > 2048:
-                    im.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
-                if im.mode in ("RGBA", "LA", "P"):
-                    im = im.convert("RGB")
-                data = None
-                for q in (90, 88, 85, 82, 80):
-                    buf = io.BytesIO()
-                    im.save(buf, "JPEG", quality=q, optimize=True)
-                    data = buf.getvalue()
-                    if len(data) <= 1_050_000:
-                        break
+            if max(im.size) > 2048:                       # ресайз ТОЛЬКО вниз, без апскейла
+                im.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGB")
+            data = None
+            for q in (90, 88, 85, 82, 80):                # жмём ВСЕГДА (порог убран)
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=q, optimize=True)
+                data = buf.getvalue()
+                if len(data) <= 1_050_000:
+                    break
+            if len(data) < len(raw):                      # защита от раздувания: сжатая ЛЕГЧЕ → её
                 b64 = base64.b64encode(data).decode("ascii")
                 return f"data:image/jpeg;base64,{b64}"
+            # сжатие НЕ легче (реф уже оптимальный) → падаем на сырой ниже
         except Exception as e:
             print(f"[FASTGEN] ref compress skipped ({path.name}): {e}")
         b64 = base64.b64encode(raw).decode("ascii")
