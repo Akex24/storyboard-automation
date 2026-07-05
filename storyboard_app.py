@@ -3841,18 +3841,6 @@ QPushButton#tab-pill:hover {
 QPushButton#tab-pill[active="true"] {
     background: #242628; color: #e8b86a; font-weight: 600;
 }
-/* 2026-06-20: акцентная pill «Генератор» — тёплый янтарь (#d4a256, accent_gold
-   из палитры), выделяется среди серых табов. Через [accent="true"] поверх
-   objectName tab-pill, чтобы не ломать общий _sync_header_tab_active. */
-QPushButton#tab-pill[accent="true"] {
-    color: #d4a257;
-}
-QPushButton#tab-pill[accent="true"]:hover {
-    color: #e8b86a;
-}
-QPushButton#tab-pill[accent="true"][active="true"] {
-    background: #242628; color: #e8b86a; font-weight: 600;
-}
 /* Этап 2 (формат): сегмент-переключатель 9:16 | 16:9 в шапке. Активная
    половина — фирменный красный (#e63946, как точка в логотипе), неактивная
    приглушённая. По образцу #header-tabs + #tab-pill. */
@@ -8193,8 +8181,6 @@ class MainWindow(QMainWindow):
             btn.setObjectName("tab-pill")
             btn.setFixedHeight(28)
             btn.setProperty("active", page_idx == 0)
-            if key == 'tab_generator':
-                btn.setProperty("accent", True)   # янтарная акцентная pill
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setProperty("_tab_idx", page_idx)
             btn.setProperty("_i18n_key", key)
