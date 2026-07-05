@@ -42,7 +42,7 @@ _FAIL_STATUSES = ("failed", "error", "cancelled")
 # 2026-07-04: HTTP-коды перегруза/сброса гейтвея FastGen — ретраятся на submit/poll.
 # 499 = «Client Closed Request» (гейтвей сбросил соединение под нагрузкой). 429 сюда
 # НЕ входит (занятость ключа — свой перебор по кругу). Зеркально video-треду.
-_RETRYABLE_HTTP = (499, 500, 502, 503, 504)
+_RETRYABLE_HTTP = (408, 499, 500, 502, 503, 504)
 
 
 # Детектор транзиентных ошибок (is_transient) + человеческие локализованные
@@ -80,7 +80,33 @@ class GeneratorImageThread(QThread):
         сценариях. MIME по расширению (jpg/jpeg/png/webp); неизвестные → png."""
         ext = path.suffix.lower().lstrip(".")
         mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp"}.get(ext, "png")
-        b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        raw = path.read_bytes()
+        # 2026-07-04: тяжёлые рефы (4K/~4МБ) раздувают тело submit → на медленном
+        # аплоаде gateway рвёт запрос (write timeout / 499). Жмём КОПИЮ В ПАМЯТИ
+        # (on-disk реф не трогаем): длинная сторона ≤2048px, JPEG q90→80 до ~1МБ.
+        # Мелкий лёгкий реф (≤2048px И ≤1.5МБ) — как есть. Любая ошибка PIL →
+        # фолбэк на сырой файл (сжатие генерацию не роняет).
+        try:
+            import io
+            from PIL import Image, ImageOps
+            im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+            if max(im.size) > 2048 or len(raw) > 1_500_000:
+                if max(im.size) > 2048:
+                    im.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+                if im.mode in ("RGBA", "LA", "P"):
+                    im = im.convert("RGB")
+                data = None
+                for q in (90, 88, 85, 82, 80):
+                    buf = io.BytesIO()
+                    im.save(buf, "JPEG", quality=q, optimize=True)
+                    data = buf.getvalue()
+                    if len(data) <= 1_050_000:
+                        break
+                b64 = base64.b64encode(data).decode("ascii")
+                return f"data:image/jpeg;base64,{b64}"
+        except Exception as e:
+            print(f"[FASTGEN] ref compress skipped ({path.name}): {e}")
+        b64 = base64.b64encode(raw).decode("ascii")
         return f"data:image/{mime};base64,{b64}"
 
     def _fastgen(self, op_id, status, elapsed, result, extra=""):

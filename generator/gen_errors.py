@@ -41,7 +41,8 @@ _RETRY_DENY = ("unsafe", "sexual", "minor", "prominent people", "guardrails",
                "safety filters", "audio filtered", "not allowed for this license",
                "file_not_found_or_expired")
 _RETRY_ALLOW = ("try again", "captcha", "no accounts available", "concurrency",
-                "failed to perform", "failed to generate", "temporarily unavailable",
+                "failed to perform", "failed to generate", "generation failed",
+                "temporarily unavailable",
                 "503", "502", "504", "connection reset", "curl:")
 
 
