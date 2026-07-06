@@ -1061,10 +1061,12 @@ class GeneratorViewerDialog(QDialog):
         self.close()
 
     def _on_grab_frame(self):
-        """Клик по плюсику у playhead → захватить текущий кадр видео (из videoSink, на паузе
-        = кадр под playhead) → сохранить PNG в папку холста (рядом с видео) → добавить как
-        реф к следующей генерации (page.add_ref) → закрыть попап. Кадр — обычная картинка-
-        реф: VEO 3.1 / OmniFlash уже умеют image-to-video, дальше юзер сам пишет промпт."""
+        """Клик по плюсику у playhead → захватить кадр видео в ПОЛНОМ разрешении
+        (кадр под playhead) → сохранить JPEG в папку холста (рядом с видео) →
+        (1) добавить рефом к следующей генерации (page.add_ref) И (2) положить новой
+        карточкой на холст тем же путём, что drag-drop из папки (page._import_dropped_files)
+        → закрыть попап. Кадр — обычная картинка-реф: VEO 3.1 / OmniFlash умеют
+        image-to-video, дальше юзер сам пишет промпт."""
         vw = getattr(self, "_video_widget", None)
         if vw is None:
             return
@@ -1112,11 +1114,22 @@ class GeneratorViewerDialog(QDialog):
         # (иначе превью рефа рисует ▶-видео-заглушку на null-картинку).
         if QPixmap(str(out)).isNull():
             return
-        # добавить в поле рефов страницы генератора (родитель попапа = generator_page)
+        # Кадр валиден (файл на диске в generator/ читается). page = generator_page
+        # (родитель попапа). Кладём кадр в ДВА места, независимыми guard'ами:
+        #   (1) в поле рефов (как раньше) — реф к следующей генерации;
+        #   (2) ДОПОЛНИТЕЛЬНО новой карточкой на холст — тем же путём, что drag-drop
+        #       из папки (_import_dropped_files: копия gen_<ts>.jpg + карточка +
+        #       canvas.json). Порядок: сначала реф, потом холст, потом close.
+        # Отсутствие метода / ошибка одного вызова не роняет попап и не мешает второму.
         page = self.parent()
         if page is not None and hasattr(page, "add_ref"):
             try:
                 page.add_ref(str(out))
+            except Exception:
+                pass
+        if page is not None and hasattr(page, "_import_dropped_files"):
+            try:
+                page._import_dropped_files([out])   # кадр → новой карточкой на холст
             except Exception:
                 pass
         self.close()
