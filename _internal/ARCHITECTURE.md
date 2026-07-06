@@ -685,6 +685,25 @@ detection (фикс БАГ 1) для `refs/objects/`. Никакого дубл�
 cinematic 16:9». Если в реальном использовании окажется что бульдоги
 получаются на белом фоне — смягчить хардкод отдельным фиксом.
 
+## Editable SIMPLE actor-ref prompt (admin, self-modifying source, 2026-07-06)
+
+Карточка «Базовый» в CreateActorRefDialog под `is_admin_mode` показывает
+кнопку pencil → `_ActorRefSimplePromptDialog` (widgets/actor_dialogs.py).
+«Сохранить» вызывает `save_actor_ref_simple_prompt(project_root, text)`
+(storyboard_app.py), которая ПЕРЕЗАПИСЫВАЕТ константу `ACTOR_REF_PROMPT_SIMPLE`
+в ИСХОДНИКЕ `project_root/storyboard_app.py` (НЕ `__file__` — в .app это
+read-only PYZ). project_root у админа = git-репо (is_admin требует .git),
+поэтому правка = тот файл, что компилит build.sh и пушит Send Update.
+
+Инвариант regex: анкор `ACTOR_REF_PROMPT_SIMPLE = """...` (non-greedy, DOTALL)
+матчит ТОЛЬКО SIMPLE, не `ACTOR_REF_PROMPT_SIMPLE_FACTORY = """` (имя длиннее).
+FACTORY — неизменяемая заводская копия для «Сбросить». DETAILED/CUSTOM не
+редактируются. Валидация save: обязательны {identity_anchor}+{outfit}, тест
+`.format()`, запрет `"""`; запись .bak→tmp→os.replace→ast.parse→откат.
+Живой эффект: global `ACTOR_REF_PROMPT_SIMPLE` в памяти — оба .format-сайта
+(actor_dialogs.py `_on_generate`, обе ветки) читают `_sa.ACTOR_REF_PROMPT_SIMPLE`
+per-click, не снимок. Вступает в силу у колег после пересборки + Send Update.
+
 ## Refs auto-link reliability (БАГ 10 fix, 3 слоя защиты)
 
 **С 2026-05-10/11 (commits ef78d7b + 87091f0):** auto-link decision

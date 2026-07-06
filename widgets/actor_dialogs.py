@@ -767,9 +767,10 @@ class _LayoutVariantCard(QFrame):
     вариант через рамку (`-selected` стиль)."""
 
     chosen = pyqtSignal(str)  # 'detailed' | 'simple'
+    edit_requested = pyqtSignal()  # клик по кнопке «редактировать промпт» (admin)
 
     def __init__(self, variant_id: str, title: str, hint: str,
-                 panels_count: int, parent=None):
+                 panels_count: int, parent=None, show_edit: bool = False):
         super().__init__(parent)
         self.variant_id = variant_id
         self._selected = False
@@ -782,8 +783,29 @@ class _LayoutVariantCard(QFrame):
         v.setContentsMargins(14, 12, 14, 12)
         v.setSpacing(6)
 
+        # Заголовок + (опц.) кнопка-иконка «редактировать промпт» справа.
+        # QAbstractButton перехватывает свой клик → выбор карточки
+        # (mousePressEvent) НЕ триггерится.
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
         self.title_lbl = QLabel(title)
-        v.addWidget(self.title_lbl)
+        title_row.addWidget(self.title_lbl)
+        title_row.addStretch()
+        if show_edit:
+            self.edit_prompt_btn = QPushButton()
+            self.edit_prompt_btn.setObjectName("variant-edit-prompt")
+            self.edit_prompt_btn.setIcon(_sa.get_icon('pencil'))
+            self.edit_prompt_btn.setIconSize(QSize(14, 14))
+            self.edit_prompt_btn.setFixedSize(24, 24)
+            self.edit_prompt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.edit_prompt_btn.setToolTip(tr('actor_ref_prompt_edit_tooltip'))
+            self.edit_prompt_btn.setStyleSheet(
+                "QPushButton{background:transparent;border:none;border-radius:6px;}"
+                "QPushButton:hover{background:#23262a;}")
+            self.edit_prompt_btn.clicked.connect(self.edit_requested.emit)
+            title_row.addWidget(self.edit_prompt_btn)
+        v.addLayout(title_row)
 
         self.panels_lbl = QLabel(f"{panels_count} панелей")
         v.addWidget(self.panels_lbl)
@@ -854,6 +876,91 @@ class _LayoutVariantCard(QFrame):
 
 
 # ─── Создание character-рефа актёра ──────────────────────────────
+
+class _ActorRefSimplePromptDialog(QDialog):
+    """Admin-редактор промпта раскладки «Базовый» (ACTOR_REF_PROMPT_SIMPLE).
+
+    «Сохранить» → _sa.save_actor_ref_simple_prompt (пишет в ИСХОДНИК, переживает
+    пересборку + Send Update). «Сбросить к заводскому» → подставляет
+    _sa.ACTOR_REF_PROMPT_SIMPLE_FACTORY в textarea (в файл — только по «Сохранить»).
+    """
+
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.setWindowTitle(tr('actor_ref_prompt_edit_title'))
+        self.setModal(True)
+        self.resize(680, 620)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+
+        hint = QLabel(tr('actor_ref_prompt_edit_hint'))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#aeb2ad; font-size:12px;")
+        lay.addWidget(hint)
+
+        self.editor = QPlainTextEdit()
+        self.editor.setPlainText(_sa.ACTOR_REF_PROMPT_SIMPLE)
+        self.editor.setStyleSheet(
+            "QPlainTextEdit{background:#131516;color:#e0e0e0;"
+            "border:1px solid #23262a;border-radius:8px;padding:8px;"
+            "font-family:'Menlo','Consolas',monospace;font-size:12px;}")
+        lay.addWidget(self.editor, stretch=1)
+
+        note = QLabel(tr('actor_ref_prompt_edit_note'))
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#8f948d; font-size:11px;")
+        lay.addWidget(note)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setWordWrap(True)
+        self.status_lbl.setStyleSheet("color:#ffd24d; font-size:12px;")
+        lay.addWidget(self.status_lbl)
+
+        row = QHBoxLayout()
+        self.copy_btn = QPushButton(tr('actor_ref_prompt_copy'))
+        self.copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_btn.clicked.connect(self._on_copy)
+        self.reset_btn = QPushButton(tr('actor_ref_prompt_reset'))
+        self.reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset_btn.clicked.connect(self._on_reset)
+        row.addWidget(self.copy_btn)
+        row.addWidget(self.reset_btn)
+        row.addStretch()
+        self.cancel_btn = QPushButton(tr('create_ref_cancel'))
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.save_btn = QPushButton(tr('actor_ref_prompt_save'))
+        self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_btn.clicked.connect(self._on_save)
+        row.addWidget(self.cancel_btn)
+        row.addWidget(self.save_btn)
+        lay.addLayout(row)
+
+    def _on_copy(self):
+        QApplication.clipboard().setText(self.editor.toPlainText())
+        self.status_lbl.setStyleSheet("color:#9fd39f; font-size:12px;")
+        self.status_lbl.setText(tr('actor_ref_prompt_copied'))
+
+    def _on_reset(self):
+        self.editor.setPlainText(_sa.ACTOR_REF_PROMPT_SIMPLE_FACTORY)
+        self.status_lbl.setStyleSheet("color:#ffd24d; font-size:12px;")
+        self.status_lbl.setText(tr('actor_ref_prompt_reset_done'))
+
+    def _on_save(self):
+        try:
+            _sa.save_actor_ref_simple_prompt(
+                self.project_root, self.editor.toPlainText())
+        except Exception as ex:
+            self.status_lbl.setStyleSheet("color:#e4344a; font-size:12px;")
+            self.status_lbl.setText(str(ex))
+            return
+        QMessageBox.information(self, tr('actor_ref_prompt_edit_title'),
+                               tr('actor_ref_prompt_saved'))
+        self.accept()
+
 
 class CreateActorRefDialog(QDialog):
     """Попап: ввод описания одежды/состояния + выбор варианта layout-а
@@ -1087,9 +1194,11 @@ class CreateActorRefDialog(QDialog):
             "simple",
             tr('create_ref_variant_simple_title'),
             tr('create_ref_variant_simple_hint'),
-            7)
+            7,
+            show_edit=_sa.is_admin_mode(self.project_root))
         self.card_detailed.chosen.connect(self._on_variant_chosen)
         self.card_simple.chosen.connect(self._on_variant_chosen)
+        self.card_simple.edit_requested.connect(self._open_simple_prompt_editor)
         var_row.addWidget(self.card_detailed, stretch=1)
         var_row.addWidget(self.card_simple, stretch=1)
         outer.addLayout(var_row)
@@ -1341,6 +1450,13 @@ class CreateActorRefDialog(QDialog):
         self._selected_variant = variant_id
         self.card_detailed.setSelected(variant_id == "detailed")
         self.card_simple.setSelected(variant_id == "simple")
+
+    def _open_simple_prompt_editor(self):
+        """Admin-only: попап редактирования ACTOR_REF_PROMPT_SIMPLE."""
+        try:
+            _ActorRefSimplePromptDialog(self.project_root, parent=self).exec()
+        except Exception:
+            traceback.print_exc()
 
     # ─── Сериал / Персонаж — наполнение и реактивность ──────────────
 

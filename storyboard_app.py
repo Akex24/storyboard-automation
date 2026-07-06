@@ -6106,6 +6106,11 @@ def extract_episode_title(text: str, episode_num: int) -> str:
 # Два варианта layout-а identity reference sheet. Юзер выбирает в попапе
 # CreateActorRefDialog (widgets/actor_dialogs.py). Промпты зашиты как
 # константы — иначе пришлось бы тащить файл в .app бандл.
+# 2026-07-06: SIMPLE («Базовый») редактируется admin'ом прямо в UI (карточка
+# → кнопка pencil) через save_actor_ref_simple_prompt(), которая ПЕРЕЗАПИСЫВАЕТ
+# текст этой константы в ИСХОДНИКЕ project_root/storyboard_app.py (не в бандл).
+# Правка переживает пересборку и уходит колегам через Send Update. Заводская
+# копия — ACTOR_REF_PROMPT_SIMPLE_FACTORY (ниже). DETAILED/CUSTOM не редактируются.
 # Маркер `{outfit}` подставляется из поля «Описание» юзера. Если поле
 # пустое — подставляется generic строка чтобы не оставлять плейсхолдер.
 
@@ -6245,6 +6250,137 @@ Hard constraints:
 - the top of the head must not be cropped
 - panels 1, 2, 3 show the complete figure from head to feet with correct natural body proportions
 """
+
+
+# 2026-07-06: НЕИЗМЕНЯЕМАЯ заводская копия ACTOR_REF_PROMPT_SIMPLE — источник
+# для «Сбросить к заводскому» в admin-редакторе. НЕ редактировать вручную и НЕ
+# трогать программно: save_actor_ref_simple_prompt анкорится строго на
+# `ACTOR_REF_PROMPT_SIMPLE = """` (пробелы вокруг '='), а имя ниже —
+# `ACTOR_REF_PROMPT_SIMPLE_FACTORY = """` (длиннее) → regex его НЕ матчит.
+ACTOR_REF_PROMPT_SIMPLE_FACTORY = """Use the attached reference image as the identity anchor.
+
+{identity_anchor}
+
+Create a clean technical identity reference sheet for the same exact person, designed for future image generation consistency.
+Create one single image with a custom asymmetric layout based on a 3x3 grid structure.
+Layout:
+- top left: 3 full-body reference panels in one row:
+  1. front full-body view, full figure from head to feet, including the head
+  2. left side full-body view, full figure from head to feet, including the head
+  3. back full-body view, full figure from head to feet, including the head
+- bottom left: 3 head-and-shoulders reference panels in one row:
+  4. front head-and-shoulders close-up
+  5. left 3/4 head-and-shoulders close-up
+  6. left side profile head-and-shoulders close-up
+- right side: 1 enlarged portrait detail panel occupying a strict 2x2 area.
+  This enlarged portrait panel must be much larger than the other panels and must clearly dominate the layout.
+  Show the same exact person in a large frontal portrait view, looking directly into the camera.
+  The full head must be visible inside the panel, with the top of the head fully included and not cropped.
+  Show the face, full head, neck, upper shoulders, and the upper part of the clothing/collar.
+  Use tight portrait framing, but not an extreme face crop.
+  The person should fill most of the panel while still leaving a small amount of neutral background around the head and shoulders.
+  Keep clearly visible natural skin texture, realistic pores, subtle under-eye texture, realistic lips, realistic nose shape, realistic facial detail, hairline, ears, neck, shoulders, and clothing details.
+Composition rules:
+- the large portrait panel occupies four standard cells on the right side
+- the 3 full-body panels stay in one horizontal row on the upper left
+- the 3 head-and-shoulders panels stay in one horizontal row on the lower left
+- panels 1, 2, 3: full figure from head to feet including the head, natural realistic body proportions, head correctly sized relative to the body
+- panels 4, 5, 6: head and shoulders visible, head fills most of the panel
+- clean technical organized layout
+Identity preservation:
+Preserve the exact same person from the reference image.
+Same facial identity, age, head shape, hairstyle, hairline, eyebrow shape, eye shape, nose, lips, jawline, ears, skin tone, neck and body proportions.
+Do not redesign or beautify the face.
+High identity consistency across all panels.
+Clothing:
+{outfit}
+Style:
+Realistic studio photography, plain neutral studio background, soft even lighting, natural skin texture, sharp realistic detail, clean presentation, accurate proportions.
+Hard constraints:
+- exactly 3 full-body panels showing the full figure from head to feet including the head
+- exactly 3 head-and-shoulders panels
+- exactly 1 enlarged portrait detail panel occupying a 2x2 area on the right side
+- the enlarged portrait panel must show the complete head, neck, upper shoulders, and upper clothing/collar
+- the enlarged portrait panel must not be an extreme face crop
+- the top of the head must not be cropped
+- panels 1, 2, 3 show the complete figure from head to feet with correct natural body proportions
+"""
+
+
+def save_actor_ref_simple_prompt(project_root: Path, new_text: str) -> None:
+    """Пишет new_text в константу ACTOR_REF_PROMPT_SIMPLE в ИСХОДНИКЕ
+    project_root/storyboard_app.py (не в бандл __file__ — там read-only PYZ).
+
+    Только admin из git-репо: правка переживает build.sh и уходит колегам
+    через Send Update (git push). Живой эффект — global-константа обновляется.
+    Бросает RuntimeError с человекочитаемым текстом при любой проблеме
+    (caller показывает его в попапе). Cross-platform: pathlib + os.replace
+    (атомарно Mac/Win), без subprocess/shell.
+    """
+    import ast as _ast
+    # ── 1. Гейт ──
+    if not is_admin_mode(project_root):
+        raise RuntimeError("Доступно только администратору проекта "
+                           "(git-репозиторий с токеном).")
+    if not (project_root / ".git").is_dir():
+        raise RuntimeError("Нет git-репозитория в project_root — запусти "
+                           "Studio из папки-исходника, иначе правка не "
+                           "попадёт в пересборку.")
+    src_path = project_root / "storyboard_app.py"
+    if not src_path.is_file():
+        raise RuntimeError(f"Исходник не найден: {src_path}")
+    original = src_path.read_text(encoding="utf-8")
+    # Анкор строго на SIMPLE (' = ' с пробелами), НЕ на ..._FACTORY.
+    pattern = re.compile(r'ACTOR_REF_PROMPT_SIMPLE = """.*?"""', re.DOTALL)
+    m = pattern.search(original)
+    if not m:
+        raise RuntimeError("Маркер ACTOR_REF_PROMPT_SIMPLE не найден — "
+                           "структура файла изменилась, сохранение отменено.")
+    # ── 2. Валидация текста ──
+    text = new_text.replace("\r\n", "\n").strip("\n")
+    if '"""' in text:
+        raise RuntimeError('Текст не должен содержать тройные кавычки '
+                           '(разорвут константу).')
+    if "{identity_anchor}" not in text:
+        raise RuntimeError("Обязателен плейсхолдер {identity_anchor} — без "
+                           "него фото-референсы не подставятся.")
+    if "{outfit}" not in text:
+        raise RuntimeError("Обязателен плейсхолдер {outfit} — без него "
+                           "описание одежды не подставится.")
+    try:
+        text.format(outfit="x", identity_anchor="y")
+    except (KeyError, IndexError, ValueError) as ex:
+        raise RuntimeError(f"Неверный плейсхолдер/скобка (.format упал): {ex}. "
+                           "Разрешены только {identity_anchor} и {outfit}; "
+                           "литеральные скобки экранируй как {{ }}.")
+    # ── 3. Новый исходник (замена ровно одного вхождения SIMPLE) ──
+    replacement = 'ACTOR_REF_PROMPT_SIMPLE = """' + text + '"""'
+    new_src = original[:m.start()] + replacement + original[m.end():]
+    # ── 4. .bak → atomic tmp+replace → ast.parse → откат при провале ──
+    bak_path = src_path.with_suffix(".py.bak")
+    tmp_path = src_path.with_suffix(".py.tmp")
+    try:
+        bak_path.write_text(original, encoding="utf-8")
+    except Exception as ex:
+        raise RuntimeError(f"Не смог создать .bak: {ex}")
+    try:
+        _ast.parse(new_src)                       # валиден ли Python ДО подмены
+        tmp_path.write_text(new_src, encoding="utf-8")
+        os.replace(str(tmp_path), str(src_path))  # атомарно Mac/Win
+    except Exception as ex:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        try:                                      # страховочный откат
+            src_path.write_text(original, encoding="utf-8")
+        except Exception:
+            pass
+        raise RuntimeError(f"Запись отменена (исходник не тронут): {ex}")
+    # ── 5. Живой эффект в памяти ──
+    global ACTOR_REF_PROMPT_SIMPLE
+    ACTOR_REF_PROMPT_SIMPLE = text
 
 
 ACTOR_REF_PROMPT_CUSTOM = """{description}
