@@ -106,6 +106,17 @@ _ANIMAL_KEYWORDS = (
 )
 
 
+def _word_is_animal(word: str) -> bool:
+    """True, если СЛОВО-токен начинается с ключа-животного.
+
+    Ключи из _ANIMAL_KEYWORDS — стемы ('лис'→лиса/лису, 'собак'→собака,
+    'животн'→животное): сверяем как ПРЕФИКС ОТДЕЛЬНОГО слова, а не
+    подстроку по всему тексту. Mid-word совпадения («эл-ЛИС-он») больше
+    невозможны — текст заранее разбит на слова-токены.
+    """
+    return any(word.startswith(kw) for kw in _ANIMAL_KEYWORDS)
+
+
 # ─── Чат конкретного эпизода (внутри Editor → content_stack page 2) ───────────
 
 class EpisodeChatView(QWidget):
@@ -1414,21 +1425,27 @@ class EpisodeChatView(QWidget):
         1) сам slug (Rex/dog_1/cat — явные имена-животные)
         2) первый сегмент описания до знака препинания —
            там стоит роль/тип персонажа, а не сюжетный контекст.
+
+        2026-07-06: сопоставление по СЛОВАМ, не подстрокой. Substring
+        ловил 'лис' внутри «Эллисон» (Ellison) → конгрессмена уносило в
+        object-flow. Теперь ключ сверяется как префикс отдельного слова
+        (word boundary) через _word_is_animal — mid-word совпадения отсеяны.
         """
-        name_lower = (name or '').lower()
-        # 1. Проверка slug
-        if any(kw in name_lower for kw in _ANIMAL_KEYWORDS):
+        import re
+        def _tokens(text: str):
+            # только буквы; '_' и цифры — разделители (guard_dog → guard, dog)
+            return re.findall(r'[^\W\d_]+', (text or '').lower(), re.UNICODE)
+        # 1. Проверка slug — по словам
+        if any(_word_is_animal(w) for w in _tokens(name)):
             return True
-        # 2. Проверка первого сегмента описания
+        # 2. Проверка первого сегмента описания — по словам
         desc = (description or '').strip()
         if not desc:
             return False
         # Режем по знакам препинания: тире, запятая, точка, точка с
         # запятой, скобка. Берём первый сегмент — там роль персонажа.
-        import re
         first_segment = re.split(r'[—\-,.;(]', desc, maxsplit=1)[0]
-        first_segment_lower = first_segment.lower()
-        return any(kw in first_segment_lower for kw in _ANIMAL_KEYWORDS)
+        return any(_word_is_animal(w) for w in _tokens(first_segment))
 
     def _append_animal_redirect_message(self, name: str) -> None:
         """System-сообщение в чат когда character-маркер

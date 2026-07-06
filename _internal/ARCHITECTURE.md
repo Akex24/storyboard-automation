@@ -656,16 +656,23 @@ Overlay держится пока в реестре есть хоть одна `
 **2. Studio-side (safety net):**
 [views/episode_chat.py](views/episode_chat.py):
 - Module-level `_ANIMAL_KEYWORDS` константа: 35 ключевых слов
-  (RU + UA + EN). Substring match, case-insensitive.
+  (RU + UA + EN). **Word-boundary match** (2026-07-06, было substring):
+  ключ сверяется как префикс ОТДЕЛЬНОГО слова-токена через
+  `_word_is_animal`, не подстрокой — иначе 'лис' ловился внутри
+  «Эллисон» (Ellison) и конгрессмен уезжал в object-flow.
+  Остаточная коллизия: фамилия, начинающаяся со стема-зверя
+  (Котов/Волков/Медведев), даёт ложный True — принятый размен ради
+  корректных слов о зверях («стая волков» тоже True).
 - `_on_gen_button_clicked` для `gen_type == 'character'`:
   - Если `_is_likely_animal(name, description)` → True →
     redirect: emit system-сообщение «похоже на животное», set
     `gen_type = 'object'`, fall-through к стандартному
     AutonomousGenThread launch path.
   - Иначе (real human) → `_start_outfit_picker(name)` как раньше.
-- `_is_likely_animal(name, description)` проверяет blob `name + " "
-  + description` (lowercased) против keywords. `description or ''`
-  защищает от None.
+- `_is_likely_animal(name, description)` токенизирует по словам и
+  проверяет ОТДЕЛЬНО: (1) slug `name`, (2) первый сегмент `description`
+  до знака препинания (там роль/тип персонажа, не сюжетный контекст).
+  `description or ''` защищает от None.
 
 Fall-through для редиректа использует существующую slug-collision
 detection (фикс БАГ 1) для `refs/objects/`. Никакого дублирования.
