@@ -18,7 +18,7 @@ Cross-platform: чистый requests, без subprocess/shell.
 from __future__ import annotations
 
 import requests
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import QThread, QTimer
 
 # Тот же боевой хост, что и генерация (storyboard_app.API_BASE).
 API_BASE = "https://googler.fast-gen.ai"
@@ -57,3 +57,71 @@ class CancelThread(QThread):
             except Exception as e:
                 # Сеть/таймаут — best-effort: логируем и продолжаем остальные пары.
                 print(f"[CANCEL] op_id={op_id} FAILED: {e}")
+
+
+def spawn_server_cancel(owner, pairs, on_done=None):
+    """Best-effort серверная отмена задач [(op_id, key), …] в фоне — ЕДИНАЯ
+    точка и для «Остановить генерацию» шотов (MainWindow._stop_all_generation),
+    и для отмены по корзине в GeneratorPage. Создаёт CancelThread, держит ссылку
+    в owner._cancel_threads (анти-GC), по finished зовёт on_done(ct) (обычно
+    retire). Пустые/битые пары отфильтровываются. Возвращает CancelThread | None.
+    """
+    clean = [(o, k) for (o, k) in (pairs or []) if o and k]
+    if not clean:
+        return None
+    try:
+        ct = CancelThread(clean, owner)
+        owner._cancel_threads = getattr(owner, "_cancel_threads", [])
+        owner._cancel_threads.append(ct)
+        if on_done is not None:
+            ct.finished.connect(lambda c=ct: on_done(c))
+        ct.start()
+        return ct
+    except Exception:
+        return None
+
+
+class ThreadReaper:
+    """Переиспользуемый жнец QThread'ов. Безопасно снимает ссылку на
+    завершившийся поток: НЕ дропаем сразу — кастомный сигнал finished/error
+    летит ИЗНУТРИ run() ДО его возврата, и немедленный drop последней ссылки
+    даёт GC работающего QThread → 'Destroyed while thread is still running' →
+    abort(). Держим в keep-alive пока isFinished(), затем deleteLater по таймеру.
+
+    owner — QObject-владелец (parent для QTimer, чтобы таймер жил с ним).
+    Логика зеркалит исторический inline-жнец MainWindow (_retire_thread /
+    _reap_finished_threads); вынесена сюда для переиспользования GeneratorPage
+    (отмена по корзине) без копипасты.
+    """
+
+    def __init__(self, owner, interval=500):
+        self._pending = set()
+        self._timer = QTimer(owner)
+        self._timer.setInterval(int(interval))
+        self._timer.timeout.connect(self._reap)
+
+    def pending(self):
+        """Копия набора ещё-не-утилизированных потоков (для close-проверок)."""
+        return set(self._pending)
+
+    def retire(self, t):
+        if t is None:
+            return
+        self._pending.add(t)
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def _reap(self):
+        if not self._pending:
+            self._timer.stop()
+            return
+        done = [t for t in self._pending if t is None or t.isFinished()]
+        for t in done:
+            self._pending.discard(t)
+            if t is not None:
+                try:
+                    t.deleteLater()
+                except Exception:
+                    pass
+        if not self._pending:
+            self._timer.stop()

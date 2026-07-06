@@ -685,6 +685,41 @@ detection (фикс БАГ 1) для `refs/objects/`. Никакого дубл�
 cinematic 16:9». Если в реальном использовании окажется что бульдоги
 получаются на белом фоне — смягчить хардкод отдельным фиксом.
 
+## Отмена активной генерации по корзине (Генератор, 2026-07-06)
+
+Корзина (btn_trash) на генерящейся плитке = ОТМЕНА, не удаление. Раньше
+`delete_result_cell` рано выходил (нет файла + не error). Теперь:
+- **КРИТИЧНО (result_cell.py `_refresh_trash_enabled`):** btn_trash ENABLED на
+  loading (`state in ("error","loading")` или есть file). Старый гейт дизейблил
+  корзину на loading → кнопка без hover/клика → ВСЯ логика отмены ниже была
+  недостижима (баг ловился только рантайм-probe'ом widgetAt, не статикой).
+- `GeneratorImageThread`/`GeneratorVideoThread` выставляют `self._op_id` +
+  `self._used_key` при submit (те же имена, что у shot-тредов).
+- при старте: `cell._gen_thread = th`; снимается в `_on_gen_done`/`_on_gen_fail`
+  (штатный финал) и при отмене.
+- `delete_result_cell` при живом `cell._gen_thread` → `_cancel_active_gen`:
+  `th.stop()` (локально рвёт поллинг+ретраи, паузы дроблёны по `_stop`) +
+  server-cancel + снятие из `_gen_threads` + жнец. Confirm и file-delete для
+  отмены пропускаются (файла нет); блок резолва пути обёрнут в `if fname:`.
+- orphan (гонка: поток дописал файл между `if self._stop:return` и записью) —
+  `_on_gen_done` по флагу `th._cancelled` зовёт `_delete_cancelled_output`
+  (только свой файл + .jpg превью, строго внутри `generator/`).
+
+**Общие хелперы `threads/cancel.py` (без копипасты):**
+- `spawn_server_cancel(owner, pairs, on_done)` — best-effort DELETE /api/v6 задач
+  [(op_id,key)]. ЕДИНАЯ точка: `MainWindow._stop_all_generation` (все пары) и
+  `GeneratorPage._cancel_active_gen` (одна пара). Раньше блок был скопирован в
+  `_stop_all_generation` inline — теперь оба зовут хелпер.
+- `ThreadReaper(owner, interval)` — переиспользуемый жнец QThread'ов (keep-alive
+  до `isFinished()` → `deleteLater`; иначе GC работающего QThread → abort).
+  `GeneratorPage._gen_reaper` использует его. NB: исторический inline-жнец
+  MainWindow (`_retire_thread`/`_reap_finished_threads`) НЕ мигрирован — сцеплен
+  с `closeEvent` (собирает `_threads_pending_delete` для «не закрывать при
+  активных потоках»); миграция — отдельный verified-заход, вне этой фичи.
+
+Гонка «поток финишировал после снятия карточки» — прежний гард `_cell_alive`
+(sip.isdeleted) не тронут. Upscale-loading карточки (UpscaleThread) — вне охвата.
+
 ## Editable SIMPLE actor-ref prompt (admin, self-modifying source, 2026-07-06)
 
 Карточка «Базовый» в CreateActorRefDialog под `is_admin_mode` показывает

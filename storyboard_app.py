@@ -14058,17 +14058,12 @@ class MainWindow(QMainWindow):
             self._retire_thread(t)
         self._active_regens.clear()
         self._active_mode_c_version_threads.clear()
-        # 5) серверная отмена в фоне (best-effort, ошибки глотаем).
-        if pairs:
-            try:
-                from threads.cancel import CancelThread
-                ct = CancelThread(pairs, self)
-                ct.finished.connect(lambda c=ct: self._retire_thread(c))
-                self._cancel_threads = getattr(self, '_cancel_threads', [])
-                self._cancel_threads.append(ct)
-                ct.start()
-            except Exception:
-                traceback.print_exc()
+        # 5) серверная отмена в фоне (best-effort). Единый хелпер spawn_server_cancel
+        #    (threads/cancel.py) — тот же путь, что и отмена по корзине в GeneratorPage
+        #    (адресность: тут все пары, там одна). Держит ссылку в self._cancel_threads,
+        #    finished → _retire_thread (жнец). Пустые pairs хелпер отфильтрует сам.
+        from threads.cancel import spawn_server_cancel
+        spawn_server_cancel(self, pairs, self._retire_thread)
         # 6) UI: погасить прогресс/секунды карточек текущего блока — перерисовка
         #    в idle (реестры уже пусты → _shot_active=False для всех карточек,
         #    set_loading(False)+stop_progress()); без ухода в другой блок.

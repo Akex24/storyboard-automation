@@ -133,6 +133,12 @@ class GeneratorPage(QWidget):
         # + ссылка тут, Qt не соберёт; убираются по finished/error). Кнопку НЕ блокируем.
         self._gen_threads = []
         self._upscale_threads = []  # 2026-06-25 (апскейл): фоновые UpscaleThread
+        # 2026-07-06 (отмена по корзине): общий жнец для ОСТАНОВЛЕННЫХ gen-потоков
+        # (threads.cancel.ThreadReaper — та же логика, что MainWindow-жнец, без копии;
+        # держит поток пока run() не вернулся → deleteLater, иначе GC работающего
+        # QThread → abort).
+        from threads.cancel import ThreadReaper
+        self._gen_reaper = ThreadReaper(self, interval=200)
         # Общий shimmer-такт (~20fps) для всех loading-плиток; стоит в простое.
         self._loading_cells = set()
         self._shimmer_phase = 0.0
@@ -1242,6 +1248,7 @@ class GeneratorPage(QWidget):
                 th = GeneratorImageThread(prompt, aspect, model_id, out_dir,
                                           refs=refs, parent=None)
             self._gen_threads.append(th)
+            cell._gen_thread = th   # 2026-07-06: явная связь карточка↔поток (отмена по корзине)
             th.finished.connect(lambda pth, c=cell, t=th: self._on_gen_done(c, t, pth))
             th.error.connect(lambda msg, c=cell, t=th: self._on_gen_fail(c, t, msg))
             th.progress.connect(lambda msg, c=cell: c.set_loading_text(msg))
@@ -1651,8 +1658,12 @@ class GeneratorPage(QWidget):
 
     def _on_gen_done(self, cell, th, path: str):
         if not self._cell_alive(cell):
-            # Плитка уже снесена (смена сериала во время генерации). Файл на диске
-            # есть, но обновлять/персистить некуда — чистим поток и выходим.
+            # Плитка снесена (смена сериала ИЛИ отмена по корзине). Персистить
+            # некуда. Если это была ОТМЕНА (гонка: поток дописал файл между stop-
+            # гардом и записью) → снести свой orphan. Смена сериала (_cancelled нет)
+            # — файл оставляем как раньше.
+            if getattr(th, "_cancelled", False):
+                self._delete_cancelled_output(path)
             if th in self._gen_threads:
                 self._gen_threads.remove(th)
             return
@@ -1673,6 +1684,10 @@ class GeneratorPage(QWidget):
             self._save_canvas()
         except Exception:
             pass
+        try:
+            cell._gen_thread = None   # штатный финал → мёртвый поток не держим
+        except Exception:
+            pass
         if th in self._gen_threads:
             self._gen_threads.remove(th)
 
@@ -1684,6 +1699,10 @@ class GeneratorPage(QWidget):
             return
         try:
             cell.set_error((msg or tr('gen_err_label'))[:160])
+        except Exception:
+            pass
+        try:
+            cell._gen_thread = None
         except Exception:
             pass
         if th in self._gen_threads:
@@ -1831,37 +1850,107 @@ class GeneratorPage(QWidget):
         if th in self._upscale_threads:
             self._upscale_threads.remove(th)
 
-    def delete_result_cell(self, cell: ShimmerCell):
-        """Удалить плитку генератора: готовый файл с диска или error-карточку
-        без файла, затем убрать карточку с холста и обновить canvas.json."""
-        if not self._cell_alive(cell):
-            return
-        meta = cell.meta() if hasattr(cell, "meta") else {}
-        fname = (meta.get("file") or "").strip() if isinstance(meta, dict) else ""
-        is_error_cell = getattr(cell, "_state", "") == "error"
-        if not fname and not is_error_cell:
-            return
-        target = None
+    def _cancel_active_gen(self, cell, th):
+        """Отмена активной генерации (корзина на loading/активной карточке):
+        локальный стоп потока + best-effort server-cancel (DELETE /api/v6) + жнец.
+        Саму карточку снимает вызывающий delete_result_cell (общий хвост).
+
+        Переиспользует общие threads.cancel.spawn_server_cancel и ThreadReaper —
+        те же, что MainWindow._stop_all_generation (отличие только в адресности:
+        одна пара vs все). Не параллельная реализация."""
+        try:
+            th._cancelled = True   # маркер для _on_gen_done: снести orphan при гонке
+        except Exception:
+            pass
+        try:
+            th.stop()              # локальный стоп: поллинг + дроблёные ретрай-паузы
+        except Exception:
+            pass
+        oid = getattr(th, "_op_id", "") or ""
+        k = getattr(th, "_used_key", "") or ""
+        try:
+            from threads.cancel import spawn_server_cancel
+            # server-cancel одной пары; finished → жнец (утилизация CancelThread).
+            spawn_server_cancel(self, [(oid, k)], self._gen_reaper.retire)
+        except Exception:
+            pass
+        try:
+            if th in self._gen_threads:
+                self._gen_threads.remove(th)
+        except Exception:
+            pass
+        try:
+            cell._gen_thread = None
+        except Exception:
+            pass
+        self._gen_reaper.retire(th)   # keep-alive до isFinished() → deleteLater
+
+    def _delete_cancelled_output(self, path: str):
+        """Гонка отмены: поток дописал файл между stop-гардом и записью. Снести
+        ТОЛЬКО этот файл (+ .jpg-превью для видео), строго внутри папки generator.
+        Чужие файлы не трогаем."""
         try:
             import storyboard_app as _sa
             root = _sa.get_stored_root()
             slug = _sa.get_current_show(root) if root else None
             if not (root and slug):
                 return
-            out_dir = root / "shows" / slug / "generator"
-            out_root = out_dir.resolve()
-            if fname:
+            out_root = (root / "shows" / slug / "generator").resolve()
+            p = Path(path).resolve()
+            if out_root not in p.parents:
+                return   # чужой путь — не трогаем
+            targets = [p] + ([p.with_suffix(".jpg")] if p.suffix.lower() == ".mp4" else [])
+            for t in targets:
+                try:
+                    if t.exists() and t.is_file():
+                        t.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def delete_result_cell(self, cell: ShimmerCell):
+        """Удалить плитку генератора: готовый файл с диска или error-карточку
+        без файла, затем убрать карточку с холста и обновить canvas.json."""
+        if not self._cell_alive(cell):
+            return
+        # 2026-07-06: корзина на АКТИВНОЙ (генерящейся) карточке = ОТМЕНА генерации.
+        # Стоп потока + server-cancel, затем снять карточку общим хвостом ниже (без
+        # confirm, без file-delete — файла ещё нет). Готовые/error карточки — прежний
+        # путь (файл + confirm).
+        _is_cancel = False
+        _active_th = getattr(cell, "_gen_thread", None)
+        if _active_th is not None and _active_th in self._gen_threads:
+            self._cancel_active_gen(cell, _active_th)
+            _is_cancel = True
+        meta = cell.meta() if hasattr(cell, "meta") else {}
+        fname = (meta.get("file") or "").strip() if isinstance(meta, dict) else ""
+        is_error_cell = getattr(cell, "_state", "") == "error"
+        if not fname and not is_error_cell and not _is_cancel:
+            return
+        target = None
+        # Резолв пути только когда есть файл (у отмены/loading файла нет — блок
+        # пропускаем, иначе ранний return по отсутствию root снёс бы снятие карточки).
+        if fname:
+            try:
+                import storyboard_app as _sa
+                root = _sa.get_stored_root()
+                slug = _sa.get_current_show(root) if root else None
+                if not (root and slug):
+                    return
+                out_dir = root / "shows" / slug / "generator"
+                out_root = out_dir.resolve()
                 target = (out_dir / fname).resolve()
                 # Защита от битого canvas.json: удаляем только внутри папки generator.
                 if out_root not in target.parents and target != out_root:
                     return
-        except Exception:
-            return
+            except Exception:
+                return
 
         settings = QSettings()
         skip_confirm = bool(settings.value(
             "generator/skip_delete_confirm", False, type=bool))
-        if not skip_confirm:
+        if not skip_confirm and not _is_cancel:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
             box.setWindowTitle(tr('gen_del_title'))

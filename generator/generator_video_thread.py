@@ -72,6 +72,10 @@ class GeneratorVideoThread(QThread):
         # False для Omni/прочих — флаг не уходит в payload (см. run()).
         self.keyframes = bool(keyframes)
         self._stop = False
+        # 2026-07-06 (отмена по корзине): op_id + ключ активной задачи (см.
+        # GeneratorImageThread). Локальные в run() → дублируем в атрибуты.
+        self._op_id = None
+        self._used_key = ""
 
     def stop(self):
         self._stop = True
@@ -328,6 +332,8 @@ class GeneratorVideoThread(QThread):
                         self.error.emit(tr('gen_err_no_id', detail=str(data)[:200]))
                         return
                     session = s   # рабочий ключ — им поллим и качаем
+                    self._op_id = op_id     # для server-cancel по корзине
+                    self._used_key = key    # ключ-создатель op'а (нужен для DELETE)
 
                 # 2026-07-04: submit-стадия попросила повтор (net/5xx) → следующая
                 # попытка retry-цикла (op_id ещё None, poll пропускаем).

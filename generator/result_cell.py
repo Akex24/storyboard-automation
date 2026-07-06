@@ -1094,15 +1094,18 @@ class ShimmerCell(QFrame):
                       if has_file else Qt.CursorShape.ArrowCursor)
 
     def _refresh_trash_enabled(self):
-        """Кнопка удаления активна для готового результата или error-плитки.
-        Loading не удаляем: генерация ещё может завершиться в эту плитку."""
+        """Кнопка корзины активна для ГОТОВОГО результата, error-плитки И
+        loading-плитки. 2026-07-06: на loading корзина = ОТМЕНА генерации (стоп
+        потока + server-cancel + снятие плитки, см. GeneratorPage.delete_result_cell
+        → _cancel_active_gen). Раньше loading был disabled («генерация ещё может
+        завершиться») — но это делало кнопку отмены недостижимой (нет hover/клика)."""
         btn = getattr(self, "btn_trash", None)
         if btn is None:
             return
         has_file = False
         if isinstance(self._meta, dict):
             has_file = bool((self._meta.get("file") or "").strip())
-        enabled = bool(has_file or self._state == "error")
+        enabled = bool(has_file or self._state in ("error", "loading"))
         btn.setEnabled(enabled)
         btn.setCursor(Qt.CursorShape.PointingHandCursor
                       if enabled else Qt.CursorShape.ArrowCursor)
@@ -1210,7 +1213,10 @@ class ShimmerCell(QFrame):
         try:
             self._page.delete_result_cell(self)
         except Exception:
-            pass
+            # НЕ глотаем молча (было except: pass) — иначе будущие ошибки
+            # удаления/отмены теряются (см. историю багов с корзиной 2026-07-06).
+            import traceback
+            traceback.print_exc()
 
     def _on_2k_clicked(self):
         """2026-06-25 (апскейл): делегировать страницe. Page создаст НОВУЮ

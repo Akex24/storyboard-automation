@@ -69,6 +69,11 @@ class GeneratorImageThread(QThread):
         self.refs: list = [str(p) for p in (refs or [])]
         self.ref_names: list = [str(n) for n in (ref_names or [])]
         self._stop = False
+        # 2026-07-06 (отмена по корзине): op_id и ключ активной задачи — для
+        # адресной server-cancel (DELETE /api/v6) из GeneratorPage. В run() они
+        # локальные → недоступны извне; дублируем в атрибуты при submit.
+        self._op_id = None
+        self._used_key = ""
 
     def stop(self):
         self._stop = True
@@ -307,6 +312,8 @@ class GeneratorImageThread(QThread):
                         self.error.emit(tr('gen_err_no_id', detail=str(data)[:200]))
                         return
                     session = s   # рабочий ключ — им поллим и качаем
+                    self._op_id = op_id     # для server-cancel по корзине
+                    self._used_key = key    # ключ-создатель op'а (нужен для DELETE)
 
                 # 2026-07-04: submit-стадия попросила повтор (net/5xx) → следующая
                 # попытка retry-цикла (op_id ещё None, poll пропускаем).
