@@ -80,14 +80,10 @@ def load_provider() -> str:
 
 
 def _fastgen_poll(op_id: str, headers: dict) -> dict:
-    # 2026-07-06: v4 endpoints returned 404 — API migrated to v6.
-    # `/api/v6/generations/{op_id}`; success statuses expanded
-    # ("succeeded"/"success"/"completed"/"done"); result key is `results`
-    # (list) with `download_url` per item. See threads/generate.py:999-1049.
     while True:
         time.sleep(4)
         r = requests.get(
-            f"{FASTGEN_BASE}/api/v6/generations/{op_id}",
+            f"{FASTGEN_BASE}/api/v4/operations/{op_id}",
             headers=headers,
             params={"result_format": "ref"},
             timeout=30,
@@ -96,10 +92,9 @@ def _fastgen_poll(op_id: str, headers: dict) -> dict:
         data = r.json()
         status = data.get("status")
         print(f"    status: {status}")
-        if status in ("succeeded", "success", "completed", "done"):
-            if data.get("results") or data.get("result"):
-                return data
-        if status in ("failed", "error", "cancelled"):
+        if status == "success" and data.get("result"):
+            return data
+        if status == "error":
             raise RuntimeError(f"Fast Gen error: {data}")
 
 
@@ -132,61 +127,38 @@ def generate_image(prompt: str, name: str, fastgen_key: str,
     # OpenAI `/api/v4/openai/image/generate`:
     #   • cost_charged=1. Без полей `model`/`resolution`.
     #   • Content-policy блокирует огнестрел/узнаваемых людей.
-    # 2026-07-06: v6 migration. Единый endpoint /api/v6/generations для
-    # всех провайдеров; провайдер выбирается через поле `model` в payload
-    # (не путём эндпоинта). op_id теперь в `data["id"]` (не "operation_id").
-    # Результат: results[0].download_url — полный URL картинки.
-    # Мапа синхронизирована с storyboard_app.IMAGE_PROVIDER_MODEL.
     provider = load_provider()
-    provider_model = {
-        "narwhal":      "nano-banana-2",
-        "narwhal_lite": "nano-banana-2-lite",
-        "openai":       "openai-image",
-    }.get(provider, "nano-banana-2")
-    endpoint = "/api/v6/generations"
-    print(f"  provider: {provider} (model={provider_model})")
+    endpoint = ("/api/v4/flow/image/generate"
+                if provider == "narwhal"
+                else "/api/v4/openai/image/generate")
+    print(f"  provider: {provider} ({endpoint})")
     r = requests.post(
         f"{FASTGEN_BASE}{endpoint}",
         headers=headers,
         params={"result_format": "ref"},
-        json={"prompt": prompt, "aspect_ratio": "16:9",
-              "model": provider_model},
-        timeout=60,
+        json={"prompt": prompt, "aspect_ratio": "16:9"},
+        timeout=30,
     )
     r.raise_for_status()
     data = r.json()
-    if not data.get("id"):
+    if not data.get("success") or not data.get("operation_id"):
         raise RuntimeError(f"Failed to start generation: {data}")
 
-    op_id = data["id"]
+    op_id = data["operation_id"]
     print(f"  op_id: {op_id}")
     result_data = _fastgen_poll(op_id, headers)
 
-    results = result_data.get("results") or result_data.get("result") or []
-    download_url = ""
-    if results and isinstance(results[0], dict):
-        download_url = results[0].get("download_url") or ""
+    result = result_data["result"]
+    ref = result[0] if isinstance(result, list) else result
+    if isinstance(ref, dict):
+        ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
+    file_hash = ref[5:] if str(ref).startswith("file:") else ref
 
-    if download_url:
-        r = requests.get(download_url,
-                         headers={"X-API-Key": fastgen_key},
-                         timeout=120)
-    else:
-        # Fallback (v5-form): storage_id inside metadata → STORAGE_BASE.
-        sid = ""
-        if results and isinstance(results[0], dict):
-            sid = ((results[0].get("metadata") or {}).get("storage_id") or "")
-        if not sid:
-            ref = results[0] if results else ""
-            if isinstance(ref, dict):
-                ref = ref.get("ref") or ref.get("url") or ref.get("file_hash") or ""
-            sid = str(ref)
-        sid = sid[5:] if sid.startswith("file:") else sid
-        r = requests.get(
-            f"{FASTGEN_STORAGE}/file/{sid}/raw",
-            headers={"X-API-Key": fastgen_key},
-            timeout=120,
-        )
+    r = requests.get(
+        f"{FASTGEN_STORAGE}/file/{file_hash}/raw",
+        headers={"X-API-Key": fastgen_key},
+        timeout=60,
+    )
     r.raise_for_status()
 
     # 2026-05-07: расширение определяется по МАГИЧЕСКИМ БАЙТАМ контента,
