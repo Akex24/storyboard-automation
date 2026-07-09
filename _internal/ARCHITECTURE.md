@@ -2594,6 +2594,20 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
 - `find_claude_cli`, `_claude_cli_cache` — ресолв пути к Claude CLI.
 - `no_console_kwargs()` — кросс-платформенные subprocess kwargs (Win:
   `creationflags=CREATE_NO_WINDOW`; Mac: `{}`).
+- `move_to_trash(path)` ([fs_utils.py](fs_utils.py)) — удаление в СИСТЕМНУЮ
+  Корзину (macOS `.Trashes/<uid>` ТОГО ЖЕ тома или `~/.Trash`; Windows Recycle
+  Bin через ctypes `SHFileOperationW`+`FOF_ALLOWUNDO`, но ТОЛЬКО если у тома есть
+  `$Recycle.Bin` — иначе WinAPI удалил бы безвозвратно), а НЕ безвозвратный
+  `unlink`. БЕЗ фоллбэка на unlink: Корзина не сработала → `return False`, файл
+  не трогаем. Зовётся из `delete_result_cell`
+  ([generator/generator_page.py](generator/generator_page.py)); при `False` на
+  существующем файле карточка НЕ снимается и canvas.json НЕ меняется, юзеру —
+  ошибка (`gen_del_trash_fail`). Живёт в отдельном leaf-модуле `fs_utils.py`
+  (stdlib-only), НЕ в storyboard_app.py: тот запускается как `__main__`, и
+  `import storyboard_app` из подпакета поднял бы второй экземпляр модуля.
+  Появилось 2026-07-09 после потери готового ролика прямым unlink (восстановили
+  через lldb). `_delete_cancelled_output` (orphan-чистка при гонке отмены)
+  остаётся на `unlink` — это внутренняя гонка, не действие юзера.
 - **Character filename invariant** (2026-05-11, v1.0.46): в
   `refs_decisions[<ep>].character[<slug>].filename` ВСЕГДА хранится
   формат `<character_slug>/<file>.<ext>`. Контролируется на двух

@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
 from generator.result_cell import ShimmerCell, resolve_existing_path
 from generator.model_select import ModelSelect
 from i18n import tr   # локализация UI (i18n — лист-модуль, без circular import)
+from fs_utils import move_to_trash   # удаление в системную Корзину (recoverable)
 
 
 # Модели по режиму: (отображаемое имя, внутренний id для payload["model"]).
@@ -1979,12 +1980,25 @@ class GeneratorPage(QWidget):
         paths_to_delete = [target] if target is not None else []
         if target is not None and meta.get("type") == "video":
             paths_to_delete.append(target.with_suffix(".jpg"))
-        for p in paths_to_delete:
-            try:
-                if p.exists() and p.is_file():
-                    p.unlink()
-            except Exception:
-                pass
+        # 2026-07-09: удаление юзером с карточки → в СИСТЕМНУЮ Корзину (откатываемо),
+        # НЕ безвозвратный unlink. Если Корзина не сработала на РЕАЛЬНО существующем
+        # файле — файл НЕ трогаем, карточку НЕ снимаем, canvas.json НЕ меняем,
+        # показываем ошибку и выходим. Уже-исчезнувший файл (внешний вотчер / двойное
+        # удаление) снятию карточки не мешает — как и прежний guard.
+        if paths_to_delete:
+            main_path = paths_to_delete[0]   # [0] = сам ассет (.mp4/картинка)
+            if main_path.exists() and main_path.is_file():
+                if not move_to_trash(main_path):
+                    QMessageBox.warning(
+                        self, tr('gen_del_title'), tr('gen_del_trash_fail'))
+                    return
+            # превью (.jpg для видео) — best-effort: осиротевший превью безвреден
+            for extra in paths_to_delete[1:]:
+                try:
+                    if extra.exists() and extra.is_file():
+                        move_to_trash(extra)
+                except Exception:
+                    pass
 
         for p in paths_to_delete:
             try:
