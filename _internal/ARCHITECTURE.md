@@ -2602,16 +2602,18 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
   ошибка (`gen_del_trash_fail`). Leaf-модуль (stdlib-only), НЕ в storyboard_app.py:
   тот `__main__`, `import storyboard_app` из подпакета поднял бы второй экземпляр.
   Появилось 2026-07-09 после потери ролика прямым unlink (восстановили через lldb).
-  - **macOS (2026-07-10, ГЛАВНОЕ):** удаление через **Finder (osascript)** —
-    `tell application "Finder" to delete POSIX file …`. Прямой перенос в
-    `.Trashes/<uid>` внешнего тома у ad-hoc `.app` БЕЗ Full Disk Access
-    БЛОКИРУЕТСЯ macOS TCC (EPERM, тихо) → Корзина молча не работала (баг 1.0.103,
-    у Alex все видео на внешнем SSD). Finder привилегирован → пишет в Корзину
-    любого тома без FDA. Цена: одноразовый Automation-попап «управлять Finder».
-    Прямой `_macos_trash_dir` (`.Trashes/<uid>` того же тома или `~/.Trash`)
-    оставлен ФОЛЛБЭКОМ (сработает если у процесса ЕСТЬ FDA, напр. запуск из
-    Terminal). ВАЖНО при отладке: `move_to_trash` из shell «работает», а из .app
-    нет — именно из-за FDA у Terminal/Claude Code и отсутствия у .app.
+  - **macOS (2026-07-10, ГЛАВНОЕ):** порядок — (1) **NSFileManager.trashItemAtURL**
+    (`_macos_ns_trash`, через `osascript -l JavaScript`/JXA) — штатный API, БЕЗ
+    звука Корзины, без FDA, без попапов; (2) фоллбэк **Finder** (`_macos_finder_trash`,
+    `tell application "Finder" to delete POSIX file …`) — тоже без FDA, но ИГРАЕТ
+    звук Корзины + разовый Automation-попап; (3) фоллбэк прямой `_macos_trash_dir`+
+    `shutil.move` (нужен FDA). Почему НЕ прямой путь по умолчанию: запись в
+    `.Trashes/<uid>` внешнего тома у ad-hoc `.app` БЕЗ Full Disk Access БЛОКИРУЕТСЯ
+    macOS TCC (EPERM, тихо) → Корзина молча не работала (баг 1.0.103, все видео
+    Alex на внешнем SSD). Finder сначала пробовали (1.0.104), но он играл звук и на
+    видео звучал ДВАЖДЫ (mp4+jpg = 2 вызова) → перешли на бесшумный NSFileManager
+    (1.0.105). ВАЖНО при отладке: `move_to_trash` из shell «работает», а из .app
+    нет — из-за FDA у Terminal/Claude Code и отсутствия у .app; код искать не надо.
   - **Windows:** Recycle Bin через ctypes `SHFileOperationW`+`FOF_ALLOWUNDO`,
     но ТОЛЬКО если у тома есть `$Recycle.Bin` (иначе WinAPI удалил бы безвозвратно).
   `_delete_cancelled_output` (orphan-чистка при гонке отмены) остаётся на `unlink`

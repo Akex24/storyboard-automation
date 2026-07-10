@@ -52,6 +52,30 @@ def _macos_trash_dir(p: Path):
         return None
 
 
+def _macos_ns_trash(p: Path) -> bool:
+    """macOS: удаление в Корзину через NSFileManager.trashItemAtURL (штатный API,
+    вызов `osascript -l JavaScript`/JXA → Foundation). БЕЗ звука Корзины (звук —
+    это Finder-эффект), без Full Disk Access, без Automation-попапа «управлять
+    Finder». Основной путь. Путь передаём argv, чтобы не экранировать в JS.
+    True при rc=0 osascript И исчезновении файла с исходного места. 2026-07-10."""
+    import subprocess
+    jxa = ('ObjC.import("Foundation");'
+           'function run(argv){'
+           ' var fm=$.NSFileManager.defaultManager;'
+           ' var url=$.NSURL.fileURLWithPath(argv[0]);'
+           ' var err=$();'
+           ' var ok=fm.trashItemAtURLResultingItemURLError(url,null,err);'
+           ' return ok?"OK":"FAIL";}')
+    try:
+        r = subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", jxa, str(p)],
+            capture_output=True, text=True, timeout=30)
+        return r.returncode == 0 and not p.exists()
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
 def _macos_finder_trash(p: Path) -> bool:
     """macOS: удаление в Корзину через Finder (osascript). Finder привилегирован →
     кладёт файл в Корзину нужного тома (+ «Положить обратно») БЕЗ Full Disk Access.
@@ -158,9 +182,12 @@ def move_to_trash(path) -> bool:
         return False
     try:
         if sys.platform == 'darwin':
-            # Finder (osascript) — привилегирован, кладёт в Корзину любого тома
-            # БЕЗ Full Disk Access. Прямая запись в .Trashes/<uid> у .app без FDA
-            # блокируется macOS TCC — это и был баг «Корзина не работает» (2026-07-10).
+            # NSFileManager.trashItemAtURL — штатный API: БЕЗ звука Корзины, без
+            # Full Disk Access, без Automation-попапа. Основной путь (2026-07-10).
+            if _macos_ns_trash(p):
+                return True
+            # Фоллбэк: Finder (тоже без FDA, кладёт в Корзину любого тома, НО играет
+            # звук Корзины) — на случай если NSFileManager не сработал.
             if _macos_finder_trash(p):
                 return True
             # Фоллбэк: прямой перенос (сработает если у процесса ЕСТЬ FDA — напр.
