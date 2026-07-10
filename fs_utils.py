@@ -52,6 +52,29 @@ def _macos_trash_dir(p: Path):
         return None
 
 
+def _macos_finder_trash(p: Path) -> bool:
+    """macOS: удаление в Корзину через Finder (osascript). Finder привилегирован →
+    кладёт файл в Корзину нужного тома (+ «Положить обратно») БЕЗ Full Disk Access.
+
+    КРИТИЧНО (2026-07-10): прямая запись в `.Trashes/<uid>` внешнего тома у .app
+    БЕЗ FDA блокируется macOS TCC (EPERM) — Корзина молча не работала (ошибка
+    `gen_del_trash_fail` у Alex). Finder эту привилегию имеет. Требует одноразового
+    разрешения «управлять Finder» (Automation) — стандартный macOS-попап.
+
+    True при rc=0 osascript И исчезновении файла с исходного места."""
+    import subprocess
+    try:
+        posix = '"' + str(p).replace('\\', '\\\\').replace('"', '\\"') + '"'
+        r = subprocess.run(
+            ["osascript", "-e",
+             f'tell application "Finder" to delete POSIX file {posix}'],
+            capture_output=True, text=True, timeout=30)
+        return r.returncode == 0 and not p.exists()
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
 def _win_recycle(p) -> bool:
     """Windows: файл → Recycle Bin через SHFileOperationW + FOF_ALLOWUNDO.
     Чистый ctypes (stdlib). Раскладка структуры — как в проверенной send2trash.
@@ -135,6 +158,13 @@ def move_to_trash(path) -> bool:
         return False
     try:
         if sys.platform == 'darwin':
+            # Finder (osascript) — привилегирован, кладёт в Корзину любого тома
+            # БЕЗ Full Disk Access. Прямая запись в .Trashes/<uid> у .app без FDA
+            # блокируется macOS TCC — это и был баг «Корзина не работает» (2026-07-10).
+            if _macos_finder_trash(p):
+                return True
+            # Фоллбэк: прямой перенос (сработает если у процесса ЕСТЬ FDA — напр.
+            # запуск из Terminal с Full Disk Access; для обычного .app не сработает).
             trash = _macos_trash_dir(p)
             if trash is None:
                 return False
