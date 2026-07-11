@@ -539,6 +539,10 @@ class GeneratorPage(QWidget):
                 except Exception:
                     pass
                 try:
+                    cell._teardown()   # погасить таймер/видео/спиннер до сноса (анти-QLabel-deleted)
+                except Exception:
+                    pass
+                try:
                     cell.setParent(None)
                     cell.deleteLater()
                 except Exception:
@@ -2087,6 +2091,10 @@ class GeneratorPage(QWidget):
                 # невидимый держатель места. Иначе соседняя плитка телепортируется
                 # под overlay удаляемой карточки ещё до старта FLIP-сдвига.
                 try:
+                    cell._teardown()   # погасить таймер/видео/спиннер до сноса (анти-QLabel-deleted)
+                except Exception:
+                    pass
+                try:
                     cell.hide()
                     cell.setGraphicsEffect(None)
                     cell.setParent(None)
@@ -2103,6 +2111,10 @@ class GeneratorPage(QWidget):
                 _finish_delete_and_shift,
             )
         else:
+            try:
+                cell._teardown()   # погасить таймер/видео/спиннер до сноса (анти-QLabel-deleted)
+            except Exception:
+                pass
             try:
                 cell.hide()
                 cell.setParent(None)
@@ -2336,6 +2348,10 @@ class GeneratorPage(QWidget):
         for cell in self._cells:
             try:
                 self.unregister_loading(cell)   # снять с общего shimmer (если была loading)
+            except Exception:
+                pass
+            try:
+                cell._teardown()   # погасить таймер/видео/спиннер до сноса (анти-QLabel-deleted)
             except Exception:
                 pass
             try:

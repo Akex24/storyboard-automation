@@ -30,10 +30,11 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QSize, QEvent, QByteArray
+from PyQt6.QtCore import Qt, QTimer, QRectF, QSize, QEvent, QByteArray, QUrl, QMimeData, QPoint
 from PyQt6.QtGui import (QPainter, QPainterPath, QLinearGradient, QColor, QPixmap,
-                         QFont, QIcon, QImageReader)
-from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton, QWidget
+                         QFont, QIcon, QImageReader, QDrag)
+from PyQt6.QtWidgets import (QFrame, QLabel, QVBoxLayout, QHBoxLayout, QToolButton,
+                             QWidget, QApplication)
 
 from views.theme import theme_qcolor, LUMZ_THEME
 from i18n import tr   # локализация UI (i18n — лист-модуль, без circular import)
@@ -429,15 +430,23 @@ class ShimmerCell(QFrame):
         # 2026-06-28: в фазе «Генерирую…» рисуем базовый текст + секунды 2-й строкой;
         # иначе (до прихода фазы) — голые «{N}с».
         base = getattr(self, "_base_loading_text", "")
-        if base:
-            # Секунды генерации — от _gen_t0 (начало генерации), а НЕ от _t0
-            # (создание карточки): после очереди счёт стартует с нуля. Fallback
-            # на _t0, если _gen_t0 почему-то не выставлен.
-            gstart = self._gen_t0 if self._gen_t0 is not None else self._t0
-            gelapsed = max(0, int(time.time() - gstart))
-            self._info_lbl.setText(f"{base}\n{gelapsed}" + tr('gen_sec'))
-        else:
-            self._info_lbl.setText(f"{elapsed}" + tr('gen_sec'))
+        try:
+            if base:
+                # Секунды генерации — от _gen_t0 (начало генерации), а НЕ от _t0
+                # (создание карточки): после очереди счёт стартует с нуля. Fallback
+                # на _t0, если _gen_t0 почему-то не выставлен.
+                gstart = self._gen_t0 if self._gen_t0 is not None else self._t0
+                gelapsed = max(0, int(time.time() - gstart))
+                self._info_lbl.setText(f"{base}\n{gelapsed}" + tr('gen_sec'))
+            else:
+                self._info_lbl.setText(f"{elapsed}" + tr('gen_sec'))
+        except RuntimeError:
+            # QLabel C++ уже снесён (карточку удалили / холст обновился прямо на тике) —
+            # гасим таймер, больше не трогаем мёртвый виджет.
+            try:
+                self._sec_timer.stop()
+            except Exception:
+                pass
 
     # ── общий shimmer-такт (зовёт страница) ─────────────────────────────
     def set_phase(self, angle_rad: float):
@@ -738,6 +747,32 @@ class ShimmerCell(QFrame):
             except Exception:
                 pass
         self.update()
+
+    def _teardown(self):
+        """Погасить всё живое ПЕРЕД удалением карточки (deleteLater): секундный таймер,
+        видео, спиннер вотермарка — чтобы отложенные тики/сигналы не дёргали снесённые
+        C++ виджеты (RuntimeError 'QLabel deleted'). Идемпотентно, под guard'ами."""
+        try:
+            self._sec_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._stop_video_playback()
+        except Exception:
+            pass
+        sp = getattr(self, "_wm_spinner", None)
+        if sp is not None:
+            try:
+                sp.stop()
+                sp.deleteLater()
+            except Exception:
+                pass
+            self._wm_spinner = None
+        try:
+            if self._page is not None:
+                self._page.unregister_loading(self)
+        except Exception:
+            pass
 
     def _draw_progress(self, p: QPainter):
         """Полоска-прогресс поверх кадра: тонкая (3px) у нижнего края, с гориз.
@@ -1043,6 +1078,66 @@ class ShimmerCell(QFrame):
         except Exception:
             import traceback
             traceback.print_exc()
+
+    def mouseMoveEvent(self, ev):
+        """ЛКМ со сдвигом > startDragDistance → перетаскивание ФАЙЛА (setUrls) во
+        внешнюю прогу (DaVinci/Premiere/CapCut — падает на таймлайн). Порог отделяет
+        drag от клика (<5px = клик → попап). Кнопки дочерние — сюда не доходят."""
+        if ev.buttons() & Qt.MouseButton.LeftButton:
+            press = getattr(self, "_press_pos", None)
+            if press is not None and (ev.position().toPoint() - press).manhattanLength() \
+                    >= QApplication.startDragDistance():
+                self._start_file_drag()
+                return
+        super().mouseMoveEvent(ev)
+
+    def _start_file_drag(self):
+        """QDrag готового файла во внешнее приложение. Только image/video с файлом на
+        диске; НЕ во время обработки вотермарка (активен спиннер)."""
+        if self._state not in ("image", "video"):
+            return
+        if getattr(self, "_wm_spinner", None) is not None:   # идёт удаление искры — не тянем
+            return
+        path = self._heal_path()                             # актуальный существующий путь
+        if not path:
+            return
+        press = getattr(self, "_press_pos", None)   # ГДЕ зажал — ДО сброса
+        self._press_pos = None            # после drag release НЕ должен открыть попап
+        try:
+            drag = QDrag(self)
+            md = QMimeData()
+            md.setUrls([QUrl.fromLocalFile(path)])           # файл на диск → внешний дроп
+            drag.setMimeData(md)
+            pm = self._make_drag_pixmap()
+            if pm is not None and not pm.isNull():
+                drag.setPixmap(pm)
+                # hotspot = точка захвата _press_pos (в координатах W=self, той же, что
+                # grab), пересчитанная под масштаб превью ОТДЕЛЬНО по X и Y. Превью dpr=1
+                # (см. _make_drag_pixmap) → pm.width()/height() = система координат setHotSpot.
+                w, h = self.width(), self.height()
+                if press is not None and w > 0 and h > 0:
+                    sx, sy = pm.width() / w, pm.height() / h
+                    hx = min(max(int(round(press.x() * sx)), 0), pm.width() - 1)
+                    hy = min(max(int(round(press.y() * sy)), 0), pm.height() - 1)
+                    drag.setHotSpot(QPoint(hx, hy))
+                else:
+                    drag.setHotSpot(pm.rect().center())   # fallback — центр
+            drag.exec(Qt.DropAction.CopyAction)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    def _make_drag_pixmap(self):
+        """Мини-превью плитки под курсором во время drag (grab текущего вида)."""
+        try:
+            pm = self.grab()
+            if pm.isNull():
+                return None
+            pm = pm.scaledToWidth(180, Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(1.0)   # retina: иначе pm.width() physical ≠ система setHotSpot
+            return pm
+        except Exception:
+            return None
 
     def eventFilter(self, obj, event):
         if isinstance(obj, QToolButton) and hasattr(obj, "_normal_icon"):
