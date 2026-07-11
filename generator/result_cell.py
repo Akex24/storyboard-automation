@@ -204,6 +204,11 @@ def _filled_icon(icon_name: str, color: str) -> QIcon:
 class ShimmerCell(QFrame):
     """Плитка результата. Создаётся в loading; page — для (un)register общего shimmer."""
 
+    # Класс-уровневый ре-энтрант-гвард enter/leaveEvent (см. enterEvent). Общий на ВСЕ
+    # плитки: синтетическая Enter/Leave-рекурсия скачет A→B→A между соседними карточками,
+    # поэтому флаг на КЛАССЕ, не на self — режет рекурсию на глубине 1.
+    _hover_sync = False
+
     def __init__(self, page, width: int = 480, height: int = 270,
                  aspect: str = "16:9", parent: Optional[QFrame] = None):
         super().__init__(parent)
@@ -972,6 +977,23 @@ class ShimmerCell(QFrame):
 
     def enterEvent(self, ev):
         super().enterEvent(ev)
+        # .show()/.raise_()/.hide() оверлеев ниже СИНХРОННО дёргают
+        # QApplicationPrivate::sendSyntheticEnterLeave (оверлеи непрозрачны для мыши,
+        # WA_TransparentForMouseEvents=False) → он тут же пере-доставляет Enter
+        # соседней/этой плитке → её enterEvent снова зовёт show() → бесконечная
+        # рекурсия → переполнение Python-стека → Fatal error → abort() (краш-репорт
+        # 2026-07-11). Гвард обрывает вложенный синтетический вход: глубина = 1.
+        if ShimmerCell._hover_sync:
+            return
+        ShimmerCell._hover_sync = True
+        try:
+            self._apply_hover_enter()
+        finally:
+            ShimmerCell._hover_sync = False
+
+    def _apply_hover_enter(self):
+        """Тело hover-входа (показ оверлеев + автоплей видео) под ре-энтрант-гвардом
+        _hover_sync (см. enterEvent)."""
         self._hovering = True
         ov = getattr(self, "_actions_overlay", None)
         if ov is not None:
@@ -1015,6 +1037,19 @@ class ShimmerCell(QFrame):
 
     def leaveEvent(self, ev):
         super().leaveEvent(ev)
+        # Тот же ре-энтрант-гвард, что в enterEvent: .hide()/.show() оверлеев здесь
+        # тоже синхронно синтезируют Enter/Leave. Вложенный вход глушим (глубина = 1).
+        if ShimmerCell._hover_sync:
+            return
+        ShimmerCell._hover_sync = True
+        try:
+            self._apply_hover_leave()
+        finally:
+            ShimmerCell._hover_sync = False
+
+    def _apply_hover_leave(self):
+        """Тело hover-выхода (спрятать оверлеи + стоп видео) под ре-энтрант-гвардом
+        _hover_sync (см. enterEvent)."""
         self._hovering = False
         ov = getattr(self, "_actions_overlay", None)
         if ov is not None:
