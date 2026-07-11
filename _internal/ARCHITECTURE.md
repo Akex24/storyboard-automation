@@ -2573,6 +2573,14 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
   форсим СИСТЕМНЫЙ backend: macOS `cv2.CAP_AVFOUNDATION`, Win `cv2.CAP_MSMF` (оба
   скомпилированы в cv2, внешних dylib/DLL не требуют), с фоллбэком на default. НЕ убирать
   ветку по `sys.platform` — иначе в .app снова пропадут превью видео.
+- **Qt multimedia backend в бандле** (2026-07-11). Hover-play плиток + видео-попап
+  ([generator/viewer_dialog.py](generator/viewer_dialog.py)) — QMediaPlayer/QVideoSink. Media-
+  плагины (`plugins/multimedia/`: `libdarwinmediaplugin` + `libffmpegmediaplugin`) тянет авто-
+  хук PyInstaller PyQt6 по hiddenimports `PyQt6.QtMultimedia`/`QtMultimediaWidgets` (в .spec).
+  ПРОВЕРКА воспроизведения в СОБРАННОМ .app — хедлес-хук `--video-selftest <clip>`
+  ([video/mediacheck.py](video/mediacheck.py), как `--wm-selftest` для ffmpeg): считает реальные
+  кадры через QVideoSink → frames>0 & non-black = backend работает (не чёрный экран).
+  Подтверждено 2026-07-11 (Mac, FFmpeg 7.1.2 из бандла); Win — тот же хук, проверять на Actions.
 - **Фича «убрать искру» — модуль [video/watermark.py](video/watermark.py)** (2026-07-10,
   заход 1: фундамент, UI ещё НЕ подключён). Убирает вотермарк-искру FastGen (4-лучевая
   полупрозрачная звезда, фикс. отступ угла `cx=W-128, cy=H-120`; 9:16 и 16:9). Публичный

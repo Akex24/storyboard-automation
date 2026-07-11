@@ -92,12 +92,14 @@ a = Analysis(
         'PyQt6.QtPrintSupport',
         'PyQt6.QtSvg',          # Для рендера SVG-иконок табов
         'PyQt6.QtSvgWidgets',
-        # 2026-06-22: QtMultimedia + QtMultimediaWidgets — hover-автоплей видео
-        # в плитках генератора (QMediaPlayer/QAudioOutput/QVideoWidget). PyInstaller
-        # hook-PyQt6 ДОЛЖЕН дотянуть media-плагины (plugins/multimedia/*) и Qt
-        # ffmpeg backend при наличии этих hiddenimports. ПРОВЕРИТЬ пересборкой:
-        # find бандла на *ultimedia*/*ffmpeg* должен стать НЕ пустым. Если хук не
-        # дотянет — добавить collect_dynamic_libs('PyQt6', ...) вторым заходом.
+        # 2026-06-22: QtMultimedia + QtMultimediaWidgets — hover-автоплей видео + попап.
+        # PyInstaller hook-PyQt6 дотягивает media-плагины (plugins/multimedia/*: darwin +
+        # ffmpeg backend) при наличии этих hiddenimports.
+        # ПРОВЕРЕНО 2026-07-11 (Mac): бандл содержит libdarwinmediaplugin.dylib +
+        # libffmpegmediaplugin.dylib; воспроизведение реальных кадров подтверждено
+        # хедлес-хуком `--video-selftest` из СОБРАННОГО .app (frames>0, non-black, audio).
+        # Windows: тот же хук+hiddenimports тянет ffmpegmediaplugin.dll/windowsmediaplugin.dll —
+        # проверяется на GitHub Actions build-windows (тем же --video-selftest, если добавим в CI).
         'PyQt6.QtMultimedia',
         'PyQt6.QtMultimediaWidgets',
         'docx',
@@ -137,6 +139,9 @@ a = Analysis(
         # явный хинт чтобы модуль и его ffmpeg-обёртка попали в frozen .app/.exe.
         'imageio_ffmpeg',
         'video.watermark',
+        # 2026-07-11: headless-проверка воспроизведения видео (--video-selftest) —
+        # ленивый импорт из storyboard_app хука → явный хинт.
+        'video.mediacheck',
         # 2026-07-10 (заход 2): UI-модуль фичи — треды/диалог, ленивый импорт из
         # result_cell (хук сердечка) и generator_page (кнопка) → явный хинт.
         'generator.watermark_ui',

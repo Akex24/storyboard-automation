@@ -106,6 +106,7 @@ class _TimelineTrack(QWidget):
             f" background:{LUMZ_THEME['accent_red']}; border:none; border-radius:6px; }}"
         )
         self._plus_btn.clicked.connect(self._emit_grab)
+        self._plus_btn.setVisible(False)   # 2026-07-11: плюсик перенесён в ряд кнопок управления
         self._reposition_plus()
 
     # --- QSlider-совместимый интерфейс (переиспользуем хендлеры скраба диалога) ---
@@ -187,7 +188,7 @@ class _TimelineTrack(QWidget):
         super().changeEvent(ev)
         if ev.type() == QEvent.Type.EnabledChange:
             if self._plus_btn is not None:
-                self._plus_btn.setVisible(self.isEnabled())
+                self._plus_btn.setVisible(False)   # плюсик перенесён в ряд кнопок — на дорожке скрыт
             self.update()
 
     # --- плюсик у playhead: позиционирование за полоской + сигнал «взять кадр» ---
@@ -197,19 +198,11 @@ class _TimelineTrack(QWidget):
         ней (не упирается раньше, не расходится). Плюсик — дочерний контейнера дорожки
         (нижней панели), а НЕ трека: иначе клиппинг по краю трека обрезал бы его в конце.
         Зовётся при смене позиции/диапазона/таскании/resize/move."""
+        # 2026-07-11: плюсик «взять кадр» перенесён в ряд кнопок управления → на дорожке
+        # больше НЕ показываем (позиционирование за playhead отключено, кнопка спрятана).
         btn = getattr(self, "_plus_btn", None)
-        if btn is None:
-            return
-        parent = self.parentWidget()
-        if parent is None:
-            return
-        if btn.parent() is not parent:
-            btn.setParent(parent)
-            btn.show()
-        cx = round(self._ms_to_x(self._pos))
-        # координаты панели = позиция трека внутри неё + X внутри трека
-        btn.move(self.x() + cx + self._PLUS_DX, self.y() + 2)
-        btn.raise_()
+        if btn is not None:
+            btn.setVisible(False)
 
     def moveEvent(self, ev):
         # трек центрируется в панели → при ресайзе окна он СДВИГАЕТСЯ (не всегда ресайзится),
@@ -497,9 +490,20 @@ class GeneratorViewerDialog(QDialog):
             lay.addWidget(lbl)
             return
         # WA_TransparentForMouseEvents НЕ ставим: он влияет только на доставку mouse-событий,
-        # не на рендер кадров. Управление на панели, а не по клику в видео.
-        vw = QVideoWidget()
+        # не на рендер кадров. Клик мышью по видео = play/pause (как ютуб); кнопка play в ряду
+        # тоже работает. Одиночный ЛКМ по QVideoWidget → _toggle_play_pause.
+        class _ClickableVideo(QVideoWidget):
+            clicked = pyqtSignal()
+            def mouseReleaseEvent(self, ev):
+                if ev.button() == Qt.MouseButton.LeftButton:
+                    self.clicked.emit()
+                super().mouseReleaseEvent(ev)
+        vw = _ClickableVideo()
         self._video_widget = vw
+        try:
+            vw.clicked.connect(self._toggle_play_pause)
+        except Exception:
+            pass
         self._audio = QAudioOutput(self)
         # Стартовый mute берём из глобального флага генератора, дальше — локальная кнопка звука.
         self._muted = bool(getattr(self.parent(), "_video_muted", False))
@@ -589,11 +593,16 @@ class GeneratorViewerDialog(QDialog):
         self._btn_play = self._mk_row_btn("play", 40, 24, self._toggle_play_pause, tr('gen_tt_playpause'), inner)
         self._btn_play.setObjectName("viewer-playpause")
 
+        # плюсик «взять кадр» — перенесён с ползунка таймлайна в ПРАВУЮ часть ряда.
+        self._btn_grab = self._mk_row_btn("plus", 28, 16, self._on_grab_frame,
+                                          tr('gen_tt_grab_frame'), inner)
+
         ih.addLayout(left)
         ih.addStretch(1)
         ih.addWidget(self._btn_play)
         ih.addStretch(1)
-        ih.addSpacing(lg_w)          # зеркало левой группы → play/pause строго по центру
+        ih.addSpacing(lg_w - 28)     # зеркало левой группы минус плюсик → play/pause по центру
+        ih.addWidget(self._btn_grab) # плюсик у правого края ряда
 
         outer.addStretch(1)
         outer.addWidget(inner, 6)
@@ -698,16 +707,16 @@ class GeneratorViewerDialog(QDialog):
     #    приходит, когда окно открывается прямо под курсором (корень бага). ──────────
     def showEvent(self, ev):
         super().showEvent(ev)
-        # БЕЗ autoplay и БЕЗ видимой отмотки: pause() на свежезагруженном плеере декодирует и
-        # показывает ПЕРВЫЙ кадр (pos 0) без проигрывания вперёд (проверено: pause() сам даёт
-        # кадр 0; прежний play→pause-пинок отматывался видимо — убран). setPosition(0) фиксирует.
+        # АВТОЗАПУСК с начала при открытии попапа: setPosition(0) + play() (по требованию —
+        # клик по карточке сразу играет видео в попапе, ручной play не нужен). Иконку
+        # play/pause догоняет playbackStateChanged → _update_play_icon.
         if self._player is not None and not self._primed:
             self._primed = True
             try:
                 if self._audio is not None:
                     self._audio.setMuted(self._muted)
-                self._player.pause()
                 self._player.setPosition(0)
+                self._player.play()
             except Exception:
                 pass
             self._update_play_icon()
@@ -1206,15 +1215,10 @@ class GeneratorViewerDialog(QDialog):
         self._scrub_ts = []
         self._scrub_warming = False
 
-    def reject(self):
-        # Escape у non-modal QDialog идёт через reject()→hide() (НЕ через closeEvent!) →
-        # teardown скраба обязателен и здесь, иначе поток/cap/кэш переживут закрытие.
-        self._teardown_scrub()
-        super().reject()
-
-    def closeEvent(self, ev):
-        # Остановить пред-декод-поток/спиннер/overlay + очистить кэш, затем троттл-таймер и
-        # воспроизведение/звук при закрытии (звук не висит, cv2-cap освобождён).
+    def _stop_playback(self):
+        """Общая очистка при ЛЮБОМ закрытии (крестик=closeEvent И Escape=reject): teardown
+        скраб-потока/cap/кэша + троттл-таймер + СТОП плеера/звука. Иначе после Escape
+        (reject→hide, БЕЗ closeEvent) звук/видео продолжали играть."""
         self._teardown_scrub()
         if self._seek_timer is not None:
             try:
@@ -1226,4 +1230,14 @@ class GeneratorViewerDialog(QDialog):
                 self._player.stop()
             except Exception:
                 pass
+
+    def reject(self):
+        # Escape у non-modal QDialog идёт через reject()→hide() (НЕ через closeEvent!) →
+        # та же очистка что при закрытии крестиком (иначе звук висит после Escape).
+        self._stop_playback()
+        super().reject()
+
+    def closeEvent(self, ev):
+        # Крестик: та же очистка (звук не висит, cv2-cap освобождён, поток остановлен).
+        self._stop_playback()
         super().closeEvent(ev)

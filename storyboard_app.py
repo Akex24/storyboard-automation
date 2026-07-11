@@ -20741,6 +20741,11 @@ def main():
     if len(sys.argv) >= 3 and sys.argv[1] == '--wm-selftest':
         from video.watermark import _selftest_cli
         raise SystemExit(_selftest_cli(sys.argv[2], sys.argv[3] if len(sys.argv) >= 4 else None))
+    # 2026-07-11: headless проверка ВОСПРОИЗВЕДЕНИЯ видео (Qt multimedia backend реально
+    # декодит кадры в СОБРАННОМ .app/.exe, не чёрный экран). Как --wm-selftest для ffmpeg.
+    if len(sys.argv) >= 3 and sys.argv[1] == '--video-selftest':
+        from video.mediacheck import video_playback_selftest
+        raise SystemExit(video_playback_selftest(sys.argv[2]))
     # 2026-05-08: файловое логирование включаем САМЫМ ПЕРВЫМ — чтобы
     # любой crash до создания QApplication тоже попал в лог.
     _init_studio_file_logging()

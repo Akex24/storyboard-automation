@@ -1069,7 +1069,13 @@ class ShimmerCell(QFrame):
 
     def _open_viewer(self):
         """Открыть non-modal попап просмотра этой плитки. Ссылку держим на странице
-        (self._page._open_viewer), чтобы окно не съел GC."""
+        (self._page._open_viewer), чтобы окно не съел GC. Для видео — сперва гасим
+        hover-превью карточки (попап играет с 0 сам), чтобы не играло в двух местах."""
+        if self._state == "video":
+            try:
+                self._stop_video_playback()
+            except Exception:
+                pass
         try:
             from generator.viewer_dialog import GeneratorViewerDialog
             dlg = GeneratorViewerDialog(
