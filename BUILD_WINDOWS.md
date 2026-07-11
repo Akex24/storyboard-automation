@@ -16,7 +16,7 @@
 Открой PowerShell или CMD в папке проекта и выполни:
 
 ```cmd
-pip install PyQt6 Pillow pillow-heif requests pyinstaller
+pip install PyQt6 Pillow pillow-heif requests pyinstaller imageio-ffmpeg
 git clone https://github.com/Akex24/storyboard-automation.git
 cd storyboard-automation
 pyinstaller StoryboardStudio.spec

@@ -2573,6 +2573,50 @@ Win-onedir, не onefile: PyInstaller onefile + Windows Defender = крэш
   форсим СИСТЕМНЫЙ backend: macOS `cv2.CAP_AVFOUNDATION`, Win `cv2.CAP_MSMF` (оба
   скомпилированы в cv2, внешних dylib/DLL не требуют), с фоллбэком на default. НЕ убирать
   ветку по `sys.platform` — иначе в .app снова пропадут превью видео.
+- **Фича «убрать искру» — модуль [video/watermark.py](video/watermark.py)** (2026-07-10,
+  заход 1: фундамент, UI ещё НЕ подключён). Убирает вотермарк-искру FastGen (4-лучевая
+  полупрозрачная звезда, фикс. отступ угла `cx=W-128, cy=H-120`; 9:16 и 16:9). Публичный
+  API: `has_watermark(path)->(bool,score)`, `remove_watermark(path)->bool` (нет искры / не в
+  Корзину → False, файл не тронут; есть → temp→`os.replace`, оригинал через
+  `fs_utils.move_to_trash`). Ядро (2026-07-11 обновл.): presence-детект + честный поиск
+  центра в ШИРОКОМ регионе (`SEARCH=80`, клампится к кадру; `_apply_center` fallback на
+  якорь при неуверенности — 2-й пик > 0.85·score) → affine un-blend `a*orig+b` по
+  НАЙДЕННОМУ центру → билатераль ядра → rim-safe добивание → **гаусс-блюр поверх** по
+  мягкой маске звезды (`_blur_over`: RB=80, margin=8, feather=7, sigma=10, k=1.0; маска
+  доходит до нуля до края региона — иначе квадратный срез; растворяет остаточный контур
+  на светлом/ровном фоне; параметры утв. на пачке 117). Ключевой факт: звезда почти всегда
+  на якоре (детект по 119 клипам: offset 0 у всех) — широкий поиск нужен как страховка, не
+  потому что «гуляет». Калибровка — `video/watermark_calib.npz` (бандл через `.spec datas`,
+  резолв через `_MEIPASS`). ffmpeg — из **imageio-ffmpeg** (бинарь в `.spec binaries` →
+  `imageio_ffmpeg/binaries`, `get_ffmpeg_exe()` находит в frozen БЕЗ системного ffmpeg;
+  Actions/BUILD_WINDOWS.md: `imageio-ffmpeg` в pip). cv2-чтение mp4 — через `_open_capture()`
+  СИСТЕМНЫМ backend (та же причина, что выше — dylib FFMPEG не в бандле). Кадры читаются
+  ПОТОКОВО (память O(1)). Хедлес-хук `--wm-selftest` в `main()` — для build-verify (прогон
+  из собранного .app).
+- **Фича «убрать вотермарк» — UI (заход 2)**, модуль [generator/watermark_ui.py](generator/watermark_ui.py).
+  Два входа: (1) **сердечко на видео** (`result_cell._on_heart_clicked` → `on_favorite_video`):
+  тихо `has_watermark` в фоне; искры нет — тишина; занят (`fs_utils.is_file_busy`) — попап,
+  сердечко остаётся; свободен — СЕРИЙНАЯ очередь `_RemovalQueue` на страницу (НЕ параллелим
+  `remove_watermark`), на карточке спиннер + дизейбл `btn_reveal`/`btn_ref` (Alex не утащит в
+  DaVinci версию со звездой), всё под `_alive()`-guard (карточку могут снести корзиной). Снятие
+  сердечка НЕ запускает ничего; картинки не трогаем. (2) **кнопка «Убрать вотермарк»** в шапке
+  холстов (слева от «Избранное», `generator_page._run_watermark_batch` → `run_batch`): скан
+  избранного → попап с N → **модальный** прогресс (`dlg.exec()` блокирует UI → нет гонки за
+  файл), «Обработано N из M» + Отмена (после текущего файла); занятые пропускаются в отдельный
+  список; итог на `page`. `is_file_busy`: mac/linux `lsof`, Windows `open(r+b)`. i18n `wm_*`
+  (18 ключей ru/uk/en). Треды форма `progress/finished/failed`, спиннер — переиспользован
+  `viewer_dialog._BusySpinner`.
+  **Метка-ускоритель (2026-07-10; v2 2026-07-11):** `remove_watermark` пишет в mp4
+  метаданный флаг `-metadata lumz_wm=removed_v2 -movflags use_metadata_tags` (movflags
+  ОБЯЗАТЕЛЕН — иначе mp4 дропает ключ). `removed_v2`=новый метод (un-blend+блюр), `removed`=
+  старый; оба в `WM_FLAG_DONE` → `has_watermark`/`remove_watermark` считают «уже чищен».
+  `backfill_flag` пишет legacy `removed`. `has_watermark` СНАЧАЛА читает флаг через bundled `ffmpeg -i` (~9мс; ffprobe
+  в imageio-бандл НЕ входит) → есть флаг → `(False,0.0)` без покадрового детекта. Пре-скан 117
+  избранных: ~168с без метки → ~1.1с с меткой. `backfill_flag(path)` — пометить уже-очищенные
+  (до появления метки) файлы remux `-c copy` без пересжатия (video-md5 не меняется), НЕ авто.
+  Гонка старт-vs-`exec()`: потоки скана/батча стартуют ИЗ диалога через
+  `QTimer.singleShot(0, thread.start)` (иначе done мог прийти до accept → зависание). Пре-скан —
+  под модальным `_ScanDialog` (спиннер «Проверяю избранное…», клики невозможны).
 - **Генератор: дроп-картинка кладётся как JPEG + стем-резолв файла плитки**
   (2026-06-28). `_import_dropped_files` ([generator/generator_page.py](generator/generator_page.py))
   конвертирует дропнутую картинку в `gen_<ts>.jpg` (q=95, без даунскейла) для

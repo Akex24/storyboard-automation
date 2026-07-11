@@ -20734,6 +20734,13 @@ def _install_qt_message_handler():
 
 
 def main():
+    # 2026-07-10: headless self-test хук фичи «убрать искру» (video.watermark).
+    # НЕ UI — выходит ДО QApplication/логирования. Нужен build-verify: прогнать фичу
+    # из СОБРАННОГО .app (bundled ffmpeg, без системного). Обычный запуск не задевает.
+    #   "…/Storyboard Studio" --wm-selftest <video.mp4>
+    if len(sys.argv) >= 3 and sys.argv[1] == '--wm-selftest':
+        from video.watermark import _selftest_cli
+        raise SystemExit(_selftest_cli(sys.argv[2], sys.argv[3] if len(sys.argv) >= 4 else None))
     # 2026-05-08: файловое логирование включаем САМЫМ ПЕРВЫМ — чтобы
     # любой crash до создания QApplication тоже попал в лог.
     _init_studio_file_logging()

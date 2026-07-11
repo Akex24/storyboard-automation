@@ -23,10 +23,18 @@ _Path('build_stamp.txt').write_text(str(int(_time.time())), encoding='utf-8')
 # падает (это намеренно: не шипим билд без heic-конвертера).
 _heif_datas, _heif_binaries, _heif_hiddenimports = collect_all('pillow_heif')
 
+# 2026-07-10: ffmpeg-бинарь из imageio-ffmpeg — для фичи «убрать искру» (video/watermark.py).
+# .spec исполняется на ОБЕИХ ОС (pyinstaller StoryboardStudio.spec) → get_ffmpeg_exe()
+# резолвит бинарь ПОД РАННЕР (Mac arm64 / Win x86_64). Кладём в imageio_ffmpeg/binaries,
+# откуда get_ffmpeg_exe() находит его в frozen БЕЗ системного ffmpeg. imageio-ffmpeg ДОЛЖЕН
+# быть установлен в окружении сборки (Actions: добавлен в pip install; Mac: локально).
+import imageio_ffmpeg as _iio
+_ffmpeg_bin = _iio.get_ffmpeg_exe()
+
 a = Analysis(
     ['storyboard_app.py'],
     pathex=[],
-    binaries=_heif_binaries,
+    binaries=_heif_binaries + [(_ffmpeg_bin, 'imageio_ffmpeg/binaries')],
     datas=[
         (certifi.where(), 'certifi'),
         # 2026-07-05: build-stamp (уникален на сборку, генерится выше) → бандл-root;
@@ -69,6 +77,10 @@ a = Analysis(
         # Contents/Resources/assets/models/, на Win onedir → _internal/assets/models/.
         # Путь резолвится через storyboard_app.get_model_path (_MEIPASS-aware).
         ('assets/models/face_detection_yunet_2023mar.onnx', 'assets/models'),
+        # 2026-07-10: калибровка вотермарк-детектора (video/watermark.py). NPZ, не base64.
+        # На Mac → Contents/Resources/video/, на Win onedir → _internal/video/.
+        # Путь резолвится в модуле через _MEIPASS (getattr(sys,'frozen')).
+        ('video/watermark_calib.npz', 'video'),
     ] + _heif_datas,
     hiddenimports=[
         'pillow_heif',
@@ -120,6 +132,14 @@ a = Analysis(
         # 2026-07-05: окно «Избранное» — button-only, лениво из generator_page._open_favorites;
         # smoke не дёргает → явный хинт чтобы модуль попал в frozen .app/.exe.
         'generator.favorites_dialog',
+        # 2026-07-10: фича «убрать искру» (video/watermark.py) + imageio-ffmpeg-обёртка.
+        # video.watermark импортится лениво (build-verify --wm-selftest и будущий UI-хук) —
+        # явный хинт чтобы модуль и его ffmpeg-обёртка попали в frozen .app/.exe.
+        'imageio_ffmpeg',
+        'video.watermark',
+        # 2026-07-10 (заход 2): UI-модуль фичи — треды/диалог, ленивый импорт из
+        # result_cell (хук сердечка) и generator_page (кнопка) → явный хинт.
+        'generator.watermark_ui',
     ] + _heif_hiddenimports,
     hookspath=[],
     hooksconfig={},

@@ -831,10 +831,20 @@ class ShimmerCell(QFrame):
             return
         ftype = (self._meta.get("type") if isinstance(self._meta, dict) else None) or "image"
         try:
-            self._page.toggle_favorite(fname, ftype)
+            now_fav = self._page.toggle_favorite(fname, ftype)
         except Exception:
-            pass
+            now_fav = False
         self._refresh_heart_state()
+        # 2026-07-10: сердечко ПОСТАВЛЕНО на ВИДЕО → тихий путь удаления вотермарка
+        # (has_watermark в фоне; занят → попап; свободен → серийная очередь + спиннер,
+        # reveal/ref дизейблятся до конца). Снятие сердечка НЕ запускает ничего.
+        # Картинки не трогаем.
+        if now_fav and ftype == "video":
+            try:
+                from generator.watermark_ui import on_favorite_video
+                on_favorite_video(self, self._page, getattr(self, "_result_path", None))
+            except Exception:
+                pass
 
     def _refresh_heart_state(self):
         """Вид кластерного сердечка (btn_heart, на своём месте в hover-оверлее) по

@@ -338,6 +338,21 @@ class GeneratorPage(QWidget):
         new_btn.clicked.connect(self._add_canvas)   # активна (КУСОК 2)
         lay.addWidget(new_btn)
         lay.addStretch()
+        # 2026-07-10: «Убрать вотермарк» — слева от «Избранное». Батч-очистка искры-вотермарка
+        # по видео-избранному текущего сериала (video/watermark.py + generator/watermark_ui.py).
+        wm_btn = QPushButton()
+        wm_btn.setObjectName("canvas-fav")
+        wm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        wm_btn.setFixedHeight(34)
+        try:
+            from storyboard_app import get_icon
+            wm_btn.setIcon(get_icon("wand-2"))
+            wm_btn.setIconSize(QSize(16, 16))
+        except Exception:
+            wm_btn.setText("✨")
+        wm_btn.setToolTip(tr('wm_btn_tooltip'))
+        wm_btn.clicked.connect(self._run_watermark_batch)
+        lay.addWidget(wm_btn)
         # Кнопка «Избранное» — прижата к ПРАВОМУ краю ряда (после stretch), симметрично
         # левым чипам холстов. Иконка heart, стиль как canvas-new. Клик → окно избранного.
         fav_btn = QPushButton()
@@ -353,6 +368,21 @@ class GeneratorPage(QWidget):
         fav_btn.setToolTip(tr('gen_favorites'))
         fav_btn.clicked.connect(self._open_favorites)
         lay.addWidget(fav_btn)
+
+    def _run_watermark_batch(self):
+        """Кнопка «Убрать вотермарк» → батч-очистка искры по видео-избранному
+        (generator/watermark_ui.run_batch: скан → попап N → модальный прогресс)."""
+        try:
+            from generator.watermark_ui import run_batch
+            run_batch(self)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()               # не глотать молча → в runtime.log
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, tr('wm_done_title'), str(e))
+            except Exception:
+                pass
 
     def _open_favorites(self):
         """Открыть окно «Избранное» (сетка избранных карточек текущего сериала).
@@ -1948,10 +1978,30 @@ class GeneratorPage(QWidget):
             except Exception:
                 return
 
+        # 2026-07-10: ВИДЕО открыто в другой программе (DaVinci) → отдельный попап
+        # «Всё равно удалить?». Картинки не трогаем. move_to_trash откатываем из Корзины.
+        busy_confirmed = False
+        if target is not None and isinstance(meta, dict) and meta.get("type") == "video":
+            try:
+                from fs_utils import is_file_busy
+                if is_file_busy(target):
+                    bbox = QMessageBox(self)
+                    bbox.setIcon(QMessageBox.Icon.Warning)
+                    bbox.setWindowTitle(tr('wm_trash_busy_title'))
+                    bbox.setText(tr('wm_trash_busy_body'))
+                    del_btn = bbox.addButton(tr('gen_btn_delete'), QMessageBox.ButtonRole.DestructiveRole)
+                    bbox.addButton(tr('gen_btn_cancel'), QMessageBox.ButtonRole.RejectRole)
+                    bbox.exec()
+                    if bbox.clickedButton() is not del_btn:
+                        return                       # Отмена → файл не трогаем
+                    busy_confirmed = True            # подтвердил здесь → обычный confirm пропускаем
+            except Exception:
+                pass
+
         settings = QSettings()
         skip_confirm = bool(settings.value(
             "generator/skip_delete_confirm", False, type=bool))
-        if not skip_confirm and not _is_cancel:
+        if not busy_confirmed and not skip_confirm and not _is_cancel:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
             box.setWindowTitle(tr('gen_del_title'))

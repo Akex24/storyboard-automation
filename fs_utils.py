@@ -210,3 +210,41 @@ def move_to_trash(path) -> bool:
     except Exception:
         traceback.print_exc()
         return False
+
+
+def is_file_busy(path) -> bool:
+    """Занят ли файл ДРУГИМ процессом (открыт/держится — напр. DaVinci с клипом на
+    таймлайне). macOS/Linux: `lsof -t` (список PID'ов), исключая СВОЙ процесс. Windows:
+    попытка открыть на запись `open(r+b)` (PermissionError → занят). Ошибка САМОЙ
+    проверки → считаем НЕ занят (False), чтобы сбой проверки не блокировал обработку.
+
+    ВАЖНО (2026-07-10): исключаем `os.getpid()`. is_file_busy бежит ВНУТРИ Storyboard
+    Studio, а Studio держит клип открытым на ЧТЕНИЕ (превью плитки / плеер) → без вычета
+    своего PID lsof видел СВОЙ же дескриптор и давал ложное «занят другой программой»
+    сразу после генерации. НЕ переходим на «только запись»: DaVinci держит исходные
+    клипы на ЧТЕНИЕ (fd вида 16r), write-гейт пропустил бы редактор с файлом на таймлайне.
+
+    Win-ветка использует open(), НЕ subprocess → чёрное cmd-окно не всплывает; lsof
+    запускается только на darwin/linux, поэтому CREATE_NO_WINDOW тут не требуется."""
+    try:
+        p = Path(str(path)).resolve()
+        if not (p.exists() and p.is_file()):
+            return False
+        if sys.platform == 'win32':
+            try:
+                with open(p, 'r+b'):
+                    return False           # открылся на запись → свободен
+            except PermissionError:
+                return True                # держит другой процесс
+            except OSError:
+                return False               # прочая ошибка открытия → не блокируем
+        # darwin / linux — lsof -t: терсе, только PID'ы (без парсинга колонок, где
+        # COMMAND усекается и может содержать пробел). Исключаем свой PID → «занят»
+        # только если остались ЧУЖИЕ держатели.
+        import subprocess
+        r = subprocess.run(['lsof', '-t', '--', str(p)], capture_output=True,
+                           text=True, timeout=5)
+        others = {int(x) for x in r.stdout.split() if x.strip().isdigit()} - {os.getpid()}
+        return bool(others)
+    except Exception:
+        return False
