@@ -913,7 +913,7 @@ class GeneratorPage(QWidget):
                 if (getattr(self, "_drag_thumb", None) is obj
                         and ev.button() == Qt.MouseButton.LeftButton):
                     if self._drag_active:
-                        self._finish_drag_swap(ev.globalPosition().toPoint())
+                        self._finish_drag_reorder(ev.globalPosition().toPoint())
                     self._end_drag()
                     return True
         # canvas-chip: позиция ✕ (Resize) + ЛКМ-релиз → переключить холст (КУСОК 2).
@@ -2777,7 +2777,7 @@ class GeneratorPage(QWidget):
         except Exception:
             pass
 
-    # ── drag-to-swap рефов (ФИШКА 2): перетащил реф на другой → меняются местами ──
+    # ── drag-reorder рефов (ФИШКА 2): перетащил реф на другой → вставка со сдвигом ──
     def _ref_thumb_at(self, global_pt):
         """Тумба рефа под глобальной точкой (hit-test по geometry в глоб. координатах)."""
         for path, th in list(self._ref_thumbs.items()):
@@ -2805,10 +2805,14 @@ class GeneratorPage(QWidget):
                 ov.set_active(th is target)   # пунктирная рамка только на цели
         self._drag_target = target
 
-    def _finish_drag_swap(self, global_pt):
-        """Отпустили над ДРУГОЙ тумбой → SWAP в self._pending_refs (ИСТОЧНИК порядка для
-        генерации, _active_refs/_on_run) + перелокация тумб + пересчёт яркие/серые (Фишка 1а).
-        Визуал тумб — следствие порядка списка, а НЕ наоборот."""
+    def _finish_drag_reorder(self, global_pt):
+        """Отпустили над ДРУГОЙ тумбой → REORDER (вставка со сдвигом) в self._pending_refs
+        (ИСТОЧНИК порядка для генерации, _active_refs/_on_run) + перелокация тумб + пересчёт
+        яркие/серые (Фишка 1а). Визуал тумб — следствие порядка списка, а НЕ наоборот.
+        Семантика: перетаскиваемый реф ВЫНИМАЕТСЯ из списка и ВСТАВЛЯЕТСЯ непосредственно
+        ПЕРЕД целевым (как в плейлисте); остальные сдвигаются, порядок сохраняется. Пример:
+        [1,2,3,4,5], 5 на место 2 → [1,5,2,3,4]. Номера @image1..@imageN позиционные
+        (inputs[] строится перебором _active_refs по порядку) → пересчитываются сами."""
         src = getattr(self, "_drag_thumb", None)
         target = self._ref_thumb_at(global_pt)
         if src is None or target is None or target is src:
@@ -2817,14 +2821,16 @@ class GeneratorPage(QWidget):
         pj = getattr(target, "_file_path", None)
         if not pi or not pj or pi not in self._pending_refs or pj not in self._pending_refs:
             return
-        i = self._pending_refs.index(pi)
-        j = self._pending_refs.index(pj)
-        self._pending_refs[i], self._pending_refs[j] = self._pending_refs[j], self._pending_refs[i]
+        # remove+insert: вынуть перетаскиваемый, вставить перед целевым. Индекс цели
+        # берём ПОСЛЕ удаления — иначе при drag вперёд (i<j) сдвиг дал бы смещение на 1.
+        self._pending_refs.remove(pi)
+        insert_at = self._pending_refs.index(pj)
+        self._pending_refs.insert(insert_at, pi)
         self._relayout_ref_thumbs()
         self._refresh_ref_activity()   # порядок изменился → пересчёт активных/притухших
 
     def _relayout_ref_thumbs(self):
-        """Переложить тумбы в _refs_row_lay в порядке self._pending_refs (после swap)."""
+        """Переложить тумбы в _refs_row_lay в порядке self._pending_refs (после reorder)."""
         lay = getattr(self, "_refs_row_lay", None)
         if lay is None:
             return
