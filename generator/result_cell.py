@@ -494,16 +494,18 @@ class ShimmerCell(QFrame):
             pass
         return QPixmap()
 
-    def set_image(self, path: str):
+    def set_image(self, path: str, preloaded_pix=None):
         self._finish_common()
         # Устойчивая загрузка (большие/4K картинки). КРИТИЧНО: если файл на диске ЕСТЬ —
         # плитка становится готовой (image) и путь проставляется ДАЖЕ если пиксмап не
         # осилил полную загрузку. Клик/реф/папка работают по ПУТИ к файлу, не по пиксмапу.
+        # preloaded_pix (из кэша миниатюр «Избранного») — если дан, не читаем диск.
         try:
             file_ok = bool(path) and Path(path).exists()
         except Exception:
             file_ok = False
-        pix = self._load_pixmap_robust(path)
+        pix = (preloaded_pix if (preloaded_pix is not None and not preloaded_pix.isNull())
+               else self._load_pixmap_robust(path))
         if pix.isNull() and not file_ok:
             self.set_error(tr('gen_err_open_result'))
             return
@@ -518,11 +520,12 @@ class ShimmerCell(QFrame):
         self._refresh_heart_state()   # файл известен → инициализировать вид сердечка
         self.update()
 
-    def set_video_placeholder(self, path: str):
+    def set_video_placeholder(self, path: str, preloaded_pix=None):
         """Готовое ВИДЕО: останавливаем shimmer/счётчик. Если видео-поток положил
         рядом кадр-превью gen_*.jpg (то же имя, .jpg) — грузим его фоном плитки через
         QPixmap (Qt понимает не-ASCII пути → отображение надёжно на Windows). Нет .jpg
-        (не-ASCII путь и cv2 не смог) → тёмный фон + ▶. ▶ рисуется поверх в любом случае."""
+        (не-ASCII путь и cv2 не смог) → тёмный фон + ▶. ▶ рисуется поверх в любом случае.
+        preloaded_pix (кэш миниатюр «Избранного») — если дан, не читаем .jpg с диска."""
         self._finish_common()
         self._state = "video"
         self._video_path = path
@@ -531,10 +534,13 @@ class ShimmerCell(QFrame):
         # Кадр-превью рядом с .mp4: то же имя, расширение .jpg. Чтение через Qt —
         # кириллица в пути не мешает (в отличие от cv2 на стороне видео-потока).
         try:
-            from pathlib import Path
-            jpg = str(Path(path).with_suffix(".jpg"))
-            pix = QPixmap(jpg)
-            if not pix.isNull():
+            if preloaded_pix is not None and not preloaded_pix.isNull():
+                pix = preloaded_pix
+            else:
+                from pathlib import Path
+                jpg = str(Path(path).with_suffix(".jpg"))
+                pix = QPixmap(jpg)
+            if pix is not None and not pix.isNull():
                 self._original_pix = pix
                 self._rescale_pixmap()
         except Exception:
