@@ -814,6 +814,28 @@ class GeneratorPage(QWidget):
         self._hint_timer = QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.timeout.connect(self._hide_hint)
+
+        # Крестик «очистить всё» (рефы + текст) — в правом-верхнем углу ПАНЕЛИ промпт-бара,
+        # ВСЕГДА виден, светлый Lucide-«x» БЕЗ фона (как иконки попапа). Абсолютное
+        # позиционирование поверх layout (дочерний bar, не в root_h) → см. _position_clear_all.
+        self._clear_all_btn = QToolButton(bar)
+        self._clear_all_btn.setObjectName("prompt-clear-all")
+        self._clear_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_all_btn.setFixedSize(30, 30)
+        self._clear_all_btn.setIconSize(QSize(20, 20))
+        self._clear_all_btn.setStyleSheet(
+            "QToolButton#prompt-clear-all { background:transparent; border:none; }")
+        try:
+            from generator.result_cell import _tinted_icon
+            from views.theme import LUMZ_THEME
+            self._clear_all_btn.setIcon(_tinted_icon("x", LUMZ_THEME["text_primary"]))
+        except Exception:
+            self._clear_all_btn.setText("✕")
+        self._clear_all_btn.setToolTip(tr('gen_tt_clear_all'))
+        self._clear_all_btn.clicked.connect(self._on_clear_all)
+        bar.installEventFilter(self)          # resize панели → перепозиционировать крестик
+        self._position_clear_all()
+        QTimer.singleShot(0, self._position_clear_all)   # добор позиции после первой раскладки
         return bar
 
     def _adjust_prompt_height(self):
@@ -846,6 +868,9 @@ class GeneratorPage(QWidget):
             if w != getattr(self, "_last_prompt_w", -1):
                 self._last_prompt_w = w
                 self._adjust_prompt_height()
+        # панель промпт-бара изменила размер → перепозиционировать крестик «очистить всё».
+        if obj is getattr(self, "_prompt_bar", None) and ev.type() == QEvent.Type.Resize:
+            self._position_clear_all()
         # ref-thumb hover: показ/скрытие крестика + popup увеличения.
         if isinstance(obj, QFrame) and obj.objectName() == "ref-thumb":
             t = ev.type()
@@ -2868,6 +2893,27 @@ class GeneratorPage(QWidget):
         self._ref_thumbs.clear()
         self._pending_refs.clear()
         self._refs_row.setVisible(False)
+
+    def _on_clear_all(self):
+        """Крестик «очистить всё» в углу панели: снести ВСЕ рефы + очистить текст промпта.
+        Крестик виден ВСЕГДА — после очистки НЕ прячем."""
+        self.clear_refs()
+        try:
+            self.prompt_input.clear()
+        except Exception:
+            pass
+
+    def _position_clear_all(self):
+        """Крестик — в правом-верхнем углу ПАНЕЛИ промпт-бара (self._prompt_bar)."""
+        btn = getattr(self, "_clear_all_btn", None)
+        bar = getattr(self, "_prompt_bar", None)
+        if btn is None or bar is None:
+            return
+        try:
+            btn.move(max(0, bar.width() - btn.width() - 8), 8)
+            btn.raise_()
+        except Exception:
+            pass
 
     def _active_refs(self) -> list:
         """Активные рефы — первые N (по _max_refs текущей модели/режима). ТОЛЬКО они

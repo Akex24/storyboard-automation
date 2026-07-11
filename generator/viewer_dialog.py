@@ -368,6 +368,11 @@ class GeneratorViewerDialog(QDialog):
 
     def __init__(self, result_path: str, meta: dict, parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
+        # МОДАЛЬНЫЙ: пока попап открыт — холст И окно избранного под ним НЕ реагируют на
+        # hover/клик (ApplicationModal блокирует ввод всем др. окнам приложения → карточки
+        # не запускают видео и не открывают второй попап). Закрытие крестиком/Escape
+        # авто-снимает модальность; видео стопается в _stop_playback (reject/closeEvent).
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._result_path = str(result_path or "")
         self._meta = meta if isinstance(meta, dict) else {}
         self._player = None
