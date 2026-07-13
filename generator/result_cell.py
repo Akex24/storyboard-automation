@@ -1150,6 +1150,13 @@ class ShimmerCell(QFrame):
             return
         press = getattr(self, "_press_pos", None)   # ГДЕ зажал — ДО сброса
         self._press_pos = None            # после drag release НЕ должен открыть попап
+        # Старт drag → остановить hover-автоплей этой карточки: иначе во время
+        # блокирующего drag.exec() (свой цикл, leaveEvent не приходит — мышь захвачена)
+        # видео и ЗВУК продолжают играть всё перетаскивание. Тот же стоп, что в
+        # клике/leave: плеер+звук off, сброс к постеру, _video_active=False → поздние
+        # кадры игнорятся, превью вернётся только на новом hover (enterEvent). Покрывает
+        # холст И избранное (обе — ShimmerCell, drag единый).
+        self._stop_video_playback()
         try:
             drag = QDrag(self)
             md = QMimeData()
