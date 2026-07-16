@@ -2482,6 +2482,18 @@ Studio при старте копирует его в `project_root` через
 Генератора: `MODELS_BY_MODE["image"]` в generator/generator_page.py.
 server_check живость меряет по nano-banana-2 (Lite не тестирует).
 
+**Псевдо-модель «Nano Banana 2 2K» (id `nano-banana-2-2k`, 2026-07-16):** ПЕРВЫЙ пункт
+`MODELS_BY_MODE["image"]` (виднее в списке), но дефолт image-режима форсится на
+`nano-banana-2` в `_populate_models` (`set_current_id`) — 2K осознанный выбор, дороже.
+На сервере такого id НЕТ: `GeneratorImageThread` (generator_thread.py) транслирует
+`nano-banana-2-2k` → `payload["model"]="nano-banana-2"` + `payload["generation_config"]=
+{"upscale":{"type":"2x"}}` (разрешение база×2). Подпись на карточке идёт сама
+(`current_label()`→`set_model_label`+`set_meta`, restore на reload). Кнопка «2K»
+(`btn_2k`) скрыта у таких карточек: `result_cell._refresh_2k_enabled` early-return при
+`meta["model_id"]=="nano-banana-2-2k"` (кадр уже 2K). server_check/`IMAGE_PROVIDER_MODEL`
+sentinel НЕ трогает (тестят фиксированные nano-banana-2/openai-image; генератор изолирован
+от pipeline-провайдера).
+
 ### Bridge `image_provider.txt` (2026-05-15)
 
 `pipeline.py` запускается AI-агентом в subprocess'е `claude -p` через

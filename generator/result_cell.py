@@ -1281,6 +1281,16 @@ class ShimmerCell(QFrame):
         if isinstance(self._meta, dict):
             is_image = (self._meta.get("type") or "image") == "image"
             has_file = bool((self._meta.get("file") or "").strip())
+            # Кадр модели «Nano Banana 2 2K» (id nano-banana-2-2k) УЖЕ 2K → кнопка
+            # апскейла не нужна, прячем её ТОЛЬКО на этой карточке (остальные — как были).
+            if self._meta.get("model_id") == "nano-banana-2-2k":
+                btn.setVisible(False)
+                btn.setEnabled(False)
+                aux = getattr(self, "_aux_2k_overlay", None)
+                if aux is not None:
+                    aux.setVisible(False)
+                self._reanchor_overlays()
+                return
         enabled = bool(is_image and has_file and self._state == "image")
         btn.setVisible(is_image)
         btn.setEnabled(enabled)

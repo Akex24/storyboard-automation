@@ -47,7 +47,8 @@ from fs_utils import move_to_trash   # удаление в системную К
 # id реальные из /api/v5/models. ВНИМАНИЕ: генерация видео пока НЕ подключена —
 # в _on_run режим "video" возвращает «Видео скоро будет» ДО использования id.
 MODELS_BY_MODE = {
-    "image": [("Nano Banana 2", "nano-banana-2"),
+    "image": [("Nano Banana 2 2K", "nano-banana-2-2k"),
+              ("Nano Banana 2", "nano-banana-2"),
               ("Nano Banana 2 Lite", "nano-banana-2-lite"),
               ("OpenAI", "openai-image")],
     "video": [("Veo 3.1 Fast (8s)", "flow-video-fast"),
@@ -1132,6 +1133,11 @@ class GeneratorPage(QWidget):
         items = [(label, model_id), ...]; id отдаётся current_model_id().
         Вызов при смене режима — позже (1 connect)."""
         self.model_combo.set_models(MODELS_BY_MODE.get(mode, []))
+        # «Nano Banana 2 2K» стоит ПЕРВЫМ пунктом (виднее в списке), но дефолтная
+        # модель image-режима — обычная nano-banana-2 (2K дороже, осознанный выбор).
+        # set_models по умолчанию берёт первый пункт → форсим NB2 на image-режиме.
+        if mode == "image":
+            self.model_combo.set_current_id("nano-banana-2")
 
     # ── MVP сквозная генерация (текст → wand-2 → картинка) ─────────────
     def _active_seg_key(self, btns) -> Optional[str]:

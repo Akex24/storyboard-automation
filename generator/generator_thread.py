@@ -165,11 +165,21 @@ class GeneratorImageThread(QThread):
                     return
 
             # v5: провайдер выбирается полем model; единый эндпоинт.
+            # «Nano Banana 2 2K» (id nano-banana-2-2k) — псевдо-модель: тело как у
+            # nano-banana-2, но серверный апскейл ×2 через generation_config
+            # (разрешение база×2). Реального model-id "nano-banana-2-2k" на сервере нет.
+            model = self.model_id
+            gen_config = None
+            if model == "nano-banana-2-2k":
+                model = "nano-banana-2"
+                gen_config = {"upscale": {"type": "2x"}}
             payload = {
                 "prompt": self.prompt,
                 "aspect_ratio": self.aspect_ratio,
-                "model": self.model_id,
+                "model": model,
             }
+            if gen_config:
+                payload["generation_config"] = gen_config
             if ref_inputs:
                 payload["inputs"] = ref_inputs
             # Диагностика — что реально уходит в /generations (data URI длинный,
